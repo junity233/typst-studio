@@ -1,10 +1,10 @@
 import { useTabsStore } from "../../store/tabsStore";
+import { closeTabWithConfirm } from "../../lib/commands";
 
 export function TabStrip() {
   const tabs = useTabsStore((s) => s.tabs);
   const activeId = useTabsStore((s) => s.activeId);
   const activate = useTabsStore((s) => s.activate);
-  const closeTab = useTabsStore((s) => s.closeTab);
   const openTab = useTabsStore((s) => s.openTab);
 
   return (
@@ -28,7 +28,7 @@ export function TabStrip() {
               aria-label={`Close ${tab.title}`}
               onClick={(e) => {
                 e.stopPropagation();
-                closeTab(tab.id);
+                void closeTabWithConfirm(tab.id);
               }}
             >
               ×

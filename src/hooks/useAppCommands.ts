@@ -11,6 +11,7 @@ import {
 import { useTabsStore } from "../store/tabsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { useUiStore } from "../store/uiStore";
+import { closeTabWithConfirm } from "../lib/commands";
 
 /**
  * Centralized command dispatch for the native app menu. Subscribes to the
@@ -68,7 +69,7 @@ export async function dispatch(menuId: string): Promise<void> {
         break;
 
       case "close-tab":
-        if (activeId !== null) await tabs.closeTab(activeId);
+        if (activeId !== null) await closeTabWithConfirm(activeId);
         break;
 
       case "toggle-sidebar":
