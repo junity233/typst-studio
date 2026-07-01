@@ -1,12 +1,14 @@
 import { useEffect, useTransition } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { onCompiled, onDiagnostics, onStatus } from "../lib/tauri";
-import { useDiagnosticsStore } from "../store/diagnosticsStore";
+import { onCompiled, onStatus } from "../lib/tauri";
 import { useTabsStore } from "../store/tabsStore";
 
 /**
  * App-level subscription to the typst compile lifecycle. Mount once near the
- * root; it wires `compiled` / `diagnostics` / `status` events into the stores.
+ * root; it wires `compiled` / `status` events into the stores.
+ *
+ * Diagnostics are now handled by the LSP server (tinymist) via
+ * `publishDiagnostics`, not by the compile pipeline.
  *
  * Preview page updates (potentially large SVG payloads) are wrapped in
  * `startTransition` so React treats them as **low priority** — keystrokes and
@@ -34,18 +36,6 @@ export function useTypstCompile(): void {
         return;
       }
       unlistens.push(uCompiled);
-
-      const uDiags = await onDiagnostics((p) => {
-        // Only update the diagnostics store — status is driven by the separate
-        // `status` event. This handler fires for both errors (non-empty list)
-        // and success-clears (empty list), so it must not assume failure.
-        useDiagnosticsStore.getState().set(p.id, p.diagnostics);
-      });
-      if (cancelled) {
-        uDiags();
-        return;
-      }
-      unlistens.push(uDiags);
 
       const uStatus = await onStatus((p) => {
         useTabsStore

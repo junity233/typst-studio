@@ -1,9 +1,17 @@
+import { useEffect, useState } from "react";
 import { useDiagnosticsStore } from "../../store/diagnosticsStore";
 import { useTabsStore } from "../../store/tabsStore";
 import type { CompileStatus } from "../../lib/ui-types";
+import { invoke } from "@tauri-apps/api/core";
 
 /** Stable empty array so the selector returns the same reference when unset. */
 const EMPTY_DIAGNOSTICS: readonly never[] = Object.freeze([]) as never[];
+
+interface LspStatus {
+  running: boolean;
+  wsUrl: string;
+  available: boolean;
+}
 
 function statusLabel(
   status: CompileStatus,
@@ -22,6 +30,12 @@ function statusLabel(
   }
 }
 
+function lspLabel(status: LspStatus): string {
+  if (!status.available) return "LSP: not installed";
+  if (!status.running) return "LSP: stopped";
+  return "LSP: connected";
+}
+
 export function StatusBar() {
   const tab = useTabsStore(
     (s) => s.tabs.find((t) => t.id === s.activeId) ?? null,
@@ -38,6 +52,30 @@ export function StatusBar() {
         ? "statusbar-status--error"
         : "";
 
+  const [lspStatus, setLspStatus] = useState<LspStatus>({
+    running: false,
+    wsUrl: "",
+    available: false,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const s = await invoke<LspStatus>("get_lsp_status");
+        if (!cancelled) setLspStatus(s);
+      } catch {
+        // ignore
+      }
+    };
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
   return (
     <footer className="statusbar">
       <span className={"statusbar-section" + (statusClass ? " " + statusClass : "")}>
@@ -51,6 +89,9 @@ export function StatusBar() {
             </span>
           )
           : <span className="statusbar-badge">No errors</span>}
+      </span>
+      <span className="statusbar-section statusbar-lsp">
+        {lspLabel(lspStatus)}
       </span>
     </footer>
   );

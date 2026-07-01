@@ -21,6 +21,7 @@ use crate::domain::document::DocumentId;
 use crate::error::{AppError, Result};
 use crate::ipc::events::OpenedDocument;
 use crate::ipc::state::AppState;
+use crate::lsp::manager::LspStatus;
 
 /// Create a new untitled tab. `content` defaults to the built-in template.
 /// The initial compile is spawned asynchronously — this returns immediately.
@@ -193,6 +194,31 @@ pub async fn get_diagnostics(
     id: DocumentId,
 ) -> Result<Vec<Diagnostic>> {
     Ok(state.editor.get_diagnostics(id))
+}
+
+/// Get the LSP server status (running, ws_url, available).
+#[tauri::command]
+pub async fn get_lsp_status(state: State<'_, AppState>) -> Result<LspStatus> {
+    let guard = state.lsp.lock();
+    Ok(match guard.as_ref() {
+        Some(mgr) => mgr.status(),
+        None => LspStatus {
+            running: false,
+            ws_url: String::new(),
+            available: false,
+        },
+    })
+}
+
+/// Restart the LSP server (e.g. after settings change).
+#[tauri::command]
+pub async fn restart_lsp(state: State<'_, AppState>) -> Result<()> {
+    let mut guard = state.lsp.lock();
+    if let Some(_mgr) = guard.as_mut() {
+        // Future: call _mgr.restart().await for a full process restart.
+        // For now the frontend reconnects automatically.
+    }
+    Ok(())
 }
 
 /// Convert a dialog `FilePath` into a `PathBuf`, rejecting URLs we can't resolve.

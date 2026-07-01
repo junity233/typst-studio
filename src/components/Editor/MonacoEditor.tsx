@@ -1,16 +1,16 @@
-import { useEffect, useRef } from "react";
-import Editor from "@monaco-editor/react";
-import type { editor } from "monaco-editor";
-import type * as Monaco from "monaco-editor";
-import { saveFile, updateText } from "../../lib/tauri";
-import { useDiagnosticsStore } from "../../store/diagnosticsStore";
+import { useEffect, useState } from "react";
+import { MonacoEditorReactComp } from "@typefox/monaco-editor-react";
+import type { TextContents } from "monaco-languageclient/editorApp";
+import type { LanguageClientManager } from "monaco-languageclient/lcwrapper";
+import { updateText } from "../../lib/tauri";
 import type { Tab } from "../../store/tabsStore";
 import { useDebouncedCallback } from "../../hooks/useDebounce";
-import { registerTypstLanguage, setupMonaco } from "./typstLanguage";
-import { toMonacoMarkers } from "./diagnostics";
-
-/** Stable empty array so the selector returns the same reference when unset. */
-const EMPTY_DIAGNOSTICS: readonly never[] = Object.freeze([]) as never[];
+import {
+  buildVscodeApiConfig,
+  buildLanguageClientConfig,
+  buildEditorAppConfig,
+  getLspWsUrl,
+} from "./lspClient";
 
 /** Imperative surface exposed to the parent for navigation (diagnostics goto). */
 export interface MonacoEditorApi {
@@ -23,119 +23,75 @@ interface MonacoEditorProps {
   onReady?: (api: MonacoEditorApi) => void;
 }
 
-const MODEL_OWNER = "typst";
+const vscodeApiConfig = buildVscodeApiConfig();
 
 export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
-  const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
-  const monacoRef = useRef<typeof Monaco | null>(null);
-  const tabIdRef = useRef<string>(tab.id);
-  tabIdRef.current = tab.id;
+  const [wsUrl, setWsUrl] = useState<string | null>(null);
+  const [lspReady, setLspReady] = useState(false);
 
-  const diagnostics = useDiagnosticsStore((s) =>
-    s.byTab[tab.id] ?? EMPTY_DIAGNOSTICS,
-  );
+  // Fetch the LSP WebSocket URL on mount.
+  useEffect(() => {
+    let cancelled = false;
+    getLspWsUrl().then((url) => {
+      if (!cancelled) {
+        setWsUrl(url);
+        setLspReady(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  // Setup + language registration run once before first mount.
-  setupMonaco();
-
-  // Debounced backend push. 100 ms feels instant while coalescing burst typing
-  // into one IPC round-trip. Combined with the backend worker's 0 ms response,
-  // total edit-to-preview latency ≈ 100 ms + compile time ≈ 150 ms.
+  // Debounced backend push for the compile pipeline (SVG preview).
   const pushToBackend = useDebouncedCallback((id: string, value: string) => {
     void updateText(id, value).catch((e) =>
       console.warn("[MonacoEditor] updateText failed:", e),
     );
   }, 100);
 
-  const handleBeforeMount = (monaco: typeof Monaco): void => {
-    registerTypstLanguage(monaco);
-    // Light theme. Apple's system is fundamentally light; the editor reads on
-    // white. Token colors are conservative and readable on white — not VS
-    // Code defaults. Action Blue is reused for typst headings (navigational).
-    monaco.editor.defineTheme("typst-light", {
-      base: "vs",
-      inherit: true,
-      rules: [
-        { token: "keyword", foreground: "931868", fontStyle: "italic" },
-        { token: "keyword.heading", foreground: "0066cc" },
-        { token: "type.identifier", foreground: "7a4400" },
-        { token: "number", foreground: "1d1d1f" },
-        { token: "string", foreground: "065d2c" },
-        { token: "comment", foreground: "7a7a7a", fontStyle: "italic" },
-        { token: "operator", foreground: "1d1d1f" },
-        { token: "strong", foreground: "1d1d1f", fontStyle: "bold" },
-        { token: "emphasis", foreground: "1d1d1f", fontStyle: "italic" },
-      ],
-      colors: {
-        "editor.background": "#ffffff",
-      },
-    });
-  };
+  const languageClientConfig = wsUrl
+    ? buildLanguageClientConfig(wsUrl)
+    : undefined;
 
-  const handleMount = (
-    ed: editor.IStandaloneCodeEditor,
-    monaco: typeof Monaco,
-  ): void => {
-    editorRef.current = ed;
-    monacoRef.current = monaco;
+  const editorAppConfig = buildEditorAppConfig(tab.id, tab.content);
 
-    // Cmd/Ctrl+S → save the currently active tab.
-    ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-      void saveFile(tabIdRef.current).catch((e) =>
-        console.warn("[MonacoEditor] save failed:", e),
-      );
-    });
-
-    onReady?.({
-      revealLine: (line, column) => {
-        ed.revealLineInCenter(line);
-        ed.setPosition({ lineNumber: line, column });
-        ed.focus();
-      },
-    });
-  };
-
-  // Apply diagnostics markers to the active model whenever they change.
-  useEffect(() => {
-    const monaco = monacoRef.current;
-    const ed = editorRef.current;
-    if (monaco === null || ed === null) return;
-    const model = ed.getModel();
-    if (model === null) return;
-    monaco.editor.setModelMarkers(model, MODEL_OWNER, toMonacoMarkers(diagnostics));
-  }, [diagnostics]);
-
-  const handleChange = (value: string | undefined): void => {
-    const next = value ?? "";
+  const handleTextChanged = (textChanges: TextContents): void => {
+    const next = textChanges.modified ?? "";
     onChange(next);
     pushToBackend(tab.id, next);
   };
 
+  const handleLanguageClientsStartDone = (
+    _lcsManager: LanguageClientManager,
+  ): void => {
+    onReady?.({
+      revealLine: (_line, _column) => {
+        // TODO: implement revealLine with the new editor API
+      },
+    });
+  };
+
+  const handleError = (error: Error): void => {
+    console.error("[MonacoEditor] error:", error);
+  };
+
+  // Don't render until we've checked LSP availability.
+  if (!lspReady) {
+    return <div className="editor-pane">Loading editor...</div>;
+  }
+
   return (
     <div className="editor-pane">
-      <Editor
-        /* `path` keys the underlying model by tab id, so each tab keeps its
-         * own undo history and view state across tab switches. */
-        path={`inmemory://typst-studio/${tab.id}`}
-        language="typst"
-        theme="typst-light"
-        value={tab.content}
-        onChange={handleChange}
-        beforeMount={handleBeforeMount}
-        onMount={handleMount}
-        loading="Loading editor…"
-        options={{
-          fontSize: 13,
-          fontFamily:
-            '"SF Mono", Menlo, Monaco, "Cascadia Code", Consolas, monospace',
-          fontLigatures: true,
-          minimap: { enabled: false },
-          scrollBeyondLastLine: false,
-          automaticLayout: true,
-          tabSize: 2,
-          wordWrap: "on",
-          renderWhitespace: "selection",
-        }}
+      <MonacoEditorReactComp
+        vscodeApiConfig={vscodeApiConfig}
+        editorAppConfig={editorAppConfig}
+        languageClientConfig={languageClientConfig}
+        style={{ height: "100%" }}
+        onTextChanged={handleTextChanged}
+        onLanguageClientsStartDone={handleLanguageClientsStartDone}
+        onError={handleError}
+        enforceLanguageClientDispose={true}
       />
     </div>
   );

@@ -475,6 +475,11 @@ button {
 .statusbar-badge-error {
   color: var(--color-error);
 }
+.statusbar-lsp {
+  font: var(--text-fine-print);
+  letter-spacing: -0.12px;
+  color: var(--color-ink-muted-48);
+}
 
 /* ============================================================================
    Buttons
