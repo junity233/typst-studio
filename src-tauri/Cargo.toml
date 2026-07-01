@@ -69,6 +69,9 @@ http = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
+# Workspace filesystem watching (file-tree live updates).
+notify = "8"
+
 # Rust ↔ TypeScript type generation (optional, behind feature)
 ts-rs = { version = "12", features = ["uuid-impl", "chrono-impl", "no-serde-warnings"], optional = true }
 

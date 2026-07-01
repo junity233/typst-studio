@@ -1,20 +1,20 @@
 //! Typst Studio — library entry point.
 //!
 //! Module layout (see docs/superpowers/specs/):
-//! - `domain`          Pure data models (DocumentId, Diagnostic, CompileResult)
+//! - `domain`          Pure data models (DocumentId, Diagnostic, CompileResult, CompileStatus)
+//! - `fs`              Workspace filesystem access (FileResolver, file tree, watcher)
 //! - `typst_engine`    EditorWorld + compiler + font/source loaders
 //! - `render`          Pluggable render pipelines (SVG / PDF / PNG)
 //! - `service`         Orchestration (EditorService, CompileScheduler, Export)
-//! - `project`         Project / VirtualFs abstractions (MVP stubs)
-//! - `languageserver`  LanguageService trait (MVP Noop stub)
+//! - `project`         Project abstraction (MVP stub)
 //! - `settings`        AppConfig + ConfigStore
 //! - `ipc`             Tauri commands, events, AppState
 //! - `error`           Unified AppError + Result alias
 
 pub mod domain;
 pub mod error;
+pub mod fs;
 pub mod ipc;
-pub mod languageserver;
 pub mod lsp;
 pub mod project;
 pub mod render;

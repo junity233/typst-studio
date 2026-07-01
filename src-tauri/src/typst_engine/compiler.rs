@@ -4,18 +4,18 @@
 //! ## Diagnostic conversion
 //!
 //! [`typst::diag::SourceDiagnostic`] carries a [`DiagSpan`] which may be a raw
-//! byte range, a numbered source span, or detached. Resolving it to the
-//! 1-indexed line/column [`Range`] our editor (Monaco) expects requires the
-//! source *text*, so the conversion is a free function
-//! [`convert_diagnostic`] that takes the main [`Source`] as context, rather
-//! than a plain `From` impl (which would have no way to resolve spans). This
-//! also keeps the `domain` layer free of any `typst` dependency.
+//! byte range, a numbered source span, or detached. A span's kind carries a
+//! [`FileId`]; now that `#include` is supported, that id may belong to an
+//! included file rather than the main source. So [`convert_diagnostic`] looks
+//! up the right [`Source`] per error via [`EditorWorld::source_for_id`]
+//! (falling back to the main source if the file can't be read), rather than
+//! resolving every span against the main source.
 
 use std::ops::Range as ByteRange;
 use std::time::Instant;
 
 use typst::diag::{Severity as TypstSeverity, SourceDiagnostic};
-use typst::syntax::{DiagSpanKind, Source};
+use typst::syntax::{DiagSpanKind, FileId, Source};
 use typst_layout::PagedDocument;
 
 use crate::domain::compile_result::CompileOutcome;
@@ -43,11 +43,13 @@ pub fn compile(world: &EditorWorld) -> (CompileOutcome, Option<PagedDocument>) {
     match warned.output {
         Ok(doc) => (CompileOutcome::ok(duration_ms), Some(doc)),
         Err(errors) => {
-            // All spans originate in the main file (no `#include` in MVP), so
-            // resolving against the main source is correct.
-            let source = world.main_source();
-            let diagnostics: Vec<Diagnostic> =
-                errors.iter().map(|d| convert_diagnostic(d, &source)).collect();
+            // Each diagnostic's span may point into any file in the workspace
+            // (the main file or an included one); resolve per error.
+            let main = world.main_source();
+            let diagnostics: Vec<Diagnostic> = errors
+                .iter()
+                .map(|d| convert_diagnostic(d, world, &main))
+                .collect();
             (CompileOutcome::fail(diagnostics, duration_ms), None)
         }
     }
@@ -55,21 +57,31 @@ pub fn compile(world: &EditorWorld) -> (CompileOutcome, Option<PagedDocument>) {
 
 /// Translate a single Typst [`SourceDiagnostic`] into our domain [`Diagnostic`].
 ///
-/// Span resolution maps byte offsets to 1-indexed (line, column) pairs via the
-/// source's line index. Detached spans collapse to position (1, 1). The column
+/// The span's [`FileId`] decides which [`Source`] is used for line/column
+/// resolution: the included file's source if the error originates there, or the
+/// main source otherwise. Detached spans collapse to position (1, 1). The column
 /// counts Unicode scalar values (chars), matching `typst::syntax::Lines`; the
 /// IPC layer may re-encode to UTF-16 for Monaco if needed.
-pub fn convert_diagnostic(d: &SourceDiagnostic, source: &Source) -> Diagnostic {
+pub fn convert_diagnostic(
+    d: &SourceDiagnostic,
+    world: &EditorWorld,
+    main: &Source,
+) -> Diagnostic {
     let severity = match d.severity {
         TypstSeverity::Error => Severity::Error,
         TypstSeverity::Warning => Severity::Warning,
     };
 
     let range = match d.span.get() {
-        DiagSpanKind::Range { range, .. } => byte_range_to_range(source, range),
-        DiagSpanKind::Number { num, sub_range, .. } => {
-            match source.range(num, sub_range) {
-                Some(bytes) => byte_range_to_range(source, bytes),
+        DiagSpanKind::Range { id, range } => {
+            resolve_source(world, main, id).map_or_else(default_range, |s| byte_range_to_range(&s, range))
+        }
+        DiagSpanKind::Number { id, num, sub_range, .. } => {
+            match resolve_source(world, main, id) {
+                Some(s) => match s.range(num, sub_range) {
+                    Some(bytes) => byte_range_to_range(&s, bytes),
+                    None => default_range(),
+                },
                 None => default_range(),
             }
         }
@@ -83,6 +95,13 @@ pub fn convert_diagnostic(d: &SourceDiagnostic, source: &Source) -> Diagnostic {
         // typst 0.15's `SourceDiagnostic` carries no error code.
         code: None,
     }
+}
+
+/// Fetch the source for a diagnostic's file id. Falls back to `main` when the
+/// id can't be resolved (no workspace, or the file isn't readable) so the range
+/// degrades gracefully instead of erroring.
+fn resolve_source(world: &EditorWorld, main: &Source, id: FileId) -> Option<Source> {
+    world.source_for_id(id).or_else(|| Some(main.clone()))
 }
 
 /// Convert a 0-indexed byte range into a 1-indexed `Range`.
@@ -191,9 +210,10 @@ mod tests {
     #[test]
     fn convert_diagnostic_handles_detached_span() {
         // A detached span must fall back to (1, 1) without panicking.
-        let source = Source::detached("anything");
+        let w = world("anything");
+        let main = w.main_source();
         let d = SourceDiagnostic::error(typst::syntax::DiagSpan::detached(), "boom");
-        let out = convert_diagnostic(&d, &source);
+        let out = convert_diagnostic(&d, &w, &main);
         assert_eq!(out.severity, Severity::Error);
         assert_eq!(out.message, "boom");
         assert_eq!(out.range, default_range());

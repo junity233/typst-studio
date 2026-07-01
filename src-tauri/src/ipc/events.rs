@@ -1,14 +1,24 @@
-//! Tauri event payloads + `CompileStatus`.
+//! Tauri event payloads.
 //!
-//! These types are the wire format for the three events emitted by the backend:
-//! `compiled`, `diagnostics`, and `status` (see `ipc-contract.md`). All payloads
+//! These types are the wire format for the events emitted by the backend:
+//! `compiled`, `diagnostics`, `status`, and `lsp_status`. All editor payloads
 //! carry a `DocumentId` so the frontend can route events to the correct tab.
 //!
 //! Field names are `camelCase` on the wire (`#[serde(rename_all = "camelCase")]`)
 //! so the generated TypeScript matches the frontend's `ui-types.ts` directly.
+//!
+//! `CompileStatus` is re-exported from `domain::compile_status` (see the `use`
+//! below) so existing `ipc::events::CompileStatus` paths keep resolving.
 
 use crate::domain::diagnostics::Diagnostic;
 use crate::domain::document::{DocumentId, DocumentMeta};
+
+// `CompileStatus` is defined in `domain::compile_status` (moved out of this
+// module to remove a `service → ipc` reverse dependency: the service layer emits
+// statuses and must not import from `ipc`). Re-exported here so existing
+// `ipc::events::CompileStatus` paths keep resolving, and so the `StatusPayload`
+// field below compiles against the same type.
+pub use crate::domain::compile_status::CompileStatus;
 
 /// Response of `new_tab` / `open_file`: the tab's metadata paired with its
 /// current source text, so the frontend can hydrate Monaco without re-reading
@@ -23,21 +33,6 @@ pub struct OpenedDocument {
     #[serde(flatten)]
     pub meta: DocumentMeta,
     pub content: String,
-}
-
-/// Lifecycle status of a compile, emitted on the `status` event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-#[cfg_attr(
-    feature = "export-types",
-    derive(ts_rs::TS),
-    ts(export_to = "../../src/lib/types.ts")
-)]
-pub enum CompileStatus {
-    Idle,
-    Compiling,
-    Success,
-    Error,
 }
 
 /// Payload of the `compiled` event: one self-contained SVG string per page.
@@ -111,21 +106,12 @@ mod tests {
     fn export_types() {
         use ts_rs::TS;
         let cfg = ts_rs::Config::default();
-        CompileStatus::export(&cfg).unwrap();
+        // `CompileStatus` is exported by `domain::compile_status`.
         CompiledPayload::export(&cfg).unwrap();
         DiagnosticsPayload::export(&cfg).unwrap();
         StatusPayload::export(&cfg).unwrap();
         OpenedDocument::export(&cfg).unwrap();
         LspStatusPayload::export(&cfg).unwrap();
-    }
-
-    #[test]
-    fn status_serializes_lowercase() {
-        // Matches the frontend's `"compiling" | "success" | ...` union.
-        assert_eq!(serde_json::to_string(&CompileStatus::Compiling).unwrap(), "\"compiling\"");
-        assert_eq!(serde_json::to_string(&CompileStatus::Success).unwrap(), "\"success\"");
-        assert_eq!(serde_json::to_string(&CompileStatus::Error).unwrap(), "\"error\"");
-        assert_eq!(serde_json::to_string(&CompileStatus::Idle).unwrap(), "\"idle\"");
     }
 
     #[test]

@@ -26,10 +26,10 @@ use parking_lot::RwLock;
 use typst_layout::PagedDocument;
 
 use crate::domain::compile_result::CompileOutcome;
+use crate::domain::compile_status::CompileStatus;
 use crate::domain::diagnostics::{Diagnostic, Range, Severity};
 use crate::domain::document::{DocumentId, DocumentMeta};
 use crate::error::{AppError, Result};
-use crate::ipc::events::CompileStatus;
 use crate::render::pipeline::RenderPipeline;
 use crate::render::svg::SvgRenderer;
 use crate::typst_engine::compiler;
