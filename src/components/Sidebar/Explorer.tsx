@@ -1,14 +1,32 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Copy,
+  File,
+  FilePlus,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  Pencil,
+  SquareArrowOutUpRight,
+  Trash2,
+} from "lucide-react";
 import type { DirEntry, EntryKind } from "../../lib/types";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useTabsStore } from "../../store/tabsStore";
-import { openFileByPath } from "../../lib/tauri";
+import { openFileByPath, revealInFinder } from "../../lib/tauri";
+import { useContextMenuStore } from "./contextMenuStore";
+
+const ICON_SIZE = 14;
 
 /**
  * The workspace file explorer: a lazy, recursively-expandable tree of the open
- * folder. Supports browse + open (click a `.typ`), and file management via the
- * toolbar (New File / New Folder) and a right-click context menu (Rename /
- * Delete). Renames use an inline editor.
+ * folder. Supports browse + open (click a `.typ`), file management via the
+ * toolbar (New File / New Folder) and a real right-click context menu
+ * (Rename / Delete / Copy / Reveal / Collapse-all). Renames use an inline
+ * editor. Folders expand/collapse with a CSS grid height transition.
  *
  * Drag-to-move is deferred — create/rename/delete cover the daily cases.
  */
@@ -19,6 +37,9 @@ export function Explorer() {
   const expanded = useWorkspaceStore((s) => s.expanded);
   const toggleExpand = useWorkspaceStore((s) => s.toggleExpand);
   const createEntry = useWorkspaceStore((s) => s.createEntry);
+  const collapseAll = useWorkspaceStore((s) => s.collapseAll);
+  const expandAll = useWorkspaceStore((s) => s.expandAll);
+  const openMenu = useContextMenuStore((s) => s.open);
   const rootEntries = tree[""] ?? [];
 
   // The directory a "new file/folder" prompt is targeting (relative; "" = root).
@@ -28,9 +49,43 @@ export function Explorer() {
   if (rootPath === null) return null;
 
   const handleNew = (kind: EntryKind) => {
-    // Default target: the root (most common case). A future per-folder "+" would
-    // pass a specific dir.
     setPendingNew({ dir: "", kind });
+  };
+
+  const handleBodyContextMenu = (e: React.MouseEvent) => {
+    // Right-click on empty space (not on a row — rows stopPropagation).
+    e.preventDefault();
+    openMenu(
+      [
+        {
+          type: "action",
+          label: "New File",
+          icon: <FilePlus size={ICON_SIZE} />,
+          onSelect: () => handleNew("file"),
+        },
+        {
+          type: "action",
+          label: "New Folder",
+          icon: <FolderPlus size={ICON_SIZE} />,
+          onSelect: () => handleNew("dir"),
+        },
+        { type: "separator" },
+        {
+          type: "action",
+          label: "Collapse All",
+          icon: <ChevronsDownUp size={ICON_SIZE} />,
+          onSelect: () => void collapseAll(),
+        },
+        {
+          type: "action",
+          label: "Expand All",
+          icon: <ChevronsUpDown size={ICON_SIZE} />,
+          onSelect: () => void expandAll(),
+        },
+      ],
+      e.clientX,
+      e.clientY,
+    );
   };
 
   return (
@@ -43,18 +98,18 @@ export function Explorer() {
             title="New file"
             onClick={() => handleNew("file")}
           >
-            ＋
+            <FilePlus size={14} />
           </button>
           <button
             className="explorer-action"
             title="New folder"
             onClick={() => handleNew("dir")}
           >
-            ▦
+            <FolderPlus size={14} />
           </button>
         </span>
       </div>
-      <div className="explorer-body">
+      <div className="explorer-body" onContextMenu={handleBodyContextMenu}>
         {rootEntries.length === 0 && pendingNew === null ? (
           <p className="explorer-empty">This folder is empty.</p>
         ) : (
@@ -108,11 +163,15 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
   const renameEntry = useWorkspaceStore((s) => s.renameEntry);
   const deleteEntry = useWorkspaceStore((s) => s.deleteEntry);
   const createEntry = useWorkspaceStore((s) => s.createEntry);
+  const openMenu = useContextMenuStore((s) => s.open);
   const [loading, setLoading] = useState(false);
   const [renaming, setRenaming] = useState(false);
 
   const isDir = entry.kind === "dir";
   const isOpen = expanded.has(entry.relative);
+  // `children` is undefined until the dir has been loaded at least once.
+  // We keep the animated container mounted whenever children are loaded, so
+  // the open/close transition has real content to animate over.
   const children = isDir ? tree[entry.relative] : undefined;
 
   const isActiveFile =
@@ -149,18 +208,7 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Right-click = rename (inline edit). Delete is on the row's ✕ button.
-    setRenaming(true);
-  };
-
-  const handleDelete = async () => {
-    const ok = window.confirm(`Delete "${entry.name}"? This cannot be undone.`);
-    if (!ok) return;
-    try {
-      await deleteEntry(entry.relative);
-    } catch (e) {
-      window.alert(`Delete failed: ${e instanceof Error ? e.message : e}`);
-    }
+    openMenu(buildRowMenu(entry, setRenaming, setPendingNew, deleteEntry), e.clientX, e.clientY);
   };
 
   const commitRename = async (newName: string) => {
@@ -187,11 +235,15 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
         onContextMenu={handleContextMenu}
         title={entry.relative}
       >
-        <span className="tree-twisty">
-          {isDir ? (isOpen ? "▾" : "▸") : ""}
+        <span className={`tree-twisty${isDir && isOpen ? " tree-twisty-open" : ""}`}>
+          {isDir && <ChevronRight size={12} />}
         </span>
-        <span className={`tree-icon tree-icon-${entry.kind}`}>
-          {isDir ? "▹" : "●"}
+        <span className="tree-icon">
+          {isDir ? (
+            isOpen ? <FolderOpen size={ICON_SIZE} /> : <Folder size={ICON_SIZE} />
+          ) : (
+            <File size={ICON_SIZE} />
+          )}
         </span>
         {renaming ? (
           <InlineName
@@ -205,80 +257,136 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
               {entry.name}
             </span>
             {loading && <span className="tree-loading" aria-hidden />}
-            {!isDir && (
-              <button
-                className="tree-action"
-                title="Delete"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void handleDelete();
-                }}
-              >
-                ✕
-              </button>
-            )}
-            {isDir && (
-              <>
-                <button
-                  className="tree-action"
-                  title="New file here"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setPendingNew({ dir: entry.relative, kind: "file" });
-                  }}
-                >
-                  ＋
-                </button>
-                <button
-                  className="tree-action"
-                  title="Delete folder"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void handleDelete();
-                  }}
-                >
-                  ✕
-                </button>
-              </>
-            )}
           </>
         )}
       </div>
-      {isDir && isOpen && children && (
-        <ul className="tree" role="group">
-          {/* Inline "new entry" row inside an expanded directory. */}
-          {pendingNew?.dir === entry.relative && (
-            <NewEntryRow
-              kind={pendingNew.kind}
-              depth={depth + 1}
-              onCancel={() => setPendingNew(null)}
-              onSubmit={async (entryName) => {
-                await createEntry(
-                  entryName.includes("/")
-                    ? entryName
-                    : `${entry.relative}/${entryName}`,
-                  pendingNew.kind,
-                );
-                setPendingNew(null);
-              }}
-            />
-          )}
-          {children.map((child) => (
-            <TreeRow
-              key={child.relative}
-              entry={child}
-              depth={depth + 1}
-              tree={tree}
-              expanded={expanded}
-              onToggle={onToggle}
-              pendingNew={pendingNew}
-              setPendingNew={setPendingNew}
-            />
-          ))}
-        </ul>
+      {isDir && children !== undefined && (
+        <div
+          className={"tree-children" + (isOpen ? " open" : "")}
+          inert={!isOpen || undefined}
+        >
+          <ul className="tree" role="group">
+            {/* Inline "new entry" row inside an expanded directory. */}
+            {pendingNew?.dir === entry.relative && (
+              <NewEntryRow
+                kind={pendingNew.kind}
+                depth={depth + 1}
+                onCancel={() => setPendingNew(null)}
+                onSubmit={async (entryName) => {
+                  await createEntry(
+                    entryName.includes("/")
+                      ? entryName
+                      : `${entry.relative}/${entryName}`,
+                    pendingNew.kind,
+                  );
+                  setPendingNew(null);
+                }}
+              />
+            )}
+            {children.map((child) => (
+              <TreeRow
+                key={child.relative}
+                entry={child}
+                depth={depth + 1}
+                tree={tree}
+                expanded={expanded}
+                onToggle={onToggle}
+                pendingNew={pendingNew}
+                setPendingNew={setPendingNew}
+              />
+            ))}
+          </ul>
+        </div>
       )}
     </li>
   );
+}
+
+/** Build the right-click menu items for a single file or directory row. */
+function buildRowMenu(
+  entry: DirEntry,
+  setRenaming: (v: boolean) => void,
+  setPendingNew: (v: { dir: string; kind: EntryKind } | null) => void,
+  deleteEntry: (rel: string) => Promise<void>,
+) {
+  const isDir = entry.kind === "dir";
+  const parentDir = entry.relative.includes("/")
+    ? entry.relative.slice(0, entry.relative.lastIndexOf("/"))
+    : "";
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard?.writeText(text).catch((e) => {
+      console.warn("[Explorer] clipboard write failed:", e);
+    });
+  };
+
+  const items = [
+    {
+      type: "action" as const,
+      label: "New File",
+      icon: <FilePlus size={ICON_SIZE} />,
+      onSelect: () => setPendingNew({ dir: isDir ? entry.relative : parentDir, kind: "file" as EntryKind }),
+    },
+    ...(isDir
+      ? [
+          {
+            type: "action" as const,
+            label: "New Folder",
+            icon: <FolderPlus size={ICON_SIZE} />,
+            onSelect: () =>
+              setPendingNew({ dir: entry.relative, kind: "dir" as EntryKind }),
+          },
+        ]
+      : []),
+    {
+      type: "action" as const,
+      label: "Rename",
+      icon: <Pencil size={ICON_SIZE} />,
+      onSelect: () => setRenaming(true),
+    },
+    { type: "separator" as const },
+    {
+      type: "action" as const,
+      label: "Copy Name",
+      icon: <Copy size={ICON_SIZE} />,
+      onSelect: () => copyToClipboard(entry.name),
+    },
+    {
+      type: "action" as const,
+      label: "Copy Relative Path",
+      icon: <Copy size={ICON_SIZE} />,
+      onSelect: () => copyToClipboard(entry.relative),
+    },
+    {
+      type: "action" as const,
+      label: "Reveal in Finder",
+      icon: <SquareArrowOutUpRight size={ICON_SIZE} />,
+      onSelect: () => void revealInFinder(entry.relative).catch((e) => {
+        window.alert(`Reveal failed: ${e instanceof Error ? e.message : e}`);
+      }),
+    },
+    { type: "separator" as const },
+    {
+      type: "action" as const,
+      label: "Delete",
+      icon: <Trash2 size={ICON_SIZE} />,
+      danger: true,
+      onSelect: () => void handleDeleteWithConfirm(entry, deleteEntry),
+    },
+  ];
+  return items;
+}
+
+async function handleDeleteWithConfirm(
+  entry: DirEntry,
+  deleteEntry: (rel: string) => Promise<void>,
+) {
+  const ok = window.confirm(`Delete "${entry.name}"? This cannot be undone.`);
+  if (!ok) return;
+  try {
+    await deleteEntry(entry.relative);
+  } catch (e) {
+    window.alert(`Delete failed: ${e instanceof Error ? e.message : e}`);
+  }
 }
 
 /** An inline text input for creating a new entry or renaming one. */
@@ -330,8 +438,8 @@ function NewEntryRow({
     <li>
       <div className="tree-row" style={{ paddingLeft: 8 + depth * 14 }}>
         <span className="tree-twisty" />
-        <span className={`tree-icon tree-icon-${kind}`}>
-          {kind === "dir" ? "▹" : "●"}
+        <span className="tree-icon">
+          {kind === "dir" ? <Folder size={ICON_SIZE} /> : <File size={ICON_SIZE} />}
         </span>
         <InlineName
           initial=""
