@@ -5,6 +5,7 @@ import {
   createEntry as createEntryBE,
   deleteEntry as deleteEntryBE,
   getWorkspace as getWorkspaceBE,
+  openDefaultWorkspace as openDefaultWorkspaceBE,
   openWorkspace as openWorkspaceBE,
   readDir as readDirBE,
   renameEntry as renameEntryBE,
@@ -84,7 +85,13 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
 
   hydrate: async () => {
     try {
-      const meta = await getWorkspaceBE();
+      let meta = await getWorkspaceBE();
+      // No folder picked yet → default to the process's current working
+      // directory (the project the app was launched from) so the explorer
+      // shows something useful on first run instead of an empty prompt.
+      if (!meta) {
+        meta = await openDefaultWorkspaceBE();
+      }
       if (meta) {
         set({ rootPath: meta.root, name: meta.name });
         await get().refresh("");

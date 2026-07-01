@@ -53,6 +53,7 @@ pub fn run() {
             ipc::commands::restart_lsp,
             // Workspace / filesystem commands.
             ipc::fs_commands::open_workspace,
+            ipc::fs_commands::open_default_workspace,
             ipc::fs_commands::close_workspace,
             ipc::fs_commands::get_workspace,
             ipc::fs_commands::read_dir,
@@ -65,6 +66,12 @@ pub fn run() {
         .setup(|app| {
             use std::sync::Arc;
             use tauri::{Emitter as _, Manager};
+
+            // Pre-build the process-wide font store (embedded + system scan).
+            // The scan is the dominant cost of opening the first tab (~hundreds
+            // of ms on macOS); warming it here — during LSP startup, before any
+            // window/tab exists — moves that cost off the first-open path.
+            crate::typst_engine::font_loader::warm();
 
             use crate::ipc::state::{AppState, TauriEmitter};
             use crate::lsp::manager::LspConfig;

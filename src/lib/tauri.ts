@@ -86,6 +86,15 @@ export async function closeWorkspace(): Promise<void> {
   await invoke("close_workspace");
 }
 
+/**
+ * Open the process's current working directory as the workspace — the default
+ * when no folder has been picked. Returns the metadata, or null if the cwd
+ * can't be determined.
+ */
+export async function openDefaultWorkspace(): Promise<WorkspaceMeta | null> {
+  return invoke<WorkspaceMeta | null>("open_default_workspace");
+}
+
 /** Query the current workspace metadata, or null if no folder is open. */
 export async function getWorkspace(): Promise<WorkspaceMeta | null> {
   return invoke<WorkspaceMeta | null>("get_workspace");

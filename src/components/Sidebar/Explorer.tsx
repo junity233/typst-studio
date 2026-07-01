@@ -179,12 +179,19 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
       (t) => t.id === activeId && t.path === `${rootPath}/${entry.relative}`,
     );
 
+  // Folders expand/collapse on single click (standard tree behavior); files
+  // open on DOUBLE click so a single click just selects/focuses the row,
+  // matching VS Code / most file managers.
   const handleClick = async () => {
     if (renaming) return;
     if (isDir) {
       await onToggle(entry.relative);
-      return;
     }
+    // Files do nothing on single click (selection is implicit via the row).
+  };
+
+  const handleDoubleClick = async () => {
+    if (renaming || isDir) return;
     if (!entry.name.endsWith(".typ")) return;
     if (rootPath === null) return;
     try {
@@ -232,6 +239,7 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
         className={`tree-row${isActiveFile ? " tree-row-active" : ""}`}
         style={{ paddingLeft: 8 + depth * 14 }}
         onClick={handleClick}
+        onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
         title={entry.relative}
       >

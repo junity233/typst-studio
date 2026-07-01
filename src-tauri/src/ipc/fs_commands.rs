@@ -19,6 +19,24 @@ use crate::ipc::events::{FsChangedPayload, OpenedDocument};
 use crate::ipc::state::AppState;
 use crate::service::workspace_service::WorkspaceMeta;
 
+/// Open `root` as the workspace (set root + resolver, start the watcher). Shared
+/// by the dialog picker and the default-workspace (cwd) opener. Builds the
+/// `fs_changed` emitter callback.
+fn open_path_as_workspace(
+    app: &AppHandle,
+    workspace: &std::sync::Arc<crate::service::workspace_service::WorkspaceService>,
+    root: PathBuf,
+) -> Result<WorkspaceMeta> {
+    let app_for_cb = app.clone();
+    let on_change: watcher::OnChange = Arc::new(move |paths: &[PathBuf]| {
+        let payload = FsChangedPayload {
+            paths: paths.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+        };
+        let _ = app_for_cb.emit("fs_changed", payload);
+    });
+    workspace.open(root, on_change)
+}
+
 /// A native folder pick → open it as the workspace. Returns the workspace
 /// metadata, or `None` if the user cancelled the dialog.
 #[tauri::command]
@@ -39,18 +57,25 @@ pub async fn open_workspace(
         .into_path()
         .map_err(|e| AppError::InvalidInput(format!("invalid folder path: {e}")))?;
 
-    // The watcher fires on its own thread; build a callback that emits
-    // `fs_changed` so the frontend can refresh its tree.
-    let app_for_cb = app.clone();
-    let on_change: watcher::OnChange = Arc::new(move |paths: &[PathBuf]| {
-        let payload = FsChangedPayload {
-            paths: paths.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
-        };
-        let _ = app_for_cb.emit("fs_changed", payload);
-    });
+    let meta = open_path_as_workspace(&app, &state.workspace, root)?;
+    Ok(Some(meta))
+}
 
-    let ws = state.workspace.clone();
-    let meta = ws.open(root, on_change)?;
+/// Open the process's current working directory as the workspace — the default
+/// workspace when the user hasn't picked a folder. Used at startup so the
+/// explorer shows the project the app was launched from. Returns `None` if the
+/// cwd can't be determined.
+#[tauri::command]
+pub async fn open_default_workspace(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<WorkspaceMeta>> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| AppError::Io(e))?;
+    if !cwd.is_dir() {
+        return Ok(None);
+    }
+    let meta = open_path_as_workspace(&app, &state.workspace, cwd)?;
     Ok(Some(meta))
 }
 
