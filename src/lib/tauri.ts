@@ -5,6 +5,7 @@ import type {
   CompiledPayload,
   DiagnosticsPayload,
   StatusPayload,
+  LspStatusPayload,
 } from "./ui-types";
 
 /**
@@ -71,4 +72,11 @@ export async function onStatus(
   handler: (payload: StatusPayload) => void,
 ): Promise<UnlistenFn> {
   return listen<StatusPayload>("status", (e) => handler(e.payload));
+}
+
+/** Subscribe to LSP status events (connect/disconnect transitions). */
+export async function onLspStatus(
+  handler: (payload: LspStatusPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<LspStatusPayload>("lsp_status", (e) => handler(e.payload));
 }

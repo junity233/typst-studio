@@ -127,7 +127,7 @@ mod tests {
         assert!(outcome.success, "errors: {:?}", outcome.errors);
         let doc = doc.expect("document should be Some on success");
         assert!(
-            doc.pages().len() >= 1,
+            !doc.pages().is_empty(),
             "expected at least one page, got {}",
             doc.pages().len()
         );
@@ -185,7 +185,7 @@ mod tests {
         let (outcome, doc) = compile(&w);
         assert!(outcome.success, "errors: {:?}", outcome.errors);
         // An empty doc still lays out to at least one (blank) page.
-        assert!(doc.unwrap().pages().len() >= 1);
+        assert!(!doc.unwrap().pages().is_empty());
     }
 
     #[test]

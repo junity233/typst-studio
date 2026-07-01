@@ -4,5 +4,5 @@
 //! so future DirectoryProject / FileSystemSource implementations slot in
 //! without touching the compiler or IPC layers.
 
-pub mod project;
+pub mod model;
 pub mod virtual_fs;

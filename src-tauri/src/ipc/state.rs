@@ -11,15 +11,14 @@ use std::sync::Arc;
 
 // `tauri::Emitter` provides `AppHandle::emit`; alias to `_` to avoid clashing
 // with our own `service::editor_service::Emitter` trait imported below.
-use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter as _};
 
 use crate::domain::diagnostics::Diagnostic;
 use crate::domain::document::DocumentId;
 use crate::ipc::events::{CompiledPayload, CompileStatus, DiagnosticsPayload, StatusPayload};
-use crate::lsp::manager::LspManager;
 use crate::service::editor_service::{EditorService, Emitter};
 use crate::service::export_service::ExportService;
+use crate::service::lsp_service::LspService;
 
 /// Production `Emitter` backed by a Tauri `AppHandle`.
 ///
@@ -62,6 +61,6 @@ impl Emitter for TauriEmitter {
 pub struct AppState {
     pub editor: Arc<EditorService>,
     pub export: Arc<ExportService>,
-    /// LSP manager — `None` if tinymist was not found or failed to start.
-    pub lsp: Arc<Mutex<Option<LspManager>>>,
+    /// LSP service wrapping the tinymist bridge.
+    pub lsp: Arc<LspService>,
 }

@@ -199,25 +199,13 @@ pub async fn get_diagnostics(
 /// Get the LSP server status (running, ws_url, available).
 #[tauri::command]
 pub async fn get_lsp_status(state: State<'_, AppState>) -> Result<LspStatus> {
-    let guard = state.lsp.lock();
-    Ok(match guard.as_ref() {
-        Some(mgr) => mgr.status(),
-        None => LspStatus {
-            running: false,
-            ws_url: String::new(),
-            available: false,
-        },
-    })
+    Ok(state.lsp.status())
 }
 
 /// Restart the LSP server (e.g. after settings change).
 #[tauri::command]
 pub async fn restart_lsp(state: State<'_, AppState>) -> Result<()> {
-    let mut guard = state.lsp.lock();
-    if let Some(_mgr) = guard.as_mut() {
-        // Future: call _mgr.restart().await for a full process restart.
-        // For now the frontend reconnects automatically.
-    }
+    state.lsp.restart();
     Ok(())
 }
 

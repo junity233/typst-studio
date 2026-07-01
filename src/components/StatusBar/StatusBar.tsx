@@ -1,17 +1,10 @@
-import { useEffect, useState } from "react";
 import { useDiagnosticsStore } from "../../store/diagnosticsStore";
 import { useTabsStore } from "../../store/tabsStore";
 import type { CompileStatus } from "../../lib/ui-types";
-import { invoke } from "@tauri-apps/api/core";
+import { useLspStatus } from "../../store/lspStore";
 
 /** Stable empty array so the selector returns the same reference when unset. */
 const EMPTY_DIAGNOSTICS: readonly never[] = Object.freeze([]) as never[];
-
-interface LspStatus {
-  running: boolean;
-  wsUrl: string;
-  available: boolean;
-}
 
 function statusLabel(
   status: CompileStatus,
@@ -30,9 +23,9 @@ function statusLabel(
   }
 }
 
-function lspLabel(status: LspStatus): string {
-  if (!status.available) return "LSP: not installed";
-  if (!status.running) return "LSP: stopped";
+function lspLabel(running: boolean, available: boolean): string {
+  if (!available) return "LSP: not installed";
+  if (!running) return "LSP: stopped";
   return "LSP: connected";
 }
 
@@ -52,29 +45,7 @@ export function StatusBar() {
         ? "statusbar-status--error"
         : "";
 
-  const [lspStatus, setLspStatus] = useState<LspStatus>({
-    running: false,
-    wsUrl: "",
-    available: false,
-  });
-
-  useEffect(() => {
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const s = await invoke<LspStatus>("get_lsp_status");
-        if (!cancelled) setLspStatus(s);
-      } catch {
-        // ignore
-      }
-    };
-    poll();
-    const id = setInterval(poll, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
+  const { status: lspStatus } = useLspStatus();
 
   return (
     <footer className="statusbar">
@@ -91,7 +62,7 @@ export function StatusBar() {
           : <span className="statusbar-badge">No errors</span>}
       </span>
       <span className="statusbar-section statusbar-lsp">
-        {lspLabel(lspStatus)}
+        {lspLabel(lspStatus.running, lspStatus.available)}
       </span>
     </footer>
   );

@@ -61,6 +61,9 @@ parking_lot = "0.12"
 # Error handling
 anyhow = "1"
 thiserror = "2"
+# HTTP types (Origin header parsing for the WS handshake). Same version as
+# tauri/tungstenite depend on, so this adds no new compiled code.
+http = "1"
 
 # IDs / time
 uuid = { version = "1", features = ["v4", "serde"] }

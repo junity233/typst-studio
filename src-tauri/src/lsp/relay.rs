@@ -69,6 +69,12 @@ pub async fn relay(
     };
 
     // Run both directions concurrently; the first to finish terminates both.
+    // The losing future is dropped mid-flight: if ws→stdin had buffered a
+    // frame in `stdin_writer` (BufWriter) that wasn't yet flushed, it is
+    // discarded, and the last inbound message may not reach tinymist. This is
+    // acceptable under the per-connection model — the relay ending means the
+    // tinymist child is about to be killed anyway, and the next connection
+    // starts fresh with a full `initialize` handshake.
     tokio::select! {
         _ = ws_to_stdin => {},
         _ = stdout_to_ws => {},

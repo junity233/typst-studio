@@ -29,3 +29,10 @@ export interface StatusPayload {
   status: CompileStatus;
   durationMs?: number;
 }
+
+/** Payload of the `lsp_status` event (LSP connection transitions). */
+export interface LspStatusPayload {
+  running: boolean;
+  wsUrl: string;
+  available: boolean;
+}

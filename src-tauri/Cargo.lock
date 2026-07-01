@@ -5779,6 +5779,7 @@ dependencies = [
  "chrono",
  "comemo 0.4.0",
  "futures-util",
+ "http",
  "parking_lot",
  "serde",
  "serde_json",

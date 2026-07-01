@@ -209,8 +209,7 @@ impl EditorService {
             Ok(pair) => pair,
             Err(payload) => {
                 let msg = payload
-                    .downcast_ref::<String>()
-                    .map(|s| s.clone())
+                    .downcast_ref::<String>().cloned()
                     .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
                     .unwrap_or_else(|| "unknown compiler panic".to_string());
                 let diag = Diagnostic {
@@ -312,6 +311,11 @@ mod tests {
     // --- test doubles --------------------------------------------------------
 
     /// An event captured by `CapturingEmitter`, for assertion in tests.
+    ///
+    /// The payload fields mirror the real wire format so a test asserting on
+    /// specifics (pages, diagnostics, status) has the data available, even
+    /// though current assertions only check event presence + id.
+    #[allow(dead_code)]
     #[derive(Clone, Debug)]
     enum CapturedEvent {
         Compiled {
@@ -447,7 +451,7 @@ mod tests {
         let doc1 = svc.last_doc(one.id).expect("tab one should have a document");
         let doc2 = svc.last_doc(two.id).expect("tab two should have a document");
         assert!(
-            doc1.pages().len() >= 1 && doc2.pages().len() >= 1,
+            !doc1.pages().is_empty() && !doc2.pages().is_empty(),
             "both tabs should produce pages"
         );
 

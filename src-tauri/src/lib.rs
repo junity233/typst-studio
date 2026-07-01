@@ -45,12 +45,13 @@ pub fn run() {
         ])
         .setup(|app| {
             use std::sync::Arc;
-            use tauri::Manager;
+            use tauri::{Emitter as _, Manager};
 
             use crate::ipc::state::{AppState, TauriEmitter};
-            use crate::lsp::manager::{LspConfig, LspManager};
+            use crate::lsp::manager::LspConfig;
             use crate::service::editor_service::{EditorService, Emitter};
             use crate::service::export_service::ExportService;
+            use crate::service::lsp_service::LspService;
 
             // The AppHandle is only available inside `.setup`. We wrap it in a
             // TauriEmitter so the service layer can emit events without a direct
@@ -61,22 +62,46 @@ pub fn run() {
             let editor = Arc::new(EditorService::new(emitter));
             let export = Arc::new(ExportService::new(editor.clone()));
 
-            // Start the LSP manager (spawns tinymist + WebSocket server).
+            // Start the LSP service (spawns tinymist + WebSocket server).
+            // The status callback emits a Tauri event on each transition so the
+            // frontend can subscribe instead of polling.
+            //
+            // `block_on` here is intentional: `LspManager::start` does a fast
+            // `which` (PATH lookup, ~ms) and a `TcpListener::bind`. Both finish
+            // in single-digit milliseconds on a normal PATH, so the brief
+            // main-thread block before window creation is preferable to the
+            // complexity of a spawn + Arc-swap + placeholder-to-live transition
+            // (which would also race the frontend's initial get_lsp_status).
+            // If `which` ever becomes slow (huge PATH), move this to a spawned
+            // task and swap the service in via an Arc<RwLock<Arc<LspService>>>.
             let lsp_config = LspConfig::default();
-            let lsp_manager = tauri::async_runtime::block_on(async {
-                LspManager::start(lsp_config).await
+            let app_for_lsp = app.handle().clone();
+            let lsp = tauri::async_runtime::block_on(async {
+                LspService::start(lsp_config, move |status| {
+                    use crate::ipc::events::LspStatusPayload;
+                    let payload = LspStatusPayload {
+                        running: status.running,
+                        ws_url: status.ws_url,
+                        available: status.available,
+                    };
+                    let _ = app_for_lsp.emit("lsp_status", payload);
+                })
+                .await
             });
-            match &lsp_manager {
-                Ok(m) => {
-                    let status = m.status();
-                    tracing::info!("LSP manager started: running={}, available={}, ws_url={}",
+            let lsp = match lsp {
+                Ok(svc) => {
+                    let status = svc.status();
+                    tracing::info!("LSP service started: running={}, available={}, ws_url={}",
                         status.running, status.available, status.ws_url);
+                    Arc::new(svc)
                 }
                 Err(e) => {
-                    tracing::warn!("LSP manager failed to start: {e}");
+                    tracing::warn!("LSP service failed to start: {e}");
+                    // Fall back to a no-manager service so the LSP commands still
+                    // resolve (reporting unavailable) instead of panicking at setup.
+                    Arc::new(LspService::disabled())
                 }
-            }
-            let lsp = Arc::new(parking_lot::Mutex::new(lsp_manager.ok()));
+            };
 
             app.manage(AppState { editor, export, lsp });
 

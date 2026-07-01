@@ -86,6 +86,22 @@ pub struct StatusPayload {
     pub duration_ms: Option<u64>,
 }
 
+/// Payload of the `lsp_status` event, emitted when the LSP connection
+/// transitions (client connects / relay ends / tinymist exits). Lets the
+/// frontend subscribe instead of polling `get_lsp_status`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct LspStatusPayload {
+    pub running: bool,
+    pub ws_url: String,
+    pub available: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +116,7 @@ mod tests {
         DiagnosticsPayload::export(&cfg).unwrap();
         StatusPayload::export(&cfg).unwrap();
         OpenedDocument::export(&cfg).unwrap();
+        LspStatusPayload::export(&cfg).unwrap();
     }
 
     #[test]
