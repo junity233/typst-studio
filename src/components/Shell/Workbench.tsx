@@ -3,6 +3,7 @@ import { Allotment } from "allotment";
 import { Sidebar } from "../Sidebar/Sidebar";
 import { EditorArea } from "./EditorArea";
 import { useWorkspaceStore } from "../../store/workspaceStore";
+import { useUiStore } from "../../store/uiStore";
 
 /**
  * The main workbench: a horizontal split between the workspace sidebar (left)
@@ -12,6 +13,11 @@ import { useWorkspaceStore } from "../../store/workspaceStore";
 export function Workbench() {
   const hydrate = useWorkspaceStore((s) => s.hydrate);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
+  const sidebarVisible = useUiStore((s) => s.sidebarVisible);
+
+  // Sidebar is shown only when a workspace is open AND the user hasn't hidden
+  // it (View → Toggle Sidebar, Cmd+B).
+  const showSidebar = rootPath !== null && sidebarVisible;
 
   // On first mount, hydrate any workspace the backend already has open (e.g.
   // across a dev reload). Safe to call repeatedly — it's a read-then-load.
@@ -22,12 +28,12 @@ export function Workbench() {
   return (
     <div className="workbench">
       <Allotment proportionalLayout={false}>
-        {/* Sidebar: hidden (min 0) when no workspace is open, else 220–480px. */}
+        {/* Sidebar: hidden when no workspace or toggled off; else 220–520px. */}
         <Allotment.Pane
-          minSize={rootPath === null ? 0 : 0}
-          preferredSize={rootPath === null ? 0 : 220}
-          maxSize={rootPath === null ? 0 : 520}
-          visible={rootPath !== null}
+          minSize={0}
+          preferredSize={showSidebar ? 220 : 0}
+          maxSize={showSidebar ? 520 : 0}
+          visible={showSidebar}
           snap
         >
           <Sidebar />

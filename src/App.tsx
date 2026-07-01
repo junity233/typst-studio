@@ -3,6 +3,7 @@ import { Workbench } from "./components/Shell/Workbench";
 import { CommandBar } from "./components/CommandBar/CommandBar";
 import { StatusBar } from "./components/StatusBar/StatusBar";
 import { useTypstCompile } from "./hooks/useTypstCompile";
+import { useAppCommands } from "./hooks/useAppCommands";
 import { initTabs, useTabsStore } from "./store/tabsStore";
 
 /**
@@ -20,6 +21,7 @@ import { initTabs, useTabsStore } from "./store/tabsStore";
  */
 export default function App() {
   useTypstCompile();
+  useAppCommands();
 
   // Ensure at least one tab exists on first load.
   useEffect(() => {

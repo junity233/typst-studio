@@ -6,6 +6,7 @@ import { MonacoEditor, type MonacoEditorApi } from "../Editor/MonacoEditor";
 import { PreviewPane } from "../Preview/PreviewPane";
 import { DiagnosticsPanel } from "../Diagnostics/DiagnosticsPanel";
 import { useTabsStore } from "../../store/tabsStore";
+import { useUiStore } from "../../store/uiStore";
 
 /**
  * The editor area: tab strip on top, then a vertical split of (editor|preview)
@@ -17,6 +18,7 @@ export function EditorArea() {
     s.tabs.find((t) => t.id === s.activeId) ?? null,
   );
   const updateContent = useTabsStore((s) => s.updateContent);
+  const previewVisible = useUiStore((s) => s.previewVisible);
 
   const [diagsCollapsed, setDiagsCollapsed] = useState(false);
   const editorApiRef = useRef<MonacoEditorApi | null>(null);
@@ -40,7 +42,13 @@ export function EditorArea() {
                 />
               </div>
             </Allotment.Pane>
-            <Allotment.Pane minSize={200}>
+            <Allotment.Pane
+              minSize={0}
+              preferredSize={previewVisible ? undefined : 0}
+              maxSize={previewVisible ? undefined : 0}
+              visible={previewVisible}
+              snap
+            >
               <div className="pane pane-preview">
                 <PreviewPane svgPages={activeTab.svgPages} />
               </div>
