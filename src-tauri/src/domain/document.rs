@@ -76,11 +76,11 @@ impl DocumentMeta {
         }
     }
 
-    /// Create a document from a filesystem path, deriving the title from
-    /// the file name.
+    /// Create a document from a filesystem path, deriving the title from the
+    /// full file name (extension included, e.g. `main.typ`).
     pub fn from_path(path: PathBuf) -> Self {
         let title = path
-            .file_stem()
+            .file_name()
             .and_then(|s| s.to_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| "Untitled".to_string());

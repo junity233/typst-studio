@@ -104,7 +104,7 @@ mod tests {
         let tab = TabState::with_meta(meta, "#hi".to_string());
         let rt = tab.state.lock();
         assert_eq!(rt.meta.id, id);
-        assert_eq!(rt.meta.title, "notes");
+        assert_eq!(rt.meta.title, "notes.typ");
         assert!(rt.meta.path.is_some());
         assert_eq!(tab.world.text(), "#hi");
     }
