@@ -150,3 +150,16 @@ export type Severity = "Error" | "Warning" | "Info";
  * `Success` / `Error`.
  */
 export type StatusPayload = { id: DocumentId, status: CompileStatus, durationMs: number | null, };
+
+/**
+ * The currently open workspace, if any.
+ */
+export type WorkspaceMeta = { 
+/**
+ * Absolute path to the workspace root.
+ */
+root: string, 
+/**
+ * Display name (the root folder's basename).
+ */
+name: string, };

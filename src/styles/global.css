@@ -72,8 +72,10 @@
 
   /* ---- Layout heights ---- */
   --toolbar-h: 52px;
+  --commandbar-h: 36px;
   --tabstrip-h: 38px;
   --statusbar-h: 28px;
+  --sidebar-w: 220px;
 
   /* ---- Allotment sash (overridden from its 8px/4px defaults) ----
      The hit area stays comfortable; the visible line is a 1px hairline that
@@ -570,3 +572,218 @@ button {
 .sash.sash-vertical.sash-active::before {
   width: 3px !important;
 }
+
+/* ============================================================================
+   Command bar (top breadcrumb)
+   The frosted toolbar treatment, reused at a slimmer height. Draggable window
+   chrome on macOS.
+   ========================================================================= */
+.command-bar {
+  height: var(--commandbar-h);
+  flex: 0 0 var(--commandbar-h);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-md);
+  background: rgba(245, 245, 247, 0.8);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid var(--color-hairline);
+  -webkit-app-region: drag;
+}
+
+/* ---- Breadcrumb ---------------------------------------------------------- */
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  font: var(--text-fine-print);
+  letter-spacing: 0;
+  color: var(--color-ink-muted-80);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  /* Breadcrumb text is not a drag target — let it be selectable/no-op. */
+  -webkit-app-region: no-drag;
+}
+.breadcrumb-placeholder {
+  font: var(--text-caption-strong);
+  color: var(--color-ink);
+  letter-spacing: 0.1px;
+}
+.breadcrumb-crumb {
+  color: var(--color-ink-muted-80);
+}
+.breadcrumb-workspace {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.breadcrumb-untitled {
+  color: var(--color-ink-muted-48);
+  font-style: italic;
+}
+.breadcrumb-sep {
+  color: var(--color-ink-muted-48);
+  padding: 0 2px;
+}
+.breadcrumb-dirty {
+  color: var(--color-primary);
+  margin-left: var(--space-xs);
+  font-size: 10px;
+}
+
+/* ============================================================================
+   Workbench + Editor area
+   ========================================================================= */
+.workbench {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+.editor-area {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  background: var(--color-canvas);
+}
+.editor-area-main {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ============================================================================
+   Sidebar / Explorer
+   ========================================================================= */
+.sidebar {
+  height: 100%;
+  background: var(--color-canvas-parchment);
+  border-right: 1px solid var(--color-hairline);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+.explorer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.explorer-header {
+  flex: 0 0 auto;
+  padding: var(--space-xs) var(--space-md);
+  font: var(--text-caption-strong);
+  color: var(--color-ink-muted-48);
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+.explorer-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.explorer-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+  padding-bottom: var(--space-md);
+}
+.explorer-empty {
+  padding: var(--space-xs) var(--space-md);
+  font: var(--text-fine-print);
+  color: var(--color-ink-muted-48);
+}
+
+/* ---- File tree ----------------------------------------------------------- */
+.tree,
+.tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding-right: var(--space-xs);
+  font: var(--text-fine-print);
+  color: var(--color-ink);
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+}
+.tree-row:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.tree-row-active {
+  background: rgba(0, 102, 204, 0.08);
+  color: var(--color-primary);
+}
+.tree-twisty {
+  width: 10px;
+  text-align: center;
+  color: var(--color-ink-muted-48);
+  font-size: 9px;
+  flex: 0 0 auto;
+}
+.tree-icon {
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+.tree-icon-dir {
+  color: var(--color-primary);
+}
+.tree-icon-file {
+  color: var(--color-ink-muted-48);
+}
+.tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree-name-typ {
+  color: var(--color-ink);
+}
+.tree-loading {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  opacity: 0.5;
+  margin-left: auto;
+}
+
+/* ---- Empty workspace prompt ---------------------------------------------- */
+.sidebar-empty {
+  padding: var(--space-xl) var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  align-items: flex-start;
+}
+.sidebar-empty-title {
+  font: var(--text-body-strong);
+  color: var(--color-ink);
+  margin: 0;
+}
+.sidebar-empty-body {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+  margin: 0 0 var(--space-sm);
+  line-height: 1.5;
+}
+.sidebar-empty-body code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.sidebar-empty-action {
+  align-self: stretch;
+  text-align: center;
+}
+

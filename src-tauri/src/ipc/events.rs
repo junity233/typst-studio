@@ -129,6 +129,11 @@ mod tests {
         OpenedDocument::export(&cfg).unwrap();
         LspStatusPayload::export(&cfg).unwrap();
         FsChangedPayload::export(&cfg).unwrap();
+        // Workspace + tree types (defined outside `events` but exported here as
+        // the single ts-rs generation entry point).
+        crate::service::workspace_service::WorkspaceMeta::export(&cfg).unwrap();
+        crate::fs::tree::DirEntry::export(&cfg).unwrap();
+        crate::fs::tree::EntryKind::export(&cfg).unwrap();
     }
 
     #[test]
