@@ -1,0 +1,190 @@
+//! Workspace / filesystem Tauri commands.
+//!
+//! These wire the frontend's file-tree and Save As needs to
+//! [`WorkspaceService`](crate::service::workspace_service::WorkspaceService) and
+//! [`EditorService`](crate::service::editor_service::EditorService). They are
+//! thin adapters: argument conversion + delegating to the service layer, with
+//! blocking IO offloaded via `spawn_blocking` (same pattern as `commands.rs`).
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use tauri::{AppHandle, Emitter as _, State};
+use tauri_plugin_dialog::DialogExt;
+
+use crate::error::{AppError, Result};
+use crate::fs::tree::EntryKind;
+use crate::fs::watcher;
+use crate::ipc::events::{FsChangedPayload, OpenedDocument};
+use crate::ipc::state::AppState;
+use crate::service::workspace_service::WorkspaceMeta;
+
+/// A native folder pick → open it as the workspace. Returns the workspace
+/// metadata, or `None` if the user cancelled the dialog.
+#[tauri::command]
+pub async fn open_workspace(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<WorkspaceMeta>> {
+    let app_for_dialog = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app_for_dialog.dialog().file().blocking_pick_folder()
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let root = picked
+        .into_path()
+        .map_err(|e| AppError::InvalidInput(format!("invalid folder path: {e}")))?;
+
+    // The watcher fires on its own thread; build a callback that emits
+    // `fs_changed` so the frontend can refresh its tree.
+    let app_for_cb = app.clone();
+    let on_change: watcher::OnChange = Arc::new(move |paths: &[PathBuf]| {
+        let payload = FsChangedPayload {
+            paths: paths.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+        };
+        let _ = app_for_cb.emit("fs_changed", payload);
+    });
+
+    let ws = state.workspace.clone();
+    let meta = ws.open(root, on_change)?;
+    Ok(Some(meta))
+}
+
+/// Close the current workspace (stops the watcher; open tabs are untouched).
+#[tauri::command]
+pub async fn close_workspace(state: State<'_, AppState>) -> Result<()> {
+    state.workspace.close();
+    Ok(())
+}
+
+/// Query the current workspace metadata, or `None` if no folder is open.
+#[tauri::command]
+pub async fn get_workspace(state: State<'_, AppState>) -> Result<Option<WorkspaceMeta>> {
+    let ws = state.workspace.clone();
+    Ok(ws.root().map(|root| {
+        let name = root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.display().to_string());
+        WorkspaceMeta {
+            root: root.display().to_string(),
+            name,
+        }
+    }))
+}
+
+/// List the immediate children of a workspace-relative directory ("" = root).
+#[tauri::command]
+pub async fn read_dir(
+    state: State<'_, AppState>,
+    rel: Option<String>,
+) -> Result<Vec<crate::fs::tree::DirEntry>> {
+    let ws = state.workspace.clone();
+    ws.read_dir(rel.as_deref().unwrap_or(""))
+}
+
+/// Create a file or directory at a workspace-relative path.
+#[tauri::command]
+pub async fn create_entry(
+    state: State<'_, AppState>,
+    rel: String,
+    kind: EntryKind,
+) -> Result<()> {
+    let ws = state.workspace.clone();
+    ws.create_entry(&rel, kind)
+}
+
+/// Rename/move a workspace-relative entry to another workspace-relative path.
+#[tauri::command]
+pub async fn rename_entry(
+    state: State<'_, AppState>,
+    from: String,
+    to: String,
+) -> Result<()> {
+    let ws = state.workspace.clone();
+    ws.rename_entry(&from, &to)
+}
+
+/// Delete a workspace-relative file or directory.
+#[tauri::command]
+pub async fn delete_entry(state: State<'_, AppState>, rel: String) -> Result<()> {
+    let ws = state.workspace.clone();
+    ws.delete_entry(&rel)
+}
+
+/// Open a file by its absolute path (no dialog) as a tab — used when clicking a
+/// `.typ` entry in the file tree. If the path is inside the open workspace, the
+/// tab compiles with `#include` resolution; otherwise it's a detached tab.
+#[tauri::command]
+pub async fn open_file_by_path(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<OpenedDocument> {
+    let path = PathBuf::from(path);
+    let path_for_read = path.clone();
+    // Read on a blocking thread.
+    let content = tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read_to_string(&path_for_read)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
+
+    // If a workspace is open and the file lives under it, give the tab a
+    // resolver so #include/#image resolve against the workspace root.
+    let resolver = state.workspace.resolver();
+    let editor = state.editor.clone();
+    let meta = editor.open_from_disk(path, content.clone(), resolver);
+    Ok(OpenedDocument { meta, content })
+}
+
+/// Save As: write a tab's text to a new file chosen via a save dialog, then
+/// make the tab file-backed at that path. Used for untitled tabs (and to save a
+/// file elsewhere). Returns the new path.
+#[tauri::command]
+pub async fn save_as(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: crate::domain::document::DocumentId,
+) -> Result<String> {
+    let editor = state.editor.clone();
+    let text = editor.tab_text(id).ok_or_else(|| {
+        AppError::NotFound(format!("tab {id} not found"))
+    })?;
+    // Default the save dialog to the tab's current name (or "Untitled").
+    let default_name = editor
+        .tab_meta(id)
+        .and_then(|m| {
+            m.path
+                .as_ref()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        })
+        .unwrap_or_else(|| "Untitled.typ".to_string());
+
+    let app_for_dialog = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app_for_dialog
+            .dialog()
+            .file()
+            .add_filter("Typst", &["typ"])
+            .set_file_name(&default_name)
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
+    let Some(picked) = picked else {
+        return Err(AppError::Other("save cancelled".into()));
+    };
+    let path = picked
+        .into_path()
+        .map_err(|e| AppError::InvalidInput(format!("invalid file path: {e}")))?;
+    let path_for_write = path.clone();
+    tauri::async_runtime::spawn_blocking(move || std::fs::write(&path_for_write, &text))
+        .await
+        .map_err(|e| AppError::Other(format!("join error: {e}")))??;
+    editor.assign_path(id, path.clone())?;
+    Ok(path.to_string_lossy().into_owned())
+}

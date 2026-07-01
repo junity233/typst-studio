@@ -32,16 +32,28 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
+            // Document / editor commands.
             ipc::commands::new_tab,
             ipc::commands::open_file,
             ipc::commands::close_tab,
             ipc::commands::update_text,
             ipc::commands::save_file,
+            ipc::fs_commands::save_as,
             ipc::commands::export_pdf,
             ipc::commands::export_png,
+            ipc::commands::export_svg,
             ipc::commands::get_diagnostics,
             ipc::commands::get_lsp_status,
             ipc::commands::restart_lsp,
+            // Workspace / filesystem commands.
+            ipc::fs_commands::open_workspace,
+            ipc::fs_commands::close_workspace,
+            ipc::fs_commands::get_workspace,
+            ipc::fs_commands::read_dir,
+            ipc::fs_commands::create_entry,
+            ipc::fs_commands::rename_entry,
+            ipc::fs_commands::delete_entry,
+            ipc::fs_commands::open_file_by_path,
         ])
         .setup(|app| {
             use std::sync::Arc;
@@ -52,6 +64,7 @@ pub fn run() {
             use crate::service::editor_service::{EditorService, Emitter};
             use crate::service::export_service::ExportService;
             use crate::service::lsp_service::LspService;
+            use crate::service::workspace_service::WorkspaceService;
 
             // The AppHandle is only available inside `.setup`. We wrap it in a
             // TauriEmitter so the service layer can emit events without a direct
@@ -61,6 +74,7 @@ pub fn run() {
             });
             let editor = Arc::new(EditorService::new(emitter));
             let export = Arc::new(ExportService::new(editor.clone()));
+            let workspace = Arc::new(WorkspaceService::new());
 
             // Start the LSP service (spawns tinymist + WebSocket server).
             // The status callback emits a Tauri event on each transition so the
@@ -103,7 +117,7 @@ pub fn run() {
                 }
             };
 
-            app.manage(AppState { editor, export, lsp });
+            app.manage(AppState { editor, export, lsp, workspace });
 
             // Auto-open devtools in debug builds to help diagnose blank screens.
             #[cfg(debug_assertions)]

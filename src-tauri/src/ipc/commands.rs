@@ -187,6 +187,57 @@ pub async fn export_png(
     Ok(paths)
 }
 
+/// Export each page of the tab's last compiled document to an SVG file. A save
+/// dialog picks the output location; pages are named `{stem}-{n}.svg` in that
+/// folder. Render + write run on a blocking thread.
+#[tauri::command]
+pub async fn export_svg(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: DocumentId,
+) -> Result<Vec<String>> {
+    let app_for_dialog = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app_for_dialog
+            .dialog()
+            .file()
+            .add_filter("SVG", &["svg"])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
+    let Some(picked) = picked else {
+        return Err(AppError::Other("export cancelled".into()));
+    };
+    let picked_path = path_buf_from(picked)?;
+    let save_dir = picked_path
+        .parent()
+        .ok_or_else(|| AppError::InvalidInput("chosen path has no parent directory".into()))?
+        .to_path_buf();
+    let base_name = picked_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("document")
+        .to_string();
+    let export = state.export.clone();
+    let base_name_clone = base_name.clone();
+    // Render (CPU-bound) + write (blocking IO) together on a blocking thread.
+    let paths = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>> {
+        let pages = export.render_svgs(id, &base_name_clone)?;
+        std::fs::create_dir_all(&save_dir)?;
+        let mut written = Vec::with_capacity(pages.len());
+        for (name, bytes) in pages {
+            let full = save_dir.join(&name);
+            std::fs::write(&full, &bytes)?;
+            written.push(full.to_string_lossy().to_string());
+        }
+        Ok(written)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
+    Ok(paths)
+}
+
 /// Fetch the current diagnostics for a tab (used on initial load).
 #[tauri::command]
 pub async fn get_diagnostics(

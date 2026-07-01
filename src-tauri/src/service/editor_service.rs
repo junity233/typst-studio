@@ -33,6 +33,7 @@ use crate::error::{AppError, Result};
 use crate::render::pipeline::RenderPipeline;
 use crate::render::svg::SvgRenderer;
 use crate::typst_engine::compiler;
+use crate::typst_engine::world::EditorWorld;
 
 use super::compile_worker::CompileWorker;
 use super::tab_state::TabState;
@@ -99,6 +100,54 @@ impl EditorService {
         self.tabs.write().insert(id, tab.clone());
         self.create_worker(id, tab);
         meta
+    }
+
+    /// Open a tab backed by a real file in a workspace, so it compiles with
+    /// `#include` / `#image()` resolution against the workspace root. Like
+    /// [`open_from_content`](Self::open_from_content) but builds the world with
+    /// the given [`FileResolver`]. Falls back to a detached world if the
+    /// resolver can't anchor the path (e.g. outside the root).
+    pub fn open_from_disk(
+        &self,
+        path: PathBuf,
+        content: String,
+        resolver: Option<crate::fs::FileResolver>,
+    ) -> DocumentMeta {
+        let meta = DocumentMeta::from_path(path.clone());
+        let id = meta.id;
+        let tab = match resolver {
+            Some(r) => match EditorWorld::with_resolver(
+                content.clone(),
+                crate::typst_engine::font_loader::SystemFontLoader::new(),
+                r,
+                &path,
+            ) {
+                Ok(world) => Arc::new(TabState::with_meta_and_world(meta.clone(), world)),
+                // Resolver couldn't anchor the path — degrade to detached.
+                Err(_) => Arc::new(TabState::with_meta(meta.clone(), content)),
+            },
+            None => Arc::new(TabState::with_meta(meta.clone(), content)),
+        };
+        self.tabs.write().insert(id, tab.clone());
+        self.create_worker(id, tab);
+        meta
+    }
+
+    /// Assign a new on-disk path to a tab (Save As). Used after writing an
+    /// untitled tab to a new file: updates meta path/title and clears dirty so
+    /// the tab becomes a normal file-backed tab. No recompile is needed — the
+    /// source text is unchanged.
+    pub fn assign_path(&self, id: DocumentId, path: PathBuf) -> Result<()> {
+        let tab = {
+            let tabs = self.tabs.read();
+            tabs.get(&id)
+                .cloned()
+                .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
+        };
+        let mut rt = tab.state.lock();
+        rt.meta = DocumentMeta::from_path(path);
+        rt.meta.dirty = false;
+        Ok(())
     }
 
     /// Spawn a [`CompileWorker`] for `id` whose closure compiles `tab` and

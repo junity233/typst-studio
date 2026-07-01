@@ -13,14 +13,16 @@ use crate::error::{AppError, Result};
 use crate::render::pdf::PdfRenderer;
 use crate::render::pipeline::RenderPipeline;
 use crate::render::png::PngRenderer;
+use crate::render::svg::SvgRenderer;
 
 use super::editor_service::EditorService;
 
-/// Renders compiled documents to PDF / PNG bytes.
+/// Renders compiled documents to PDF / PNG / SVG bytes.
 pub struct ExportService {
     editor: Arc<EditorService>,
     pdf_renderer: PdfRenderer,
     png_renderer: PngRenderer,
+    svg_renderer: SvgRenderer,
 }
 
 impl ExportService {
@@ -31,6 +33,7 @@ impl ExportService {
             editor,
             pdf_renderer: PdfRenderer::new(),
             png_renderer: PngRenderer::default(),
+            svg_renderer: SvgRenderer::new(),
         }
     }
 
@@ -58,6 +61,21 @@ impl ExportService {
             .collect())
     }
 
+    /// Render each page to an SVG string. Returns `(name, bytes)` pairs where
+    /// name is `{base_name}-{n}.svg`.
+    fn render_svg_bytes(&self, id: DocumentId, base_name: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        let doc = self
+            .editor
+            .last_doc(id)
+            .ok_or_else(|| AppError::Export(format!("no compiled document for tab {id}")))?;
+        let pages = self.svg_renderer.render(&doc);
+        Ok(pages
+            .into_iter()
+            .enumerate()
+            .map(|(i, svg)| (format!("{base_name}-{}.svg", i + 1), svg.into_bytes()))
+            .collect())
+    }
+
     /// Render to PDF bytes. Public entry point for the command layer (which
     /// writes to disk asynchronously).
     pub fn render_pdf(&self, id: DocumentId) -> Result<Vec<u8>> {
@@ -67,6 +85,11 @@ impl ExportService {
     /// Render to PNG bytes. Returns `(filename, bytes)` per page.
     pub fn render_pngs(&self, id: DocumentId, base_name: &str) -> Result<Vec<(String, Vec<u8>)>> {
         self.render_png_bytes(id, base_name)
+    }
+
+    /// Render to SVG bytes. Returns `(filename, bytes)` per page.
+    pub fn render_svgs(&self, id: DocumentId, base_name: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        self.render_svg_bytes(id, base_name)
     }
 }
 
@@ -121,6 +144,19 @@ mod tests {
             assert!(name.starts_with("doc-"), "filename prefix: {name}");
             // PNG magic bytes.
             assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        }
+    }
+
+    #[test]
+    fn render_svgs_produces_svg_per_page() {
+        let (_editor, export, id) =
+            make_editor_with_tab("#set page(width: 10cm)\n\nVector export");
+        let pages = export.render_svgs(id, "doc").unwrap();
+        assert!(!pages.is_empty(), "at least one SVG expected");
+        for (name, bytes) in &pages {
+            assert!(name.starts_with("doc-"), "filename prefix: {name}");
+            let text = std::str::from_utf8(bytes).unwrap();
+            assert!(text.starts_with("<svg"), "page should be an SVG: {}", &text[..text.len().min(20)]);
         }
     }
 

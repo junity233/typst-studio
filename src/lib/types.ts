@@ -47,6 +47,20 @@ code: bigint | null, };
 export type DiagnosticsPayload = { id: DocumentId, diagnostics: Array<Diagnostic>, };
 
 /**
+ * A single entry returned by [`read_dir`]: one child of a directory.
+ */
+export type DirEntry = { 
+/**
+ * Path relative to the workspace root, using `/` separators.
+ * Empty string for the root itself.
+ */
+relative: string, 
+/**
+ * Entry name (last path component).
+ */
+name: string, kind: EntryKind, };
+
+/**
  * Unique identifier for an open document (tab).
  *
  * Wraps a `Uuid` v4. Serialized as a string across IPC.
@@ -73,6 +87,30 @@ title: string,
  * Unsaved-changes flag.
  */
 dirty: boolean, };
+
+/**
+ * Whether a tree entry is a file or a directory.
+ */
+export type EntryKind = "file" | "dir";
+
+/**
+ * Payload of the `fs_changed` event: paths (absolute) that changed on disk in
+ * the workspace, detected by the filesystem watcher. The frontend refreshes
+ * the affected parts of its file tree. Empty `paths` is a generic "something
+ * changed, refresh" signal (used as a fallback).
+ */
+export type FsChangedPayload = { 
+/**
+ * Absolute paths that changed (created/modified/removed).
+ */
+paths: Array<string>, };
+
+/**
+ * Payload of the `lsp_status` event, emitted when the LSP connection
+ * transitions (client connects / relay ends / tinymist exits). Lets the
+ * frontend subscribe instead of polling `get_lsp_status`.
+ */
+export type LspStatusPayload = { running: boolean, wsUrl: string, available: boolean, };
 
 /**
  * Response of `new_tab` / `open_file`: the tab's metadata paired with its

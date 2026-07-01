@@ -63,6 +63,20 @@ impl TabState {
             }),
         }
     }
+
+    /// Create a tab from explicit metadata + a pre-built world. Used when the
+    /// world must be workspace-backed (a [`FileResolver`] for `#include`), since
+    /// [`with_meta`](Self::with_meta) always builds a detached single-file world.
+    pub fn with_meta_and_world(meta: DocumentMeta, world: EditorWorld) -> Self {
+        Self {
+            world,
+            state: Mutex::new(TabRuntime {
+                meta,
+                last_doc: None,
+                last_outcome: CompileOutcome::ok(0),
+            }),
+        }
+    }
 }
 
 #[cfg(test)]

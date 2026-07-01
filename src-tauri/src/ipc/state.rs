@@ -19,6 +19,7 @@ use crate::ipc::events::{CompiledPayload, CompileStatus, DiagnosticsPayload, Sta
 use crate::service::editor_service::{EditorService, Emitter};
 use crate::service::export_service::ExportService;
 use crate::service::lsp_service::LspService;
+use crate::service::workspace_service::WorkspaceService;
 
 /// Production `Emitter` backed by a Tauri `AppHandle`.
 ///
@@ -63,4 +64,6 @@ pub struct AppState {
     pub export: Arc<ExportService>,
     /// LSP service wrapping the tinymist bridge.
     pub lsp: Arc<LspService>,
+    /// The open workspace (a folder), its file tree, and watcher.
+    pub workspace: Arc<WorkspaceService>,
 }

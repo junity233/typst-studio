@@ -97,6 +97,22 @@ pub struct LspStatusPayload {
     pub available: bool,
 }
 
+/// Payload of the `fs_changed` event: paths (absolute) that changed on disk in
+/// the workspace, detected by the filesystem watcher. The frontend refreshes
+/// the affected parts of its file tree. Empty `paths` is a generic "something
+/// changed, refresh" signal (used as a fallback).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct FsChangedPayload {
+    /// Absolute paths that changed (created/modified/removed).
+    pub paths: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +128,7 @@ mod tests {
         StatusPayload::export(&cfg).unwrap();
         OpenedDocument::export(&cfg).unwrap();
         LspStatusPayload::export(&cfg).unwrap();
+        FsChangedPayload::export(&cfg).unwrap();
     }
 
     #[test]
