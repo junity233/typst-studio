@@ -7,6 +7,7 @@ import { PreviewPane } from "../Preview/PreviewPane";
 import { DiagnosticsPanel } from "../Diagnostics/DiagnosticsPanel";
 import { useTabsStore } from "../../store/tabsStore";
 import { useUiStore } from "../../store/uiStore";
+import { updateText } from "../../lib/tauri";
 
 /**
  * The editor area: tab strip on top, then a vertical split of (editor|preview)
@@ -22,6 +23,16 @@ export function EditorArea() {
 
   const [diagsCollapsed, setDiagsCollapsed] = useState(false);
   const editorApiRef = useRef<MonacoEditorApi | null>(null);
+
+  // Manual preview refresh: re-pushes the current source to the backend
+  // compile pipeline. Shown only while `preview.autoRefresh` is off (handled
+  // in PreviewPane). `activeTab` is non-null wherever this is invoked.
+  const handleRefresh = () => {
+    if (activeTab === null) return;
+    void updateText(activeTab.id, activeTab.content).catch((e) =>
+      console.warn("[EditorArea] manual refresh failed:", e),
+    );
+  };
 
   return (
     <div className="editor-area">
@@ -50,7 +61,10 @@ export function EditorArea() {
               snap
             >
               <div className="pane pane-preview">
-                <PreviewPane svgPages={activeTab.svgPages} />
+                <PreviewPane
+                  svgPages={activeTab.svgPages}
+                  onRefresh={handleRefresh}
+                />
               </div>
             </Allotment.Pane>
           </SplitPane>

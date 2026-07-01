@@ -20,6 +20,7 @@ use crate::service::editor_service::{EditorService, Emitter};
 use crate::service::export_service::ExportService;
 use crate::service::lsp_service::LspService;
 use crate::service::workspace_service::WorkspaceService;
+use crate::settings::SettingsService;
 
 /// Production `Emitter` backed by a Tauri `AppHandle`.
 ///
@@ -66,4 +67,6 @@ pub struct AppState {
     pub lsp: Arc<LspService>,
     /// The open workspace (a folder), its file tree, and watcher.
     pub workspace: Arc<WorkspaceService>,
+    /// Dynamic user settings (JSON config + manifest validation).
+    pub settings: Arc<SettingsService>,
 }

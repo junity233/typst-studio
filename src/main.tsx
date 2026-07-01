@@ -1,6 +1,8 @@
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Component, useEffect, type ErrorInfo, type ReactNode } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { SettingsApp } from "./components/Settings/SettingsApp";
+import { useSettingsStore } from "./store/settingsStore";
 import "./styles/global.css";
 
 class ErrorBoundary extends Component<
@@ -43,8 +45,28 @@ class ErrorBoundary extends Component<
   }
 }
 
+/**
+ * Detect whether this bundle loaded as the dedicated settings window
+ * (`index.html?window=settings`). A single Vite bundle serves both; the query
+ * param selects which root component renders.
+ */
+const isSettingsWindow =
+  new URLSearchParams(window.location.search).get("window") === "settings";
+
+/**
+ * Root: hydrates the settings store once (both windows need it — the settings
+ * window renders the manifest, the main window feeds future consumers), then
+ * branches to the settings UI or the app shell.
+ */
+function Root() {
+  useEffect(() => {
+    void useSettingsStore.getState().hydrate();
+  }, []);
+  return isSettingsWindow ? <SettingsApp /> : <App />;
+}
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <ErrorBoundary>
-    <App />
+    <Root />
   </ErrorBoundary>,
 );

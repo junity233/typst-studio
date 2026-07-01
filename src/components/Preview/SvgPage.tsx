@@ -3,6 +3,7 @@ import { memo, useEffect, useState } from "react";
 interface SvgPageProps {
   svg: string;
   pageNumber: number;
+  zoom?: number;
 }
 
 /**
@@ -20,10 +21,16 @@ interface SvgPageProps {
  * Trade-off: the preview is no longer selectable text (it's a rasterized
  * bitmap). For MVP (viewing only) this is acceptable; text selection can be
  * re-added later via a hybrid approach (overlay transparent text layer).
+ *
+ * `zoom` is applied as the CSS `zoom` property (valid in Tauri's WKWebView and
+ * WebView2/WebKitGTK): it scales the page box AND reflows the surrounding flex
+ * column, so adjacent pages keep their spacing — unlike `transform: scale`,
+ * which would overlap siblings.
  */
 export const SvgPage = memo(function SvgPage({
   svg,
   pageNumber,
+  zoom = 1,
 }: SvgPageProps) {
   const [url, setUrl] = useState<string>("");
 
@@ -35,7 +42,11 @@ export const SvgPage = memo(function SvgPage({
   }, [svg]);
 
   return (
-    <div className="svg-page" data-page={pageNumber}>
+    <div
+      className="svg-page"
+      data-page={pageNumber}
+      style={zoom !== 1 ? { zoom } : undefined}
+    >
       {url && (
         <img
           src={url}

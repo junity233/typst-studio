@@ -15,6 +15,7 @@ import type {
   StatusPayload,
   LspStatusPayload,
 } from "./ui-types";
+import type { Manifest } from "./settings-types";
 
 /**
  * Create an untitled document on the backend.
@@ -179,4 +180,42 @@ export async function onMenuEvent(
   handler: (payload: MenuEventPayload) => void,
 ): Promise<UnlistenFn> {
   return listen<MenuEventPayload>("menu_event", (e) => handler(e.payload));
+}
+
+// --- Settings ----------------------------------------------------------------
+
+/** Fetch the whole runtime settings object. */
+export async function getAllSettings(): Promise<Record<string, unknown>> {
+  return invoke<Record<string, unknown>>("get_all_settings");
+}
+
+/** Write one setting by dot-path; persists + broadcasts `settings_changed`. */
+export async function setSetting(
+  path: string,
+  value: unknown,
+): Promise<void> {
+  await invoke("set_setting", { path, value });
+}
+
+/** Fetch the settings manifest (the descriptor that drives the settings UI). */
+export async function getSettingsManifest(): Promise<Manifest> {
+  return invoke<Manifest>("get_settings_manifest");
+}
+
+/** Create or focus the dedicated settings window. */
+export async function openSettings(): Promise<void> {
+  await invoke("open_settings");
+}
+
+/**
+ * Subscribe to whole-config broadcasts. Emitted to ALL windows on every
+ * successful `set_setting`, carrying the full runtime config object. Returns
+ * an unlisten function (same shape as the other `on*` wrappers).
+ */
+export async function onSettingsChanged(
+  handler: (data: Record<string, unknown>) => void,
+): Promise<UnlistenFn> {
+  return listen<Record<string, unknown>>("settings_changed", (e) =>
+    handler(e.payload),
+  );
 }

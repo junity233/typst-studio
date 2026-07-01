@@ -39,6 +39,7 @@ pub mod ids {
     pub const EXPORT_PDF: &str = "export-pdf";
     pub const EXPORT_PNG: &str = "export-png";
     pub const EXPORT_SVG: &str = "export-svg";
+    pub const OPEN_SETTINGS: &str = "open-settings";
 }
 
 /// Build the full application menu. On macOS the first submenu is the app-name
@@ -72,20 +73,30 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     )?;
 
     // ---- Edit (prebuilt native items; they act on the focused webview) ----
-    let edit = Submenu::with_items(
-        app,
-        "Edit",
-        true,
-        &[
-            &PredefinedMenuItem::undo(app, None)?,
-            &PredefinedMenuItem::redo(app, None)?,
-            &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::cut(app, None)?,
-            &PredefinedMenuItem::copy(app, None)?,
-            &PredefinedMenuItem::paste(app, None)?,
-            &PredefinedMenuItem::select_all(app, None)?,
-        ],
-    )?;
+    // On non-macOS the Settings entry has no app-name menu to live in, so it is
+    // appended here. Named locals (not inline temporaries) are required because
+    // the items outlive the single statement that registers them.
+    let undo = PredefinedMenuItem::undo(app, None)?;
+    let redo = PredefinedMenuItem::redo(app, None)?;
+    let edit_sep = PredefinedMenuItem::separator(app)?;
+    let cut = PredefinedMenuItem::cut(app, None)?;
+    let copy = PredefinedMenuItem::copy(app, None)?;
+    let paste = PredefinedMenuItem::paste(app, None)?;
+    let select_all = PredefinedMenuItem::select_all(app, None)?;
+
+    #[cfg(not(target_os = "macos"))]
+    let settings_item =
+        MenuItem::with_id(app, ids::OPEN_SETTINGS, "Settings…", true, Some("CmdOrCtrl+,"))?;
+
+    // `mut` is only needed on platforms that append the Settings item below
+    // (non-macOS); on macOS the push is cfg'd out, so silence unused_mut there.
+    #[cfg_attr(target_os = "macos", allow(unused_mut))]
+    let mut edit_items: Vec<&dyn tauri::menu::IsMenuItem<R>> =
+        vec![&undo, &redo, &edit_sep, &cut, &copy, &paste, &select_all];
+    #[cfg(not(target_os = "macos"))]
+    edit_items.push(&settings_item);
+
+    let edit = Submenu::with_items(app, "Edit", true, &edit_items)?;
 
     // ---- View (toggle items) ----
     let view = Submenu::with_items(
@@ -157,6 +168,8 @@ fn build_app_name_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Submenu<
         true,
         &[
             &PredefinedMenuItem::about(app, None, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, ids::OPEN_SETTINGS, "Settings…", true, Some("CmdOrCtrl+,"))?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,

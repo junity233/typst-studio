@@ -1,21 +1,16 @@
-//! `ConfigStore` trait + `JsonFileStore` implementation.
+//! JSON file-backed store for the runtime `serde_json::Value` config document.
 //!
-//! Stub for now; concrete persistence arrives with the settings UI phase.
+//! The dynamic settings model has no fixed schema, so the store reads/writes a
+//! free-form JSON document rather than a typed struct. A missing file or parse
+//! error degrades to an empty object (`{}`); callers then fall back to the
+//! manifest defaults. [`SettingsService`](super::service::SettingsService)
+//! owns a `JsonFileStore` directly — no trait is needed for a single impl.
 
-#![allow(dead_code)]
-
-use crate::error::Result;
 use std::path::PathBuf;
 
-use super::config::AppConfig;
+use crate::error::Result;
 
-/// Persistence abstraction for user settings.
-pub trait ConfigStore: Send + Sync {
-    fn load(&self) -> Result<AppConfig>;
-    fn save(&self, cfg: &AppConfig) -> Result<()>;
-}
-
-/// JSON file-backed store. Default location is the platform config dir.
+/// Persists the runtime config as pretty-printed JSON at a fixed path.
 pub struct JsonFileStore {
     pub path: PathBuf,
 }
@@ -24,24 +19,61 @@ impl JsonFileStore {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
-}
 
-impl ConfigStore for JsonFileStore {
-    fn load(&self) -> Result<AppConfig> {
+    /// Load the document. A missing file or read/parse error yields an empty
+    /// object so a fresh install behaves like an unconfigured one.
+    pub fn load_value(&self) -> serde_json::Value {
         if !self.path.exists() {
-            return Ok(AppConfig::default());
+            return serde_json::json!({});
         }
-        let raw = std::fs::read_to_string(&self.path)?;
-        let cfg: AppConfig = serde_json::from_str(&raw).unwrap_or_default();
-        Ok(cfg)
+        let raw = match std::fs::read_to_string(&self.path) {
+            Ok(s) => s,
+            Err(_) => return serde_json::json!({}),
+        };
+        serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}))
     }
 
-    fn save(&self, cfg: &AppConfig) -> Result<()> {
+    /// Write the document, creating parent directories as needed.
+    pub fn save_value(&self, value: &serde_json::Value) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let raw = serde_json::to_string_pretty(cfg)?;
+        let raw = serde_json::to_string_pretty(value)?;
         std::fs::write(&self.path, raw)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_path() -> PathBuf {
+        std::env::temp_dir().join(format!("typst-settings-{}.json", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn missing_file_loads_empty_object() {
+        let store = JsonFileStore::new(tmp_path());
+        assert_eq!(store.load_value(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn save_then_load_roundtrips() {
+        let path = tmp_path();
+        let store = JsonFileStore::new(path.clone());
+        let doc = serde_json::json!({ "editor": { "fontSize": 14 } });
+        store.save_value(&doc).unwrap();
+        assert_eq!(store.load_value(), doc);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn garbage_file_loads_empty_object() {
+        let path = tmp_path();
+        std::fs::write(&path, "{ not json").unwrap();
+        let store = JsonFileStore::new(path.clone());
+        assert_eq!(store.load_value(), serde_json::json!({}));
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -292,6 +292,23 @@ button {
   font: var(--text-body);
   letter-spacing: -0.374px;
 }
+.preview-refresh {
+  position: sticky;
+  top: 0;
+  align-self: flex-end;
+  z-index: 2;
+  margin-bottom: var(--space-xs);
+  padding: var(--space-xxs) var(--space-sm);
+  background: var(--color-surface-pearl);
+  color: var(--color-ink);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  font: var(--text-button-utility);
+  cursor: pointer;
+}
+.preview-refresh:hover {
+  background: var(--color-canvas);
+}
 .svg-page {
   width: 100%;
   max-width: 800px;
@@ -933,5 +950,238 @@ button {
   height: 1px;
   background: var(--color-hairline);
   margin: 4px 0;
+}
+
+/* ============================================================================
+   Settings window (dedicated OS window, loads ?window=settings)
+   macOS-System-Settings layout: a parchment category rail on the left and a
+   white control pane on the right. The parchment↔canvas color change IS the
+   vertical divider (no rule), per DESIGN.md's surface-change-over-border rule.
+   All flat — no shadows on chrome. Single Action Blue accent.
+   ========================================================================= */
+.settings-window {
+  display: flex;
+  height: 100vh;
+  background: var(--color-canvas);
+  font: var(--text-body);
+  color: var(--color-ink);
+}
+.settings-loading,
+.settings-empty {
+  margin: auto;
+  padding: var(--space-lg);
+  color: var(--color-ink-muted-48);
+  font: var(--text-body);
+  letter-spacing: -0.374px;
+}
+
+/* ---- Category rail (parchment surface) ---- */
+.settings-categories {
+  flex: 0 0 180px;
+  width: 180px;
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  background: var(--color-canvas-parchment);
+  overflow-y: auto;
+}
+.settings-category {
+  text-align: left;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  color: var(--color-ink);
+  font: var(--text-caption);
+  letter-spacing: -0.224px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.1s ease;
+}
+.settings-category:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.settings-category-active {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+.settings-category:active {
+  transform: scale(0.97);
+}
+.settings-category:focus-visible {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: 2px;
+}
+
+/* ---- Control pane (white canvas) ---- */
+.settings-pane {
+  flex: 1 1 auto;
+  padding: var(--space-lg) var(--space-xl);
+  overflow-y: auto;
+  background: var(--color-canvas);
+}
+.settings-pane-title {
+  font: var(--text-tagline);
+  letter-spacing: -0.374px;
+  color: var(--color-ink);
+  margin: 0 0 var(--space-md);
+}
+.settings-rows {
+  display: flex;
+  flex-direction: column;
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  min-height: 44px; /* touch-floor */
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--color-hairline);
+}
+.setting-label {
+  font: var(--text-body);
+  letter-spacing: -0.374px;
+  color: var(--color-ink);
+}
+.setting-control {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* ---- Text / number / select inputs ---- */
+.setting-input {
+  min-width: 120px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font: var(--text-body);
+  letter-spacing: -0.374px;
+  transition: border-color 0.12s ease;
+}
+.setting-input:focus {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: 1px;
+  border-color: var(--color-primary-focus);
+}
+.setting-input[type="number"] {
+  width: 120px;
+}
+select.setting-input {
+  cursor: pointer;
+  padding-right: 28px;
+}
+
+/* ---- Toggle (the project's first switch) ----
+   44×24 capsule track: Action Blue when on, translucent chip-gray when off.
+   White 20px knob slides right via aria-pressed. Active press = scale(0.95). */
+.toggle {
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+}
+.toggle:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.toggle-track {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-chip-translucent);
+  transition: background 0.15s ease;
+}
+.toggle[aria-pressed="true"] .toggle-track {
+  background: var(--color-primary);
+}
+.toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-pill);
+  background: var(--color-canvas);
+  transition: transform 0.15s ease;
+}
+.toggle[aria-pressed="true"] .toggle-knob {
+  transform: translateX(20px);
+}
+.toggle:active {
+  transform: scale(0.95);
+}
+.toggle:focus-visible {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-pill);
+}
+
+/* ---- Paths list (string-array setting) ---- */
+.path-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 260px;
+  max-width: 360px;
+}
+.path-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 4px 8px;
+  background: var(--color-canvas-parchment);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  font: var(--text-caption);
+  letter-spacing: -0.224px;
+  color: var(--color-ink);
+}
+.path-chip-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.path-chip-remove {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-xs);
+  color: var(--color-primary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 0.1s ease, transform 0.1s ease;
+}
+.path-chip-remove:hover {
+  background: rgba(0, 102, 204, 0.08);
+}
+.path-chip-remove:active {
+  transform: scale(0.9);
+}
+.path-add {
+  display: flex;
+  gap: var(--space-xs);
+  margin-top: var(--space-xxs);
+}
+.path-add-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.path-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
 }
 

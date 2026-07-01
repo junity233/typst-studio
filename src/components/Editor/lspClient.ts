@@ -159,10 +159,16 @@ export function buildLanguageClientConfig(
  *
  * Callers are responsible for registering the tab's in-memory file via
  * `registerTypstMemFile(tabId, content)` in a React effect.
+ *
+ * `editorOptions` (optional) is merged OVER the built-in defaults so callers
+ * (e.g. settings-driven option overrides) can adjust the editor without losing
+ * the baseline configuration. The wrapper live-applies these on change via
+ * `editor.updateOptions`.
  */
 export function buildEditorAppConfig(
   tabId: string,
   content: string,
+  editorOptions?: Monaco.editor.IStandaloneEditorConstructionOptions,
 ): EditorAppConfig {
   const uri = typstMemUri(tabId);
 
@@ -197,6 +203,7 @@ export function buildEditorAppConfig(
       tabSize: 2,
       wordWrap: "on",
       renderWhitespace: "selection",
+      ...editorOptions,
     },
   };
 }

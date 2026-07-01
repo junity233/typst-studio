@@ -1,0 +1,49 @@
+/**
+ * Hand-written TS types for the settings manifest. The runtime config is a
+ * dynamic `serde_json::Value` (no Rust struct, no ts-rs export), so this
+ * descriptor shape is the only typed surface and is authored by hand to mirror
+ * `src-tauri/settings/manifest.json` exactly. New settings = edit the JSON; the
+ * types here cover the whole `type` union and its optional constraints.
+ */
+
+/** The value types a setting can hold. */
+export type SettingType =
+  | "number"
+  | "integer"
+  | "string"
+  | "boolean"
+  | "paths"
+  | "select";
+
+/** A single setting descriptor — one row in a category. */
+export interface SettingDef {
+  /** Dot-separated path into the runtime config, e.g. "editor.fontSize". */
+  key: string;
+  type: SettingType;
+  label: string;
+  /** JSON value matching `type`. */
+  default: unknown;
+  /** Inclusive numeric lower bound (number/integer only). */
+  min?: number;
+  /** Inclusive numeric upper bound (number/integer only). */
+  max?: number;
+  /** Per-change step granularity (number/integer only). */
+  step?: number;
+  /** Allowed values (select only). */
+  options?: string[];
+  /** When true the control is display-only (e.g. window.recentWorkspaces). */
+  readonly?: boolean;
+}
+
+/** A group of related settings rendered under one heading. */
+export interface ManifestCategory {
+  id: string;
+  label: string;
+  settings: SettingDef[];
+}
+
+/** The whole manifest — the single source of truth that drives the settings UI. */
+export interface Manifest {
+  version: number;
+  categories: ManifestCategory[];
+}

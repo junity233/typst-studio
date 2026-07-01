@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MonacoEditorReactComp } from "@typefox/monaco-editor-react";
-import type { TextContents } from "monaco-languageclient/editorApp";
+import type * as Monaco from "@codingame/monaco-vscode-editor-api";
+import type { TextContents, EditorApp } from "monaco-languageclient/editorApp";
 import type { LanguageClientManager } from "monaco-languageclient/lcwrapper";
 import { updateText } from "../../lib/tauri";
 import type { Tab } from "../../store/tabsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useDebouncedCallback } from "../../hooks/useDebounce";
 import { useLspStatus } from "../../store/lspStore";
+import { useSetting } from "../../hooks/useSetting";
 import {
   buildVscodeApiConfig,
   buildLanguageClientConfig,
@@ -81,14 +83,64 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // this is a legal handshake rather than a protocol-violating repeat.
   const editorKey = `lsp-${wsUrl ?? "nolsp"}`;
 
+  // Editor + preview settings (reactive). Each `useSetting` re-renders this
+  // component when its value changes, which flows new options into the memo
+  // below — the wrapper live-applies them via `editor.updateOptions`.
+  const [fontSize] = useSetting<number>("editor.fontSize");
+  const [fontFamily] = useSetting<string>("editor.fontFamily");
+  const [tabSize] = useSetting<number>("editor.tabSize");
+  const [wordWrap] = useSetting<boolean>("editor.wordWrap");
+  const [lineNumbers] = useSetting<boolean>("editor.lineNumbers");
+  const [minimap] = useSetting<boolean>("editor.minimap");
+  const [autoRefresh] = useSetting<boolean>("preview.autoRefresh");
+
+  // `preview.autoRefresh` gates the compile-pipeline push. Read through a ref
+  // so the (once-created) debounced callback always sees the live value
+  // without being rebuilt on every toggle.
+  const autoRefreshRef = useRef(autoRefresh);
+  autoRefreshRef.current = autoRefresh;
+
+  // Settings-derived editor options. Only keys that are actually set are
+  // overridden; everything else falls through to buildEditorAppConfig's
+  // built-in defaults. `editor.fontFamily` is applied only when non-empty so
+  // an unset value keeps Monaco's own font stack.
+  const settingsOptions =
+    useMemo<Monaco.editor.IStandaloneEditorConstructionOptions>(() => {
+      const opts: Monaco.editor.IStandaloneEditorConstructionOptions = {};
+      if (fontSize !== undefined) opts.fontSize = fontSize;
+      if (fontFamily && fontFamily.length > 0) opts.fontFamily = fontFamily;
+      if (tabSize !== undefined) {
+        opts.tabSize = tabSize;
+        opts.insertSpaces = true;
+      }
+      if (wordWrap !== undefined) opts.wordWrap = wordWrap ? "on" : "off";
+      if (lineNumbers !== undefined)
+        opts.lineNumbers = lineNumbers ? "on" : "off";
+      if (minimap !== undefined) opts.minimap = { enabled: minimap };
+      return opts;
+    }, [fontSize, fontFamily, tabSize, wordWrap, lineNumbers, minimap]);
+
   // The editor-app config is rebuilt per tab so the model URI differs per tab.
   // Changing the URI (vs only the text) is what routes through
   // `triggerReprocessConfig` → `updateCodeResources` → `editor.setModel`,
   // which fires automatic didClose(old) + didOpen(new) on the SAME tinymist
   // session (verified in the installed @typefox/monaco-editor-react bundle).
+  //
+  // The config is ALSO rebuilt when `settingsOptions` changes so the wrapper
+  // live-applies new editor options. To keep that rebuild from re-pushing the
+  // live document text through `updateCode` (which would churn the mounted
+  // editor — cursor/undo disruption), the `codeResources` text is pinned to
+  // the seed captured at tab switch via `seedContentRef`. Live edits flow
+  // through the model, never the config.
+  const seedContentRef = useRef(tab.content);
+  const seededTabIdRef = useRef(tab.id);
+  if (seededTabIdRef.current !== tab.id) {
+    seededTabIdRef.current = tab.id;
+    seedContentRef.current = tab.content;
+  }
   const editorAppConfig = useMemo(
-    () => buildEditorAppConfig(tab.id, tab.content),
-    [tab.id], // eslint-disable-line react-hooks/exhaustive-deps
+    () => buildEditorAppConfig(tab.id, seedContentRef.current, settingsOptions),
+    [tab.id, settingsOptions], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // The current tab id, via a ref. CRITICAL: the editor instance is shared
@@ -128,10 +180,30 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     setReprocessTick((t) => t + 1);
   }, [tab.id]);
 
+  // Apply settings-derived options directly to the live Monaco instance. We
+  // deliberately bypass the wrapper's processConfig (which only runs on a
+  // reprocess bump): processConfig text-diffs the config's codeResources —
+  // pinned to the tab-switch seed — against the live model, and would call
+  // `updateCode` with that stale seed, clobbering unsaved edits. Calling
+  // `editor.updateOptions` touches ONLY options, never content.
+  const editorAppRef = useRef<EditorApp | null>(null);
+  useEffect(() => {
+    editorAppRef.current?.getEditor()?.updateOptions(settingsOptions);
+  }, [settingsOptions]);
+
   const handleTextChanged = (textChanges: TextContents): void => {
     const next = textChanges.modified ?? "";
+    // Always keep the local tab content current so a manual refresh can push
+    // it; only gate the backend compile push on `preview.autoRefresh`.
     onChangeRef.current(next);
-    pushToBackend(tabIdRef.current, next);
+    if (autoRefreshRef.current !== false) {
+      pushToBackend(tabIdRef.current, next);
+    }
+  };
+
+  const handleEditorStartDone = (editorApp?: EditorApp): void => {
+    editorAppRef.current = editorApp ?? null;
+    editorApp?.getEditor()?.updateOptions(settingsOptions);
   };
 
   const handleLanguageClientsStartDone = (
@@ -164,6 +236,7 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         triggerReprocessConfig={reprocessTick}
         style={{ height: "100%" }}
         onTextChanged={handleTextChanged}
+        onEditorStartDone={handleEditorStartDone}
         onLanguageClientsStartDone={handleLanguageClientsStartDone}
         onError={handleError}
         // Keep the client alive across tab switches. The shared `lcsManager`

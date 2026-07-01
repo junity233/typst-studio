@@ -7,7 +7,7 @@
 //! - `render`          Pluggable render pipelines (SVG / PDF / PNG)
 //! - `service`         Orchestration (EditorService, CompileScheduler, Export)
 //! - `project`         Project abstraction (MVP stub)
-//! - `settings`        AppConfig + ConfigStore
+//! - `settings`        Dynamic JSON config + shared manifest + SettingsService
 //! - `ipc`             Tauri commands, events, AppState
 //! - `error`           Unified AppError + Result alias
 
@@ -62,6 +62,12 @@ pub fn run() {
             ipc::fs_commands::delete_entry,
             ipc::fs_commands::open_file_by_path,
             ipc::fs_commands::reveal_in_finder,
+            // Settings commands.
+            ipc::settings_commands::get_all_settings,
+            ipc::settings_commands::get_setting,
+            ipc::settings_commands::set_setting,
+            ipc::settings_commands::get_settings_manifest,
+            ipc::settings_commands::open_settings,
         ])
         .setup(|app| {
             use std::sync::Arc;
@@ -79,6 +85,7 @@ pub fn run() {
             use crate::service::export_service::ExportService;
             use crate::service::lsp_service::LspService;
             use crate::service::workspace_service::WorkspaceService;
+            use crate::settings::{JsonFileStore, Manifest, SettingsService};
 
             // The AppHandle is only available inside `.setup`. We wrap it in a
             // TauriEmitter so the service layer can emit events without a direct
@@ -131,7 +138,23 @@ pub fn run() {
                 }
             };
 
-            app.manage(AppState { editor, export, lsp, workspace });
+            // Settings: persist a free-form JSON document in the platform config
+            // dir; broadcast every change to all windows via `settings_changed`.
+            // `app_config_dir()?` + `SettingsService::new(...)?` both convert
+            // into the setup closure's `Box<dyn std::error::Error>` return.
+            let cfg_dir = app.path().app_config_dir()?;
+            let store = JsonFileStore::new(cfg_dir.join("settings.json"));
+            let manifest = Manifest::embedded();
+            let app_for_settings = app.handle().clone();
+            let settings = Arc::new(SettingsService::new(
+                store,
+                manifest,
+                move |data| {
+                    let _ = app_for_settings.emit("settings_changed", data.clone());
+                },
+            )?);
+
+            app.manage(AppState { editor, export, lsp, workspace, settings });
 
             // Auto-open devtools in debug builds to help diagnose blank screens.
             #[cfg(debug_assertions)]

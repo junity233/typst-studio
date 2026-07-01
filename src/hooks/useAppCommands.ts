@@ -5,6 +5,7 @@ import {
   exportPng,
   exportSvg,
   openFile,
+  openSettings,
   saveAs as saveAsBE,
   saveFile,
 } from "../lib/tauri";
@@ -101,6 +102,10 @@ export async function dispatch(menuId: string): Promise<void> {
 
       case "toggle-preview":
         ui.togglePreview();
+        break;
+
+      case "open-settings":
+        await openSettings();
         break;
 
       case "export-pdf":
