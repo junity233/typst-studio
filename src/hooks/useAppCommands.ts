@@ -32,8 +32,31 @@ export function useAppCommands(): void {
       unlisten = fn;
     });
 
+    // Capture-phase Cmd/Ctrl+S. The native menu's accelerator only fires when
+    // the keypress reaches the OS — but Monaco (and the VS Code services we
+    // wire via filesServiceOverride) can swallow Cmd+S in the webview before it
+    // bubbles, so the menu handler never runs. This document-level capture
+    // listener sits ahead of the editor, intercepts the save shortcut directly,
+    // and dispatches our save — making Cmd+S reliable regardless of focus.
+    const onKeyDown = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === "s" && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        void dispatch("save");
+      }
+      // Cmd/Ctrl+Shift+S → Save As.
+      if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        e.stopPropagation();
+        void dispatch("save-as");
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+
     return () => {
       unlisten?.();
+      document.removeEventListener("keydown", onKeyDown, true);
     };
   }, []);
 }
