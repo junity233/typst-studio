@@ -5,4 +5,5 @@
 pub mod commands;
 pub mod events;
 pub mod fs_commands;
+pub mod menu;
 pub mod state;

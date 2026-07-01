@@ -31,6 +31,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        // Native application menu (File/Edit/View/Export/Help). Built once and
+        // applied app-wide (macOS menubar; Win/Linux per-window).
+        .menu(|app| crate::ipc::menu::build_menu(app))
+        .on_menu_event(|app, event| {
+            crate::ipc::menu::dispatch_menu_event(app, event.id());
+        })
         .invoke_handler(tauri::generate_handler![
             // Document / editor commands.
             ipc::commands::new_tab,
