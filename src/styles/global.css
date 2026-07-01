@@ -1,0 +1,567 @@
+/* ============================================================================
+   Typst Studio — global stylesheet
+   Design language: Apple marketing analysis (DESIGN.md), adapted for a
+   desktop code editor. LIGHT primary. Chrome is flat (no shadows) — the only
+   shadow in the system lives on `.svg-page` to give the document weight.
+   ========================================================================= */
+
+:root {
+  /* ---- Colors (DESIGN.md colors:) ---- */
+  --color-primary: #0066cc; /* Action Blue — the single interactive accent */
+  --color-primary-focus: #0071e3; /* keyboard focus ring */
+  --color-primary-on-dark: #2997ff;
+  --color-ink: #1d1d1f; /* near-black, the voice of all headlines/text */
+  --color-body: #1d1d1f;
+  --color-body-muted: #7a7a7a;
+  --color-ink-muted-80: #333333; /* slightly softer body text */
+  --color-ink-muted-48: #7a7a7a; /* disabled / fine-print */
+  --color-divider-soft: #f0f0f0;
+  --color-hairline: #e0e0e0; /* 1px borders */
+  --color-canvas: #ffffff; /* editor + svg paper */
+  --color-canvas-parchment: #f5f5f7; /* default app canvas, preview, status */
+  --color-surface-pearl: #fafafc; /* active tab, secondary surfaces */
+  --color-surface-tile-1: #272729;
+  --color-surface-black: #000000;
+  --color-surface-chip-translucent: #d2d2d7;
+  --color-on-primary: #ffffff;
+
+  /* ---- Severity colors (the one documented exception to "single accent"):
+     Apple marketing never needs error cues. A code editor does. We reuse
+     Apple's system Red/Orange ONLY for diagnostic dots + status text, nowhere
+     else. Heading/code keywords still use Action Blue. ---- */
+  --color-error: #ff3b30; /* system red — error dot + error status only */
+  --color-warning: #ff9500; /* system orange — warning dot only */
+
+  /* ---- Typography (SF Pro stack) ---- */
+  --font-display: "SF Pro Display", system-ui, -apple-system,
+    BlinkMacSystemFont, sans-serif;
+  --font-text: "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont,
+    sans-serif;
+  --font-mono: "SF Mono", Menlo, Monaco, "Cascadia Code", Consolas, monospace;
+
+  /* Type scale — font shorthand tokens. Letter-spacing is applied per-use
+     because it is not part of the `font` shorthand. */
+  --text-tagline: 600 21px/1.19 var(--font-display);
+  --text-body-strong: 600 17px/1.24 var(--font-text);
+  --text-body: 400 17px/1.47 var(--font-text);
+  --text-caption: 400 14px/1.43 var(--font-text);
+  --text-caption-strong: 600 14px/1.29 var(--font-text);
+  --text-button-utility: 400 14px/1.29 var(--font-text);
+  --text-fine-print: 400 12px/1 var(--font-text);
+  --text-nav-link: 400 12px/1 var(--font-text);
+
+  /* ---- Radius scale ---- */
+  --radius-none: 0;
+  --radius-xs: 5px;
+  --radius-sm: 8px;
+  --radius-md: 11px;
+  --radius-lg: 18px;
+  --radius-pill: 9999px;
+
+  /* ---- Spacing scale ---- */
+  --space-xxs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 17px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-xxl: 48px;
+
+  /* ---- The ONE shadow — applied ONLY to `.svg-page` ---- */
+  --shadow-product: rgba(0, 0, 0, 0.22) 3px 5px 30px 0;
+
+  /* ---- Layout heights ---- */
+  --toolbar-h: 52px;
+  --tabstrip-h: 38px;
+  --statusbar-h: 28px;
+
+  /* ---- Allotment sash (overridden from its 8px/4px defaults) ----
+     The hit area stays comfortable; the visible line is a 1px hairline that
+     turns Action Blue on hover/drag. */
+  --sash-size: 6px;
+  --sash-hover-size: 1px;
+  --sash-hover-transition-duration: 0.1s;
+
+  font-family: var(--font-text);
+  font-size: 14px; /* denser than 17px — this is app chrome, not reading copy */
+  line-height: 1.45;
+  letter-spacing: -0.224px; /* caption tightness across UI chrome */
+  color: var(--color-ink);
+  background: var(--color-canvas-parchment);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-canvas-parchment);
+  color: var(--color-ink);
+}
+
+/* No outlines on mouse click; restore for keyboard focus. */
+:focus {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* ============================================================================
+   App shell
+   ========================================================================= */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--color-canvas-parchment);
+}
+.app-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--color-canvas);
+}
+
+/* ============================================================================
+   Toolbar (sub-nav-frosted treatment)
+   ========================================================================= */
+.toolbar {
+  height: var(--toolbar-h);
+  flex: 0 0 var(--toolbar-h);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-lg);
+  background: rgba(245, 245, 247, 0.8);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid var(--color-hairline);
+  -webkit-app-region: drag;
+}
+.toolbar-brand {
+  font: var(--text-tagline);
+  letter-spacing: 0.231px;
+  color: var(--color-ink);
+}
+.toolbar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  -webkit-app-region: no-drag;
+}
+
+/* ============================================================================
+   Tab strip
+   ========================================================================= */
+.tabstrip {
+  height: var(--tabstrip-h);
+  flex: 0 0 var(--tabstrip-h);
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-xxs);
+  padding: 0 var(--space-sm);
+  background: var(--color-canvas);
+  border-bottom: 1px solid var(--color-hairline);
+  overflow-x: auto;
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: transparent;
+  color: var(--color-ink-muted-80);
+  font: var(--text-caption);
+  letter-spacing: -0.224px;
+  white-space: nowrap;
+  user-select: none;
+  cursor: default;
+  transition: background 0.12s ease;
+}
+.tab:hover {
+  background: var(--color-surface-pearl);
+}
+.tab-active {
+  background: var(--color-surface-pearl);
+  color: var(--color-ink);
+  /* Active indicator: a 2px Action Blue underline at the tab's bottom edge
+     (Apple's docs/pages apps underline the selected tab rather than topping
+     it with a blue bar). */
+  box-shadow: inset 0 -2px 0 0 var(--color-primary);
+}
+.tab:focus-visible {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+.tab-title {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-dirty {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  flex: 0 0 auto;
+}
+.tab-close {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  color: var(--color-ink-muted-48);
+  opacity: 0;
+  font-size: 15px;
+  line-height: 1;
+  transition: opacity 0.1s ease, background 0.1s ease, color 0.1s ease;
+}
+.tab:hover .tab-close,
+.tab-active .tab-close {
+  opacity: 1;
+}
+.tab-close:hover {
+  background: var(--color-hairline);
+  color: var(--color-ink);
+}
+.tab-add {
+  align-self: center;
+  margin-left: var(--space-xxs);
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-pearl);
+  color: var(--color-ink-muted-80);
+  font-size: 16px;
+  line-height: 1;
+}
+.tab-add:hover {
+  background: var(--color-hairline);
+  color: var(--color-ink);
+}
+
+/* ============================================================================
+   Panes (editor / preview)
+   ========================================================================= */
+.pane {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+.pane-empty {
+  align-items: center;
+  justify-content: center;
+  background: var(--color-canvas);
+  color: var(--color-ink-muted-48);
+  font: var(--text-body);
+  letter-spacing: -0.374px;
+}
+.pane-editor {
+  background: var(--color-canvas);
+}
+.pane-preview {
+  background: var(--color-canvas-parchment);
+}
+
+/* ---- Monaco editor ---- */
+.editor-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+.editor-pane > div,
+.editor-pane .monaco-editor {
+  width: 100%;
+  height: 100%;
+}
+
+/* ---- Preview pane (parchment surface; the SVG page rests on it) ---- */
+.preview-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-xl);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-lg);
+  background: var(--color-canvas-parchment);
+}
+.preview-empty {
+  margin: auto;
+  color: var(--color-ink-muted-48);
+  font: var(--text-body);
+  letter-spacing: -0.374px;
+}
+.svg-page {
+  width: 100%;
+  max-width: 800px;
+  background: var(--color-canvas);
+  /* THE ONE SHADOW — gives the rendered document weight on the parchment
+     surface. The only box-shadow in the entire app. */
+  box-shadow: var(--shadow-product);
+}
+.svg-page svg,
+.svg-page-img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* ============================================================================
+   Diagnostics panel
+   ========================================================================= */
+.diagnostics {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--color-surface-pearl);
+  border-top: 1px solid var(--color-hairline);
+}
+.diagnostics-header {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 var(--space-lg);
+  border-bottom: 1px solid var(--color-hairline);
+}
+.diagnostics-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font: var(--text-caption-strong);
+  letter-spacing: -0.224px;
+  color: var(--color-ink);
+}
+.diagnostics-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--color-hairline);
+  color: var(--color-ink);
+  font-family: var(--font-text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+.diagnostics-body {
+  max-height: 160px;
+  overflow-y: auto;
+  transition: max-height 0.2s ease;
+}
+.diagnostics.collapsed .diagnostics-body {
+  max-height: 0;
+  overflow: hidden;
+}
+.diag-empty {
+  padding: var(--space-xs) var(--space-lg);
+  color: var(--color-ink-muted-48);
+  font: var(--text-fine-print);
+  letter-spacing: -0.12px;
+}
+.diag-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.diag-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-lg);
+  cursor: pointer;
+}
+.diag-item:hover {
+  background: var(--color-canvas-parchment);
+}
+.diag-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-ink-muted-48);
+}
+.diag-sev-error .diag-dot {
+  background: var(--color-error);
+}
+.diag-sev-warning .diag-dot {
+  background: var(--color-warning);
+}
+.diag-sev-info .diag-dot {
+  background: var(--color-primary);
+}
+.diag-message {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--text-caption);
+  letter-spacing: -0.224px;
+  color: var(--color-ink);
+}
+.diag-loc {
+  flex: 0 0 auto;
+  color: var(--color-ink-muted-48);
+  font: var(--text-fine-print);
+  letter-spacing: -0.12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================================
+   Status bar (footer / fine-print)
+   ========================================================================= */
+.statusbar {
+  height: var(--statusbar-h);
+  flex: 0 0 var(--statusbar-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-lg);
+  background: var(--color-canvas-parchment);
+  border-top: 1px solid var(--color-hairline);
+  font: var(--text-fine-print);
+  letter-spacing: -0.12px;
+  color: var(--color-ink-muted-80);
+}
+.statusbar-section {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.statusbar-status--compiling {
+  color: var(--color-primary);
+}
+.statusbar-status--error {
+  color: var(--color-error);
+}
+.statusbar-badge {
+  color: var(--color-ink-muted-48);
+}
+.statusbar-badge-error {
+  color: var(--color-error);
+}
+
+/* ============================================================================
+   Buttons
+   ========================================================================= */
+.btn-primary {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font: var(--text-button-utility);
+  letter-spacing: -0.224px;
+  border: none;
+  border-radius: var(--radius-pill);
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: transform 0.1s ease, background 0.1s ease;
+}
+.btn-primary:hover {
+  background: var(--color-primary-focus);
+}
+.btn-primary:active {
+  transform: scale(0.95);
+}
+.btn-primary:focus-visible {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: 2px;
+}
+
+.btn-utility {
+  background: var(--color-ink);
+  color: var(--color-canvas);
+  font: var(--text-button-utility);
+  letter-spacing: -0.224px;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: transform 0.1s ease, opacity 0.1s ease;
+}
+.btn-utility:hover {
+  opacity: 0.85;
+}
+.btn-utility:active {
+  transform: scale(0.95);
+}
+.btn-utility:focus-visible {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: 2px;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-primary);
+  font: var(--text-button-utility);
+  letter-spacing: -0.224px;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: transform 0.1s ease, background 0.1s ease;
+}
+.btn-ghost:hover {
+  background: rgba(0, 102, 204, 0.08);
+}
+.btn-ghost:active {
+  transform: scale(0.95);
+}
+.btn-ghost:focus-visible {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: 2px;
+}
+
+/* ============================================================================
+   Split-pane sash overrides (Allotment)
+   Allotment styles its sash via CSS-module (hashed) classes plus stable
+   classes: `sash sash-vertical sash-mac` and state classes `sash-hover` /
+   `sash-active`. The visible line is the sash's `::before` pseudo. We target
+   the stable classes; `!important` is used on the pseudo background because
+   Allotment's hashed two-class selector (`.x.y:before`) outweighs a single
+   stable class, and load order must not be relied upon.
+   ========================================================================= */
+.sash.sash-vertical::before {
+  background: var(--color-hairline) !important;
+}
+.sash.sash-vertical:hover::before,
+.sash.sash-vertical.sash-hover::before,
+.sash.sash-vertical.sash-active::before {
+  background: var(--color-primary) !important;
+}
+.sash.sash-vertical.sash-active::before {
+  width: 3px !important;
+}

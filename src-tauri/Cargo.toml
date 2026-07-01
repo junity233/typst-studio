@@ -1,0 +1,69 @@
+[package]
+name = "typst-studio"
+version = "0.1.0"
+description = "A Typst visual editor with live SVG preview"
+authors = ["Typst Studio"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "typst_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+default = []
+# Enables ts-rs type export tests (run `cargo test --features export-types` to regenerate)
+export-types = ["dep:ts-rs"]
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Typst engine (official crates, pinned to 0.15)
+typst = "0.15"
+# typst-layout defines `PagedDocument`/`Page`, the concrete renderable document
+# type required by every `typst-svg`/`typst-pdf`/`typst-render` entry point.
+# The `typst` crate depends on it but does not re-export it, and the render
+# crates take it by reference without re-exporting it either, so any caller of
+# `typst_svg::svg(..)` / `typst_pdf::pdf(..)` / `typst_render::render(..)` must
+# name `typst_layout::PagedDocument` directly. It is already a transitive
+# dependency (pulled in by typst/typst-pdf/typst-render/typst-svg), so adding it
+# here pulls in no new code — it only makes the type nameable.
+typst-layout = "0.15"
+typst-svg = "0.15"
+typst-pdf = "0.15"
+typst-render = "0.15"
+typst-kit = { version = "0.15", features = ["embedded-fonts", "scan-fonts"] }
+comemo = "0.4"
+
+# Async / scheduling
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+
+# Concurrency
+parking_lot = "0.12"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# IDs / time
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Rust ↔ TypeScript type generation (optional, behind feature)
+ts-rs = { version = "12", features = ["uuid-impl", "chrono-impl", "no-serde-warnings"], optional = true }
+
+# Pin: time 0.3.39+ broke `Parsable::parse` API (added required `defaults` arg),
+# which cookie 0.18.1 (transitive via tauri) hasn't adapted to. Remove when
+# cookie / tauri ships a compatible release.
+time = { version = "=0.3.36", default-features = false, features = ["std", "macros", "parsing"] }
+
