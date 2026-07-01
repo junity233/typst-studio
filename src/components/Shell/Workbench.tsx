@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { Allotment } from "allotment";
+import "allotment/dist/style.css";
 import { Sidebar } from "../Sidebar/Sidebar";
 import { EditorArea } from "./EditorArea";
 import { useWorkspaceStore } from "../../store/workspaceStore";
@@ -12,12 +13,12 @@ import { useUiStore } from "../../store/uiStore";
  */
 export function Workbench() {
   const hydrate = useWorkspaceStore((s) => s.hydrate);
-  const rootPath = useWorkspaceStore((s) => s.rootPath);
   const sidebarVisible = useUiStore((s) => s.sidebarVisible);
 
-  // Sidebar is shown only when a workspace is open AND the user hasn't hidden
-  // it (View → Toggle Sidebar, Cmd+B).
-  const showSidebar = rootPath !== null && sidebarVisible;
+  // The sidebar shows whenever the user hasn't hidden it (View → Toggle
+  // Sidebar / Cmd+B). With no workspace open it renders the EmptyWorkspace
+  // prompt (the Open Folder entry point) — so first-run users always see it.
+  const showSidebar = sidebarVisible;
 
   // On first mount, hydrate any workspace the backend already has open (e.g.
   // across a dev reload). Safe to call repeatedly — it's a read-then-load.

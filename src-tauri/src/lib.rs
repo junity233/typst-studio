@@ -60,6 +60,7 @@ pub fn run() {
             ipc::fs_commands::rename_entry,
             ipc::fs_commands::delete_entry,
             ipc::fs_commands::open_file_by_path,
+            ipc::fs_commands::reveal_in_finder,
         ])
         .setup(|app| {
             use std::sync::Arc;

@@ -52,6 +52,10 @@ export interface WorkspaceState {
 
   /** Toggle a directory's expanded state, loading on first expand. */
   toggleExpand: (rel: string) => Promise<void>;
+  /** Collapse every currently-expanded directory. */
+  collapseAll: () => void;
+  /** Expand every currently-loaded directory (lazy tree — only loaded ones). */
+  expandAll: () => Promise<void>;
 
   /** File operations (each also refreshes the affected directory). */
   createEntry: (rel: string, kind: EntryKind) => Promise<void>;
@@ -150,6 +154,28 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       expanded.add(rel);
       await get().ensureLoaded(rel);
     }
+    set({ expanded });
+  },
+
+  collapseAll: () => {
+    set({ expanded: new Set<string>() });
+  },
+
+  expandAll: async () => {
+    // The tree is lazy: only loaded directories appear as keys. Expand each
+    // loaded directory and every directory child within it. Deeper, unloaded
+    // folders stay collapsed until the user opens them (no recursive load storm).
+    const { tree } = get();
+    const expanded = new Set(get().expanded);
+    const visit = (dirRel: string) => {
+      const entries = tree[dirRel];
+      if (!entries) return;
+      expanded.add(dirRel);
+      for (const e of entries) {
+        if (e.kind === "dir") visit(e.relative);
+      }
+    };
+    visit("");
     set({ expanded });
   },
 

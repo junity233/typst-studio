@@ -118,6 +118,14 @@ impl WorkspaceService {
 
     /// Resolve a workspace-relative path string ("" or "." = root) to an
     /// absolute path under the current root. Errors if no workspace is open or
+    /// the path escapes the root. Public entry point for commands (e.g.
+    /// `reveal_in_finder`) that need the absolute path but do no other IO.
+    pub fn resolve_path(&self, rel: &str) -> Result<PathBuf> {
+        self.resolve_rel(rel)
+    }
+
+    /// Resolve a workspace-relative path string ("" or "." = root) to an
+    /// absolute path under the current root. Errors if no workspace is open or
     /// the path escapes the root.
     fn resolve_rel(&self, rel: &str) -> Result<PathBuf> {
         let root = self

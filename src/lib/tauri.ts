@@ -114,6 +114,11 @@ export async function deleteEntry(rel: string): Promise<void> {
   await invoke("delete_entry", { rel });
 }
 
+/** Reveal a workspace-relative file or directory in the OS file manager. */
+export async function revealInFinder(rel: string): Promise<void> {
+  await invoke("reveal_in_finder", { rel });
+}
+
 /**
  * Open a file by absolute path (no dialog) as a tab — used by file-tree clicks.
  * If the path is inside the open workspace, the tab compiles with #include

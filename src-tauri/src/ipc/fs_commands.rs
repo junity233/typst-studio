@@ -116,6 +116,23 @@ pub async fn delete_entry(state: State<'_, AppState>, rel: String) -> Result<()>
     ws.delete_entry(&rel)
 }
 
+/// Reveal a workspace-relative file or directory in the OS file manager
+/// (Finder on macOS). Uses the `tauri-plugin-opener` `reveal_item_in_dir`
+/// API, which handles both files and directories correctly.
+#[tauri::command]
+pub async fn reveal_in_finder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    rel: String,
+) -> Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let ws = state.workspace.clone();
+    let abs = ws.resolve_path(&rel)?;
+    app.opener()
+        .reveal_item_in_dir(abs)
+        .map_err(|e| AppError::Other(e.to_string()))
+}
+
 /// Open a file by its absolute path (no dialog) as a tab — used when clicking a
 /// `.typ` entry in the file tree. If the path is inside the open workspace, the
 /// tab compiles with `#include` resolution; otherwise it's a detached tab.
