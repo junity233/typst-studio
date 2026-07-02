@@ -42,7 +42,6 @@ export function usePasteConvert(
       if (plain.trim().length > 0 && !looksRich(html, plain)) return;
       if (TYPST_MARK.test(plain)) return;
 
-      e.preventDefault();
       const tab = tabRef.current;
       const ctx = {
         workspace: rootPath ?? undefined,
@@ -57,6 +56,7 @@ export function usePasteConvert(
         console.error("[paste] conversion failed, falling back to native:", err);
         return;
       }
+      e.preventDefault();
       const finalSrcByIndex: Record<number, string> = {};
       await Promise.all(
         result.pendingImages.map(async (img) => {
