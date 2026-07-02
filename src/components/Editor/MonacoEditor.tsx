@@ -23,6 +23,7 @@ import {
   registerTypstMemFile,
   MEM_ROOT,
 } from "./lspClient";
+import { usePasteConvert } from "./usePasteConvert";
 
 /** Imperative surface exposed to the parent for navigation (diagnostics goto). */
 export interface MonacoEditorApi {
@@ -233,6 +234,11 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // Ditto for onChange — it closes over the parent's active tab; keep it live.
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // The paste-convert hook needs the FULL tab (for `tab.path` to resolve
+  // image-write directories), not just the id. Kept live on every render so
+  // the (once-registered) capture-phase listener always sees the current tab.
+  const tabRef = useRef<Tab>(tab);
+  tabRef.current = tab;
 
   // Register the tab's in-memory file before bumping the reprocess counter.
   // The new model URI must resolve (file must be registered) BEFORE
@@ -271,6 +277,14 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   useEffect(() => {
     editorAppRef.current?.getEditor()?.updateOptions(settingsOptions);
   }, [settingsOptions]);
+
+  // Rich-text paste: capture-phase listener converts pasted HTML to Typst and
+  // resolves/inserts images. Wired through `getEditor` (closes over
+  // `editorAppRef`) + `tabRef` (live tab) so the hook sees fresh values
+  // without re-registering the listener on every keystroke.
+  const getEditor: () => Monaco.editor.IStandaloneCodeEditor | null = () =>
+    editorAppRef.current?.getEditor() ?? null;
+  usePasteConvert(getEditor, tabRef);
 
   const handleTextChanged = (textChanges: TextContents): void => {
     const next = textChanges.modified ?? "";

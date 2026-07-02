@@ -233,3 +233,10 @@ export async function onSettingsWindow(
     handler(e.payload.open),
   );
 }
+
+// --- Paste-feature: remote image download -----------------------------------
+
+/** Download a remote URL to a local file via the backend net module. */
+export async function fetchUrlToFile(url: string, dest: string): Promise<number> {
+  return invoke<number>("fetch_url_to_file", { url, dest });
+}
