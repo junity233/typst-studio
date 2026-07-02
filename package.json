@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "dependencies": {
     "@codingame/monaco-vscode-files-service-override": "^25.1.2",
@@ -25,11 +27,14 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@types/jsdom": "^28.0.3",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "jsdom": "^25.0.1",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^2.1.9"
   },
   "overrides": {
     "monaco-editor": "npm:@codingame/monaco-vscode-editor-api@^25.1.2"
