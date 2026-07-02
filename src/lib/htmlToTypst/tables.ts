@@ -17,12 +17,8 @@ export function convertTable(el: Element, wctx: WalkCtx): string {
       const isHeaderCell = cell.tagName.toLowerCase() === "th";
       const colspan = Number(cell.getAttribute("colspan") ?? "1");
       const rowspan = cell.getAttribute("rowspan");
-      const hasColspanAttr = colspan > 1;
       const hasRowspanAttr = rowspan !== null && Number(rowspan) > 1;
       const content = convertInline(cell, wctx).trim();
-      if (content === "" && !hasColspanAttr && !hasRowspanAttr) {
-        return;
-      }
       if (!isHeaderCell) rowIsHeader = false;
       if (hasRowspanAttr) hasRowspan = true;
       cells.push(content);
