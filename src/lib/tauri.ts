@@ -219,3 +219,17 @@ export async function onSettingsChanged(
     handler(e.payload),
   );
 }
+
+/**
+ * Subscribe to Settings window visibility. The backend broadcasts
+ * `{ open }` when the Settings window is created/destroyed so the main window
+ * can show a modal overlay (it floats `always_on_top`, but Tauri has no native
+ * cross-platform modal that blocks parent input).
+ */
+export async function onSettingsWindow(
+  handler: (open: boolean) => void,
+): Promise<UnlistenFn> {
+  return listen<{ open: boolean }>("settings_window", (e) =>
+    handler(e.payload.open),
+  );
+}
