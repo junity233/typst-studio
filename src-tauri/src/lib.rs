@@ -156,11 +156,6 @@ pub fn run() {
 
             app.manage(AppState { editor, export, lsp, workspace, settings });
 
-            // Auto-open devtools in debug builds to help diagnose blank screens.
-            #[cfg(debug_assertions)]
-            if let Some(win) = app.get_webview_window("main") {
-                win.open_devtools();
-            }
             Ok(())
         })
         .run(tauri::generate_context!())
