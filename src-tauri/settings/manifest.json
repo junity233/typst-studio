@@ -11,7 +11,10 @@
         { "key": "editor.tabSize",    "type": "integer", "label": "Tab size",     "default": 2, "min": 1, "max": 16 },
         { "key": "editor.wordWrap",   "type": "boolean", "label": "Word wrap",    "default": false },
         { "key": "editor.lineNumbers","type": "boolean", "label": "Line numbers", "default": true },
-        { "key": "editor.minimap",    "type": "boolean", "label": "Minimap",      "default": false }
+        { "key": "editor.minimap",    "type": "boolean", "label": "Minimap",      "default": false },
+        { "key": "editor.pasteConvertRichText",  "type": "boolean", "label": "Paste rich text as Typst", "default": true },
+        { "key": "editor.pasteImagePath",        "type": "string",  "label": "Pasted image path", "default": "${fileDir}/assets/pasted-${hash}.${ext}" },
+        { "key": "editor.pasteImageFetchRemote", "type": "boolean", "label": "Download remote images on paste", "default": true }
     ]},
     { "id": "preview", "label": "Preview", "settings": [
         { "key": "preview.autoRefresh", "type": "boolean", "label": "Auto refresh", "default": true },
