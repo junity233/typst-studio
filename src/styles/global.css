@@ -380,53 +380,63 @@ button {
   font: var(--text-fine-print);
   letter-spacing: -0.12px;
 }
-.diag-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.diag-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  padding: var(--space-xs) var(--space-lg);
-  cursor: pointer;
-}
-.diag-item:hover {
-  background: var(--color-canvas-parchment);
-}
-.diag-dot {
-  flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-ink-muted-48);
-}
-.diag-sev-error .diag-dot {
-  background: var(--color-error);
-}
-.diag-sev-warning .diag-dot {
-  background: var(--color-warning);
-}
-.diag-sev-info .diag-dot {
-  background: var(--color-primary);
-}
-.diag-message {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.diag-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
   font: var(--text-caption);
   letter-spacing: -0.224px;
   color: var(--color-ink);
 }
-.diag-loc {
-  flex: 0 0 auto;
+.diag-table thead th {
+  text-align: left;
+  font-weight: 600;
   color: var(--color-ink-muted-48);
+  padding: var(--space-xs) var(--space-lg);
+  border-bottom: 1px solid var(--color-hairline);
   font: var(--text-fine-print);
   letter-spacing: -0.12px;
-  font-variant-numeric: tabular-nums;
+  position: sticky;
+  top: 0;
+  background: var(--color-canvas);
 }
+.diag-col-sev { width: 64px; white-space: nowrap; }
+.diag-col-loc { width: 140px; }
+.diag-col-msg { width: auto; }
+.diag-table tbody tr {
+  cursor: pointer;
+}
+.diag-table tbody td {
+  padding: var(--space-xs) var(--space-lg);
+  vertical-align: middle;
+  border-bottom: 1px solid var(--color-divider-soft);
+}
+.diag-table tbody tr:hover {
+  background: var(--color-canvas-parchment);
+}
+.diag-sev-text {
+  font: var(--text-fine-print);
+  letter-spacing: -0.12px;
+  font-weight: 600;
+}
+.diag-sev-error .diag-sev-text,
+.diag-row.diag-sev-error .diag-sev-text { color: var(--color-error); }
+.diag-sev-warning .diag-sev-text { color: var(--color-warning); }
+.diag-sev-info .diag-sev-text { color: var(--color-primary); }
+.diag-col-loc {
+  color: var(--color-ink-muted-48);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.diag-col-loc .diag-loc-col {
+  margin-left: var(--space-xs);
+}
+.diag-col-msg {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+ }
+
 
 /* ============================================================================
    Status bar (footer / fine-print)
@@ -636,9 +646,83 @@ button {
   min-width: 0;
   background: var(--color-canvas);
 }
+.editor-area-header {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+.editor-area-header > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.preview-toggle {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-right: var(--space-xs);
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-ink-muted-48);
+  cursor: pointer;
+}
+.preview-toggle:hover {
+  background: var(--color-canvas-parchment);
+  color: var(--color-ink);
+}
+.preview-toggle[aria-pressed="true"] {
+  color: var(--color-ink);
+}
+.preview-toggle:active {
+  transform: scale(0.95);
+}
 .editor-area-main {
   flex: 1 1 auto;
   min-height: 0;
+}
+/* Editor | preview split. A plain flex row (not Allotment): the editor flexes
+   and the preview width is set inline by the drag handler (persisted to
+   localStorage). `.preview-hidden` collapses the preview + sash so the editor
+   goes full-width. Monaco's `automaticLayout` reflows on the resize. */
+.editor-split {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+}
+.editor-split .pane-editor {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.editor-split .pane-preview {
+  flex: 0 0 480px;
+  overflow: hidden;
+}
+.editor-sash {
+  flex: 0 0 1px;
+  background: var(--color-hairline);
+  cursor: col-resize;
+  position: relative;
+}
+/* Wider hit area for the sash without changing its 1px visual width. */
+.editor-sash::after {
+  content: "";
+  position: absolute;
+  inset: 0 -4px;
+}
+.editor-sash:hover,
+.editor-sash:active {
+  background: var(--color-primary);
+}
+.editor-split.preview-hidden .pane-preview,
+.editor-split.preview-hidden .editor-sash {
+  display: none;
 }
 
 /* ============================================================================
@@ -847,6 +931,15 @@ button {
   align-items: center;
   justify-content: center;
   z-index: 1000;
+}
+.settings-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.25);
+  /* Above dialogs (1000) and context menus (1100): blocks ALL main-window
+     input while the Settings window is open. */
+  z-index: 2000;
+  cursor: pointer;
 }
 .dialog {
   background: var(--color-canvas);
