@@ -524,4 +524,22 @@ src/lib/pathMacros/__tests__/
 
 > 本节记录实现过程中与设计的偏差及原因，类似主设计文档 §9 的做法。
 
-- 待填。
+**概览**：13 个任务全部完成。前端 63/63 单测通过；后端 112/112（含 3 个 mockito）通过；`tsc --noEmit` 与 `npm run build` 均干净。
+
+1. **§6.3 blocks 参考代码自相矛盾**（Task 6）。计划里的 blocks.ts 参考实现不满足它自己的测试用例，做了 3 处最小修正：(a) 文本节点直接走 `escapeTypst`（`convertInline(textNode)` 返回 `""`）；(b) `<p>` 走 `convertInline` 而非 `convertBlocks`（让 `<p><b>x</b></p>` → `*x*`）；(c) `<li>` 先克隆并移除直接 `ul/ol` 子节点再 `convertInline`，避免嵌套列表文本泄漏到父项。每处修正都对应一个具体测试断言。
+
+2. **§6.4 表格测试 HTML 隐式闭合问题**（Task 7）。计划里表格测试用了 `<td>A<td><td>B<td>` 隐式闭合简写，jsdom 会展开出幻影空单元格。修正：把所有表格 fixture 改为良构 HTML（显式 `</td>`/`</tr>`），移除原本为吸收幻影单元格而加的「空单元格丢弃」守卫，并补一个「故意空 `<td></td>` 被保留为 `[]`」的回归测试。colspan 展开不受影响。
+
+3. **§6.1 Word 检测启发式**（Task 8）。计划的 `isWordHtml` 正则 `/mso-|ProgId=...Word\.Document/` 无法命中 3 个测试（Office 命名空间标签、纯实体输入都没有 `mso-`）。放宽检测：额外匹配 `<o:p>` 等 Office 命名空间标签前缀与 Word 特有实体（smart quotes/nbsp/hellip）。副作用：任何含 smart quote 的干净 HTML 也会走清洗（仅规范化引号，无害）。`mso-list` 伪列表的语义重建仍是已知限制（不在本次范围）。
+
+4. **§9 后端 timeout 错误构造**（Task 10）。reqwest 0.12 的 `error::Timeout` 不可公开构造，故新增 `NetError::Timeout(Duration)` 变体；`client` 字段为 `pub(super)` 以便 `fetch.rs` 的 `impl HttpClient` 编译。`cargo test net` 3/3 通过。
+
+5. **§11 preventDefault 时序**（Task 12，code review 修正）。初版在转换 `try` 之前就 `preventDefault()`，若 `htmlToTypst` 抛异常会吞掉粘贴、无法回退原生——违反 §11。修正：`preventDefault()` 移到同步转换成功之后（仍在同一事件 tick，无 `await` 介于其间），catch 直接 `return`（不 preventDefault → 原生粘贴继续）。
+
+6. **Commit 完整性**（Task 10）。Task 10 提交时 `lib.rs`/`state.rs` 等共享文件里叠加了既有未提交的「session memory」改动，导致提交引用了未跟踪的 `session.rs`/`session_commands.rs`，单独 checkout 该提交无法编译。已 amend 该提交，把被引用的后端 session 文件一并纳入，使提交自洽。
+
+**已知限制（deferred）**：
+- 空 `<li>`（仅含嵌套列表）产生尾随空格 marker `- `（Task 6，未覆盖测试）。
+- `ensureAbsolute` 未接线：未保存 tab（无 filePath）粘贴远程图片时，模板展开可能产出相对路径，后端 `dest.is_absolute()` 校验失败 → 每图 catch 退回原始 URL（优雅降级，不下载）。本地 data: 图片与已保存 tab 不受影响。
+- Word `mso-list` 伪列表不重建为 `<ul>/<ol>`，作为普通段落处理。
+- 条件注释剥离分支无直接测试覆盖（正则按检视正确）。
