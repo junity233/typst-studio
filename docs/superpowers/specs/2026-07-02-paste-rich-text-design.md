@@ -536,10 +536,19 @@ src/lib/pathMacros/__tests__/
 
 5. **§11 preventDefault 时序**（Task 12，code review 修正）。初版在转换 `try` 之前就 `preventDefault()`，若 `htmlToTypst` 抛异常会吞掉粘贴、无法回退原生——违反 §11。修正：`preventDefault()` 移到同步转换成功之后（仍在同一事件 tick，无 `await` 介于其间），catch 直接 `return`（不 preventDefault → 原生粘贴继续）。
 
-6. **Commit 完整性**（Task 10）。Task 10 提交时 `lib.rs`/`state.rs` 等共享文件里叠加了既有未提交的「session memory」改动，导致提交引用了未跟踪的 `session.rs`/`session_commands.rs`，单独 checkout 该提交无法编译。已 amend 该提交，把被引用的后端 session 文件一并纳入，使提交自洽。
+6. **属性值字符串转义**（final review 修正）。转换器只转义文本节点，属性值（`href`/`src`）原样插入 `#link("...")`/`#image("...")` 字符串字面量——恶意剪贴板可断出字符串注入任意 Typst 标记（`#read`/`#image` 等），Windows 反斜杠路径也会破坏字符串。新增 `escapeTypstStr`（转义 `\` 与 `"`），应用于 `#link` 的 href 与 `#image` 的 src。
+
+7. **同步捕获选区**（final review 修正）。`editor.getSelection()` 原本在图片解析 `await` 之后调用，远程图下载期间用户可能移动光标，导致插入位置错误。改为在 `preventDefault()` 之后同步捕获 `sel`，复用为 `executeEdits` 的 range。
+
+8. **图片路径绝对化**（final review 修正）。`ensureAbsolute` 原为死代码——未保存 tab + 无工作区时 `${fileDir}` 字面量残留，`data:` 图片会写入名为 `${fileDir}` 的垃圾目录。现已接线：模板展开后调用 `ensureAbsolute`，未保存+无工作区时回退 OS temp 目录。
+
+9. **流式大小上限**（final review 修正）。`fetch_bytes` 原本先 `resp.bytes().await` 全量缓冲再校验——恶意服务器可省略 `Content-Length` 流式倾倒海量数据导致 OOM。改为 `resp.chunk()` 增量读取，每块累计超 `max_bytes` 立即 `TooLarge` 中止。
+
+10. **Commit 完整性**（Task 10）。Task 10 提交时 `lib.rs`/`state.rs` 等共享文件里叠加了既有未提交的「session memory」改动，导致提交引用了未跟踪的 `session.rs`/`session_commands.rs`，单独 checkout 该提交无法编译。已 amend 该提交，把被引用的后端 session 文件一并纳入，使提交自洽。
 
 **已知限制（deferred）**：
 - 空 `<li>`（仅含嵌套列表）产生尾随空格 marker `- `（Task 6，未覆盖测试）。
-- `ensureAbsolute` 未接线：未保存 tab（无 filePath）粘贴远程图片时，模板展开可能产出相对路径，后端 `dest.is_absolute()` 校验失败 → 每图 catch 退回原始 URL（优雅降级，不下载）。本地 data: 图片与已保存 tab 不受影响。
 - Word `mso-list` 伪列表不重建为 `<ul>/<ol>`，作为普通段落处理。
 - 条件注释剥离分支无直接测试覆盖（正则按检视正确）。
+- `fetch_url_to_file` 接受任意 URL（剪贴板 `<img src>`），无 loopback/私网 SSRF 黑名单；桌面单用户场景下视为可接受取舍。
+- 图片去重（spec §8.3 的 `-2`/`-3` 后缀）未实现；同内容同路径幂等覆盖。
