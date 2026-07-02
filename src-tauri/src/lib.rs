@@ -38,6 +38,20 @@ pub fn run() {
         .on_menu_event(|app, event| {
             crate::ipc::menu::dispatch_menu_event(app, event.id());
         })
+        // Intercept the main window's close (traffic light / Cmd+Q / Alt+F4):
+        // never close synchronously — hand the decision to the frontend, which
+        // checks for unsaved tabs and either `destroy()`s the window or shows a
+        // Save-All / Don't-Save / Cancel dialog. The Settings window (a
+        // separate label) is left alone so it closes freely.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    use tauri::{Emitter as _, Manager as _};
+                    api.prevent_close();
+                    let _ = window.app_handle().emit("close_requested", ());
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             // Document / editor commands.
             ipc::commands::new_tab,

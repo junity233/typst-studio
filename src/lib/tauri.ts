@@ -244,6 +244,18 @@ export async function onSettingsWindow(
   );
 }
 
+/**
+ * Subscribe to the main window's close request. The backend intercepts the OS
+ * close (traffic light / Cmd+Q / Alt+F4) on the `main` window, prevents the
+ * actual close, and emits this event so the frontend can decide: close
+ * immediately, or show a Save-All confirmation when there are dirty tabs.
+ */
+export async function onCloseRequested(
+  handler: () => void,
+): Promise<UnlistenFn> {
+  return listen("close_requested", () => handler());
+}
+
 // --- Session memory ----------------------------------------------------------
 
 export interface Session {

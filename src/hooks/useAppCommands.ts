@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { onMenuEvent } from "../lib/tauri";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { onMenuEvent, onCloseRequested } from "../lib/tauri";
 import {
   exportPdf,
   exportPng,
@@ -12,7 +13,8 @@ import {
 import { useTabsStore } from "../store/tabsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { useUiStore } from "../store/uiStore";
-import { closeTabWithConfirm } from "../lib/commands";
+import { useDialogStore } from "../store/dialogStore";
+import { closeTabWithConfirm, saveTab } from "../lib/commands";
 
 /**
  * Centralized command dispatch for the native app menu. Subscribes to the
@@ -58,6 +60,27 @@ export function useAppCommands(): void {
     return () => {
       unlisten?.();
       document.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, []);
+
+  /**
+   * Main-window close guard. The backend intercepts the OS close and emits
+   * `close_requested` instead of closing; here we decide: if there are no dirty
+   * tabs, close now; otherwise show one consolidated Save All / Don't Save /
+   * Cancel dialog. `destroy()` (not `close()`) is used so CloseRequested isn't
+   * re-emitted, which would loop back here.
+   */
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    onCloseRequested(() => {
+      void handleCloseRequested();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      unlisten?.();
     };
   }, []);
 }
@@ -136,6 +159,36 @@ async function handleOpenFile(): Promise<void> {
   const doc = await openFile();
   if (doc === null) return;
   useTabsStore.getState().openPath(doc);
+}
+
+/**
+ * Close the app, guarding unsaved tabs. Reads the tab list fresh (no React
+ * selector) so the check reflects current edits at the moment of close.
+ */
+async function handleCloseRequested(): Promise<void> {
+  const tabs = useTabsStore.getState().tabs;
+  const dirty = tabs.filter((t) => t.dirty);
+  if (dirty.length === 0) {
+    await getCurrentWindow().destroy();
+    return;
+  }
+  const choice = await useDialogStore.getState().confirm({
+    title: `You have ${dirty.length} unsaved document${dirty.length === 1 ? "" : "s"}`,
+    message: "If you don't save, your changes will be lost.",
+    confirmLabel: "Save All",
+    discardLabel: "Don't Save",
+    cancelLabel: "Cancel",
+  });
+  if (choice === "cancel") return;
+  if (choice === "discard") {
+    await getCurrentWindow().destroy();
+    return;
+  }
+  // choice === "confirm" → Save All, then close only if every save succeeded.
+  for (const t of dirty) {
+    if (!(await saveTab(t.id))) return;
+  }
+  await getCurrentWindow().destroy();
 }
 
 /** Save the active tab in place, or Save As if it's untitled. */
