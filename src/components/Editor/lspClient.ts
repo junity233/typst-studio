@@ -203,6 +203,18 @@ export function buildEditorAppConfig(
       tabSize: 2,
       wordWrap: "on",
       renderWhitespace: "selection",
+      // Reclaim editable width: drop the glyph margin and slim the line-number
+      // gutter. Typst needs neither breakpoints nor a wide number column.
+      glyphMargin: false,
+      lineNumbersMinChars: 3,
+      folding: false,
+      // Disable CodeLens: tinymist publishes a "1@Export PDF" clickable lens at
+      // the top of the document. The app exposes export through the native menu
+      // instead, so hide the lens.
+      codeLens: false,
+      // Tighten the vertical air around the text so the editor reads edge-to-edge
+      // within its pane instead of floating in wide whitespace.
+      padding: { top: 6, bottom: 6 },
       ...editorOptions,
     },
   };

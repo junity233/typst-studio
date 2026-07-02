@@ -3,9 +3,16 @@ import { MonacoEditorReactComp } from "@typefox/monaco-editor-react";
 import type * as Monaco from "@codingame/monaco-vscode-editor-api";
 import type { TextContents, EditorApp } from "monaco-languageclient/editorApp";
 import type { LanguageClientManager } from "monaco-languageclient/lcwrapper";
+import { StandaloneServices } from "@codingame/monaco-vscode-api/vscode/vs/editor/standalone/browser/standaloneServices";
+import { IMarkerService } from "@codingame/monaco-vscode-api/vscode/vs/platform/markers/common/markers.service";
+import { MarkerSeverity, type IMarkerData } from "@codingame/monaco-vscode-api/vscode/vs/platform/markers/common/markers";
+import { Uri } from "vscode";
 import { updateText } from "../../lib/tauri";
 import type { Tab } from "../../store/tabsStore";
+import type { Diagnostic } from "../../lib/types";
+import { useDiagnosticsStore } from "../../store/diagnosticsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
+import { useUiStore } from "../../store/uiStore";
 import { useDebouncedCallback } from "../../hooks/useDebounce";
 import { useLspStatus } from "../../store/lspStore";
 import { useSetting } from "../../hooks/useSetting";
@@ -14,6 +21,7 @@ import {
   buildLanguageClientConfig,
   buildEditorAppConfig,
   registerTypstMemFile,
+  MEM_ROOT,
 } from "./lspClient";
 
 /** Imperative surface exposed to the parent for navigation (diagnostics goto). */
@@ -28,6 +36,72 @@ interface MonacoEditorProps {
 }
 
 const vscodeApiConfig = buildVscodeApiConfig();
+
+/**
+ * Map a Monaco `MarkerSeverity` bitmask (Error=8, Warning=4, Info=2, Hint=1)
+ * → the app's Diagnostic severity union.
+ */
+function markerSeverity(s: MarkerSeverity): Diagnostic["severity"] {
+  if ((s & MarkerSeverity.Error) === MarkerSeverity.Error) return "Error";
+  if ((s & MarkerSeverity.Warning) === MarkerSeverity.Warning) return "Warning";
+  if ((s & MarkerSeverity.Info) === MarkerSeverity.Info) return "Info";
+  return "Info";
+}
+
+/**
+ * Extract the tab id from a `file:///typst-studio-mem/<id>.typ` URI string, or
+ * null if the URI isn't one of our in-memory tab URIs.
+ */
+function tabIdFromUri(uriStr: string): string | null {
+  let path: string;
+  try {
+    path = Uri.parse(uriStr).path;
+  } catch {
+    return null;
+  }
+  const prefix = `${MEM_ROOT}/`;
+  if (!path.startsWith(prefix)) return null;
+  const file = path.slice(prefix.length);
+  if (!file.endsWith(".typ")) return null;
+  return file.slice(0, -".typ".length);
+}
+
+// One-shot bridge from Monaco's marker service into the per-tab diagnostics
+// store. Installed after services are up; idempotent. The marker service holds
+// the authoritative diagnostics (the language client's diagnostics feature
+// pushes `publishDiagnostics` there AND renders squiggles from it), so we read
+// markers — never subscribe to publishDiagnostics (that would clobber the
+// feature handler and silence the squiggles).
+let diagBridgeInstalled = false;
+function ensureDiagBridge(): void {
+  if (diagBridgeInstalled) return;
+  diagBridgeInstalled = true;
+  const markers = StandaloneServices.get(IMarkerService);
+
+  const sync = (uris: readonly { toString(): string }[]): void => {
+    for (const u of uris) {
+      const id = tabIdFromUri(u.toString());
+      if (id === null) continue;
+      const data: IMarkerData[] = markers.read({
+        resource: Uri.parse(u.toString()),
+      }) as unknown as IMarkerData[];
+      const diags: Diagnostic[] = data.map((m) => ({
+        severity: markerSeverity(m.severity),
+        message: m.message ?? "",
+        code: null,
+        range: {
+          start_line: m.startLineNumber,
+          start_column: m.startColumn,
+          end_line: m.endLineNumber,
+          end_column: m.endColumn,
+        },
+      }));
+      useDiagnosticsStore.getState().set(id, diags);
+    }
+  };
+
+  markers.onMarkerChanged((uris) => sync(uris));
+}
 
 export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // Single source of truth for LSP status across the app (shared with
@@ -93,12 +167,19 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   const [lineNumbers] = useSetting<boolean>("editor.lineNumbers");
   const [minimap] = useSetting<boolean>("editor.minimap");
   const [autoRefresh] = useSetting<boolean>("preview.autoRefresh");
+  // When the preview pane is hidden there's no point compiling; the gate is
+  // OR'd with `preview.autoRefresh` below. Read via the store directly (not a
+  // prop) so a toggle re-renders EditorArea — not this editor — yet the
+  // debounced push callback still sees the live value through `previewVisibleRef`.
+  const previewVisible = useUiStore((s) => s.previewVisible);
 
-  // `preview.autoRefresh` gates the compile-pipeline push. Read through a ref
-  // so the (once-created) debounced callback always sees the live value
-  // without being rebuilt on every toggle.
+  // `preview.autoRefresh` AND preview visibility gate the compile-pipeline push.
+  // Read through refs so the (once-created) debounced callback always sees the
+  // live values without being rebuilt on every toggle.
   const autoRefreshRef = useRef(autoRefresh);
   autoRefreshRef.current = autoRefresh;
+  const previewVisibleRef = useRef(previewVisible);
+  previewVisibleRef.current = previewVisible;
 
   // Settings-derived editor options. Only keys that are actually set are
   // overridden; everything else falls through to buildEditorAppConfig's
@@ -196,7 +277,7 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     // Always keep the local tab content current so a manual refresh can push
     // it; only gate the backend compile push on `preview.autoRefresh`.
     onChangeRef.current(next);
-    if (autoRefreshRef.current !== false) {
+    if (autoRefreshRef.current !== false && previewVisibleRef.current) {
       pushToBackend(tabIdRef.current, next);
     }
   };
@@ -209,9 +290,23 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   const handleLanguageClientsStartDone = (
     _lcsManager: LanguageClientManager,
   ): void => {
+    // The language client's built-in diagnostics feature already routes
+    // `publishDiagnostics` into Monaco's marker service (which renders the
+    // squiggles). We do NOT subscribe to publishDiagnostics directly — that
+    // would clobber the feature handler and kill the squiggles. Instead, once
+    // services are up, we read the marker service for every in-memory tab and
+    // mirror markers into the per-tab diagnosticsStore (which the panel reads).
+    ensureDiagBridge();
+
     onReady?.({
-      revealLine: (_line, _column) => {
-        // TODO: implement revealLine with the new editor API
+      revealLine: (line, column) => {
+        const editor = editorAppRef.current?.getEditor() ?? null;
+        if (!editor) return;
+        // Reveal the line (centered when far from the viewport, top-aligned
+        // when nearby) and move the cursor + focus so the user can type on.
+        editor.revealLineInCenterIfOutsideViewport(line);
+        editor.setPosition({ lineNumber: line, column });
+        editor.focus();
       },
     });
   };
