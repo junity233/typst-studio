@@ -96,6 +96,16 @@ export async function openDefaultWorkspace(): Promise<WorkspaceMeta | null> {
   return invoke<WorkspaceMeta | null>("open_default_workspace");
 }
 
+/**
+ * Open `path` as the workspace without a dialog (used to restore the last
+ * workspace on startup). Returns null if the path is missing/not a directory.
+ */
+export async function openWorkspaceByPath(
+  path: string,
+): Promise<WorkspaceMeta | null> {
+  return invoke<WorkspaceMeta | null>("open_workspace_by_path", { path });
+}
+
 /** Query the current workspace metadata, or null if no folder is open. */
 export async function getWorkspace(): Promise<WorkspaceMeta | null> {
   return invoke<WorkspaceMeta | null>("get_workspace");
@@ -232,6 +242,29 @@ export async function onSettingsWindow(
   return listen<{ open: boolean }>("settings_window", (e) =>
     handler(e.payload.open),
   );
+}
+
+// --- Session memory ----------------------------------------------------------
+
+export interface Session {
+  lastWorkspace: string;
+  lastFile: string;
+}
+
+/** Read the persisted session (last-opened workspace + file). */
+export async function getSession(): Promise<Session> {
+  return invoke<Session>("get_session");
+}
+
+/**
+ * Merge a partial update into the session. Only `lastWorkspace` / `lastFile`
+ * (when present) are applied; both are absolute paths (or "" to clear).
+ */
+export async function saveSession(patch: {
+  lastWorkspace?: string;
+  lastFile?: string;
+}): Promise<Session> {
+  return invoke<Session>("save_session", { patch });
 }
 
 // --- Paste-feature: remote image download -----------------------------------

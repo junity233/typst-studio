@@ -6,6 +6,7 @@ import { ConfirmDialog } from "./components/Dialogs/ConfirmDialog";
 import { ContextMenu } from "./components/Sidebar/ContextMenu";
 import { useTypstCompile } from "./hooks/useTypstCompile";
 import { useAppCommands } from "./hooks/useAppCommands";
+import { useStartupSession } from "./hooks/useStartupSession";
 import { onSettingsWindow, openSettings } from "./lib/tauri";
 
 /**
@@ -29,6 +30,7 @@ import { onSettingsWindow, openSettings } from "./lib/tauri";
 export default function App() {
   useTypstCompile();
   useAppCommands();
+  useStartupSession();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {

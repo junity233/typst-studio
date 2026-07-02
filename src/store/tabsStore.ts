@@ -6,6 +6,7 @@ import {
   newTab as newTabBE,
 } from "../lib/tauri";
 import { useDiagnosticsStore } from "./diagnosticsStore";
+import { recordFile } from "../lib/session";
 
 /**
  * A single open document. `svgPages` holds the rendered preview pages emitted
@@ -72,6 +73,8 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
   openPath: (doc) => {
     const tab = tabFromOpened(doc);
     set((s) => ({ tabs: [...s.tabs, tab], activeId: doc.id }));
+    // Remember the opened file so it can be restored on next launch.
+    if (doc.path) recordFile(doc.path);
   },
 
   closeTab: async (id) => {

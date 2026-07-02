@@ -79,6 +79,23 @@ pub async fn open_default_workspace(
     Ok(Some(meta))
 }
 
+/// Open `path` as the workspace without a dialog (used to restore the last
+/// workspace on startup). Returns `None` if the path doesn't exist or isn't a
+/// directory, so the caller can fall back to the default workspace.
+#[tauri::command]
+pub async fn open_workspace_by_path(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Option<WorkspaceMeta>> {
+    let root = PathBuf::from(&path);
+    if !root.is_absolute() || !root.is_dir() {
+        return Ok(None);
+    }
+    let meta = open_path_as_workspace(&app, &state.workspace, root)?;
+    Ok(Some(meta))
+}
+
 /// Close the current workspace (stops the watcher; open tabs are untouched).
 #[tauri::command]
 pub async fn close_workspace(state: State<'_, AppState>) -> Result<()> {

@@ -7,9 +7,11 @@ import {
   getWorkspace as getWorkspaceBE,
   openDefaultWorkspace as openDefaultWorkspaceBE,
   openWorkspace as openWorkspaceBE,
+  openWorkspaceByPath as openWorkspaceByPathBE,
   readDir as readDirBE,
   renameEntry as renameEntryBE,
 } from "../lib/tauri";
+import { recordWorkspace, loadSession } from "../lib/session";
 
 /**
  * Workspace store: the open folder, its lazily-loaded file tree, and the file
@@ -86,11 +88,17 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   hydrate: async () => {
     try {
       let meta = await getWorkspaceBE();
-      // No folder picked yet → default to the process's current working
-      // directory (the project the app was launched from) so the explorer
-      // shows something useful on first run instead of an empty prompt.
+      // Nothing open yet: try to restore the last workspace from the session
+      // memory before falling back to the cwd default. This makes the app
+      // reopen where the user left off.
       if (!meta) {
-        meta = await openDefaultWorkspaceBE();
+        const session = await loadSession();
+        if (session.lastWorkspace) {
+          meta = await openWorkspaceByPathBE(session.lastWorkspace);
+        }
+        if (!meta) {
+          meta = await openDefaultWorkspaceBE();
+        }
       }
       if (meta) {
         set({ rootPath: meta.root, name: meta.name });
@@ -112,6 +120,8 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         expanded: new Set<string>(),
       });
       await get().refresh("");
+      // Persist the chosen workspace so it reopens on next launch.
+      recordWorkspace(meta.root);
     } catch (e) {
       console.error("[workspace.openWorkspace] failed:", e);
       throw e;
