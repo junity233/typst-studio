@@ -16,9 +16,11 @@ use tauri::{AppHandle, Emitter as _};
 use crate::domain::diagnostics::Diagnostic;
 use crate::domain::document::DocumentId;
 use crate::ipc::events::{CompiledPayload, CompileStatus, DiagnosticsPayload, StatusPayload};
+use crate::net::client::HttpClient;
 use crate::service::editor_service::{EditorService, Emitter};
 use crate::service::export_service::ExportService;
 use crate::service::lsp_service::LspService;
+use crate::service::session::SessionService;
 use crate::service::workspace_service::WorkspaceService;
 use crate::settings::SettingsService;
 
@@ -69,4 +71,8 @@ pub struct AppState {
     pub workspace: Arc<WorkspaceService>,
     /// Dynamic user settings (JSON config + manifest validation).
     pub settings: Arc<SettingsService>,
+    /// Last-opened workspace/file memory (separate from settings).
+    pub session: Arc<SessionService>,
+    /// Reusable HTTP client (paste remote-image fetch + future downloads).
+    pub net: Arc<HttpClient>,
 }

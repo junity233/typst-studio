@@ -16,6 +16,7 @@ pub mod error;
 pub mod fs;
 pub mod ipc;
 pub mod lsp;
+pub mod net;
 pub mod project;
 pub mod render;
 pub mod service;
@@ -54,6 +55,7 @@ pub fn run() {
             // Workspace / filesystem commands.
             ipc::fs_commands::open_workspace,
             ipc::fs_commands::open_default_workspace,
+            ipc::fs_commands::open_workspace_by_path,
             ipc::fs_commands::close_workspace,
             ipc::fs_commands::get_workspace,
             ipc::fs_commands::read_dir,
@@ -68,6 +70,11 @@ pub fn run() {
             ipc::settings_commands::set_setting,
             ipc::settings_commands::get_settings_manifest,
             ipc::settings_commands::open_settings,
+            // Session memory commands (last workspace + file).
+            ipc::session_commands::get_session,
+            ipc::session_commands::save_session,
+            // Network: remote image download (paste feature).
+            ipc::net_commands::fetch_url_to_file,
         ])
         .setup(|app| {
             use std::sync::Arc;
@@ -81,9 +88,11 @@ pub fn run() {
 
             use crate::ipc::state::{AppState, TauriEmitter};
             use crate::lsp::manager::LspConfig;
+            use crate::net::client::HttpClient;
             use crate::service::editor_service::{EditorService, Emitter};
             use crate::service::export_service::ExportService;
             use crate::service::lsp_service::LspService;
+            use crate::service::session::SessionService;
             use crate::service::workspace_service::WorkspaceService;
             use crate::settings::{JsonFileStore, Manifest, SettingsService};
 
@@ -154,7 +163,13 @@ pub fn run() {
                 },
             )?);
 
-            app.manage(AppState { editor, export, lsp, workspace, settings });
+            // Session memory (last workspace + file) in the same config dir.
+            let session = Arc::new(SessionService::load(cfg_dir.join("session.json"))?);
+
+            // Reusable HTTP client shared app-wide via AppState.
+            let net = Arc::new(HttpClient::new());
+
+            app.manage(AppState { editor, export, lsp, workspace, settings, session, net });
 
             Ok(())
         })

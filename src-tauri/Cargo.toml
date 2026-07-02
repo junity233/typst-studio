@@ -80,3 +80,9 @@ ts-rs = { version = "12", features = ["uuid-impl", "chrono-impl", "no-serde-warn
 # cookie / tauri ships a compatible release.
 time = { version = "=0.3.36", default-features = false, features = ["std", "macros", "parsing"] }
 
+# HTTP client for remote image fetch (paste feature) + future reuse.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+mockito = "1"
+
