@@ -43,7 +43,7 @@ impl HttpClient {
         // public construction, so we surface timeouts via a dedicated
         // `NetError::Timeout` variant instead of the `Request(..)` path the
         // original sketch used.
-        let resp = tokio::time::timeout(opts.timeout, self.client.get(url).send())
+        let mut resp = tokio::time::timeout(opts.timeout, self.client.get(url).send())
             .await
             .map_err(|_| NetError::Timeout(opts.timeout))??;
         if !resp.status().is_success() {
@@ -54,11 +54,21 @@ impl HttpClient {
                 return Err(NetError::TooLarge { size: len, cap: opts.max_bytes });
             }
         }
-        let bytes = resp.bytes().await?;
-        if (bytes.len() as u64) > opts.max_bytes {
-            return Err(NetError::TooLarge { size: bytes.len() as u64, cap: opts.max_bytes });
+        // Stream the body incrementally so a server that omits
+        // `Content-Length` cannot force us to buffer gigabytes before the
+        // post-check trips. `Response::chunk()` is available without the
+        // `stream` feature (that feature only gates `bytes_stream()`).
+        let mut buf = Vec::new();
+        while let Some(chunk) = resp.chunk().await? {
+            if (buf.len() + chunk.len()) as u64 > opts.max_bytes {
+                return Err(NetError::TooLarge {
+                    size: (buf.len() + chunk.len()) as u64,
+                    cap: opts.max_bytes,
+                });
+            }
+            buf.extend_from_slice(&chunk);
         }
-        Ok(bytes.to_vec())
+        Ok(buf)
     }
 }
 
@@ -108,5 +118,29 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, NetError::Status(_)));
+    }
+
+    #[tokio::test]
+    async fn too_large_aborts_stream() {
+        // A body larger than `max_bytes` with no `Content-Length` header must
+        // be rejected by the streaming check rather than fully buffered.
+        let mut server = mockito::Server::new_async().await;
+        let body = b"abcdefghijklmnopqrstuvwxyz";
+        let _m = server
+            .mock("GET", "/big")
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+        let client = HttpClient::new();
+        let opts = FetchOptions {
+            max_bytes: 4,
+            ..FetchOptions::default()
+        };
+        let err = client
+            .fetch_bytes(&format!("{}/big", server.url()), &opts)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NetError::TooLarge { .. }));
     }
 }

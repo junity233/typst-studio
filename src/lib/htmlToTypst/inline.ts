@@ -1,5 +1,5 @@
 import type { WalkCtx } from "./types";
-import { escapeTypst } from "./escape";
+import { escapeTypst, escapeTypstStr } from "./escape";
 import { collectImage } from "./images";
 
 export function convertInline(node: Node, wctx: WalkCtx): string {
@@ -48,8 +48,8 @@ function inlineNode(node: Node, wctx: WalkCtx): string {
       const href = el.getAttribute("href") ?? "";
       const text = inner();
       if (!href) return text;
-      if (text === href) return `#link("${href}")`;
-      return `#link("${href}")[${text}]`;
+      if (text === href) return `#link("${escapeTypstStr(href)}")`;
+      return `#link("${escapeTypstStr(href)}")[${text}]`;
     }
     case "span": {
       const style = el.getAttribute("style") ?? "";

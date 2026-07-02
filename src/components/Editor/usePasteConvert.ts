@@ -5,10 +5,11 @@ import type { Tab } from "../../store/tabsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useSetting } from "../../hooks/useSetting";
 import { htmlToTypst } from "../../lib/htmlToTypst";
+import { escapeTypstStr } from "../../lib/htmlToTypst/escape";
 import { expandTemplate } from "../../lib/pathMacros";
 import { inferExt } from "../../lib/htmlToTypst/images";
 import { sha1Hex } from "./sha1";
-import { writeImage, resolveImageDir } from "./imageIo";
+import { writeImage, resolveImageDir, ensureAbsolute } from "./imageIo";
 import { fetchUrlToFile } from "../../lib/tauri";
 
 export type GetEditor = () => Monaco.editor.IStandaloneCodeEditor | null;
@@ -57,6 +58,11 @@ export function usePasteConvert(
         return;
       }
       e.preventDefault();
+      // Capture the selection synchronously before any await: image
+      // resolution can take seconds, during which the user may move the
+      // cursor or switch tabs. Reused below as the edit range.
+      const sel = editor.getSelection();
+      if (!sel) return;
       const finalSrcByIndex: Record<number, string> = {};
       await Promise.all(
         result.pendingImages.map(async (img) => {
@@ -72,10 +78,8 @@ export function usePasteConvert(
       );
       const finalText = result.typst.replace(PLACEHOLDER_RE, (_m, i) => {
         const src = finalSrcByIndex[Number(i)] ?? "";
-        return `#image("${src.replace(/"/g, '\\"')}")`;
+        return `#image("${escapeTypstStr(src)}")`;
       });
-      const sel = editor.getSelection();
-      if (!sel) return;
       editor.executeEdits("paste-convert", [{ range: sel, text: finalText }]);
       if (result.warnings.length > 0) {
         console.warn(`[paste] ${result.warnings.length} warnings:`, result.warnings);
@@ -120,13 +124,18 @@ async function resolveImage(
     timestamp: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
     index: img.index,
   });
+  // Make the expanded path absolute before writing: for an unsaved tab with
+  // no workspace, `${fileDir}` stays literal, so fall back to tempDir via
+  // ensureAbsolute. Both the on-disk path and the returned `#image()` src
+  // use this absolute value so they always agree.
+  const abs = await ensureAbsolute(rel, ctx.workspace);
   if (isRemote) {
-    await fetchUrlToFile(img.src, rel);
-    return rel;
+    await fetchUrlToFile(img.src, abs);
+    return abs;
   }
   if (bytes) {
-    await writeImage(rel, bytes);
-    return rel;
+    await writeImage(abs, bytes);
+    return abs;
   }
   return img.src;
 }
