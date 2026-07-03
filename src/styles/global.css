@@ -1047,17 +1047,19 @@ button {
 
 /* ============================================================================
    Settings window (dedicated OS window, loads ?window=settings)
-   macOS-System-Settings layout: a parchment category rail on the left and a
-   white control pane on the right. The parchment↔canvas color change IS the
-   vertical divider (no rule), per DESIGN.md's surface-change-over-border rule.
-   All flat — no shadows on chrome. Single Action Blue accent.
+   macOS-System-Settings layout: a parchment category sidebar on the left and
+   grouped white cards on the right. Parchment↔canvas color change is the
+   divider (no rule). All flat — no shadows on chrome. Single Action Blue
+   accent. SF Pro stack, negative tracking on display sizes, weight ladder
+   300/400/600 (no 500).
    ========================================================================= */
 .settings-window {
   display: flex;
   height: 100vh;
-  background: var(--color-canvas);
+  background: var(--color-canvas-parchment);
   font: var(--text-body);
   color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
 }
 .settings-loading,
 .settings-empty {
@@ -1068,72 +1070,145 @@ button {
   letter-spacing: -0.374px;
 }
 
-/* ---- Category rail (parchment surface) ---- */
-.settings-categories {
-  flex: 0 0 180px;
-  width: 180px;
-  padding: var(--space-md);
+/* ---- Sidebar (parchment surface) ---- */
+.settings-sidebar {
+  flex: 0 0 220px;
+  width: 220px;
+  padding: var(--space-lg) var(--space-md);
   display: flex;
   flex-direction: column;
-  gap: var(--space-xxs);
   background: var(--color-canvas-parchment);
   overflow-y: auto;
 }
+.settings-sidebar-title {
+  margin: 0 var(--space-xs) var(--space-md);
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  color: var(--color-ink);
+}
+.settings-categories {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 .settings-category {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
   text-align: left;
-  padding: var(--space-xs) var(--space-sm);
+  padding: 7px var(--space-xs);
   border-radius: var(--radius-sm);
   color: var(--color-ink);
-  font: var(--text-caption);
-  letter-spacing: -0.224px;
+  background: transparent;
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease, transform 0.1s ease;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 .settings-category:hover {
   background: rgba(0, 0, 0, 0.04);
 }
 .settings-category-active {
-  color: var(--color-primary);
-  font-weight: 600;
+  background: var(--color-primary);
+  color: var(--color-canvas);
+}
+.settings-category-active:hover {
+  background: var(--color-primary);
 }
 .settings-category:active {
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
-.settings-category:focus-visible {
-  outline: 2px solid var(--color-primary-focus);
-  outline-offset: 2px;
+.settings-category-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 22px;
+  width: 22px;
+  opacity: 0.85;
+}
+.settings-category-active .settings-category-icon {
+  opacity: 1;
+}
+.settings-category-label {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.1px;
+}
+.settings-category-active .settings-category-label {
+  font-weight: 600;
 }
 
-/* ---- Control pane (white canvas) ---- */
+/* ---- Content pane (parchment canvas, white cards float on it) ---- */
 .settings-pane {
   flex: 1 1 auto;
-  padding: var(--space-lg) var(--space-xl);
   overflow-y: auto;
-  background: var(--color-canvas);
+  background: var(--color-canvas-parchment);
 }
-.settings-pane-title {
-  font: var(--text-tagline);
-  letter-spacing: -0.374px;
+.settings-content {
+  max-width: 620px;
+  padding: var(--space-xl) var(--space-xl) var(--space-xxl);
+}
+.settings-content-header {
+  margin-bottom: var(--space-md);
+}
+.settings-content-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
   color: var(--color-ink);
-  margin: 0 0 var(--space-md);
 }
-.settings-rows {
-  display: flex;
-  flex-direction: column;
+.settings-content-sub {
+  margin: 2px 0 0;
+  font-size: 13px;
+  letter-spacing: -0.1px;
+  color: var(--color-ink-muted-48);
 }
+
+/* ---- Grouped card ---- */
+.settings-card {
+  background: var(--color-canvas);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-hairline);
+  overflow: hidden;
+}
+
+/* ---- Setting row ---- */
 .setting-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-lg);
-  min-height: 44px; /* touch-floor */
-  padding: var(--space-sm) 0;
-  border-bottom: 1px solid var(--color-hairline);
+  min-height: 52px;
+  padding: var(--space-sm) var(--space-lg);
+  border-bottom: 1px solid var(--color-divider-soft);
+}
+.setting-row-last {
+  border-bottom: none;
+}
+.setting-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 .setting-label {
-  font: var(--text-body);
-  letter-spacing: -0.374px;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.15px;
   color: var(--color-ink);
+}
+.setting-key {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0;
+  color: var(--color-ink-muted-48);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .setting-control {
   flex: 0 0 auto;
@@ -1143,32 +1218,40 @@ button {
 
 /* ---- Text / number / select inputs ---- */
 .setting-input {
-  min-width: 120px;
-  padding: 8px 12px;
+  min-width: 140px;
+  padding: 7px 11px;
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-sm);
   background: var(--color-canvas);
   color: var(--color-ink);
-  font: var(--text-body);
-  letter-spacing: -0.374px;
-  transition: border-color 0.12s ease;
+  font-size: 13px;
+  letter-spacing: -0.1px;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.setting-input:hover {
+  border-color: var(--color-ink-muted-48);
 }
 .setting-input:focus {
-  outline: 2px solid var(--color-primary-focus);
-  outline-offset: 1px;
-  border-color: var(--color-primary-focus);
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.12);
 }
-.setting-input[type="number"] {
-  width: 120px;
+.setting-input-number {
+  width: 100px;
+  min-width: 100px;
 }
-select.setting-input {
+.setting-input-select {
   cursor: pointer;
   padding-right: 28px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%237a7a7a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  appearance: none;
 }
 
-/* ---- Toggle (the project's first switch) ----
-   44×24 capsule track: Action Blue when on, translucent chip-gray when off.
-   White 20px knob slides right via aria-pressed. Active press = scale(0.95). */
+/* ---- Toggle (iOS-style switch) ----
+   38×22 capsule track: Action Blue when on, translucent chip-gray when off.
+   White 18px knob slides right via aria-pressed. Active press = scale(0.95). */
 .toggle {
   border: none;
   background: transparent;
@@ -1183,8 +1266,8 @@ select.setting-input {
 .toggle-track {
   position: relative;
   display: inline-block;
-  width: 44px;
-  height: 24px;
+  width: 38px;
+  height: 22px;
   border-radius: var(--radius-pill);
   background: var(--color-surface-chip-translucent);
   transition: background 0.15s ease;
@@ -1196,14 +1279,15 @@ select.setting-input {
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   border-radius: var(--radius-pill);
   background: var(--color-canvas);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
   transition: transform 0.15s ease;
 }
 .toggle[aria-pressed="true"] .toggle-knob {
-  transform: translateX(20px);
+  transform: translateX(16px);
 }
 .toggle:active {
   transform: scale(0.95);
@@ -1219,20 +1303,17 @@ select.setting-input {
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
-  min-width: 260px;
-  max-width: 360px;
+  min-width: 280px;
+  max-width: 380px;
 }
 .path-chip {
   display: inline-flex;
   align-items: center;
   gap: var(--space-xs);
-  padding: 4px 8px;
+  padding: 6px 10px;
   background: var(--color-canvas-parchment);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-sm);
-  font: var(--text-caption);
-  letter-spacing: -0.224px;
-  color: var(--color-ink);
 }
 .path-chip-label {
   flex: 1 1 auto;
@@ -1241,6 +1322,7 @@ select.setting-input {
   white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 12px;
+  color: var(--color-ink);
 }
 .path-chip-remove {
   flex: 0 0 auto;
@@ -1250,14 +1332,15 @@ select.setting-input {
   width: 18px;
   height: 18px;
   border-radius: var(--radius-xs);
-  color: var(--color-primary);
+  color: var(--color-ink-muted-48);
   background: transparent;
   border: none;
   cursor: pointer;
-  transition: background 0.1s ease, transform 0.1s ease;
+  transition: background 0.1s ease, color 0.1s ease, transform 0.1s ease;
 }
 .path-chip-remove:hover {
-  background: rgba(0, 102, 204, 0.08);
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--color-ink);
 }
 .path-chip-remove:active {
   transform: scale(0.9);
@@ -1276,5 +1359,17 @@ select.setting-input {
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--color-ink);
+  color: var(--color-canvas);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.1px;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.1s ease;
 }
-
+.path-add-btn:active {
+  transform: scale(0.95);
+}
