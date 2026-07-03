@@ -8,11 +8,12 @@ let startupDone = false;
 
 /**
  * Restore the last-opened file on startup. If a remembered file exists and is
- * still reachable, reopen it; otherwise ensure a fresh untitled tab exists.
+ * still reachable, reopen it; otherwise start with no tab open (the user
+ * creates one via the + button or by opening a file).
  *
  * Run once near the app root. Idempotent: a second invocation (e.g. StrictMode
- * remount) is a no-op. A failed reopen (file moved/deleted, workspace not
- * restored) silently falls back to the empty tab — losing the hint is harmless.
+ * remount) is a no-op. A failed reopen (file moved/deleted) is silently
+ * ignored — losing the hint is harmless.
  */
 export function useStartupSession(): void {
   useEffect(() => {
@@ -27,13 +28,10 @@ export function useStartupSession(): void {
         if (session.lastFile) {
           const doc = await openFileByPath(session.lastFile);
           useTabsStore.getState().openPath(doc);
-          return;
         }
       } catch (e) {
         console.warn("[startup] last-file restore failed:", e);
       }
-      // No file to restore, or restore failed → fresh untitled tab.
-      await useTabsStore.getState().openTab();
     })();
   }, []);
 }
