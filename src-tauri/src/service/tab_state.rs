@@ -16,13 +16,14 @@ use parking_lot::Mutex;
 use typst_layout::PagedDocument;
 
 use crate::domain::compile_result::CompileOutcome;
-use crate::domain::document::{DocumentId, DocumentMeta, DocumentOrigin};
+use crate::domain::disk_version::DiskVersion;
+use crate::domain::document::{ConflictState, DocumentId, DocumentMeta, DocumentOrigin};
 use crate::typst_engine::world::EditorWorld;
 
 /// Mutable-per-tab state that changes on compile / save / edit. Behind a Mutex
 /// separate from the world so compile never blocks on it.
 pub struct TabRuntime {
-    /// Tab metadata (id, path, title, dirty, origin, revision).
+    /// Tab metadata (id, path, title, dirty, origin, revision, conflict).
     pub meta: DocumentMeta,
     /// The last successfully compiled document (for export). `None` until the
     /// first successful compile, or after a failing compile.
@@ -32,6 +33,12 @@ pub struct TabRuntime {
     /// The revision this `last_outcome` / `last_doc` corresponds to. `None`
     /// until the first compile completes. Used to discard stale results.
     pub last_compiled_revision: Option<u64>,
+    /// On-disk content identity (§8.4). `None` for untitled / never-read-from-
+    /// disk documents. Set when a file is opened, refreshed on every save
+    /// (so the imminent watcher event is recognized as self-induced), and used
+    /// by `handle_external_change` to distinguish an external edit from a
+    /// touch-only change.
+    pub disk_version: Option<DiskVersion>,
 }
 
 /// Per-tab state: the editor world (lock-free during compile) + locked runtime.
@@ -53,6 +60,7 @@ impl TabState {
             dirty: false,
             origin: DocumentOrigin::Untitled,
             revision: 0,
+            conflict: ConflictState::None,
         };
         Self::with_meta(meta, initial_text)
     }
@@ -66,6 +74,7 @@ impl TabState {
                 last_doc: None,
                 last_outcome: CompileOutcome::ok(0),
                 last_compiled_revision: None,
+                disk_version: None,
             }),
         }
     }
@@ -81,6 +90,7 @@ impl TabState {
                 last_doc: None,
                 last_outcome: CompileOutcome::ok(0),
                 last_compiled_revision: None,
+                disk_version: None,
             }),
         }
     }

@@ -1,6 +1,6 @@
 import { useEffect, useTransition } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { onCompiled, onStatus } from "../lib/tauri";
+import { onCompiled, onConflict, onStatus } from "../lib/tauri";
 import { useTabsStore } from "../store/tabsStore";
 
 /**
@@ -48,6 +48,17 @@ export function useTypstCompile(): void {
         return;
       }
       unlistens.push(uStatus);
+
+      // §8.4: external-modification conflict. Surface the backend's conflict
+      // state on the tab (the resolution UI is a later task).
+      const uConflict = await onConflict((p) => {
+        useTabsStore.getState().setConflict(p.id, p.conflict);
+      });
+      if (cancelled) {
+        uConflict();
+        return;
+      }
+      unlistens.push(uConflict);
     })();
 
     return () => {

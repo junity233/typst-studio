@@ -88,7 +88,10 @@ pub async fn update_text(
 }
 
 /// Write a tab's source back to its on-disk path (errors for untitled tabs).
-/// The disk write runs on a blocking thread.
+/// The disk write runs on a blocking thread. After the write, `mark_saved`
+/// clears the dirty flag AND records the on-disk content version, so the
+/// imminent watcher event for our own write is recognized as self-induced and
+/// does NOT trigger a conflict/reload (§8.2 / §8.4).
 #[tauri::command]
 pub async fn save_file(state: State<'_, AppState>, id: DocumentId) -> Result<()> {
     let editor = state.editor.clone();
@@ -96,7 +99,7 @@ pub async fn save_file(state: State<'_, AppState>, id: DocumentId) -> Result<()>
     tauri::async_runtime::spawn_blocking(move || std::fs::write(&path, text))
         .await
         .map_err(|e| AppError::Other(format!("join error: {e}")))??;
-    editor.clear_dirty(id);
+    editor.mark_saved(id);
     Ok(())
 }
 

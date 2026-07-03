@@ -130,6 +130,28 @@ pub struct FsChangedPayload {
     pub paths: Vec<String>,
 }
 
+/// Payload of the `conflict` event (§8.4): an external disk change to an open
+/// document's file moved it into a conflict state. `disk_content` is present
+/// for `Modified` so the UI can show a diff; absent otherwise.
+///
+/// `revision` (§7) tags the buffer revision the conflict corresponds to.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct ConflictPayload {
+    pub id: DocumentId,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub revision: u64,
+    pub conflict: crate::domain::document::ConflictState,
+    /// The current disk content, present on `Modified` (so the UI can show a
+    /// diff). `None` for `None` / `Missing`.
+    pub disk_content: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +168,7 @@ mod tests {
         OpenedDocument::export(&cfg).unwrap();
         LspStatusPayload::export(&cfg).unwrap();
         FsChangedPayload::export(&cfg).unwrap();
+        ConflictPayload::export(&cfg).unwrap();
         // Workspace + tree types (defined outside `events` but exported here as
         // the single ts-rs generation entry point).
         crate::service::workspace_service::WorkspaceMeta::export(&cfg).unwrap();

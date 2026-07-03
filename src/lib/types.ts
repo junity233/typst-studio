@@ -44,6 +44,31 @@ lineMap: Array<LineRect>,
 durationMs: number, };
 
 /**
+ * Payload of the `conflict` event (§8.4): an external disk change to an open
+ * document's file moved it into a conflict state. `disk_content` is present
+ * for `Modified` so the UI can show a diff; absent otherwise.
+ *
+ * `revision` (§7) tags the buffer revision the conflict corresponds to.
+ */
+export type ConflictPayload = { id: DocumentId, revision: number, conflict: ConflictState, 
+/**
+ * The current disk content, present on `Modified` (so the UI can show a
+ * diff). `None` for `None` / `Missing`.
+ */
+diskContent: string | null, };
+
+/**
+ * External-modification conflict state for a document (§8.4).
+ *
+ * Set by [`EditorService::handle_external_change`](crate::service::editor_service::EditorService::handle_external_change)
+ * when a filesystem watcher reports a change to a document's backing file.
+ * The user resolves a `Modified` / `Missing` state via explicit actions (use
+ * disk, overwrite disk, Save As); the resolution UI is out of scope for the
+ * state-tracking layer — this enum is just the data.
+ */
+export type ConflictState = "none" | "modified" | "missing";
+
+/**
  * A single diagnostic, IPC/serialization-friendly.
  */
 export type Diagnostic = { severity: Severity, range: Range, message: string, 
@@ -116,7 +141,13 @@ origin: DocumentOrigin,
  * `u64` maps to `bigint` by default in ts-rs, but Tauri serializes it as a
  * JSON number at runtime — override to `number` to match the wire format.
  */
-revision: number, };
+revision: number, 
+/**
+ * External-modification conflict state (§8.4). `None` when in sync with
+ * disk; `Modified` / `Missing` when the watcher detected an external disk
+ * change that could not be auto-applied (dirty buffer / deleted file).
+ */
+conflict: ConflictState, };
 
 /**
  * How a document is anchored on disk (§4.2).
@@ -232,7 +263,13 @@ origin: DocumentOrigin,
  * `u64` maps to `bigint` by default in ts-rs, but Tauri serializes it as a
  * JSON number at runtime — override to `number` to match the wire format.
  */
-revision: number, };
+revision: number, 
+/**
+ * External-modification conflict state (§8.4). `None` when in sync with
+ * disk; `Modified` / `Missing` when the watcher detected an external disk
+ * change that could not be auto-applied (dirty buffer / deleted file).
+ */
+conflict: ConflictState, };
 
 /**
  * A 1-indexed text range (Monaco-friendly). Half-open `[start, end)`.

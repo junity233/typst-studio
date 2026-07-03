@@ -14,9 +14,11 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter as _};
 
 use crate::domain::diagnostics::Diagnostic;
-use crate::domain::document::DocumentId;
+use crate::domain::document::{ConflictState, DocumentId};
 use crate::domain::source_map::LineRect;
-use crate::ipc::events::{CompiledPayload, CompileStatus, DiagnosticsPayload, StatusPayload};
+use crate::ipc::events::{
+    CompiledPayload, CompileStatus, ConflictPayload, DiagnosticsPayload, StatusPayload,
+};
 use crate::net::client::HttpClient;
 use crate::service::editor_service::{EditorService, Emitter};
 use crate::service::export_service::ExportService;
@@ -75,6 +77,24 @@ impl Emitter for TauriEmitter {
                 revision,
                 status,
                 duration_ms,
+            },
+        );
+    }
+
+    fn emit_conflict(
+        &self,
+        id: DocumentId,
+        revision: u64,
+        conflict: ConflictState,
+        disk_content: Option<String>,
+    ) {
+        let _ = self.app.emit(
+            "conflict",
+            ConflictPayload {
+                id,
+                revision,
+                conflict,
+                disk_content,
             },
         );
     }

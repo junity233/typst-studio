@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ConflictPayload,
   DirEntry,
   DocumentId,
   EntryKind,
@@ -183,6 +184,18 @@ export async function onFsChanged(
   handler: (payload: FsChangedPayload) => void,
 ): Promise<UnlistenFn> {
   return listen<FsChangedPayload>("fs_changed", (e) => handler(e.payload));
+}
+
+/**
+ * Subscribe to external-modification conflict events (§8.4). Emitted when the
+ * filesystem watcher detects a disk change to an open document's backing file
+ * that could not be auto-applied (dirty buffer → Modified; deleted → Missing).
+ * `diskContent` is present on `Modified` so the UI can show a diff.
+ */
+export async function onConflict(
+  handler: (payload: ConflictPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<ConflictPayload>("conflict", (e) => handler(e.payload));
 }
 
 /** Subscribe to native menu activation events. */

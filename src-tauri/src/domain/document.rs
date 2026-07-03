@@ -82,6 +82,33 @@ impl Default for WorkspaceId {
     }
 }
 
+/// External-modification conflict state for a document (§8.4).
+///
+/// Set by [`EditorService::handle_external_change`](crate::service::editor_service::EditorService::handle_external_change)
+/// when a filesystem watcher reports a change to a document's backing file.
+/// The user resolves a `Modified` / `Missing` state via explicit actions (use
+/// disk, overwrite disk, Save As); the resolution UI is out of scope for the
+/// state-tracking layer — this enum is just the data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ConflictState {
+    /// No conflict; in sync with disk (or untitled / no disk backing).
+    #[default]
+    None,
+    /// Disk content differs from the buffer AND the buffer has unsaved edits.
+    /// The user must decide: compare / use disk / overwrite disk. The buffer is
+    /// left untouched (never silently clobbered).
+    Modified,
+    /// The backing file was deleted on disk. The buffer is preserved; Save
+    /// rebuilds it, Save As writes elsewhere.
+    Missing,
+}
+
 /// How a document is anchored on disk (§4.2).
 ///
 /// Drives relative-resource resolution (`#include`, `#image()`), file
@@ -176,6 +203,11 @@ pub struct DocumentMeta {
     #[serde(default)]
     #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub revision: u64,
+    /// External-modification conflict state (§8.4). `None` when in sync with
+    /// disk; `Modified` / `Missing` when the watcher detected an external disk
+    /// change that could not be auto-applied (dirty buffer / deleted file).
+    #[serde(default)]
+    pub conflict: ConflictState,
 }
 
 impl DocumentMeta {
@@ -196,6 +228,7 @@ impl DocumentMeta {
             dirty: false,
             origin: DocumentOrigin::Untitled,
             revision: 0,
+            conflict: ConflictState::None,
         }
     }
 
@@ -210,6 +243,7 @@ impl DocumentMeta {
             dirty: false,
             origin: DocumentOrigin::WorkspaceFile { path, workspace_id },
             revision: 0,
+            conflict: ConflictState::None,
         }
     }
 
@@ -224,6 +258,7 @@ impl DocumentMeta {
             dirty: false,
             origin: DocumentOrigin::LooseFile { path, root },
             revision: 0,
+            conflict: ConflictState::None,
         }
     }
 
@@ -252,6 +287,7 @@ impl DocumentMeta {
             dirty: false,
             origin: DocumentOrigin::LooseFile { path, root },
             revision: 0,
+            conflict: ConflictState::None,
         }
     }
 }
@@ -271,6 +307,10 @@ mod tests {
         // ts-rs only emits types that are explicitly exported, so a referenced
         // but un-exported type would leave an undefined name in types.ts.
         DocumentOrigin::export(&cfg).unwrap();
+        // ConflictState must be exported because DocumentMeta references it;
+        // like DocumentOrigin, an un-exported referenced type would leave an
+        // undefined name in types.ts.
+        ConflictState::export(&cfg).unwrap();
         DocumentMeta::export(&cfg).unwrap();
     }
 

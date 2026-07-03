@@ -119,6 +119,14 @@ mod tests {
                 _: Option<u64>,
             ) {
             }
+            fn emit_conflict(
+                &self,
+                _: DocumentId,
+                _: u64,
+                _: crate::domain::document::ConflictState,
+                _: Option<String>,
+            ) {
+            }
         }
         Arc::new(EditorService::new(Arc::new(NoopEmitter)))
     }

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { CompileStatus } from "../lib/ui-types";
-import type { LineRect, OpenedDocument } from "../lib/types";
+import type { ConflictState, LineRect, OpenedDocument } from "../lib/types";
 import {
   closeTab as closeTabBE,
   newTab as newTabBE,
@@ -29,6 +29,12 @@ export interface Tab {
   content: string;
   /** Monotonic content revision; bumped on every edit (§7). */
   revision: number;
+  /**
+   * External-modification conflict state (§8.4). "modified" when the disk
+   * changed while the buffer had unsaved edits; "missing" when the backing
+   * file was deleted. Reset to "none" on user edit (they're moving past it).
+   */
+  conflict: ConflictState;
   status: CompileStatus;
   durationMs: number | null;
   svgPages: string[];
@@ -62,6 +68,12 @@ export interface TabsState {
     svgPages: string[],
     lineMap: LineRect[],
   ) => void;
+  /**
+   * Set a tab's external-modification conflict state (§8.4). A simple setter —
+   * the conflict state is not revision-tagged (the user resolves it via
+   * explicit actions in a later task); this just surfaces the backend's state.
+   */
+  setConflict: (id: string, conflict: ConflictState) => void;
   markSaved: (id: string, path: string) => void;
 }
 
@@ -78,6 +90,8 @@ function tabFromOpened(doc: OpenedDocument): Tab {
     // The backend seeds revision 0 on open; the first compile carries revision
     // 0 and matches this. Each subsequent edit bumps it.
     revision: 0,
+    // No external-modification conflict on open (§8.4).
+    conflict: "none",
     status: "idle",
     durationMs: null,
     svgPages: [],
@@ -135,7 +149,15 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
         if (tab.id !== id || content === tab.content) return tab;
         // Bump the optimistic revision. The backend's next compile event will
         // carry this same revision (or higher); older events are then ignored.
-        return { ...tab, content, dirty: true, revision: tab.revision + 1 };
+        // Reset conflict to "none" (§8.4): the user is editing, so they're
+        // moving past any prior external-change conflict.
+        return {
+          ...tab,
+          content,
+          dirty: true,
+          revision: tab.revision + 1,
+          conflict: "none",
+        };
       }),
     })),
 
@@ -161,6 +183,13 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
       }),
     })),
 
+  setConflict: (id, conflict) =>
+    set((s) => ({
+      tabs: s.tabs.map((tab) =>
+        tab.id === id ? { ...tab, conflict } : tab,
+      ),
+    })),
+
   markSaved: (id, path) => {
     set((s) => ({
       tabs: s.tabs.map((tab) =>
@@ -170,6 +199,9 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
               path,
               title: path.split(/[\\/]/).pop() ?? tab.title,
               dirty: false,
+              // A successful save resolves any external-change conflict (§8.4):
+              // the buffer is now in sync with disk.
+              conflict: "none",
             }
           : tab,
       ),

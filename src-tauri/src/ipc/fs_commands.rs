@@ -29,8 +29,23 @@ fn open_path_as_workspace(
     state: &AppState,
     root: PathBuf,
 ) -> Result<WorkspaceMeta> {
+    // The watcher callback needs two things: the AppHandle (to emit `fs_changed`
+    // for the frontend's tree refresh) and an Arc<EditorService> (to route
+    // document paths into conflict/reload handling, §8.4). Both are cloned out
+    // here because the closure must be 'static + Send + Sync — a State<'_> is
+    // neither. The Arc clones are cheap and keep the services alive for the
+    // watcher's lifetime.
     let app_for_cb = app.clone();
+    let editor_for_cb = state.editor.clone();
     let on_change: watcher::OnChange = Arc::new(move |paths: &[PathBuf]| {
+        // §8.4: route each changed path to the editor so an open document whose
+        // backing file changed is reloaded (clean buffer) or marked conflict
+        // (dirty buffer / deleted). Safe on the watcher flush thread.
+        for p in paths {
+            editor_for_cb.handle_external_change(p);
+        }
+        // Notify the frontend to refresh its file tree (independent of the
+        // document-handling above — the tree shows all files, not just docs).
         let payload = FsChangedPayload {
             paths: paths.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         };

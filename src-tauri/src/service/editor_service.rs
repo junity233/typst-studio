@@ -28,11 +28,13 @@ use typst_layout::PagedDocument;
 use crate::domain::compile_result::CompileOutcome;
 use crate::domain::compile_status::CompileStatus;
 use crate::domain::diagnostics::{Diagnostic, Range, Severity};
-use crate::domain::document::{DocumentId, DocumentMeta, DocumentOrigin};
+use crate::domain::disk_version::DiskVersion;
+use crate::domain::document::{ConflictState, DocumentId, DocumentMeta, DocumentOrigin};
 use crate::domain::path::canonicalize_for_identity;
 use crate::domain::registry::{DocumentRegistry, SharedRegistry};
 use crate::domain::source_map::LineRect;
 use crate::error::{AppError, Result};
+use crate::fs::watcher;
 use crate::render::pipeline::RenderPipeline;
 use crate::render::source_map::build_source_map;
 use crate::render::svg::SvgRenderer;
@@ -58,6 +60,17 @@ type Workers = Arc<RwLock<HashMap<DocumentId, CompileWorker>>>;
 /// clone (root behind an `Arc<RwLock<PathBuf>>`), so a clone is handed to each
 /// tab's [`EditorWorld`](crate::typst_engine::world::EditorWorld).
 type LooseResolvers = Arc<RwLock<HashMap<PathBuf, crate::fs::FileResolver>>>;
+
+/// Per-parent-directory filesystem watchers for loose files OUTSIDE the active
+/// workspace (§4.2 / §8.4). The workspace's own watcher covers in-workspace
+/// files, so this cache only ever holds parents that are NOT inside the
+/// workspace root. Same-dir loose files share one watcher (keyed by parent),
+/// mirroring the [`loose_resolvers`](EditorService::loose_resolvers) cache.
+///
+/// Bounded by the number of distinct out-of-workspace directories the user has
+/// opened — not unbounded. Watchers are left alive on tab close for B2 (small
+/// per-directory cost); see the TODO on [`close_tab`](EditorService::close_tab).
+type LooseWatchers = Arc<RwLock<HashMap<PathBuf, watcher::WatcherGuard>>>;
 
 /// Decouples `EditorService` from the concrete event-delivery mechanism.
 ///
@@ -88,6 +101,16 @@ pub trait Emitter: Send + Sync {
         status: CompileStatus,
         duration_ms: Option<u64>,
     );
+    /// Notify the frontend of an external-modification conflict (§8.4). Emits
+    /// the disk content (for `Modified`, so the UI can show a diff) and the
+    /// new conflict state. `revision` tags the buffer revision.
+    fn emit_conflict(
+        &self,
+        id: DocumentId,
+        revision: u64,
+        conflict: ConflictState,
+        disk_content: Option<String>,
+    );
 }
 
 /// The multi-tab editor orchestrator.
@@ -98,6 +121,10 @@ pub struct EditorService {
     /// Parent-directory-rooted resolvers for loose files (§4.2). Shared so two
     /// tabs whose files live in the same directory anchor against one root.
     loose_resolvers: LooseResolvers,
+    /// Per-parent-dir watchers for out-of-workspace loose files (§4.2 / §8.4).
+    /// In-workspace files are covered by the workspace watcher; this cache
+    /// closes the gap for files opened outside the workspace root.
+    loose_watchers: LooseWatchers,
     emitter: Arc<dyn Emitter>,
 }
 
@@ -109,6 +136,7 @@ impl EditorService {
             workers: Arc::new(RwLock::new(HashMap::new())),
             registry: Arc::new(RwLock::new(DocumentRegistry::new())),
             loose_resolvers: Arc::new(RwLock::new(HashMap::new())),
+            loose_watchers: Arc::new(RwLock::new(HashMap::new())),
             emitter,
         }
     }
@@ -160,12 +188,17 @@ impl EditorService {
         if let Some(existing) = self.find_existing(&canon) {
             return Ok(existing);
         }
-        let meta = self.classify_new(DocumentId::new(), canon, workspace);
+        let meta = self.classify_new(DocumentId::new(), canon.clone(), workspace);
         let id = meta.id;
         self.registry.write().register(meta.clone())?;
         let tab = self.tab_from_meta(&meta, &content, workspace);
         self.tabs.write().insert(id, tab.clone());
         self.create_worker(id, tab);
+        // Seed the on-disk version (§8.4) and ensure a watcher covers this
+        // file's directory (the workspace watcher for in-workspace files, a
+        // parent-dir watcher for out-of-workspace loose files).
+        self.set_disk_version_from_path(id, meta.origin.canonical_path());
+        self.ensure_dir_watched(id, &meta.origin, workspace);
         Ok(meta)
     }
 
@@ -188,12 +221,17 @@ impl EditorService {
         if let Some(existing) = self.find_existing(&canon) {
             return Ok(existing);
         }
-        let meta = self.classify_new(DocumentId::new(), canon, workspace);
+        let meta = self.classify_new(DocumentId::new(), canon.clone(), workspace);
         let id = meta.id;
         self.registry.write().register(meta.clone())?;
         let tab = self.tab_from_meta(&meta, &content, workspace);
         self.tabs.write().insert(id, tab.clone());
         self.create_worker(id, tab);
+        // Seed the on-disk version (§8.4) and ensure a watcher covers this
+        // file's directory (the workspace watcher for in-workspace files, a
+        // parent-dir watcher for out-of-workspace loose files).
+        self.set_disk_version_from_path(id, meta.origin.canonical_path());
+        self.ensure_dir_watched(id, &meta.origin, workspace);
         Ok(meta)
     }
 
@@ -248,6 +286,137 @@ impl EditorService {
             .entry(parent.to_path_buf())
             .or_insert(resolver)
             .clone()
+    }
+
+    // --- external-modification support (§8.4) --------------------------------
+
+    /// Look up (or insert) the parent-directory watcher for a loose file
+    /// outside the active workspace (§4.2 / §8.4). Same-dir loose files share
+    /// one watcher. The watcher's `on_change` routes changed paths into
+    /// [`handle_external_change`](Self::handle_external_change) (it does NOT
+    /// emit `fs_changed` — that event is workspace-tree-only, and these dirs
+    /// are by definition outside the workspace). Best-effort: a watcher failure
+    /// is logged and skipped (the cache entry is simply not inserted).
+    fn loose_watcher_for(&self, parent: &std::path::Path) {
+        if self.loose_watchers.read().contains_key(parent) {
+            return;
+        }
+        // The callback only needs `self` to route into handle_external_change.
+        // It captures the shared tab map + emitter + registry by cloning the
+        // Arcs (NOT an Arc<EditorService> — that would be a cycle), so the
+        // closure stays 'static + Send + Sync.
+        let tabs = self.tabs.clone();
+        let workers = self.workers.clone();
+        let registry = self.registry.clone();
+        let emitter = self.emitter.clone();
+        let on_change: watcher::OnChange = Arc::new(move |paths: &[PathBuf]| {
+            for p in paths {
+                handle_external_change_locked(p, &tabs, &registry, &workers, &emitter);
+            }
+        });
+        match watcher::watch(parent, on_change) {
+            Ok(guard) => {
+                self.loose_watchers
+                    .write()
+                    .entry(parent.to_path_buf())
+                    .or_insert(guard);
+            }
+            // A watcher failure is non-fatal — the file still edits, just
+            // without live external-change detection. Log and continue.
+            Err(e) => tracing::warn!("could not start loose-file watcher for {parent:?}: {e}"),
+        }
+    }
+
+    /// Seed (or refresh) a tab's [`DiskVersion`] from its on-disk file (§8.4).
+    /// Best-effort: if the file can't be read (untitled / deleted mid-open), the
+    /// version is left as-is. Called on open and after Save As rebind.
+    fn set_disk_version_from_path(&self, id: DocumentId, path: Option<&Path>) {
+        let Some(path) = path else { return };
+        let Ok(version) = DiskVersion::from_path(path) else {
+            return;
+        };
+        if let Some(t) = self.tabs.read().get(&id) {
+            t.state.lock().disk_version = Some(version);
+        }
+    }
+
+    /// Ensure the directory of a freshly-opened file is watched for external
+    /// changes. In-workspace files are covered by the workspace watcher; only
+    /// OUT-of-workspace loose files need a parent-dir watcher here.
+    fn ensure_dir_watched(
+        &self,
+        _id: DocumentId,
+        origin: &DocumentOrigin,
+        workspace: Option<&WorkspaceService>,
+    ) {
+        let DocumentOrigin::LooseFile { root, path, .. } = origin else {
+            return;
+        };
+        // Skip if the file is actually inside the open workspace — that dir is
+        // already watched by the workspace watcher, and double-watching wastes
+        // a platform file watch handle.
+        let inside_workspace = workspace
+            .filter(|ws| ws.is_open())
+            .is_some_and(|ws| ws.contains(path) || ws.contains(root));
+        if !inside_workspace {
+            self.loose_watcher_for(root);
+        }
+    }
+
+    /// Mark a tab as saved: clear the dirty flag AND recompute + store the
+    /// on-disk [`DiskVersion`] from the freshly-written file (§8.2 / §8.4).
+    ///
+    /// This MUST be called **after** the IPC layer's `std::fs::write` returns,
+    /// so the stored version matches the bytes on disk. Then, when the watcher
+    /// fires for the file we just wrote, [`handle_external_change`] sees the
+    /// new disk version equals the stored one and treats the event as
+    /// self-induced (no reload, no conflict). Replaces the old
+    /// [`clear_dirty`](Self::clear_dirty) in the save path.
+    pub fn mark_saved(&self, id: DocumentId) {
+        let path = {
+            let tabs = self.tabs.read();
+            let Some(tab) = tabs.get(&id) else { return };
+            let mut rt = tab.state.lock();
+            rt.meta.dirty = false;
+            rt.meta.conflict = ConflictState::None;
+            rt.meta.origin.canonical_path().map(|p| p.to_path_buf())
+        };
+        // Recompute the disk version from the on-disk bytes the caller just
+        // wrote. Reads outside the lock (no nested cross-service locks).
+        if let Some(path) = path {
+            self.set_disk_version_from_path(id, Some(&path));
+        }
+    }
+
+    /// Handle an external disk change to a path, routing it to the open
+    /// document (if any) whose canonical path matches (§8.4). Called from the
+    /// workspace watcher's and the loose-file watchers' `on_change` callbacks
+    /// (on the watcher flush thread); safe to call concurrently with compile
+    /// workers and `update_text` — it mirrors the existing brief-lock pattern.
+    ///
+    /// Rules (§8.4):
+    /// - **no open document** at `path` → no-op (the frontend's tree refresh
+    ///   handles non-document files).
+    /// - **file now missing on disk** → `ConflictState::Missing`; buffer
+    ///   preserved; conflict event emitted; no reload.
+    /// - **content identical** to the stored version (mtime-only change) →
+    ///   no-op (no reload, no recompile).
+    /// - **content differs AND buffer clean** → auto-reload: set world text,
+    ///   bump revision, keep `dirty=false`, update disk version, recompile.
+    /// - **content differs AND buffer dirty** → `ConflictState::Modified`;
+    ///   buffer untouched; conflict event emitted with the disk content.
+    ///
+    /// The app's OWN save is recognized because [`mark_saved`] updates the
+    /// stored version to match the freshly-written bytes, so the watcher event
+    /// for that write compares equal → no-op (the "content identical" case).
+    pub fn handle_external_change(&self, path: &Path) {
+        handle_external_change_locked(
+            path,
+            &self.tabs,
+            &self.registry,
+            &self.workers,
+            &self.emitter,
+        );
     }
 
     /// Build a [`TabState`] for `meta` seeded with `text`, anchoring the world
@@ -395,6 +564,15 @@ impl EditorService {
 
         // Swap the new world in and rotate the worker to trigger a recompile.
         self.swap_world(id, new_tab);
+
+        // The rebuilt tab's runtime starts with `disk_version: None`. Seed it
+        // from the freshly-written target file (Save As just wrote it), so the
+        // imminent watcher event for that write is recognized as self-induced
+        // (§8.2). Also ensure the target's parent dir is watched — Save As to a
+        // directory outside the workspace needs a loose watcher to catch
+        // future external changes (§4.2).
+        self.set_disk_version_from_path(id, Some(&canon));
+        self.loose_watcher_for(&root);
         Ok(())
     }
 
@@ -459,14 +637,17 @@ impl EditorService {
     /// Reclassify a single document, if its origin should change under `ws`.
     /// No-op when the origin is already correct (or the doc is untitled).
     fn reclassify_one(&self, id: DocumentId, ws: &WorkspaceService) {
-        // Snapshot the current meta, buffer, and revision under a brief lock.
-        let (meta, text) = {
+        // Snapshot the current meta, buffer, revision, and disk_version under a
+        // brief lock. disk_version is preserved across reclassification (the
+        // file didn't change — only its resolution scope did), so it must be
+        // carried over the world rebuild (which resets it to None).
+        let (meta, text, disk_version) = {
             let tabs = self.tabs.read();
             let Some(tab) = tabs.get(&id).cloned() else {
                 return;
             };
             let rt = tab.state.lock();
-            (rt.meta.clone(), tab.world.text())
+            (rt.meta.clone(), tab.world.text(), rt.disk_version.clone())
         };
 
         // Untitled docs are never reclassified.
@@ -483,7 +664,7 @@ impl EditorService {
         // the canonical path is identical, so the registry rebind is
         // idempotent for this id.
         let new_meta = DocumentMeta {
-            origin: new_origin,
+            origin: new_origin.clone(),
             ..meta
         };
 
@@ -503,6 +684,24 @@ impl EditorService {
 
         let new_tab = self.build_tab(&new_meta, &text, resolver, &canon);
         self.swap_world(id, new_tab);
+
+        // Restore the disk_version (the rebuild reset it to None). The file is
+        // unchanged, so the pre-transition snapshot is still accurate.
+        if let Some(dv) = disk_version {
+            if let Some(t) = self.tabs.read().get(&id) {
+                t.state.lock().disk_version = Some(dv);
+            }
+        }
+
+        // If the document is now a LooseFile outside the workspace, make sure
+        // its parent dir is watched for external changes (§4.2). In-workspace
+        // files are covered by the workspace watcher.
+        if let DocumentOrigin::LooseFile { root, path, .. } = &new_origin {
+            let inside = ws.is_open() && (ws.contains(path) || ws.contains(root));
+            if !inside {
+                self.loose_watcher_for(root);
+            }
+        }
     }
 
     /// Spawn a [`CompileWorker`] for `id` whose closure compiles `tab` and
@@ -519,6 +718,13 @@ impl EditorService {
     /// Close a tab, releasing its world and compile worker. The worker thread
     /// finishes its current compile (if any) then exits in the background —
     /// this method returns immediately.
+    ///
+    /// **Loose-file watchers are intentionally left running** for B2 (§8.4):
+    /// evicting on close would require ref-counting same-dir loose files, and
+    /// the per-directory cost is small. The cache is keyed by parent dir, so it
+    /// is bounded by the number of distinct dirs opened — never unbounded.
+    /// TODO(future): evict a loose watcher when the last same-dir loose file
+    /// closes, to free the platform file-watch handle.
     pub fn close_tab(&self, id: DocumentId) -> Result<()> {
         // Drop the worker first (sends Shutdown, doesn't join).
         let _ = self.workers.write().remove(&id);
@@ -748,6 +954,13 @@ impl EditorService {
     pub fn loose_resolver_cache_len(&self) -> usize {
         self.loose_resolvers.read().len()
     }
+
+    /// Number of out-of-workspace parent dirs currently watched by loose-file
+    /// watchers. Test-only accessor for asserting watcher installation (§4.2).
+    #[cfg(test)]
+    pub fn loose_watcher_count(&self) -> usize {
+        self.loose_watchers.read().len()
+    }
 }
 
 /// Decide the reclassified [`DocumentOrigin`] for a doc currently at `canon`,
@@ -820,6 +1033,160 @@ fn resolver_for_origin(
     }
 }
 
+/// The shared core of [`EditorService::handle_external_change`], callable from
+/// the loose-file watcher's `on_change` callback (which holds clones of the
+/// `Arc` fields rather than `&EditorService`). Implements the §8.4 rules: see
+/// [`handle_external_change`](EditorService::handle_external_change) for the
+/// full decision table.
+///
+/// Lock discipline mirrors [`update_text`](EditorService::update_text): brief
+/// locks, no nested cross-service locks, the world text written via its own
+/// interior `RwLock` outside the runtime mutex. Safe to run on the watcher
+/// flush thread concurrently with compile workers and the IPC runtime.
+fn handle_external_change_locked(
+    path: &Path,
+    tabs: &Tabs,
+    registry: &SharedRegistry,
+    workers: &Workers,
+    emitter: &Arc<dyn Emitter>,
+) {
+    // Canonicalize the watcher's path so it compares against the registry's
+    // canonical keys. `canonicalize_for_identity` does lexical normalization
+    // then symlink resolution *only if the path exists*. For a DELETED file the
+    // symlink step is skipped, so the lexical form may differ from the stored
+    // canonical key (e.g. macOS `/var/...` vs the resolved `/private/var/...`).
+    // We resolve the open document id by trying, in order: the canonicalized
+    // path, the raw event path, and (for a deleted file whose parent still
+    // exists) a canonicalized-parent + file-name join. The watcher is rooted at
+    // a canonical dir, so the last fallback reconstructs the true canonical key
+    // even when the file itself is gone.
+    let canon = canonicalize_for_identity(path).ok();
+    let id = {
+        let reg = registry.read();
+        canon
+            .as_deref()
+            .and_then(|c| reg.find_by_canonical(c))
+            .or_else(|| reg.find_by_canonical(path))
+            .or_else(|| {
+                // Deleted-file fallback: canonicalize the (still-existing)
+                // parent, then re-join the file name. If the parent is also
+                // gone, this yields None and we treat the path as not-an-open-
+                // document.
+                let parent = path.parent()?;
+                let canon_parent = canonicalize_for_identity(parent).ok()?;
+                let name = path.file_name()?;
+                reg.find_by_canonical(&canon_parent.join(name))
+            })
+    };
+    let Some(id) = id else {
+        return; // not an open document — the frontend tree handles it.
+    };
+
+    let tab = match tabs.read().get(&id).cloned() {
+        Some(t) => t,
+        None => return,
+    };
+
+    // Read the new on-disk version. Distinguish "file deleted" (NotFound) from
+    // other read failures (permissions, transient IO): only the former is
+    // Missing (§8.4); a transient error is logged and ignored so we don't
+    // wrongly tell the user their file was deleted. Try the canonical path
+    // first (it may still exist), then the raw event path.
+    let new_version = canon
+        .as_deref()
+        .and_then(|c| match DiskVersion::from_path(c) {
+            Ok(v) => Some(v),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                tracing::warn!("disk version read failed for {}: {e}", c.display());
+                None
+            }
+        })
+        .or_else(|| match DiskVersion::from_path(path) {
+            Ok(v) => Some(v),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                tracing::warn!("disk version read failed for {}: {e}", path.display());
+                None
+            }
+        });
+    let new_version = match new_version {
+        // NotFound on both candidate paths → the file is genuinely gone.
+        None if !path_exists(path) && canon.as_deref().is_none_or(|c| !c.exists()) => {
+            set_conflict(&tab, id, emitter, ConflictState::Missing, None);
+            return;
+        }
+        // A transient read failure (not NotFound, or NotFound on one path but
+        // the other still exists) → don't classify as Missing; skip this event.
+        None => return,
+        Some(v) => v,
+    };
+    // The path that still exists on disk (canonical form preferred).
+    let live_path = canon.as_deref().filter(|c| c.exists()).unwrap_or(path);
+
+    let (stored_version, dirty) = {
+        let rt = tab.state.lock();
+        (rt.disk_version.clone(), rt.meta.dirty)
+    };
+
+    // Content identical to the stored version (mtime-only change, §8.4 last
+    // bullet, OR the app's own save whose version `mark_saved` just recorded):
+    // no-op — no reload, no recompile.
+    if stored_version.as_ref() == Some(&new_version) {
+        return;
+    }
+
+    if dirty {
+        // Buffer has unsaved edits → never clobber. Surface the conflict with
+        // the disk content so the UI can offer compare / use-disk / overwrite.
+        let disk_content = std::fs::read_to_string(live_path).ok();
+        set_conflict(&tab, id, emitter, ConflictState::Modified, disk_content);
+        return;
+    }
+
+    // Clean buffer + external change → auto-reload. Read the new text and
+    // reload without marking dirty.
+    let Ok(content) = std::fs::read_to_string(live_path) else {
+        // File vanished between the version read and the content read.
+        set_conflict(&tab, id, emitter, ConflictState::Missing, None);
+        return;
+    };
+    tab.world.set_text(content);
+    let mut rt = tab.state.lock();
+    rt.meta.revision = rt.meta.revision.saturating_add(1);
+    rt.meta.dirty = false;
+    rt.meta.conflict = ConflictState::None;
+    rt.disk_version = Some(new_version);
+    drop(rt);
+    if let Some(worker) = workers.read().get(&id) {
+        worker.recompile();
+    }
+}
+
+/// Helper: set a tab's conflict state and emit the corresponding event. Holds
+/// the runtime lock only long enough to update `meta.conflict`.
+fn set_conflict(
+    tab: &Arc<TabState>,
+    id: DocumentId,
+    emitter: &Arc<dyn Emitter>,
+    conflict: ConflictState,
+    disk_content: Option<String>,
+) {
+    let revision = {
+        let mut rt = tab.state.lock();
+        rt.meta.conflict = conflict;
+        rt.meta.revision
+    };
+    emitter.emit_conflict(id, revision, conflict, disk_content);
+}
+
+/// Whether `path` exists on disk (any type — file, dir, symlink target).
+/// Used by [`handle_external_change_locked`] to distinguish a genuine deletion
+/// (`NotFound` + path truly gone) from a transient read failure.
+fn path_exists(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -853,6 +1220,12 @@ mod tests {
             revision: u64,
             status: CompileStatus,
             duration_ms: Option<u64>,
+        },
+        Conflict {
+            id: DocumentId,
+            revision: u64,
+            conflict: ConflictState,
+            disk_content: Option<String>,
         },
     }
 
@@ -892,6 +1265,16 @@ mod tests {
                 })
                 .collect()
         }
+        /// Conflict states emitted for `id`, in emit order.
+        fn conflicts_for(&self, id: DocumentId) -> Vec<ConflictState> {
+            self.snapshot()
+                .into_iter()
+                .filter_map(|e| match e {
+                    CapturedEvent::Conflict { id: eid, conflict, .. } if eid == id => Some(conflict),
+                    _ => None,
+                })
+                .collect()
+        }
     }
 
     impl Emitter for CapturingEmitter {
@@ -926,6 +1309,17 @@ mod tests {
             self.events
                 .lock()
                 .push(CapturedEvent::Status { id, revision, status, duration_ms });
+        }
+        fn emit_conflict(
+            &self,
+            id: DocumentId,
+            revision: u64,
+            conflict: ConflictState,
+            disk_content: Option<String>,
+        ) {
+            self.events
+                .lock()
+                .push(CapturedEvent::Conflict { id, revision, conflict, disk_content });
         }
     }
 
@@ -1675,6 +2069,287 @@ mod tests {
         assert_eq!(svc.tab_meta(meta.id).unwrap().id, id_preserved, "DocumentId stable");
 
         ws.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- external-modification handling (§8.4, Task B2) ---------------------
+
+    /// Create a temp `.typ` file with the given content and return its path.
+    fn make_tmp_file(content: &str) -> PathBuf {
+        let p =
+            std::env::temp_dir().join(format!("ts-conflict-{}.typ", uuid::Uuid::new_v4()));
+        std::fs::write(&p, content).unwrap();
+        p
+    }
+
+    /// Open a file as a disk-backed tab (clean) and wait for its first compile.
+    fn open_clean_file(svc: &EditorService, emitter: &CapturingEmitter, path: &Path) -> DocumentId {
+        let content = std::fs::read_to_string(path).unwrap();
+        let meta = svc.open_from_disk(path.to_path_buf(), content, None).unwrap();
+        wait_for_compiled(emitter, meta.id);
+        // Wait for the disk_version to be seeded (open_from_disk sets it after
+        // the worker is created; it reads the file synchronously).
+        for _ in 0..40 {
+            let seeded = svc
+                .tabs
+                .read()
+                .get(&meta.id)
+                .map(|t| t.state.lock().disk_version.is_some())
+                .unwrap_or(false);
+            if seeded {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        meta.id
+    }
+
+    /// §8.4: a clean buffer auto-reloads from disk on external change (revision
+    /// bumps, dirty stays false, content updates), then recompiles.
+    #[test]
+    fn handle_external_change_clean_buffer_auto_reloads() {
+        let tmp = make_tmp_file("#set page(width: 10cm)\n\nOriginal");
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &tmp);
+        let rev_before = svc.tab_revision(id).unwrap();
+        assert!(!svc.tab_meta(id).unwrap().dirty);
+
+        // Externally modify the file (buffer is clean).
+        std::fs::write(&tmp, "#set page(width: 10cm)\n\nChanged on disk").unwrap();
+        svc.handle_external_change(&tmp);
+
+        // Buffer reloaded to the new content; revision bumped; still not dirty.
+        assert_eq!(
+            svc.tab_text(id).as_deref(),
+            Some("#set page(width: 10cm)\n\nChanged on disk"),
+            "clean buffer must reload from disk"
+        );
+        assert!(
+            svc.tab_revision(id).unwrap() > rev_before,
+            "reload must bump the revision"
+        );
+        assert!(
+            !svc.tab_meta(id).unwrap().dirty,
+            "auto-reload must not mark the buffer dirty"
+        );
+        assert_eq!(svc.tab_meta(id).unwrap().conflict, ConflictState::None);
+        // The reload signals a recompile.
+        emitter.clear();
+        wait_for_compiled(&emitter, id);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// §8.4: a dirty buffer with an external change enters `Modified` conflict
+    /// — the buffer is NEVER clobbered.
+    #[test]
+    fn handle_external_change_dirty_buffer_enters_conflict() {
+        let tmp = make_tmp_file("#set page(width: 10cm)\n\nOriginal");
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &tmp);
+        // Dirty the buffer with unsaved edits.
+        svc.update_text(id, "#set page(width: 10cm)\n\nMy local edit".into())
+            .unwrap();
+        wait_for_compiled(&emitter, id);
+        let text_before = svc.tab_text(id).unwrap();
+        let rev_before = svc.tab_revision(id).unwrap();
+
+        // Externally modify the file — buffer is dirty → conflict, no clobber.
+        std::fs::write(&tmp, "#set page(width: 10cm)\n\nChanged on disk").unwrap();
+        svc.handle_external_change(&tmp);
+
+        assert_eq!(
+            svc.tab_text(id).as_deref(),
+            Some(text_before.as_str()),
+            "dirty buffer must NOT be clobbered"
+        );
+        assert_eq!(svc.tab_revision(id), Some(rev_before), "no reload → no revision bump");
+        assert_eq!(
+            svc.tab_meta(id).unwrap().conflict,
+            ConflictState::Modified,
+            "must enter Modified conflict"
+        );
+        // A conflict event was emitted.
+        assert!(
+            emitter.conflicts_for(id).contains(&ConflictState::Modified),
+            "expected a Modified conflict event"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// §8.4: deleting the backing file marks the document `Missing` but
+    /// preserves the buffer.
+    #[test]
+    fn handle_external_change_deleted_file_marks_missing() {
+        let tmp = make_tmp_file("#set page(width: 10cm)\n\nHello");
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &tmp);
+        let text_before = svc.tab_text(id).unwrap();
+
+        // Delete the file then deliver the watcher event.
+        std::fs::remove_file(&tmp).unwrap();
+        svc.handle_external_change(&tmp);
+
+        assert_eq!(
+            svc.tab_text(id).as_deref(),
+            Some(text_before.as_str()),
+            "buffer must be preserved on deletion"
+        );
+        assert_eq!(
+            svc.tab_meta(id).unwrap().conflict,
+            ConflictState::Missing,
+            "deleted file must mark Missing"
+        );
+        assert!(emitter.conflicts_for(id).contains(&ConflictState::Missing));
+    }
+
+    /// §8.4 "仅时间戳变化但内容未变": a touch (same bytes, new mtime) must NOT
+    /// reload — the revision is unchanged.
+    #[test]
+    fn handle_external_change_mtime_only_no_reload() {
+        let tmp = make_tmp_file("#set page(width: 10cm)\n\nSame");
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &tmp);
+        let rev_before = svc.tab_revision(id).unwrap();
+        let text_before = svc.tab_text(id).unwrap();
+
+        // Rewrite identical bytes after a short sleep to advance the mtime.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&tmp, "#set page(width: 10cm)\n\nSame").unwrap();
+        svc.handle_external_change(&tmp);
+
+        assert_eq!(svc.tab_revision(id), Some(rev_before), "mtime-only change must not bump revision");
+        assert_eq!(svc.tab_text(id), Some(text_before), "buffer unchanged");
+        assert_eq!(svc.tab_meta(id).unwrap().conflict, ConflictState::None);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// §8.2: the app's own save must NOT trigger a conflict/reload. After the
+    /// save path (prepare_save → write → mark_saved), the watcher event for our
+    /// write compares equal (disk_version matches) → no-op.
+    #[test]
+    fn self_save_does_not_trigger_conflict() {
+        let tmp = make_tmp_file("#set page(width: 10cm)\n\nOriginal");
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &tmp);
+        // Edit + save via the same path the command layer uses.
+        svc.update_text(id, "#set page(width: 10cm)\n\nSaved!".into())
+            .unwrap();
+        wait_for_compiled(&emitter, id);
+        let (path, text) = svc.prepare_save(id).unwrap();
+        std::fs::write(&path, &text).unwrap();
+        svc.mark_saved(id); // records the on-disk version of our write.
+        assert!(!svc.tab_meta(id).unwrap().dirty, "mark_saved clears dirty");
+        assert_eq!(svc.tab_meta(id).unwrap().conflict, ConflictState::None);
+
+        let rev_before = svc.tab_revision(id).unwrap();
+        let text_before = svc.tab_text(id).unwrap();
+
+        // Simulate the watcher firing for our own write.
+        svc.handle_external_change(&tmp);
+
+        assert_eq!(
+            svc.tab_revision(id),
+            Some(rev_before),
+            "self-save must not bump the revision"
+        );
+        assert_eq!(svc.tab_text(id), Some(text_before), "buffer unchanged on self-save");
+        assert_eq!(
+            svc.tab_meta(id).unwrap().conflict,
+            ConflictState::None,
+            "self-save must not enter conflict"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// §4.2 / §8.4: opening a loose file OUTSIDE the workspace installs a
+    /// parent-directory watcher (the workspace watcher does not cover it).
+    #[test]
+    fn loose_file_watcher_installed_for_out_of_workspace_file() {
+        let dir = std::env::temp_dir()
+            .join(format!("ts-loose-watch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.typ");
+        std::fs::write(&main, "#set page(width: 10cm)\n\nLoose").unwrap();
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &main);
+        assert!(
+            matches!(svc.tab_meta(id).unwrap().origin, DocumentOrigin::LooseFile { .. }),
+            "without a workspace the file must be loose"
+        );
+        assert_eq!(
+            svc.loose_watcher_count(),
+            1,
+            "exactly one parent-dir watcher for the loose file"
+        );
+
+        // Behaviourally: a real external change reaches handle_external_change
+        // (we call it directly since the watcher's 300ms debounce is timing-
+        // dependent and already tested in watcher.rs).
+        std::fs::write(&main, "#set page(width: 10cm)\n\nChanged").unwrap();
+        svc.handle_external_change(&main);
+        assert_eq!(
+            svc.tab_text(id).as_deref(),
+            Some("#set page(width: 10cm)\n\nChanged"),
+            "loose-file external change reloads the clean buffer"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Same-dir loose files share ONE watcher (§4.2 cache sharing for watchers
+    /// too), and a second distinct dir gets a second watcher.
+    #[test]
+    fn loose_watchers_share_same_parent_dir() {
+        let dir1 = std::env::temp_dir()
+            .join(format!("ts-loose-share-1-{}", uuid::Uuid::new_v4()));
+        let dir2 = std::env::temp_dir()
+            .join(format!("ts-loose-share-2-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir1).unwrap();
+        std::fs::create_dir_all(&dir2).unwrap();
+        let a = dir1.join("a.typ");
+        let b = dir1.join("b.typ");
+        let c = dir2.join("c.typ");
+        std::fs::write(&a, "x").unwrap();
+        std::fs::write(&b, "y").unwrap();
+        std::fs::write(&c, "z").unwrap();
+        let (svc, emitter) = make_service();
+        open_clean_file(&svc, &emitter, &a);
+        open_clean_file(&svc, &emitter, &b);
+        assert_eq!(svc.loose_watcher_count(), 1, "two same-dir files share one watcher");
+        open_clean_file(&svc, &emitter, &c);
+        assert_eq!(svc.loose_watcher_count(), 2, "a second distinct dir adds a second watcher");
+        let _ = std::fs::remove_dir_all(&dir1);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn handle_external_change_for_unrelated_path_is_noop() {
+        // The workspace watcher routes EVERY changed path through
+        // handle_external_change; most don't correspond to an open document and
+        // must be silently ignored (no panic, no events, no state change).
+        let dir = std::env::temp_dir().join(format!("ts-noop-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.typ");
+        std::fs::write(&main, "#set page(width: 10cm)\n\nUnrelated").unwrap();
+        let (svc, emitter) = make_service();
+        open_clean_file(&svc, &emitter, &main);
+        emitter.clear();
+
+        // A path with no open document — must not panic or emit anything.
+        let other = dir.join("notes.typ");
+        std::fs::write(&other, "changed").unwrap();
+        svc.handle_external_change(&other);
+        // Also exercise a totally bogus path.
+        svc.handle_external_change(std::path::Path::new("/nonexistent-ts-xyz/none.typ"));
+
+        // No conflict, no compile events for our tab.
+        let snaps = emitter.snapshot();
+        assert!(
+            snaps.iter().all(|e| !matches!(
+                e,
+                CapturedEvent::Conflict { id, .. } if *id == svc.tab_meta(svc.list_tabs()[0].id).unwrap().id
+            )),
+            "unrelated path must not raise a conflict: {snaps:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -3,6 +3,7 @@
 pub mod compile_result;
 pub mod compile_status;
 pub mod diagnostics;
+pub mod disk_version;
 pub mod document;
 pub mod path;
 pub mod registry;

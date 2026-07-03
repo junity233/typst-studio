@@ -15,6 +15,7 @@ function freshTab(overrides: Partial<Tab> = {}): Tab {
     dirty: false,
     content: "old",
     revision: 0,
+    conflict: "none",
     status: "idle",
     durationMs: null,
     svgPages: [],
@@ -98,5 +99,49 @@ describe("tabsStore revision guard (§7)", () => {
     expect(() =>
       useTabsStore.getState().setStatus("nope", 1, "success"),
     ).not.toThrow();
+  });
+});
+
+describe("tabsStore conflict state (§8.4)", () => {
+  beforeEach(() => {
+    useTabsStore.setState({ tabs: [freshTab()], activeId: "tab-1" });
+  });
+
+  it("setConflict updates the conflict state", () => {
+    useTabsStore.setState({ tabs: [freshTab({ conflict: "none" })] });
+    useTabsStore.getState().setConflict("tab-1", "modified");
+    expect(useTabsStore.getState().tabs[0].conflict).toBe("modified");
+    useTabsStore.getState().setConflict("tab-1", "missing");
+    expect(useTabsStore.getState().tabs[0].conflict).toBe("missing");
+  });
+
+  it("setConflict is a no-op for unknown tabs", () => {
+    expect(() =>
+      useTabsStore.getState().setConflict("nope", "modified"),
+    ).not.toThrow();
+  });
+
+  it("updateContent resets conflict to none (user is editing past it)", () => {
+    useTabsStore.setState({ tabs: [freshTab({ conflict: "modified", content: "a" })] });
+    useTabsStore.getState().updateContent("tab-1", "b");
+    const tab = useTabsStore.getState().tabs[0];
+    expect(tab.conflict).toBe("none");
+    expect(tab.content).toBe("b");
+  });
+
+  it("updateContent does not change conflict when content is unchanged", () => {
+    useTabsStore.setState({ tabs: [freshTab({ conflict: "modified", content: "same" })] });
+    useTabsStore.getState().updateContent("tab-1", "same");
+    expect(useTabsStore.getState().tabs[0].conflict).toBe("modified");
+  });
+
+  it("markSaved clears the conflict (save resolves it)", () => {
+    useTabsStore.setState({
+      tabs: [freshTab({ conflict: "missing", dirty: true, content: "x" })],
+    });
+    useTabsStore.getState().markSaved("tab-1", "/x/main.typ");
+    const tab = useTabsStore.getState().tabs[0];
+    expect(tab.conflict).toBe("none");
+    expect(tab.dirty).toBe(false);
   });
 });
