@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# TextMate grammar artifacts are produced by `npm run fetch-grammar` from
+# tinymist's published VSIX — they are build output, not source.
+src/assets/grammar/*.json
+!src/assets/grammar/.gitkeep
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

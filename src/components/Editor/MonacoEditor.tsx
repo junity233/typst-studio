@@ -23,6 +23,7 @@ import {
   registerTypstMemFile,
   MEM_ROOT,
 } from "./lspClient";
+import { registerTypstHighlighting } from "./typstHighlighting";
 import { usePasteConvert } from "./usePasteConvert";
 
 /**
@@ -286,6 +287,15 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     return unregister;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.id]);
+
+  // Register Typst syntax highlighting (TextMate grammar + theme CSS).
+  // Runs once on mount, before the editor creates its model. The actual
+  // WASM/grammar/theme loading is lazy (via TokenizationRegistry.registerFactory)
+  // so it doesn't block editor creation — the model starts in plain-text mode
+  // and re-tokenizes with colors once initialization completes.
+  useEffect(() => {
+    void registerTypstHighlighting();
+  }, []);
 
   // Drive the model swap: bumping `triggerReprocessConfig` makes
   // MonacoEditorReactComp call `updateCodeResources` (compares the URI in
