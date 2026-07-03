@@ -1,4 +1,4 @@
-import { useTabsStore } from "../../store/tabsStore";
+import { useActiveDocument } from "../../store/tabsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 
 /**
@@ -8,9 +8,7 @@ import { useWorkspaceStore } from "../../store/workspaceStore";
  * bare filename. For an untitled tab, shows "Untitled".
  */
 export function Breadcrumb() {
-  const activeTab = useTabsStore((s) =>
-    s.tabs.find((t) => t.id === s.activeId) ?? null,
-  );
+  const activeTab = useActiveDocument();
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const workspaceName = useWorkspaceStore((s) => s.name);
 

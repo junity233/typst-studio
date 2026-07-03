@@ -10,7 +10,8 @@ import {
   saveAs as saveAsBE,
   saveFile,
 } from "../lib/tauri";
-import { useTabsStore } from "../store/tabsStore";
+import { useTabsStore, readOrderedDocuments } from "../store/tabsStore";
+import { useDocumentsStore } from "../store/documentsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { useUiStore } from "../store/uiStore";
 import { useDialogStore } from "../store/dialogStore";
@@ -90,7 +91,10 @@ export function useAppCommands(): void {
 export async function dispatch(menuId: string): Promise<void> {
   const tabs = useTabsStore.getState();
   const activeId = tabs.activeId;
-  const activeTab = tabs.tabs.find((t) => t.id === activeId) ?? null;
+  const activeTab =
+    activeId !== null
+      ? (useDocumentsStore.getState().documents[activeId] ?? null)
+      : null;
   const ws = useWorkspaceStore.getState();
   const ui = useUiStore.getState();
 
@@ -178,8 +182,10 @@ async function handleOpenFile(): Promise<void> {
  * the window going away.
  */
 async function handleCloseRequested(): Promise<void> {
-  const tabs = useTabsStore.getState().tabs;
-  const dirty = tabs.filter((t) => t.dirty);
+  // Read the live view order + domain state fresh (no React selector) so the
+  // dirty check reflects current edits at the moment of close.
+  const docs = readOrderedDocuments();
+  const dirty = docs.filter((t) => t.dirty);
   if (dirty.length === 0) {
     await captureAndSaveSession();
     await getCurrentWindow().destroy();

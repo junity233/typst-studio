@@ -4,7 +4,7 @@ import { TabStrip } from "../TitleBar/TabStrip";
 import { MonacoEditor, type MonacoEditorApi } from "../Editor/MonacoEditor";
 import { PreviewPane } from "../Preview/PreviewPane";
 import { DiagnosticsPanel } from "../Diagnostics/DiagnosticsPanel";
-import { useTabsStore } from "../../store/tabsStore";
+import { useTabsStore, useActiveDocument } from "../../store/tabsStore";
 import { useUiStore } from "../../store/uiStore";
 import { useSetting } from "../../hooks/useSetting";
 import { updateText } from "../../lib/tauri";
@@ -41,9 +41,7 @@ function loadPreviewWidth(): number {
  * The preview width is persisted to localStorage and clamped to a sensible min.
  */
 export function EditorArea() {
-  const activeTab = useTabsStore((s) =>
-    s.tabs.find((t) => t.id === s.activeId) ?? null,
-  );
+  const activeTab = useActiveDocument();
   const updateContent = useTabsStore((s) => s.updateContent);
   const previewVisible = useUiStore((s) => s.previewVisible);
   const setPreview = useUiStore((s) => s.setPreview);

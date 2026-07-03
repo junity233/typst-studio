@@ -117,9 +117,16 @@ export async function captureSession(
  */
 export async function captureAndSaveSession(): Promise<void> {
   try {
-    const { useTabsStore } = await import("../store/tabsStore");
+    // Read the live view order + domain state. The tabs store is now a views
+    // store (ids only); the domain fields come from documentsStore via
+    // `readOrderedDocuments`, which snapshots both stores once. Imported
+    // lazily to keep this module free of a static import cycle (the stores
+    // import `recordFile` from here).
+    const { useTabsStore, readOrderedDocuments } = await import(
+      "../store/tabsStore"
+    );
     await captureSession(
-      () => useTabsStore.getState(),
+      () => ({ tabs: readOrderedDocuments(), activeId: useTabsStore.getState().activeId }),
       saveSession,
     );
   } catch (e) {

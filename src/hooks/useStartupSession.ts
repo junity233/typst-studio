@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useTabsStore } from "../store/tabsStore";
+import { useDocumentsStore } from "../store/documentsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { loadSession, restoreOpenDocuments } from "../lib/session";
 import { openFileByPath, setDirty } from "../lib/tauri";
@@ -33,7 +34,7 @@ export function useStartupSession(): void {
     startupDone = true;
 
     void (async () => {
-      const { tabs } = useTabsStore.getState();
+      const tabs = useTabsStore.getState().tabs;
       if (tabs.length > 0) return; // something already open (e.g. dev reload)
       try {
         const session = await loadSession();
@@ -92,12 +93,9 @@ export function useStartupSession(): void {
           if (!dirty) continue;
           try {
             await setDirty(id, true);
-            // Mirror the flag locally so the UI reflects it immediately.
-            useTabsStore.setState((s) => ({
-              tabs: s.tabs.map((t) =>
-                t.id === id ? { ...t, dirty: true } : t,
-              ),
-            }));
+            // Mirror the flag locally so the UI reflects it immediately. The
+            // dirty flag is domain state, so it lives in documentsStore now.
+            useDocumentsStore.getState().reMarkDirty(id);
           } catch (e) {
             console.warn(`[startup] could not re-mark ${id} dirty:`, e);
           }

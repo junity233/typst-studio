@@ -29,11 +29,15 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 const { dispatch } = await import("../useAppCommands");
 const { useTabsStore } = await import("../../store/tabsStore");
+const { useDocumentsStore } = await import("../../store/documentsStore");
 
 function seedActiveTab(revision: number): void {
-  useTabsStore.setState({
-    tabs: [
-      {
+  // Phase 4: domain state (incl. revision) lives in documentsStore; the views
+  // store holds only the id list + activeId. Seed both so dispatch resolves the
+  // active document and reads its revision.
+  useDocumentsStore.setState({
+    documents: {
+      active: {
         id: "active",
         title: "main.typ",
         path: "/x/main.typ",
@@ -46,9 +50,9 @@ function seedActiveTab(revision: number): void {
         svgPages: [],
         lineMap: [],
       },
-    ],
-    activeId: "active",
+    },
   });
+  useTabsStore.setState({ tabs: ["active"], activeId: "active" });
 }
 
 describe("dispatch forwards active tab revision to export IPC (§9)", () => {
@@ -94,6 +98,7 @@ describe("dispatch forwards active tab revision to export IPC (§9)", () => {
   });
 
   it("does not export when there is no active tab", async () => {
+    useDocumentsStore.setState({ documents: {} });
     useTabsStore.setState({ tabs: [], activeId: null });
     await dispatch("export-pdf");
     expect(invokeMock).not.toHaveBeenCalled();

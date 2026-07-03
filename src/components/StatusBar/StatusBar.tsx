@@ -1,5 +1,5 @@
 import { useDiagnosticsStore } from "../../store/diagnosticsStore";
-import { useTabsStore } from "../../store/tabsStore";
+import { useActiveDocument } from "../../store/tabsStore";
 import type { CompileStatus } from "../../lib/ui-types";
 import { useLspStatus } from "../../store/lspStore";
 
@@ -30,9 +30,7 @@ function lspLabel(running: boolean, available: boolean): string {
 }
 
 export function StatusBar() {
-  const tab = useTabsStore(
-    (s) => s.tabs.find((t) => t.id === s.activeId) ?? null,
-  );
+  const tab = useActiveDocument();
   const diagnostics = useDiagnosticsStore((s) =>
     tab !== null ? (s.byTab[tab.id] ?? EMPTY_DIAGNOSTICS) : EMPTY_DIAGNOSTICS,
   );
