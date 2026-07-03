@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 use parking_lot::RwLock;
 
+use crate::domain::document::WorkspaceId;
+use crate::domain::path::canonicalize_for_identity;
 use crate::error::{AppError, Result};
 use crate::fs::resolver::FileResolver;
 use crate::fs::tree::{read_dir as fs_read_dir, DirEntry, EntryKind};
@@ -44,6 +46,11 @@ pub struct WorkspaceService {
     resolver: RwLock<Option<FileResolver>>,
     /// Keeps the filesystem watcher alive while a workspace is open.
     watcher: RwLock<Option<watcher::WatcherGuard>>,
+    /// A fresh id minted on each [`open`](Self::open), embedded in every
+    /// `WorkspaceFile` origin so reclassification can detect stale
+    /// classifications (a doc owned by a *previous* workspace). `None` when
+    /// closed. See §4.3.
+    id: RwLock<Option<WorkspaceId>>,
 }
 
 impl WorkspaceService {
@@ -52,6 +59,7 @@ impl WorkspaceService {
             root: RwLock::new(None),
             resolver: RwLock::new(None),
             watcher: RwLock::new(None),
+            id: RwLock::new(None),
         }
     }
 
@@ -72,6 +80,30 @@ impl WorkspaceService {
         self.resolver.read().clone()
     }
 
+    /// The id of the currently open workspace, if any (§4.3). A fresh id is
+    /// minted on each [`open`](Self::open), so two consecutive openings of the
+    /// same folder yield distinct ids — letting reclassification tell a stale
+    /// `WorkspaceFile` (owned by a prior workspace) from a current one.
+    pub fn workspace_id(&self) -> Option<WorkspaceId> {
+        *self.id.read()
+    }
+
+    /// Whether `path` (canonicalized) is inside the current workspace root
+    /// (§4.2). Returns `false` when no workspace is open or when the path
+    /// can't be canonicalized (we never classify an un-canonicalizable path as
+    /// "inside"). Uses component-based `starts_with`, so a root of `/a/b`
+    /// contains `/a/b/c.typ` but not `/a/bc.typ`.
+    pub fn contains(&self, path: &Path) -> bool {
+        let root = match self.root.read().clone() {
+            Some(r) => r,
+            None => return false,
+        };
+        match canonicalize_for_identity(path) {
+            Ok(canon) => canon.starts_with(&root),
+            Err(_) => false,
+        }
+    }
+
     /// Open `root` as the workspace, replacing any prior workspace. Starts a
     /// filesystem watcher; `on_fs_change` is called (on the watcher thread) with
     /// changed paths so the IPC layer can emit a `fs_changed` event.
@@ -88,10 +120,13 @@ impl WorkspaceService {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| canonical.display().to_string());
 
-        // Swap root + resolver.
+        // Swap root + resolver. Mint a fresh workspace id each open so
+        // reclassification can distinguish docs owned by a *prior* workspace
+        // from those owned by the current one (§4.3).
         *self.root.write() = Some(canonical.clone());
         let resolver = FileResolver::new(canonical.clone());
         *self.resolver.write() = Some(resolver);
+        *self.id.write() = Some(WorkspaceId::new());
 
         // (Re)start the watcher. Dropping the old guard stops it.
         match watcher::watch(&canonical, on_fs_change) {
@@ -114,6 +149,7 @@ impl WorkspaceService {
         *self.watcher.write() = None;
         *self.resolver.write() = None;
         *self.root.write() = None;
+        *self.id.write() = None;
     }
 
     /// Resolve a workspace-relative path string ("" or "." = root) to an
@@ -338,6 +374,56 @@ mod tests {
         let ws = WorkspaceService::new();
         assert!(ws.read_dir("").is_err(), "read_dir needs an open workspace");
         assert!(ws.create_entry("x", EntryKind::File).is_err());
+    }
+
+    #[test]
+    fn contains_true_for_file_inside_root() {
+        let dir = tmp_dir();
+        std::fs::write(dir.join("main.typ"), "x").unwrap();
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        let file = dir.join("main.typ");
+        assert!(ws.contains(&file), "file inside root must be contained");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn contains_false_for_file_outside_root() {
+        let dir = tmp_dir();
+        let other = std::env::temp_dir().join(format!("typst-ws-out-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&other, "x").unwrap();
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        assert!(
+            !ws.contains(&other),
+            "file outside root must not be contained"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&other);
+    }
+
+    #[test]
+    fn contains_false_when_no_workspace() {
+        let ws = WorkspaceService::new();
+        let file = std::env::temp_dir().join("typst-ws-none.typ");
+        assert!(!ws.contains(&file), "no workspace → never contained");
+    }
+
+    #[test]
+    fn workspace_id_mints_per_open_and_clears_on_close() {
+        let dir = tmp_dir();
+        let ws = WorkspaceService::new();
+        assert!(ws.workspace_id().is_none(), "no id before first open");
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        let id1 = ws.workspace_id().expect("open mints an id");
+        // Reopen the SAME folder — must yield a fresh id (so stale docs are
+        // detectable across a reopen).
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        let id2 = ws.workspace_id().expect("reopen mints an id");
+        assert_ne!(id1, id2, "each open must mint a fresh workspace id");
+        ws.close();
+        assert!(ws.workspace_id().is_none(), "close clears the id");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

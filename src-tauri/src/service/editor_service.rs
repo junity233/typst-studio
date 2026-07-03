@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -28,7 +28,7 @@ use typst_layout::PagedDocument;
 use crate::domain::compile_result::CompileOutcome;
 use crate::domain::compile_status::CompileStatus;
 use crate::domain::diagnostics::{Diagnostic, Range, Severity};
-use crate::domain::document::{DocumentId, DocumentMeta, WorkspaceId};
+use crate::domain::document::{DocumentId, DocumentMeta, DocumentOrigin};
 use crate::domain::path::canonicalize_for_identity;
 use crate::domain::registry::{DocumentRegistry, SharedRegistry};
 use crate::domain::source_map::LineRect;
@@ -41,6 +41,7 @@ use crate::typst_engine::world::EditorWorld;
 
 use super::compile_worker::CompileWorker;
 use super::tab_state::TabState;
+use super::workspace_service::WorkspaceService;
 
 /// Default content for a fresh untitled tab.
 const DEFAULT_TEMPLATE: &str = "#set page(width: 21cm, height: 29.7cm)\n\nHello, Typst!\n";
@@ -139,52 +140,96 @@ impl EditorService {
     /// Open a tab from already-read content (the command layer handles IO).
     /// Sets the path + title from `path`. A worker is started for the tab.
     ///
+    /// `workspace` supplies the active-workspace context for origin
+    /// classification (§4.2): when a workspace is open and the file lives
+    /// inside it, the tab is a `WorkspaceFile` backed by the workspace
+    /// resolver; otherwise it is a `LooseFile` rooted at its parent dir. Pass
+    /// `None` when no workspace context is available (the file is always loose
+    /// then).
+    ///
     /// If a document at `path`'s canonical location is already open, **no new
     /// document is created**: the existing [`DocumentId`] is returned so the
     /// caller can focus its view instead (§4.1 uniqueness, §8.1 step 3).
-    pub fn open_from_content(&self, path: PathBuf, content: String) -> Result<DocumentMeta> {
+    pub fn open_from_content(
+        &self,
+        path: PathBuf,
+        content: String,
+        workspace: Option<&WorkspaceService>,
+    ) -> Result<DocumentMeta> {
         let canon = canonicalize_for_identity(&path)?;
         if let Some(existing) = self.find_existing(&canon) {
             return Ok(existing);
         }
-        let meta = self.classify_new(DocumentId::new(), canon);
+        let meta = self.classify_new(DocumentId::new(), canon, workspace);
         let id = meta.id;
         self.registry.write().register(meta.clone())?;
-        let tab = Arc::new(TabState::with_meta(meta.clone(), content));
+        let tab = self.tab_from_meta(&meta, &content, workspace);
         self.tabs.write().insert(id, tab.clone());
         self.create_worker(id, tab);
         Ok(meta)
     }
 
     /// Open a tab backed by a real file on disk. The world's resolver is
-    /// derived from the document's origin (§4.2): a loose file gets a
-    /// parent-directory-rooted [`FileResolver`] so same-dir `#include` /
-    /// `#image()` resolve; an untitled-derived origin would fall back to a
-    /// detached world. Falls back to detached if the resolver can't anchor the
-    /// path (mirrors the pre-resolver behavior).
+    /// derived from the document's origin (§4.2): a workspace file (inside the
+    /// active workspace, when `workspace` is supplied) gets the workspace
+    /// resolver; a loose file gets a parent-directory-rooted [`FileResolver`]
+    /// so same-dir `#include` / `#image()` resolve. Falls back to a detached
+    /// world if the resolver can't anchor the path.
     ///
     /// Deduplicates by canonical path like
     /// [`open_from_content`](Self::open_from_content).
-    pub fn open_from_disk(&self, path: PathBuf, content: String) -> Result<DocumentMeta> {
+    pub fn open_from_disk(
+        &self,
+        path: PathBuf,
+        content: String,
+        workspace: Option<&WorkspaceService>,
+    ) -> Result<DocumentMeta> {
         let canon = canonicalize_for_identity(&path)?;
         if let Some(existing) = self.find_existing(&canon) {
             return Ok(existing);
         }
-        let meta = self.classify_new(DocumentId::new(), canon.clone());
+        let meta = self.classify_new(DocumentId::new(), canon, workspace);
         let id = meta.id;
         self.registry.write().register(meta.clone())?;
-        let tab = match &meta.origin {
-            crate::domain::document::DocumentOrigin::LooseFile { root, .. } => {
-                self.build_loose_tab(&meta, &content, root, &canon)
-            }
-            // Untitled / workspace origins are owned by other phases; for them
-            // (and for any future WorkspaceFile in Task B) we degrade to a
-            // detached world here — Task B plumbs the workspace resolver.
-            _ => Arc::new(TabState::with_meta(meta.clone(), content)),
-        };
+        let tab = self.tab_from_meta(&meta, &content, workspace);
         self.tabs.write().insert(id, tab.clone());
         self.create_worker(id, tab);
         Ok(meta)
+    }
+
+    /// Build the initial [`TabState`] for a freshly-classified `meta`, picking
+    /// the resolver that matches the origin: the workspace resolver for a
+    /// `WorkspaceFile`, the cached parent resolver for a `LooseFile`, and a
+    /// detached world for `Untitled`. Shared by the two open paths.
+    fn tab_from_meta(
+        &self,
+        meta: &DocumentMeta,
+        content: &str,
+        workspace: Option<&WorkspaceService>,
+    ) -> Arc<TabState> {
+        let canon = match meta.origin.canonical_path() {
+            Some(p) => p,
+            None => return Arc::new(TabState::with_meta(meta.clone(), content.to_string())),
+        };
+        match &meta.origin {
+            DocumentOrigin::WorkspaceFile { .. } => {
+                // Origin is a workspace file iff the workspace was open and
+                // contained the path at classify time, so the resolver is
+                // available. Guard against the (impossible-in-practice) race
+                // where the workspace closed between classify and here by
+                // falling back to a detached single-file world (no relative
+                // resolution) — the next reclassify pass on a real open will
+                // restore the workspace resolver.
+                let resolver = workspace.and_then(|ws| ws.resolver());
+                self.build_tab(meta, content, resolver, canon)
+            }
+            DocumentOrigin::LooseFile { root, .. } => {
+                self.build_loose_tab(meta, content, root, canon)
+            }
+            DocumentOrigin::Untitled => {
+                Arc::new(TabState::with_meta(meta.clone(), content.to_string()))
+            }
+        }
     }
 
     /// Look up (or insert) the shared [`FileResolver`] for a loose-file parent
@@ -205,29 +250,57 @@ impl EditorService {
             .clone()
     }
 
+    /// Build a [`TabState`] for `meta` seeded with `text`, anchoring the world
+    /// at `canon` against the supplied resolver.
+    ///
+    /// - `Some(resolver)`: the world's main `FileId` is derived from `canon`
+    ///   via the resolver, so `#include` / `#image()` resolve relative to the
+    ///   main file's directory (and any sibling under the resolver's root). Use
+    ///   this for both workspace files (workspace resolver) and loose files
+    ///   (parent-directory resolver).
+    /// - `None`: a detached single-file world — no `#include` resolution. Used
+    ///   for untitled tabs and as a fallback when the resolver can't anchor
+    ///   `canon` (e.g. the root vanished mid-flight).
+    ///
+    /// Shared by [`open_from_disk`](Self::open_from_disk),
+    /// [`rebind_path`](Self::rebind_path), and
+    /// [`reclassify_documents`](Self::reclassify_documents) so all three
+    /// reconstruct the world identically.
+    fn build_tab(
+        &self,
+        meta: &DocumentMeta,
+        text: &str,
+        resolver: Option<crate::fs::FileResolver>,
+        canon: &Path,
+    ) -> Arc<TabState> {
+        match resolver {
+            Some(r) => match EditorWorld::with_resolver(
+                text.to_string(),
+                crate::typst_engine::font_loader::SystemFontLoader::new(),
+                r,
+                canon,
+            ) {
+                Ok(world) => Arc::new(TabState::with_meta_and_world(meta.clone(), world)),
+                // Resolver couldn't anchor the path — degrade to detached.
+                Err(_) => Arc::new(TabState::with_meta(meta.clone(), text.to_string())),
+            },
+            None => Arc::new(TabState::with_meta(meta.clone(), text.to_string())),
+        }
+    }
+
     /// Build a [`TabState`] whose world is a loose file anchored at `root`,
     /// seeded with `text`. Falls back to a detached single-file world if the
-    /// resolver can't anchor `canon` (e.g. the root has vanished). Shared by
-    /// [`open_from_disk`](Self::open_from_disk) and
-    /// [`rebind_path`](Self::rebind_path) so both resolve `#include` the same way.
+    /// resolver can't anchor `canon` (e.g. the root has vanished). Thin wrapper
+    /// over [`build_tab`](Self::build_tab) using the cached parent resolver.
     fn build_loose_tab(
         &self,
         meta: &DocumentMeta,
         text: &str,
-        root: &std::path::Path,
-        canon: &std::path::Path,
+        root: &Path,
+        canon: &Path,
     ) -> Arc<TabState> {
         let resolver = self.loose_resolver_for(root);
-        match EditorWorld::with_resolver(
-            text.to_string(),
-            crate::typst_engine::font_loader::SystemFontLoader::new(),
-            resolver,
-            canon,
-        ) {
-            Ok(world) => Arc::new(TabState::with_meta_and_world(meta.clone(), world)),
-            // Resolver couldn't anchor the path — degrade to detached.
-            Err(_) => Arc::new(TabState::with_meta(meta.clone(), text.to_string())),
-        }
+        self.build_tab(meta, text, Some(resolver), canon)
     }
 
     /// Return the existing metadata for an already-open canonical path, if any.
@@ -238,34 +311,28 @@ impl EditorService {
             .and_then(|id| reg.get(id).cloned())
     }
 
-    /// Classify a fresh on-disk path as `WorkspaceFile` or `LooseFile`. The
-    /// active-workspace classification is performed by [`Self::active_workspace_id`];
-    /// with no workspace open, every disk file is a `LooseFile` rooted at its
-    /// parent directory (§4.2).
-    ///
-    /// Phase 1 / Task A always classifies as `LooseFile` (parent-rooted) —
-    /// correct behavior for the no-workspace case. Task B refines this once
-    /// `WorkspaceService` exposes containment.
-    fn classify_new(&self, id: DocumentId, canon: PathBuf) -> DocumentMeta {
-        // TODO(phase2-taskB): workspace containment — once `active_workspace_id`
-        // returns a real id and `WorkspaceService::contains` exists, branch to a
-        // `WorkspaceFile` here. For now, every disk file is a loose file.
-        if let Some(_ws) = self.active_workspace_id() {
-            // Reserved for Task B: build a WorkspaceFile once containment is
-            // queryable. For now, fall through to LooseFile so Task A behavior
-            // matches the existing open path.
+    /// Classify a fresh on-disk path as `WorkspaceFile` or `LooseFile` (§4.2).
+    /// When `workspace` is open and contains `canon`, the file is a
+    /// `WorkspaceFile` carrying the workspace's id; otherwise it is a
+    /// `LooseFile` rooted at its parent directory.
+    fn classify_new(
+        &self,
+        id: DocumentId,
+        canon: PathBuf,
+        workspace: Option<&WorkspaceService>,
+    ) -> DocumentMeta {
+        if let Some(ws) = workspace {
+            if let Some(workspace_id) = ws.workspace_id() {
+                if ws.contains(&canon) {
+                    return DocumentMeta::with_workspace_path(id, canon, workspace_id);
+                }
+            }
         }
         let root = canon
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
         DocumentMeta::with_loose_path(id, canon, root)
-    }
-
-    /// The currently active workspace id, if any.
-    // TODO(phase2-taskB): workspace containment — wire to `WorkspaceService`.
-    fn active_workspace_id(&self) -> Option<WorkspaceId> {
-        None
     }
 
     /// Full Save As rebind (§4.1 / §8.3): give a tab a new on-disk path while
@@ -326,17 +393,32 @@ impl EditorService {
         // `with_meta_and_world`; falls back to a detached world on anchor failure.
         let new_tab = self.build_loose_tab(&new_meta, &text, &root, &canon);
 
-        // Swap the tab in, then rotate the worker. Dropping the old worker
-        // discards comemo's incremental cache (acceptable on Save As); spawning
-        // a fresh one signals an immediate recompile against the new world.
+        // Swap the new world in and rotate the worker to trigger a recompile.
+        self.swap_world(id, new_tab);
+        Ok(())
+    }
+
+    /// Swap a freshly-built [`TabState`] in for `id`, dropping the old worker
+    /// and spawning a fresh one that signals an immediate recompile.
+    ///
+    /// This is the shared "world rebuilt → worker rotated" tail used by both
+    /// [`rebind_path`](Self::rebind_path) and
+    /// [`reclassify_documents`](Self::reclassify_documents). Dropping the old
+    /// worker discards comemo's incremental cache for the old world (acceptable
+    /// on a Save As or a resolution-scope change); the new worker compiles
+    /// against the rebuilt world.
+    ///
+    /// Callers MUST have already updated the registry (if the canonical path
+    /// changed) and built `new_tab` preserving the buffer + revision.
+    fn swap_world(&self, id: DocumentId, new_tab: Arc<TabState>) {
         self.tabs.write().insert(id, new_tab.clone());
         // There's a sub-millisecond window between dropping the old worker and
         // spawning the new one where an update_text could arrive and find no
-        // worker (its recompile signal is dropped). Acceptable since Save As is
-        // user-initiated and the disk write already captured the buffer.
+        // worker (its recompile signal is dropped). Acceptable since both
+        // callers (Save As, reclassify) are user-initiated and the buffer is
+        // already captured in the new world.
         let _ = self.workers.write().remove(&id);
         self.create_worker(id, new_tab);
-        Ok(())
     }
 
     /// Deprecated alias — delegates to [`rebind_path`](Self::rebind_path). Kept
@@ -345,6 +427,82 @@ impl EditorService {
     #[deprecated(note = "use rebind_path — it rebuilds the world and recompiles")]
     pub fn assign_path(&self, id: DocumentId, path: PathBuf) -> Result<()> {
         self.rebind_path(id, path)
+    }
+
+    /// Reclassify every open document's [`DocumentOrigin`] against the current
+    /// workspace state (§4.3), rebuilding each affected tab's world with the
+    /// matching resolver. Called by the IPC command layer after a workspace
+    /// opens or closes.
+    ///
+    /// Transitions (the file path itself never moves — only the classification
+    /// and its resolution scope change):
+    /// - **Workspace opens**: a `LooseFile` whose canonical path is inside the
+    ///   new root becomes a `WorkspaceFile` (resolver switches to the workspace
+    ///   root). A `WorkspaceFile` left over from a *prior* workspace is
+    ///   re-claimed by the current workspace if still contained, else demoted
+    ///   to `LooseFile`.
+    /// - **Workspace closes**: every `WorkspaceFile` becomes a `LooseFile`
+    ///   rooted at its parent dir (resolver switches to the parent-rooted one,
+    ///   so same-dir `#include` still resolves).
+    /// - `Untitled` documents are never touched.
+    ///
+    /// `DocumentId`, buffer text, `revision`, and `dirty` are preserved across
+    /// every transition; compile results reset (the rebuilt world recompiles).
+    pub fn reclassify_documents(&self, ws: &WorkspaceService) {
+        // Snapshot the ids first so we release the read lock before mutating.
+        let ids: Vec<DocumentId> = self.tabs.read().keys().copied().collect();
+        for id in ids {
+            self.reclassify_one(id, ws);
+        }
+    }
+
+    /// Reclassify a single document, if its origin should change under `ws`.
+    /// No-op when the origin is already correct (or the doc is untitled).
+    fn reclassify_one(&self, id: DocumentId, ws: &WorkspaceService) {
+        // Snapshot the current meta, buffer, and revision under a brief lock.
+        let (meta, text) = {
+            let tabs = self.tabs.read();
+            let Some(tab) = tabs.get(&id).cloned() else {
+                return;
+            };
+            let rt = tab.state.lock();
+            (rt.meta.clone(), tab.world.text())
+        };
+
+        // Untitled docs are never reclassified.
+        let Some(canon) = meta.origin.canonical_path().map(|p| p.to_path_buf()) else {
+            return;
+        };
+
+        let Some(new_origin) = reclassified_origin(&meta.origin, &canon, ws) else {
+            return; // already correct — no transition needed.
+        };
+
+        // Build the new meta preserving id, title, dirty, and revision. Only
+        // the origin classification (and thus the resolution scope) changes;
+        // the canonical path is identical, so the registry rebind is
+        // idempotent for this id.
+        let new_meta = DocumentMeta {
+            origin: new_origin,
+            ..meta
+        };
+
+        // Pick the resolver matching the new origin: workspace resolver for a
+        // WorkspaceFile, cached parent resolver for a LooseFile.
+        let resolver = resolver_for_origin(&new_meta.origin, ws, |parent| {
+            self.loose_resolver_for(parent)
+        });
+
+        // Update the registry first (idempotent rebind — same canonical path).
+        // A conflict here would be a bug (the path didn't move), but rebind is
+        // fallible so honour the Result: on the impossible conflict, leave the
+        // tab untouched rather than half-swap.
+        if self.registry.write().rebind(id, new_meta.clone()).is_err() {
+            return;
+        }
+
+        let new_tab = self.build_tab(&new_meta, &text, resolver, &canon);
+        self.swap_world(id, new_tab);
     }
 
     /// Spawn a [`CompileWorker`] for `id` whose closure compiles `tab` and
@@ -589,6 +747,76 @@ impl EditorService {
     #[cfg(test)]
     pub fn loose_resolver_cache_len(&self) -> usize {
         self.loose_resolvers.read().len()
+    }
+}
+
+/// Decide the reclassified [`DocumentOrigin`] for a doc currently at `canon`,
+/// given the workspace state. Returns `None` when the origin is already correct
+/// (no transition needed).
+///
+/// Rules (§4.3):
+/// - Workspace open + doc contained → `WorkspaceFile` with the current id.
+/// - Workspace open + doc NOT contained → `LooseFile` rooted at its parent.
+/// - Workspace closed + doc was a `WorkspaceFile` → `LooseFile` rooted at its
+///   parent.
+/// - Workspace closed + doc already `LooseFile` → unchanged (`None`).
+fn reclassified_origin(
+    current: &DocumentOrigin,
+    canon: &Path,
+    ws: &WorkspaceService,
+) -> Option<DocumentOrigin> {
+    let parent = canon
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    if ws.is_open() {
+        if let Some(workspace_id) = ws.workspace_id() {
+            if ws.contains(canon) {
+                // Belongs to the current workspace.
+                let target = DocumentOrigin::WorkspaceFile {
+                    path: canon.to_path_buf(),
+                    workspace_id,
+                };
+                // Transition iff the target differs from the current origin.
+                return (&target != current).then_some(target);
+            }
+        }
+        // Workspace open but the file is outside it → loose.
+        let target = DocumentOrigin::LooseFile {
+            path: canon.to_path_buf(),
+            root: parent,
+        };
+        return (&target != current).then_some(target);
+    }
+
+    // No workspace open: any WorkspaceFile must demote to LooseFile.
+    match current {
+        DocumentOrigin::WorkspaceFile { .. } => {
+            let target = DocumentOrigin::LooseFile {
+                path: canon.to_path_buf(),
+                root: parent,
+            };
+            Some(target)
+        }
+        // Already loose (or untitled, which is filtered out earlier).
+        _ => None,
+    }
+}
+
+/// Pick the [`FileResolver`] matching an origin's resolution scope. Returns the
+/// workspace resolver for a `WorkspaceFile`, the (cached) parent resolver for a
+/// `LooseFile`, and `None` for `Untitled`. `loose_for` resolves the loose
+/// resolver (so the editor service can route through its shared cache).
+fn resolver_for_origin(
+    origin: &DocumentOrigin,
+    ws: &WorkspaceService,
+    loose_for: impl Fn(&Path) -> crate::fs::FileResolver,
+) -> Option<crate::fs::FileResolver> {
+    match origin {
+        DocumentOrigin::WorkspaceFile { .. } => ws.resolver(),
+        DocumentOrigin::LooseFile { root, .. } => Some(loose_for(root)),
+        DocumentOrigin::Untitled => None,
     }
 }
 
@@ -871,7 +1099,7 @@ mod tests {
         let (svc, _) = make_service();
         // Simulate what the command layer does: read content, open tab, then save.
         let initial = std::fs::read_to_string(&tmp).unwrap();
-        let meta = svc.open_from_content(tmp.clone(), initial).unwrap();
+        let meta = svc.open_from_content(tmp.clone(), initial, None).unwrap();
         // Edit + prepare_save + write + clear_dirty (mirrors the async command).
         svc.update_text(meta.id, "#set page(width: 10cm)\n\nSaved!".into())
             .unwrap();
@@ -955,11 +1183,11 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("ts-dedup-{}.typ", uuid::Uuid::new_v4()));
         std::fs::write(&tmp, "#set page(width: 10cm)\n\nOne").unwrap();
         let (svc, _) = make_service();
-        let first = svc.open_from_content(tmp.clone(), "x".into()).unwrap();
+        let first = svc.open_from_content(tmp.clone(), "x".into(), None).unwrap();
         // Open via a different lexical path (`.` component) that canonicalizes
         // to the same file — must NOT create a second document.
         let via_dot = tmp.parent().unwrap().join(".").join(tmp.file_name().unwrap());
-        let second = svc.open_from_content(via_dot, "y".into()).unwrap();
+        let second = svc.open_from_content(via_dot, "y".into(), None).unwrap();
         assert_eq!(first.id, second.id, "same canonical path must dedup");
         assert_eq!(svc.list_tabs().len(), 1);
         assert_eq!(svc.registry().read().len(), 1);
@@ -975,7 +1203,7 @@ mod tests {
         let src = dir.join("a.typ");
         std::fs::write(&src, "#set page(width: 10cm)\n\nA").unwrap();
         let (svc, _) = make_service();
-        let meta = svc.open_from_content(src.clone(), "x".into()).unwrap();
+        let meta = svc.open_from_content(src.clone(), "x".into(), None).unwrap();
         let id_before = meta.id;
         // Save As to a new path in the same dir.
         let dst = dir.join("b.typ");
@@ -1013,8 +1241,8 @@ mod tests {
         let a_canon = canonicalize_for_identity(&a).unwrap();
         let b_canon = canonicalize_for_identity(&b).unwrap();
         let (svc, _) = make_service();
-        let meta_a = svc.open_from_content(a.clone(), "x".into()).unwrap();
-        let meta_b = svc.open_from_content(b.clone(), "y".into()).unwrap();
+        let meta_a = svc.open_from_content(a.clone(), "x".into(), None).unwrap();
+        let meta_b = svc.open_from_content(b.clone(), "y".into(), None).unwrap();
         // Try to Save As b onto a's path → must error.
         let err = svc.rebind_path(meta_b.id, a.clone()).unwrap_err();
         assert!(matches!(err, AppError::AlreadyOpen { .. }));
@@ -1036,7 +1264,7 @@ mod tests {
         std::fs::write(dir.join("intro.typ"), "Intro\n").unwrap();
         let (svc, emitter) = make_service();
         let content = std::fs::read_to_string(&main).unwrap();
-        let meta = svc.open_from_disk(main.clone(), content).unwrap();
+        let meta = svc.open_from_disk(main.clone(), content, None).unwrap();
         wait_for_compiled(&emitter, meta.id);
         // The include must resolve → a document with at least one page exists.
         let doc = svc
@@ -1068,7 +1296,7 @@ mod tests {
         std::fs::write(dir2.join("intro.typ"), "Intro in dir2\n").unwrap();
 
         let (svc, emitter) = make_service();
-        let meta = svc.open_from_disk(src.clone(), text.to_string()).unwrap();
+        let meta = svc.open_from_disk(src.clone(), text.to_string(), None).unwrap();
         wait_for_compiled(&emitter, meta.id);
 
         // Save As into dir2. The buffer + id are preserved, but the world is
@@ -1108,7 +1336,7 @@ mod tests {
         std::fs::write(&src, "#set page(width: 10cm)\n\nOriginal").unwrap();
         let (svc, emitter) = make_service();
         let content = std::fs::read_to_string(&src).unwrap();
-        let meta = svc.open_from_disk(src.clone(), content).unwrap();
+        let meta = svc.open_from_disk(src.clone(), content, None).unwrap();
         wait_for_compiled(&emitter, meta.id);
         // Edit to bump the revision.
         svc.update_text(meta.id, "#set page(width: 10cm)\n\nEdited".into())
@@ -1147,8 +1375,8 @@ mod tests {
         let a_canon = canonicalize_for_identity(&a).unwrap();
         let b_canon = canonicalize_for_identity(&b).unwrap();
         let (svc, _) = make_service();
-        let meta_a = svc.open_from_disk(a.clone(), "x".into()).unwrap();
-        let meta_b = svc.open_from_disk(b.clone(), "y".into()).unwrap();
+        let meta_a = svc.open_from_disk(a.clone(), "x".into(), None).unwrap();
+        let meta_b = svc.open_from_disk(b.clone(), "y".into(), None).unwrap();
         // Rebind b onto a's path → conflict.
         let err = svc.rebind_path(meta_b.id, a.clone()).unwrap_err();
         assert!(matches!(err, AppError::AlreadyOpen { .. }));
@@ -1176,10 +1404,10 @@ mod tests {
         std::fs::write(&two, "#set page(width: 10cm)\n\nTwo").unwrap();
         let (svc, emitter) = make_service();
         let a = svc
-            .open_from_disk(one.clone(), "#set page(width: 10cm)\n\nOne".into())
+            .open_from_disk(one.clone(), "#set page(width: 10cm)\n\nOne".into(), None)
             .unwrap();
         let b = svc
-            .open_from_disk(two.clone(), "#set page(width: 10cm)\n\nTwo".into())
+            .open_from_disk(two.clone(), "#set page(width: 10cm)\n\nTwo".into(), None)
             .unwrap();
         wait_for_compiled(&emitter, a.id);
         wait_for_compiled(&emitter, b.id);
@@ -1189,6 +1417,264 @@ mod tests {
             1,
             "both files share one parent → exactly one cached resolver"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- workspace reclassification (§4.3) -----------------------------------
+
+    /// A no-op fs-change callback for the workspace watcher in tests.
+    fn noop_on_change() -> crate::fs::watcher::OnChange {
+        Arc::new(|_: &[PathBuf]| {})
+    }
+
+    /// §4.3: opening a workspace reclassifies an already-open loose file inside
+    /// it to a `WorkspaceFile`, preserving id/buffer/revision and still
+    /// compiling.
+    #[test]
+    fn reclassify_loose_to_workspace_on_open() {
+        let dir = std::env::temp_dir().join(format!("ts-recl-open-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.typ");
+        std::fs::write(&main, "#set page(width: 10cm)\n\nHello").unwrap();
+
+        let (svc, emitter) = make_service();
+        // Open the file with NO workspace → it's a loose file.
+        let content = std::fs::read_to_string(&main).unwrap();
+        let meta = svc.open_from_disk(main.clone(), content, None).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        let id_before = meta.id;
+        assert!(
+            matches!(meta.origin, DocumentOrigin::LooseFile { .. }),
+            "without a workspace the file must classify as LooseFile"
+        );
+
+        // Open a workspace rooted at the file's dir and reclassify.
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        let ws_id = ws.workspace_id().unwrap();
+        emitter.clear(); // drop the initial-compile event so the wait below
+                         // only returns once the post-reclassify compile finishes.
+        svc.reclassify_documents(&ws);
+
+        let after = svc.tab_meta(meta.id).unwrap();
+        assert_eq!(after.id, id_before, "DocumentId must survive reclassify");
+        match after.origin {
+            DocumentOrigin::WorkspaceFile { workspace_id, .. } => {
+                assert_eq!(workspace_id, ws_id, "origin must carry the new workspace id");
+            }
+            ref other => panic!("expected WorkspaceFile, got {other:?}"),
+        }
+        // Buffer + revision preserved.
+        assert_eq!(svc.tab_text(meta.id).as_deref(), Some("#set page(width: 10cm)\n\nHello"));
+        assert_eq!(svc.tab_revision(meta.id), Some(0));
+
+        // The rebuilt world still compiles (the worker recompiles).
+        wait_for_compiled(&emitter, meta.id);
+        assert!(
+            svc.last_doc(meta.id).map(|d| !d.pages().is_empty()).unwrap_or(false),
+            "reclassified tab must recompile to a non-empty document"
+        );
+        ws.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §4.3: closing a workspace demotes a `WorkspaceFile` to a `LooseFile`
+    /// rooted at its parent dir (so same-dir `#include` still resolves),
+    /// preserving id/buffer.
+    #[test]
+    fn reclassify_workspace_to_loose_on_close() {
+        let dir = std::env::temp_dir().join(format!("ts-recl-close-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.typ");
+        // An include that must keep resolving after demotion (parent-rooted).
+        std::fs::write(&main, "#include \"intro.typ\"\n").unwrap();
+        std::fs::write(dir.join("intro.typ"), "Intro\n").unwrap();
+
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        let (svc, emitter) = make_service();
+        let content = std::fs::read_to_string(&main).unwrap();
+        // Open WITH a workspace → it's a WorkspaceFile.
+        let meta = svc.open_from_disk(main.clone(), content, Some(&ws)).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        let id_before = meta.id;
+        assert!(
+            matches!(meta.origin, DocumentOrigin::WorkspaceFile { .. }),
+            "inside an open workspace the file must classify as WorkspaceFile"
+        );
+
+        // Close the workspace and reclassify → demote to LooseFile.
+        ws.close();
+        emitter.clear();
+        svc.reclassify_documents(&ws);
+
+        let after = svc.tab_meta(meta.id).unwrap();
+        assert_eq!(after.id, id_before, "DocumentId must survive reclassify");
+        match &after.origin {
+            DocumentOrigin::LooseFile { root, .. } => {
+                assert_eq!(root, &canonicalize_for_identity(&dir).unwrap());
+            }
+            other => panic!("expected LooseFile after close, got {other:?}"),
+        }
+        assert_eq!(svc.tab_text(meta.id).as_deref(), Some("#include \"intro.typ\"\n"));
+
+        // The parent-rooted resolver still resolves the same-dir include.
+        wait_for_compiled(&emitter, meta.id);
+        assert!(
+            svc.last_doc(meta.id).map(|d| !d.pages().is_empty()).unwrap_or(false),
+            "demoted loose file must still resolve its same-dir #include"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §4.3 / §7: reclassification preserves `dirty` and `revision` (only Save
+    /// As / save clears dirty).
+    #[test]
+    fn reclassify_preserves_dirty_and_revision() {
+        let dir = std::env::temp_dir().join(format!("ts-recl-dirty-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.typ");
+        std::fs::write(&main, "#set page(width: 10cm)\n\nOriginal").unwrap();
+
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        let (svc, emitter) = make_service();
+        let content = std::fs::read_to_string(&main).unwrap();
+        let meta = svc.open_from_disk(main.clone(), content, Some(&ws)).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        // Edit → dirty + bumped revision.
+        svc.update_text(meta.id, "#set page(width: 10cm)\n\nEdited".into())
+            .unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        let rev_before = svc.tab_revision(meta.id).unwrap();
+        let text_before = svc.tab_text(meta.id).unwrap();
+        assert!(rev_before > 0, "edit must have bumped the revision");
+        assert!(svc.tab_meta(meta.id).unwrap().dirty, "must be dirty after edit");
+
+        // Close + reclassify → dirty + revision survive.
+        ws.close();
+        svc.reclassify_documents(&ws);
+
+        let after = svc.tab_meta(meta.id).unwrap();
+        assert_eq!(svc.tab_revision(meta.id), Some(rev_before), "revision preserved");
+        assert!(after.dirty, "dirty must survive reclassification");
+        assert_eq!(svc.tab_text(meta.id).as_deref(), Some(text_before.as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §4.3: `Untitled` documents are never reclassified.
+    #[test]
+    fn reclassify_untitled_untouched() {
+        let (svc, emitter) = make_service();
+        let meta = svc.new_tab(None);
+        wait_for_compiled(&emitter, meta.id);
+        let text_before = svc.tab_text(meta.id).unwrap();
+        let rev_before = svc.tab_revision(meta.id).unwrap();
+
+        let ws = WorkspaceService::new();
+        let dir = std::env::temp_dir().join(format!("ts-recl-unt-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        svc.reclassify_documents(&ws);
+        ws.close();
+        svc.reclassify_documents(&ws);
+
+        let after = svc.tab_meta(meta.id).unwrap();
+        assert!(
+            after.origin.is_untitled(),
+            "untitled origin must be untouched by reclassify"
+        );
+        assert_eq!(svc.tab_text(meta.id).as_deref(), Some(text_before.as_str()));
+        assert_eq!(svc.tab_revision(meta.id), Some(rev_before));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §4.3: a loose file OUTSIDE the workspace root stays loose when a
+    /// workspace opens.
+    #[test]
+    fn reclassify_outside_workspace_stays_loose() {
+        let ws_dir =
+            std::env::temp_dir().join(format!("ts-recl-out-ws-{}", uuid::Uuid::new_v4()));
+        let outside_dir =
+            std::env::temp_dir().join(format!("ts-recl-out-file-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&ws_dir).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let main = outside_dir.join("main.typ");
+        std::fs::write(&main, "#set page(width: 10cm)\n\nOutside").unwrap();
+
+        let (svc, emitter) = make_service();
+        let content = std::fs::read_to_string(&main).unwrap();
+        let meta = svc.open_from_disk(main.clone(), content, None).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        let id_before = meta.id;
+        assert!(matches!(meta.origin, DocumentOrigin::LooseFile { .. }));
+
+        // Open a workspace that does NOT contain the file → stays loose.
+        let ws = WorkspaceService::new();
+        ws.open(ws_dir.clone(), noop_on_change()).unwrap();
+        svc.reclassify_documents(&ws);
+
+        let after = svc.tab_meta(meta.id).unwrap();
+        assert_eq!(after.id, id_before);
+        assert!(
+            matches!(after.origin, DocumentOrigin::LooseFile { .. }),
+            "file outside the workspace must stay LooseFile"
+        );
+        ws.close();
+        let _ = std::fs::remove_dir_all(&ws_dir);
+        let _ = std::fs::remove_dir_all(&outside_dir);
+    }
+
+    #[test]
+    fn reclassify_stale_workspacefile_is_reclaimed_with_new_id() {
+        // Open a file as WorkspaceFile(id1), close the workspace (demotes to
+        // LooseFile), reopen the SAME folder (new id2), reclassify — the doc
+        // must be re-claimed as WorkspaceFile carrying id2 (not left stale).
+        let dir = std::env::temp_dir().join(format!("ts-recl-stale-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.typ");
+        std::fs::write(&main, "#set page(width: 10cm)\n\nStale").unwrap();
+
+        let (svc, emitter) = make_service();
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        let id1 = ws.workspace_id().expect("workspace open has an id");
+        // Open inside the workspace → classifies as WorkspaceFile(id1).
+        let content = std::fs::read_to_string(&main).unwrap();
+        let meta = svc.open_from_disk(main.clone(), content, Some(&ws)).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        match &svc.tab_meta(meta.id).unwrap().origin {
+            DocumentOrigin::WorkspaceFile { workspace_id, .. } => {
+                assert_eq!(*workspace_id, id1, "should be claimed by the first workspace");
+            }
+            other => panic!("expected WorkspaceFile, got {other:?}"),
+        }
+
+        // Close → demote to LooseFile.
+        ws.close();
+        svc.reclassify_documents(&ws);
+        assert!(matches!(
+            svc.tab_meta(meta.id).unwrap().origin,
+            DocumentOrigin::LooseFile { .. }
+        ));
+
+        // Reopen the SAME folder → a fresh WorkspaceId.
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        let id2 = ws.workspace_id().expect("reopened workspace has an id");
+        assert_ne!(id1, id2, "each open must mint a fresh WorkspaceId");
+        svc.reclassify_documents(&ws);
+
+        // The doc is re-claimed by the new workspace, carrying id2.
+        let id_preserved = meta.id;
+        match &svc.tab_meta(meta.id).unwrap().origin {
+            DocumentOrigin::WorkspaceFile { workspace_id, .. } => {
+                assert_eq!(*workspace_id, id2, "stale doc must be re-claimed with the new id");
+            }
+            other => panic!("expected WorkspaceFile after reopen, got {other:?}"),
+        }
+        assert_eq!(svc.tab_meta(meta.id).unwrap().id, id_preserved, "DocumentId stable");
+
+        ws.close();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
