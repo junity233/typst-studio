@@ -15,7 +15,7 @@ use std::ops::Range as ByteRange;
 use std::time::Instant;
 
 use typst::diag::{Severity as TypstSeverity, SourceDiagnostic};
-use typst::syntax::{DiagSpanKind, FileId, Source};
+use typst::syntax::{DiagSpanKind, FileId, Source, Span};
 use typst_layout::PagedDocument;
 
 use crate::domain::compile_result::CompileOutcome;
@@ -100,12 +100,37 @@ pub fn convert_diagnostic(
 /// Fetch the source for a diagnostic's file id. Falls back to `main` when the
 /// id can't be resolved (no workspace, or the file isn't readable) so the range
 /// degrades gracefully instead of erroring.
-fn resolve_source(world: &EditorWorld, main: &Source, id: FileId) -> Option<Source> {
+pub(crate) fn resolve_source(
+    world: &EditorWorld,
+    main: &Source,
+    id: FileId,
+) -> Option<Source> {
     world.source_for_id(id).or_else(|| Some(main.clone()))
 }
 
+/// Resolve a Typst [`Span`] to its 1-indexed source line.
+///
+/// `None` for detached / unresolvable spans (e.g. synthesized content with no
+/// source location). Used by the source-map builder to map rendered glyphs back
+/// to a source line for scroll-sync and click-to-source.
+pub(crate) fn span_to_line(span: Span, world: &EditorWorld) -> Option<u32> {
+    use typst::WorldExt;
+    // `WorldExt::range` dispatches on the span's kind (Detached/Number/Range),
+    // resolving numbered spans via the world's source(s) and returning the byte
+    // range verbatim for range spans. Same machinery diagnostics already use.
+    let bytes = world.range(span)?;
+    let source = span
+        .id()
+        .and_then(|id| world.source_for_id(id))
+        .unwrap_or_else(|| world.main_source());
+    let lines = source.lines();
+    let (line, _col) = lines.byte_to_line_column(bytes.start)?;
+    // `byte_to_line_column` is 0-indexed; Monaco (and our LineRect) are 1-indexed.
+    u32::try_from(line + 1).ok()
+}
+
 /// Convert a 0-indexed byte range into a 1-indexed `Range`.
-fn byte_range_to_range(source: &Source, bytes: ByteRange<usize>) -> Range {
+pub(crate) fn byte_range_to_range(source: &Source, bytes: ByteRange<usize>) -> Range {
     let lines = source.lines();
     let (sl, sc) = lines
         .byte_to_line_column(bytes.start)

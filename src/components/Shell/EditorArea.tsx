@@ -6,7 +6,13 @@ import { PreviewPane } from "../Preview/PreviewPane";
 import { DiagnosticsPanel } from "../Diagnostics/DiagnosticsPanel";
 import { useTabsStore } from "../../store/tabsStore";
 import { useUiStore } from "../../store/uiStore";
+import { useSetting } from "../../hooks/useSetting";
 import { updateText } from "../../lib/tauri";
+import {
+  lineAtOrAboveY,
+  parseViewBoxPt,
+  rectAtOrBeforeLine,
+} from "../Preview/previewMapping";
 
 const PREVIEW_WIDTH_KEY = "ts-preview-width";
 const PREVIEW_WIDTH_DEFAULT = 480;
@@ -44,6 +50,9 @@ export function EditorArea() {
 
   const [diagsCollapsed, setDiagsCollapsed] = useState(false);
   const editorApiRef = useRef<MonacoEditorApi | null>(null);
+  // Bumped when the editor API becomes available, so the scroll-sync effect can
+  // (re)subscribe reactively (refs don't trigger re-renders).
+  const [editorReadyTick, setEditorReadyTick] = useState(0);
   const prevPreviewVisible = useRef(previewVisible);
 
   const [previewWidth, setPreviewWidth] = useState<number>(loadPreviewWidth);
@@ -51,6 +60,249 @@ export function EditorArea() {
   // Latest width for the drag closure to read without going stale / rebuilding.
   const previewWidthRef = useRef(previewWidth);
   previewWidthRef.current = previewWidth;
+
+  // --- Scroll-sync & click-to-source wiring -------------------------------
+  const [scrollSync] = useSetting<boolean>("preview.scrollSync");
+  const previewPaneRef = useRef<HTMLDivElement | null>(null);
+  const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const scrollSyncOn = scrollSync !== false; // default true when unset
+  // Latest lineMap + svg pages for use inside stable callbacks.
+  const lineMapRef = useRef(activeTab?.lineMap ?? []);
+  lineMapRef.current = activeTab?.lineMap ?? [];
+  const svgPagesRef = useRef<string[]>(activeTab?.svgPages ?? []);
+  svgPagesRef.current = activeTab?.svgPages ?? [];
+
+  const handleJumpToLine = useCallback((line: number) => {
+    editorApiRef.current?.revealLine(line, 1);
+  }, []);
+
+  // Vertical offset (px) below the pane's top edge where the synced line/rect
+  // is anchored. Matches the preview-pane's top padding (var(--space-sm) = 12px)
+  // so the top line sits just inside the content area, not flush against the
+  // border. Used by BOTH directions so the invariant is symmetric:
+  //   editor-top-line N  ⇄  preview rect for N at paneTop + ANCHOR_PX.
+  const ANCHOR_PX = 12;
+  // Per-frame easing factor for the interpolated follow. 0.6 = move 60% of the
+  // remaining gap each frame; converges in ~3 frames (~50ms) — fast enough to
+  // feel nearly instantaneous, yet eased enough that fast scrolls don't look
+  // like hard jumps. (1.0 would snap instantly and feel jittery under rapid
+  // input; 0.3 was perceptibly laggy.)
+  const EASE = 0.6;
+  // When no user scroll has arrived for this long (ms), force a final absolute
+  // alignment so the two panes are exactly in sync at rest (corrects any drift
+  // accumulated during fast scrolling, where events may coalesce/skip).
+  const IDLE_MS = 150;
+
+  // --- Cross-domain mapping helpers (source line ⇄ preview scrollTop) -----
+  // Both helpers work in *logical* scroll coordinates (pane.scrollTop / editor
+  // getScrollTop), NOT getBoundingClientRect(). Reason: the rect reflects the
+  // compositor's rendered position, which can lag the logical scrollTop by a
+  // frame during fast/inertial scrolling — that lag is what made the final
+  // resting position drift. The lineMap is static per-compile, so mapping
+  // through it is deterministic and compositor-independent.
+
+  // Cache of each page wrapper's offsetTop + px-per-pt, rebuilt when pages
+  // change. Reading offsetTop/getBoundingClientRect once per page (lazily) is
+  // fine; we avoid re-reading them every animation frame.
+  const pageMetrics = useRef<
+    { offsetTop: number; pxPerPt: number; ptHeight: number }[]
+  >([]);
+
+  // Refresh the cached page metrics from the live DOM. Called at the start of
+  // each sync kick so offsets reflect the current layout (zoom, pane width).
+  const refreshPageMetrics = useCallback(() => {
+    const out: { offsetTop: number; pxPerPt: number; ptHeight: number }[] = [];
+    for (let i = 0; i < pageRefs.current.length; i++) {
+      const el = pageRefs.current[i];
+      if (!el) continue;
+      const img = el.querySelector(
+        "img.svg-page-img",
+      ) as HTMLImageElement | null;
+      const ptSize = parseViewBoxPt(svgPagesRef.current[i] ?? "");
+      if (!img || !ptSize || ptSize.height === 0) continue;
+      const imgRect = img.getBoundingClientRect();
+      out.push({
+        offsetTop: el.offsetTop,
+        pxPerPt: imgRect.height / ptSize.height,
+        ptHeight: ptSize.height,
+      });
+    }
+    pageMetrics.current = out;
+  }, []);
+
+  // Given the editor's top visible line, return the preview scrollTop that puts
+  // that line's rect at ANCHOR_PX below the preview's top edge.
+  const previewScrollTopForLine = useCallback(
+    (topLine: number): number | null => {
+      const rect = rectAtOrBeforeLine(lineMapRef.current, topLine);
+      if (!rect) return null;
+      const m = pageMetrics.current[rect.page];
+      if (!m) return null;
+      return m.offsetTop + rect.y * m.pxPerPt - ANCHOR_PX;
+    },
+    [],
+  );
+
+  // Given the preview's current scrollTop, return the editor scrollTop that
+  // aligns the source line at the preview's anchor to the editor's top. We go
+  // preview scrollTop → pt → source line → editor pixel via the editor's own
+  // line metrics.
+  const editorScrollTopForPreview = useCallback((): number | null => {
+    const api = editorApiRef.current;
+    const pane = previewPaneRef.current;
+    if (!api || !pane) return null;
+    // The anchor in content coords = scrollTop + ANCHOR_PX (px from the top of
+    // the scrollable content). Find the page that contains this offset.
+    const anchorContentY = pane.scrollTop + ANCHOR_PX;
+    let leadPage = -1;
+    for (let i = 0; i < pageMetrics.current.length; i++) {
+      const m = pageMetrics.current[i];
+      // A page spans [offsetTop, offsetTop + ptHeight*pxPerPt). The gap between
+      // pages (var(--space-xs)) is small; treat the anchor as "in" the last
+      // page whose top is at/above it.
+      if (m.offsetTop <= anchorContentY) leadPage = i;
+      else break;
+    }
+    if (leadPage < 0) return null;
+    const m = pageMetrics.current[leadPage];
+    const ptY = (anchorContentY - m.offsetTop) / m.pxPerPt;
+    const hit = lineAtOrAboveY(
+      lineMapRef.current.filter((lr) => lr.page === leadPage),
+      ptY,
+    );
+    if (!hit) return null;
+    // Map the source line into an editor pixel offset.
+    return api.getLineTopOffset(hit.line) - ANCHOR_PX;
+  }, []);
+
+  // --- Interpolated sync engine ------------------------------------------
+  // One of "editor" | "preview" | null: which pane the USER is currently
+  // scrolling. The other pane is the one we ease toward its target.
+  const driverRef = useRef<"editor" | "preview" | null>(null);
+  const lastUserScrollAt = useRef(0);
+  const animRaf = useRef<number | null>(null);
+
+  // Set the driven pane, refresh the target, and start the easing loop if it
+  // isn't already running. Called on every user scroll event.
+  const kick = useCallback((driver: "editor" | "preview") => {
+    driverRef.current = driver;
+    lastUserScrollAt.current = performance.now();
+    // Refresh cached page metrics (offsetTop/pxPerPt) so the target math uses
+    // the current layout rather than stale geometry from a prior zoom/resize.
+    refreshPageMetrics();
+    if (animRaf.current == null) {
+      animRaf.current = requestAnimationFrame(tick);
+    }
+  }, [refreshPageMetrics]);
+
+  // The per-frame step: ease the follower toward its target, then either
+  // schedule another frame or finalize (absolute snap) once idle.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const tick = () => {
+    animRaf.current = null;
+    const driver = driverRef.current;
+    const api = editorApiRef.current;
+    const pane = previewPaneRef.current;
+    if (!driver || !api || !pane) return;
+
+    // Refresh the target from the driver's CURRENT position (the user may still
+    // be scrolling, so the target moves each frame).
+    let target: number | null;
+    let applyRaw: (v: number) => void;
+    let current: number;
+    if (driver === "editor") {
+      target = previewScrollTopForLine(api.getTopVisibleLine());
+      current = pane.scrollTop;
+      applyRaw = (v) => {
+        pane.scrollTop = v;
+      };
+    } else {
+      target = editorScrollTopForPreview();
+      current = api.getScrollTop();
+      applyRaw = (v) => api.setScrollTop(v);
+    }
+    if (target == null) return;
+    target = Math.max(0, target);
+    const gap = target - current;
+    const idle = performance.now() - lastUserScrollAt.current >= IDLE_MS;
+
+    // Wrap the apply so the follower's echo scroll events are ignored (they'd
+    // otherwise re-kick the loop in the opposite direction → ping-pong). Both a
+    // synchronous flag (covers in-call events) and a timestamp (covers Monaco's
+    // deferred scroll events) are armed.
+    const apply = (v: number) => {
+      applyingRef.current = true;
+      applyingUntil.current = performance.now() + APPLY_GUARD_MS;
+      try {
+        applyRaw(v);
+      } finally {
+        applyingRef.current = false;
+      }
+    };
+
+    if (idle) {
+      // Scroll settled: absolute-align to the driver's final position, killing
+      // any residual drift from eased/inertial scrolling. Always apply (no gap
+      // threshold) so the resting position is exact.
+      apply(target);
+      return;
+    }
+    // Not idle: ease toward the (moving) target. Re-arm every frame while the
+    // user is still scrolling so we keep up; convergence isn't the goal here —
+    // the idle branch above does the final exact alignment.
+    const next = current + gap * EASE;
+    apply(next);
+    animRaf.current = requestAnimationFrame(tick);
+  };
+
+  // Guard so the follower's own scroll events don't re-trigger the loop in the
+  // opposite direction. Two layers:
+  //  (a) `applyingRef` is set synchronously around each programmatic scroll, so
+  //      events fired *during* the apply are ignored.
+  //  (b) `applyingUntil` is a timestamp: some scroll events (Monaco's
+  //      setScrollTop in particular) fire asynchronously, after `apply()`
+  //      returns. We keep the guard armed for a short window after each apply
+  //      so those deferred echoes don't flip the driver and start a ping-pong.
+  // Together these prevent the oscillation where editor→preview moves the
+  // preview, whose echo re-kicks as preview→editor, etc.
+  const applyingRef = useRef(false);
+  const applyingUntil = useRef(0);
+  // How long after a programmatic apply to keep ignoring follower echoes.
+  const APPLY_GUARD_MS = 80;
+
+  const isApplying = useCallback(() => {
+    return applyingRef.current || performance.now() < applyingUntil.current;
+  }, []);
+
+  // Editor → preview: the editor is the driver.
+  useEffect(() => {
+    if (!scrollSyncOn) return;
+    const api = editorApiRef.current;
+    if (!api) return;
+    const dispose = api.onDidScrollChange((topLine) => {
+      // Ignore echoes of our own programmatic editor scroll (preview driving).
+      if (isApplying()) return;
+      void topLine;
+      kick("editor");
+    });
+    return dispose;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollSyncOn, editorReadyTick, kick, isApplying]);
+
+  // Preview → editor: the preview is the driver.
+  const handlePreviewScroll = useCallback(() => {
+    if (!scrollSyncOn) return;
+    // Ignore echoes of our own programmatic preview scroll (editor driving).
+    if (isApplying()) return;
+    kick("preview");
+  }, [scrollSyncOn, kick, isApplying]);
+
+  // Cleanup the animation loop on unmount.
+  useEffect(() => {
+    return () => {
+      if (animRaf.current != null) cancelAnimationFrame(animRaf.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!prevPreviewVisible.current && previewVisible && activeTab) {
@@ -129,6 +381,7 @@ export function EditorArea() {
                 onChange={(value) => updateContent(activeTab.id, value)}
                 onReady={(api) => {
                   editorApiRef.current = api;
+                  setEditorReadyTick((t) => t + 1);
                 }}
               />
             </div>
@@ -144,7 +397,12 @@ export function EditorArea() {
             >
               <PreviewPane
                 svgPages={activeTab.svgPages}
+                lineMap={activeTab.lineMap}
                 onRefresh={handleRefresh}
+                onJumpToLine={handleJumpToLine}
+                onScroll={handlePreviewScroll}
+                paneRef={previewPaneRef}
+                pageRefs={pageRefs}
               />
             </div>
           </div>

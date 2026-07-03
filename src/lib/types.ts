@@ -23,9 +23,16 @@ errors: Array<Diagnostic>, };
 export type CompileStatus = "idle" | "compiling" | "success" | "error";
 
 /**
- * Payload of the `compiled` event: one self-contained SVG string per page.
+ * Payload of the `compiled` event: one self-contained SVG string per page,
+ * plus a source map mapping each source line to its page-space bounding rect
+ * (used by the frontend for scroll-sync and click-to-source).
  */
 export type CompiledPayload = { id: DocumentId, pages: Array<string>, 
+/**
+ * Source line → preview-page bbox index, sorted by `(page, y)`. Empty for
+ * documents with no rendered text (or when compilation produced no doc).
+ */
+lineMap: Array<LineRect>, 
 /**
  * `u64` maps to `bigint` by default in ts-rs, but Tauri serializes it as a
  * JSON number at runtime — override to `number` to match the contract.
@@ -104,6 +111,38 @@ export type FsChangedPayload = {
  * Absolute paths that changed (created/modified/removed).
  */
 paths: Array<string>, };
+
+/**
+ * A source line's bounding rectangle on a preview page.
+ *
+ * `page` is 0-indexed; `line` is 1-indexed (matching Monaco). Geometry is in
+ * points, relative to the page's top-left corner.
+ */
+export type LineRect = { 
+/**
+ * 1-indexed source line.
+ */
+line: number, 
+/**
+ * 0-indexed page number.
+ */
+page: number, 
+/**
+ * Left edge of the line's bounding box, in pt.
+ */
+x: number, 
+/**
+ * Top edge of the line's bounding box, in pt.
+ */
+y: number, 
+/**
+ * Width of the bounding box, in pt.
+ */
+w: number, 
+/**
+ * Height of the bounding box, in pt.
+ */
+h: number, };
 
 /**
  * Payload of the `lsp_status` event, emitted when the LSP connection

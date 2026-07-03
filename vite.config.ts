@@ -1,8 +1,21 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+
+// @codingame/monaco-vscode-* packages register their resources (grammars,
+// theme JSONs, NLS files) via `new URL('./resources/...json', import.meta.url)`.
+// Vite's dep optimizer pre-bundles these into per-package chunks under
+// `node_modules/.vite/deps/`, which rewrites `import.meta.url` to the chunk's
+// URL and breaks relative resolution of `./resources/...` (every JSON returns
+// 404, theme JSONs never load, the editor renders unstyled). Excluding these
+// packages from pre-bundling keeps `import.meta.url` pointing at the real file
+// in node_modules, so `./resources/...` resolves correctly under Vite's `/node_modules/...`
+// dev serving.
+const MONACO_VSCODE_RESOURCE_PACKAGES = [
+  "@codingame/monaco-vscode-theme-defaults-default-extension",
+  "@codingame/monaco-vscode-textmate-service-override",
+];
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -33,6 +46,10 @@ export default defineConfig({
   resolve: {
     // Required for monaco-languageclient / @codingame/monaco-vscode-api
     dedupe: ["vscode"],
+  },
+
+  optimizeDeps: {
+    exclude: MONACO_VSCODE_RESOURCE_PACKAGES,
   },
 
   worker: {

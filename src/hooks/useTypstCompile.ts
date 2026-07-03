@@ -28,7 +28,7 @@ export function useTypstCompile(): void {
         // Wrap the SVG payload update in a transition so Monaco keystroke
         // processing is never blocked by preview reconciliation.
         startTransition(() => {
-          tabs.setPages(p.id, p.pages);
+          tabs.setPages(p.id, p.pages, p.lineMap);
         });
       });
       if (cancelled) {

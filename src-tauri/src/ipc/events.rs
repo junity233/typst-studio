@@ -12,6 +12,7 @@
 
 use crate::domain::diagnostics::Diagnostic;
 use crate::domain::document::{DocumentId, DocumentMeta};
+use crate::domain::source_map::LineRect;
 
 // `CompileStatus` is defined in `domain::compile_status` (moved out of this
 // module to remove a `service → ipc` reverse dependency: the service layer emits
@@ -35,7 +36,9 @@ pub struct OpenedDocument {
     pub content: String,
 }
 
-/// Payload of the `compiled` event: one self-contained SVG string per page.
+/// Payload of the `compiled` event: one self-contained SVG string per page,
+/// plus a source map mapping each source line to its page-space bounding rect
+/// (used by the frontend for scroll-sync and click-to-source).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
@@ -46,6 +49,9 @@ pub struct OpenedDocument {
 pub struct CompiledPayload {
     pub id: DocumentId,
     pub pages: Vec<String>,
+    /// Source line → preview-page bbox index, sorted by `(page, y)`. Empty for
+    /// documents with no rendered text (or when compilation produced no doc).
+    pub line_map: Vec<LineRect>,
     /// `u64` maps to `bigint` by default in ts-rs, but Tauri serializes it as a
     /// JSON number at runtime — override to `number` to match the contract.
     #[cfg_attr(feature = "export-types", ts(type = "number"))]
@@ -141,11 +147,13 @@ mod tests {
         let payload = CompiledPayload {
             id: DocumentId::new(),
             pages: vec!["<svg/>".to_string()],
+            line_map: Vec::new(),
             duration_ms: 7,
         };
         let json = serde_json::to_string(&payload).unwrap();
         assert!(json.contains("\"durationMs\""), "camelCase field expected: {json}");
         assert!(json.contains("\"pages\""));
+        assert!(json.contains("\"lineMap\""), "camelCase field expected: {json}");
         assert!(json.contains("\"id\""));
     }
 }

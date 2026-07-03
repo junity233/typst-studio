@@ -8,6 +8,7 @@ import filesServiceOverride, {
   registerFileSystemOverlay,
 } from "@codingame/monaco-vscode-files-service-override";
 import { Uri } from "vscode";
+import { configureDefaultWorkerFactory } from "monaco-languageclient/workerFactory";
 
 /**
  * Virtual path prefix under which in-memory Typst tabs live. We use the
@@ -74,19 +75,56 @@ export function registerTypstMemFile(
 }
 
 /**
- * Build the `MonacoVscodeApiConfig` for classic mode.
- * Classic mode preserves Monarch tokenizers and custom themes.
+ * Build the `MonacoVscodeApiConfig` for extended mode.
  *
- * Registers a custom file system provider for the `typst-mem://` scheme so
- * in-memory Typst documents can be opened without a real file on disk.
+ * Extended mode is mandatory for TextMate + semantic-token highlighting:
+ * `configureHighlightingServices()` in monaco-languageclient only dynamic-
+ * imports the textmate/theme/languages service overrides when `$type ===
+ * "extended"`, and the classic branch loads just a no-op monarch override.
+ *
+ * We register tinymist's manifest slice (grammars + semanticTokenScopes) as a
+ * web extension. `semanticTokenScopes` is the critical bit — it's how tinymist's
+ * LSP `textDocument/semanticTokens` output gets mapped to TextMate scopes →
+ * theme colors. Without it, semantic tokens arrive but render unstyled.
+ *
+ * Grammar JSONs are provided inline via `filesOrContents` (encoded as data URLs
+ * by the wrapper) so the TextMate service can fetch them from the extension
+ * registry without a network call.
  */
 export function buildVscodeApiConfig(): MonacoVscodeApiConfig {
   return {
-    $type: "classic",
+    $type: "extended",
     viewsConfig: { $type: "EditorService" },
-    // `filesServiceOverride()` returns an IEditorOverrideServices object
-    // (keyed service-id -> factory); spread to satisfy the literal type.
+    // filesServiceOverride is still needed for our in-memory `file://` overlay
+    // (the virtual Typst tab URIs). TextMate/theme/languages overrides are
+    // auto-loaded by the wrapper in extended mode.
     serviceOverrides: filesServiceOverride(),
+    // Force-on semantic highlighting regardless of any user config; tinymist's
+    // grammar is wired for it, and the configurationDefaults in the manifest
+    // also enable it, but this is the server-agnostic guarantee.
+    advanced: { enforceSemanticHighlighting: true },
+    // Wire Monaco's worker URLs (editorWorkerService / TextMateWorker /
+    // extensionHostWorkerMain). Without this, MonacoEnvironment.getWorkerUrl
+    // is undefined and Monaco falls back to running worker code on the main
+    // thread ("Could not create web worker(s)... Falling back to loading web
+    // worker code in main thread, which might cause UI freezes").
+    monacoWorkerFactory: configureDefaultWorkerFactory,
+    userConfiguration: {
+      // NOTE: In monaco-vscode-api v25, the workbench theme service never
+      // actually loads this theme from the bundled extension. The real theme
+      // + token CSS is applied manually by typstHighlighting.ts. This entry
+      // is kept for forward compatibility (v34+ loads it properly).
+      json: JSON.stringify({
+        "workbench.colorTheme": "Default Light Modern",
+      }),
+    },
+    // NOTE: the `extensions` field (tinymist manifest with contributes.grammars
+    // + semanticTokenScopes) is intentionally omitted. In v25 the extension
+    // host doesn't process contributes from programmatically registered
+    // extensions — the grammar never reaches the TextMate service. Instead,
+    // highlighting is registered directly via typstHighlighting.ts. When v34
+    // is published to npm, restore the `extensions` field and delete
+    // typstHighlighting.ts.
   };
 }
 
@@ -180,18 +218,6 @@ export function buildEditorAppConfig(
         enforceLanguageId: "typst",
       },
     },
-    languageDef: {
-      languageExtensionConfig: {
-        id: "typst",
-        extensions: [".typ", ".typst"],
-        aliases: ["Typst", "typst"],
-      },
-      monarchLanguage: buildMonarchLanguage(),
-      theme: {
-        name: "typst-light",
-        data: buildThemeData(),
-      },
-    },
     editorOptions: {
       fontSize: 13,
       fontFamily:
@@ -216,83 +242,6 @@ export function buildEditorAppConfig(
       // within its pane instead of floating in wide whitespace.
       padding: { top: 6, bottom: 6 },
       ...editorOptions,
-    },
-  };
-}
-
-/** The Monarch tokenizer definition for Typst. */
-function buildMonarchLanguage(): Monaco.languages.IMonarchLanguage {
-  return {
-    defaultToken: "",
-    tokenPostfix: ".typst",
-    comments: { lineComment: "//", blockComment: ["/*", "*/"] },
-    brackets: [
-      { open: "{", close: "}", token: "delimiter.curly" },
-      { open: "[", close: "]", token: "delimiter.square" },
-      { open: "(", close: ")", token: "delimiter.parenthesis" },
-    ],
-    autoClosingPairs: [
-      { open: "{", close: "}" },
-      { open: "[", close: "]" },
-      { open: "(", close: ")" },
-      { open: '"', close: '"' },
-    ],
-    surroundingPairs: [
-      { open: "{", close: "}" },
-      { open: "[", close: "]" },
-      { open: "(", close: ")" },
-      { open: '"', close: '"' },
-    ],
-    tokenizer: {
-      root: [
-        [/^(=+)\s.*$/, "keyword.heading"],
-        [/\/\*/, "comment", "@comment"],
-        [/\/\/.*$/, "comment"],
-        [
-          /#(set|let|if|else|for|while|import|include|return|show|context)\b/,
-          "keyword",
-        ],
-        [/#([a-zA-Z_][\w-]*)/, "type.identifier"],
-        [/"/, "string", "@string"],
-        [/\b\d+(\.\d+)?(px|pt|em|cm|mm|in|%)?\b/, "number"],
-        [/[+\-*/=<>!&|]/, "operator"],
-        [/\*[^*]+\*/, "strong"],
-        [/_[^_]+_/, "emphasis"],
-        { include: "@whitespace" },
-      ],
-      comment: [
-        [/[^/*]+/, "comment"],
-        [/\*\//, "comment", "@pop"],
-        [/[/*]/, "comment"],
-      ],
-      string: [
-        [/[^\\"]+/, "string"],
-        [/\\./, "string.escape"],
-        [/"/, "string", "@pop"],
-      ],
-      whitespace: [[/\s+/, "white"]],
-    },
-  } as Monaco.languages.IMonarchLanguage;
-}
-
-/** The theme data for the Typst light theme. */
-function buildThemeData(): Monaco.editor.IStandaloneThemeData {
-  return {
-    base: "vs",
-    inherit: true,
-    rules: [
-      { token: "keyword", foreground: "931868", fontStyle: "italic" },
-      { token: "keyword.heading", foreground: "0066cc" },
-      { token: "type.identifier", foreground: "7a4400" },
-      { token: "number", foreground: "1d1d1f" },
-      { token: "string", foreground: "065d2c" },
-      { token: "comment", foreground: "7a7a7a", fontStyle: "italic" },
-      { token: "operator", foreground: "1d1d1f" },
-      { token: "strong", foreground: "1d1d1f", fontStyle: "bold" },
-      { token: "emphasis", foreground: "1d1d1f", fontStyle: "italic" },
-    ],
-    colors: {
-      "editor.background": "#ffffff",
     },
   };
 }

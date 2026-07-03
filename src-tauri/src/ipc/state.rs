@@ -15,6 +15,7 @@ use tauri::{AppHandle, Emitter as _};
 
 use crate::domain::diagnostics::Diagnostic;
 use crate::domain::document::DocumentId;
+use crate::domain::source_map::LineRect;
 use crate::ipc::events::{CompiledPayload, CompileStatus, DiagnosticsPayload, StatusPayload};
 use crate::net::client::HttpClient;
 use crate::service::editor_service::{EditorService, Emitter};
@@ -33,12 +34,19 @@ pub struct TauriEmitter {
 }
 
 impl Emitter for TauriEmitter {
-    fn emit_compiled(&self, id: DocumentId, pages: Vec<String>, duration_ms: u64) {
+    fn emit_compiled(
+        &self,
+        id: DocumentId,
+        pages: Vec<String>,
+        line_map: Vec<LineRect>,
+        duration_ms: u64,
+    ) {
         let _ = self.app.emit(
             "compiled",
             CompiledPayload {
                 id,
                 pages,
+                line_map,
                 duration_ms,
             },
         );

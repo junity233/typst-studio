@@ -5,4 +5,5 @@
 pub mod pdf;
 pub mod pipeline;
 pub mod png;
+pub mod source_map;
 pub mod svg;

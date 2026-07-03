@@ -18,6 +18,7 @@
     ]},
     { "id": "preview", "label": "Preview", "settings": [
         { "key": "preview.autoRefresh", "type": "boolean", "label": "Auto refresh", "default": true },
+        { "key": "preview.scrollSync",  "type": "boolean", "label": "Sync scroll with editor", "default": true },
         { "key": "preview.zoomLevel",   "type": "number",  "label": "Zoom level",   "default": 1.0, "min": 0.25, "max": 4.0, "step": 0.25 },
         { "key": "preview.background",  "type": "select",  "label": "Background",   "default": "light", "options": ["light", "dark"] }
     ]},
