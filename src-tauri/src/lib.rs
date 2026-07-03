@@ -84,9 +84,10 @@ pub fn run() {
             ipc::settings_commands::set_setting,
             ipc::settings_commands::get_settings_manifest,
             ipc::settings_commands::open_settings,
-            // Session memory commands (last workspace + file).
+            // Session memory commands (open documents + active view).
             ipc::session_commands::get_session,
             ipc::session_commands::save_session,
+            ipc::session_commands::set_dirty,
             // Network: remote image download (paste feature).
             ipc::net_commands::fetch_url_to_file,
         ])
@@ -177,7 +178,7 @@ pub fn run() {
                 },
             )?);
 
-            // Session memory (last workspace + file) in the same config dir.
+            // Session memory (open documents + active view, §13) in the same config dir.
             let session = Arc::new(SessionService::load(cfg_dir.join("session.json"))?);
 
             // Reusable HTTP client shared app-wide via AppState.

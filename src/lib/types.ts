@@ -231,6 +231,18 @@ h: number, };
 export type LspStatusPayload = { running: boolean, wsUrl: string, available: boolean, };
 
 /**
+ * A single open-document entry in the persisted session. The frontend
+ * assembles this in display order from its tab list.
+ *
+ * Variants are deliberately coarse (`Disk` vs `Untitled`): the
+ * workspace-file vs loose-file distinction is a *derived* classification
+ * recomputed on restore (§4.3), so it is not stored. `dirty` is carried so a
+ * restore can re-mark a document (for disk files, a dirty record means "you
+ * had unsaved edits at shutdown that are now lost" — see the restore path).
+ */
+export type OpenDocRecord = { "kind": "disk", path: string, dirty: boolean, } | { "kind": "untitled", content: string, dirty: boolean, };
+
+/**
  * Response of `new_tab` / `open_file`: the tab's metadata paired with its
  * current source text, so the frontend can hydrate Monaco without re-reading
  * the file from disk.
@@ -275,6 +287,42 @@ conflict: ConflictState, };
  * A 1-indexed text range (Monaco-friendly). Half-open `[start, end)`.
  */
 export type Range = { start_line: number, start_column: number, end_line: number, end_column: number, };
+
+/**
+ * What we remember between launches. All fields default so an OLD session.json
+ * (with only `lastWorkspace`/`lastFile`) still loads cleanly.
+ *
+ * `rename_all = "camelCase"` so the on-disk shape matches what the frontend
+ * sends in a `save_session` patch (`openDocuments`, `activeDocumentId`, …) and
+ * what older builds wrote (`lastWorkspace`/`lastFile`). Without it serde would
+ * look for snake_case keys and silently drop every camelCase field.
+ */
+export type Session = { 
+/**
+ * Absolute path of the last workspace folder, or "".
+ *
+ * The `alias` lets us read **real legacy `session.json` files** written
+ * by older builds, which serialized in snake_case (no `rename_all` then).
+ * Without it, those files would silently default to "" on upgrade and the
+ * user's remembered workspace would stop reopening.
+ */
+lastWorkspace: string, 
+/**
+ * Absolute path of the last file, or "". Kept for backward-compat with
+ * older session.json files; superseded by `open_documents`. Same alias
+ * story as `last_workspace`.
+ */
+lastFile: string, 
+/**
+ * Every open document, in display (tab) order. See [`OpenDocRecord`].
+ */
+openDocuments: Array<OpenDocRecord>, 
+/**
+ * The active view's document id (as a string). May reference a doc that
+ * fails to restore; the caller falls back to the last successfully opened
+ * view in that case.
+ */
+activeDocumentId: string | null, };
 
 /**
  * Severity of a diagnostic message.

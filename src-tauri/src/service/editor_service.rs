@@ -794,6 +794,17 @@ impl EditorService {
         }
     }
 
+    /// Set a tab's dirty flag to `dirty` (§13). Used by the session-restore
+    /// path to re-mark a document dirty when it was dirty at shutdown. For a
+    /// restored disk file this signals "you had unsaved edits at shutdown that
+    /// are now lost" — the on-disk bytes are loaded, then the tab is marked
+    /// dirty so the user is alerted. No-op if the tab is not open.
+    pub fn set_dirty(&self, id: DocumentId, dirty: bool) {
+        if let Some(t) = self.tabs.read().get(&id) {
+            t.state.lock().meta.dirty = dirty;
+        }
+    }
+
     /// Compile a tab synchronously (bypassing the worker). Used in tests.
     pub fn compile_now(&self, id: DocumentId) {
         if let Some(tab) = self.tabs.read().get(&id).cloned() {
@@ -1503,6 +1514,27 @@ mod tests {
         let on_disk = std::fs::read_to_string(&tmp).unwrap();
         assert!(on_disk.contains("Saved!"));
         assert!(!svc.tab_meta(meta.id).unwrap().dirty, "dirty flag must clear on save");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn set_dirty_round_trips_and_is_noop_for_missing_tab() {
+        // set_dirty is used on session restore to re-mark a doc that was dirty
+        // at shutdown. Verify it sets + clears, and is a no-op for an unknown id.
+        let tmp = std::env::temp_dir().join(format!("typst-setdirty-{}.typ", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp, "#set page(width: 10cm)\n\nX").unwrap();
+        let (svc, _) = make_service();
+        let meta = svc.open_from_content(tmp.clone(), "x".into(), None).unwrap();
+        // A freshly opened file is clean.
+        assert!(!svc.tab_meta(meta.id).unwrap().dirty);
+        // Mark dirty (as restore would for a doc that had unsaved edits at shutdown).
+        svc.set_dirty(meta.id, true);
+        assert!(svc.tab_meta(meta.id).unwrap().dirty, "set_dirty(true) must mark dirty");
+        // Clearing via set_dirty mirrors the boolean toggle.
+        svc.set_dirty(meta.id, false);
+        assert!(!svc.tab_meta(meta.id).unwrap().dirty, "set_dirty(false) must clear dirty");
+        // No-op on an unknown id (must not panic).
+        svc.set_dirty(DocumentId::new(), true);
         let _ = std::fs::remove_file(&tmp);
     }
 

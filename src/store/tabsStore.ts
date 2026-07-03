@@ -6,7 +6,7 @@ import {
   newTab as newTabBE,
 } from "../lib/tauri";
 import { useDiagnosticsStore } from "./diagnosticsStore";
-import { recordFile } from "../lib/session";
+import { captureAndSaveSession, recordFile } from "../lib/session";
 
 /**
  * A single open document. `svgPages` holds the rendered preview pages emitted
@@ -109,6 +109,7 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
     const doc = await newTabBE(content);
     const tab = tabFromOpened(doc);
     set((s) => ({ tabs: [...s.tabs, tab], activeId: doc.id }));
+    void captureAndSaveSession();
     return doc.id;
   },
 
@@ -117,6 +118,7 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
     set((s) => ({ tabs: [...s.tabs, tab], activeId: doc.id }));
     // Remember the opened file so it can be restored on next launch.
     if (doc.path) recordFile(doc.path);
+    void captureAndSaveSession();
   },
 
   closeTab: async (id) => {
@@ -135,11 +137,15 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
       }
       return { tabs, activeId };
     });
+    // Await so the close-guard (useAppCommands) can await closeTab and have the
+    // session capture complete before destroying the window.
+    await captureAndSaveSession();
   },
 
   activate: (id) => {
     if (get().tabs.some((tab) => tab.id === id)) {
       set({ activeId: id });
+      void captureAndSaveSession();
     }
   },
 
@@ -209,6 +215,7 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
     // Refresh the session's last-file hint on every save (covers Save, Save
     // As, and the close-guard Save-All), so relaunch reopens the latest file.
     recordFile(path);
+    void captureAndSaveSession();
   },
 }));
 

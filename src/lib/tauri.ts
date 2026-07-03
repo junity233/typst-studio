@@ -7,6 +7,8 @@ import type {
   EntryKind,
   FsChangedPayload,
   OpenedDocument,
+  OpenDocRecord,
+  Session,
   WorkspaceMeta,
 } from "./types";
 import type {
@@ -271,25 +273,46 @@ export async function onCloseRequested(
 
 // --- Session memory ----------------------------------------------------------
 
-export interface Session {
-  lastWorkspace: string;
-  lastFile: string;
-}
+/**
+ * The persisted session (§13). Re-exported from the generated `types.ts` so the
+ * frontend and backend stay in sync via ts-rs. Captures the last workspace,
+ * every open document (disk path or untitled content) in display order, and the
+ * active view id.
+ */
+export type { Session } from "./types";
 
-/** Read the persisted session (last-opened workspace + file). */
+/** Read the persisted session. Missing/malformed file → an empty session. */
 export async function getSession(): Promise<Session> {
   return invoke<Session>("get_session");
 }
 
 /**
- * Merge a partial update into the session. Only `lastWorkspace` / `lastFile`
- * (when present) are applied; both are absolute paths (or "" to clear).
+ * Merge a partial update into the session. Only present fields are applied by
+ * the backend (`lastWorkspace`, `lastFile`, `openDocuments`,
+ * `activeDocumentId`); a wrong-type field is skipped, not fatal. The capture
+ * path always sends a full `openDocuments` array + `activeDocumentId`,
+ * replacing the prior values wholesale.
  */
 export async function saveSession(patch: {
   lastWorkspace?: string;
   lastFile?: string;
+  openDocuments?: OpenDocRecord[];
+  activeDocumentId?: string | null;
 }): Promise<Session> {
   return invoke<Session>("save_session", { patch });
+}
+
+/**
+ * Set a tab's dirty flag (§13). Used by the session-restore path to re-mark a
+ * restored document dirty when it was dirty at shutdown (for a disk file this
+ * signals "you had unsaved edits at shutdown that are now lost"). No-op if the
+ * tab is not open.
+ */
+export async function setDirty(
+  id: DocumentId,
+  dirty: boolean,
+): Promise<void> {
+  await invoke("set_dirty", { id, dirty });
 }
 
 // --- Paste-feature: remote image download -----------------------------------

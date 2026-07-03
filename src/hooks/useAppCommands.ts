@@ -15,6 +15,7 @@ import { useWorkspaceStore } from "../store/workspaceStore";
 import { useUiStore } from "../store/uiStore";
 import { useDialogStore } from "../store/dialogStore";
 import { closeTabWithConfirm, saveTab } from "../lib/commands";
+import { captureAndSaveSession } from "../lib/session";
 
 /**
  * Centralized command dispatch for the native app menu. Subscribes to the
@@ -164,11 +165,17 @@ async function handleOpenFile(): Promise<void> {
 /**
  * Close the app, guarding unsaved tabs. Reads the tab list fresh (no React
  * selector) so the check reflects current edits at the moment of close.
+ *
+ * Before destroying the window the session is re-captured (awaited) so the
+ * final tab list + active view is persisted for the next launch — the
+ * fire-and-forget captures from the store actions may otherwise be cut off by
+ * the window going away.
  */
 async function handleCloseRequested(): Promise<void> {
   const tabs = useTabsStore.getState().tabs;
   const dirty = tabs.filter((t) => t.dirty);
   if (dirty.length === 0) {
+    await captureAndSaveSession();
     await getCurrentWindow().destroy();
     return;
   }
@@ -181,6 +188,7 @@ async function handleCloseRequested(): Promise<void> {
   });
   if (choice === "cancel") return;
   if (choice === "discard") {
+    await captureAndSaveSession();
     await getCurrentWindow().destroy();
     return;
   }
@@ -188,6 +196,7 @@ async function handleCloseRequested(): Promise<void> {
   for (const t of dirty) {
     if (!(await saveTab(t.id))) return;
   }
+  await captureAndSaveSession();
   await getCurrentWindow().destroy();
 }
 
