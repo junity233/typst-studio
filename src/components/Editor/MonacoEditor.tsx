@@ -40,6 +40,10 @@ export interface MonacoEditorApi {
   revealLineTopIfOutsideViewport: (line: number) => void;
   /** The topmost fully/partially visible source line (1-indexed). */
   getTopVisibleLine: () => number;
+  /** Current scroll offset in px (for interpolated scroll-sync). */
+  getScrollTop: () => number;
+  /** Set the scroll offset in px (for interpolated scroll-sync). */
+  setScrollTop: (top: number) => void;
   /**
    * Subscribe to editor scroll changes; the callback receives the new top
    * visible line. Returns an unsubscribe function.
@@ -363,6 +367,14 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         const ranges = editor?.getVisibleRanges() ?? [];
         // The first visible range is the topmost line in the viewport.
         return ranges.length > 0 ? ranges[0].startLineNumber : 1;
+      },
+      getScrollTop: () => {
+        const editor = editorAppRef.current?.getEditor() ?? null;
+        return editor ? editor.getScrollTop() : 0;
+      },
+      setScrollTop: (top) => {
+        const editor = editorAppRef.current?.getEditor() ?? null;
+        editor?.setScrollTop(top);
       },
       onDidScrollChange: (cb) => {
         const editor = editorAppRef.current?.getEditor() ?? null;
