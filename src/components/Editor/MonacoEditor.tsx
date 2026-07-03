@@ -25,10 +25,37 @@ import {
 } from "./lspClient";
 import { usePasteConvert } from "./usePasteConvert";
 
-/** Imperative surface exposed to the parent for navigation (diagnostics goto). */
+/**
+ * Imperative surface exposed to the parent for navigation (diagnostics goto,
+ * preview click-to-source) and scroll-sync.
+ */
 export interface MonacoEditorApi {
+  /** Reveal a line, place the cursor, and focus (diagnostics / click-to-source). */
   revealLine: (line: number, column: number) => void;
+  /**
+   * Reveal a line at the top of the viewport only if it's currently outside the
+   * visible range; otherwise no-op. Used by preview→editor scroll-sync so the
+   * editor follows smoothly without re-centering (and jittering) on every tick.
+   */
+  revealLineTopIfOutsideViewport: (line: number) => void;
+  /** The topmost fully/partially visible source line (1-indexed). */
+  getTopVisibleLine: () => number;
+  /**
+   * Subscribe to editor scroll changes; the callback receives the new top
+   * visible line. Returns an unsubscribe function.
+   */
+  onDidScrollChange: (cb: (topLine: number) => void) => () => void;
 }
+
+/**
+ * `Monaco.editor.ScrollType.Immediate` (= 1). The reveal APIs default to
+ * `Smooth`, which — if a user ever enables `editor.smoothScrolling` — animates
+ * over 125ms and fires `onDidScrollChange` on every frame, escaping our
+ * scroll-sync guard (tuned for the immediate case). Passing `Immediate` makes
+ * the feedback loop robust by construction regardless of that setting. Used as
+ * a literal because `Monaco` is imported as a type-only namespace.
+ */
+const SCROLL_IMMEDIATE = 1;
 
 interface MonacoEditorProps {
   tab: Tab;
@@ -318,9 +345,36 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         if (!editor) return;
         // Reveal the line (centered when far from the viewport, top-aligned
         // when nearby) and move the cursor + focus so the user can type on.
-        editor.revealLineInCenterIfOutsideViewport(line);
+        // Immediate scroll keeps the preview-sync guard robust.
+        editor.revealLineInCenterIfOutsideViewport(line, SCROLL_IMMEDIATE);
         editor.setPosition({ lineNumber: line, column });
         editor.focus();
+      },
+      revealLineTopIfOutsideViewport: (line) => {
+        const editor = editorAppRef.current?.getEditor() ?? null;
+        if (!editor) return;
+        // Only scroll when the line has scrolled out of view, and align it to
+        // the top (not center) so repeated small scrolls produce a smooth,
+        // linear follow instead of the re-center jitter from `InCenter`.
+        editor.revealLineInCenterIfOutsideViewport(line, SCROLL_IMMEDIATE);
+      },
+      getTopVisibleLine: () => {
+        const editor = editorAppRef.current?.getEditor() ?? null;
+        const ranges = editor?.getVisibleRanges() ?? [];
+        // The first visible range is the topmost line in the viewport.
+        return ranges.length > 0 ? ranges[0].startLineNumber : 1;
+      },
+      onDidScrollChange: (cb) => {
+        const editor = editorAppRef.current?.getEditor() ?? null;
+        if (!editor) return () => {};
+        // `onDidScrollChange` fires on any viewport change (scroll, layout,
+        // fold). We re-derive the top visible line and forward it.
+        const topLine = () => {
+          const ranges = editor.getVisibleRanges();
+          return ranges.length > 0 ? ranges[0].startLineNumber : 1;
+        };
+        const d = editor.onDidScrollChange(() => cb(topLine()));
+        return () => d.dispose();
       },
     });
   };

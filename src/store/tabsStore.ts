@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { CompileStatus } from "../lib/ui-types";
-import type { OpenedDocument } from "../lib/types";
+import type { LineRect, OpenedDocument } from "../lib/types";
 import {
   closeTab as closeTabBE,
   newTab as newTabBE,
@@ -10,8 +10,10 @@ import { recordFile } from "../lib/session";
 
 /**
  * A single open document. `svgPages` holds the rendered preview pages emitted
- * by the backend; it lives on the Tab (rather than a separate previewStore)
- * so the PreviewPane can read a single selector and tab switches are atomic.
+ * by the backend; `lineMap` is the matching source-line → page-rect index used
+ * for scroll-sync and click-to-source. Both live on the Tab (rather than a
+ * separate previewStore) so the PreviewPane can read a single selector and tab
+ * switches are atomic.
  */
 export interface Tab {
   id: string;
@@ -22,6 +24,8 @@ export interface Tab {
   status: CompileStatus;
   durationMs: number | null;
   svgPages: string[];
+  /** Source line → preview-page bbox, from the last `compiled` event. */
+  lineMap: LineRect[];
 }
 
 export interface TabsState {
@@ -36,8 +40,8 @@ export interface TabsState {
   activate: (id: string) => void;
   updateContent: (id: string, content: string) => void;
   setStatus: (id: string, status: CompileStatus, durationMs?: number) => void;
-  /** Replace the rendered preview pages for a tab. */
-  setPages: (id: string, svgPages: string[]) => void;
+  /** Replace the rendered preview pages (and matching source map) for a tab. */
+  setPages: (id: string, svgPages: string[], lineMap: LineRect[]) => void;
   markSaved: (id: string, path: string) => void;
 }
 
@@ -54,6 +58,7 @@ function tabFromOpened(doc: OpenedDocument): Tab {
     status: "idle",
     durationMs: null,
     svgPages: [],
+    lineMap: [],
   };
 }
 
@@ -118,10 +123,10 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
       ),
     })),
 
-  setPages: (id, svgPages) =>
+  setPages: (id, svgPages, lineMap) =>
     set((s) => ({
       tabs: s.tabs.map((tab) =>
-        tab.id === id ? { ...tab, svgPages } : tab,
+        tab.id === id ? { ...tab, svgPages, lineMap } : tab,
       ),
     })),
 
