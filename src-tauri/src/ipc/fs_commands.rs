@@ -176,8 +176,11 @@ pub async fn reveal_in_finder(
 }
 
 /// Open a file by its absolute path (no dialog) as a tab — used when clicking a
-/// `.typ` entry in the file tree. If the path is inside the open workspace, the
-/// tab compiles with `#include` resolution; otherwise it's a detached tab.
+/// `.typ` entry in the file tree. The editor service derives the world's
+/// resolver from the document's origin: a loose file (outside any workspace)
+/// gets a parent-directory-rooted resolver so same-dir `#include` /
+/// `#image()` resolve; a workspace file would get the workspace resolver
+/// (plumbed in Task B).
 #[tauri::command]
 pub async fn open_file_by_path(
     state: State<'_, AppState>,
@@ -192,11 +195,10 @@ pub async fn open_file_by_path(
     .await
     .map_err(|e| AppError::Other(format!("join error: {e}")))??;
 
-    // If a workspace is open and the file lives under it, give the tab a
-    // resolver so #include/#image resolve against the workspace root.
-    let resolver = state.workspace.resolver();
+    // The editor service classifies the file (loose vs workspace) and builds a
+    // resolver-anchored world accordingly — no resolver argument needed here.
     let editor = state.editor.clone();
-    let meta = editor.open_from_disk(path, content.clone(), resolver)?;
+    let meta = editor.open_from_disk(path, content.clone())?;
     Ok(OpenedDocument { meta, content })
 }
 
@@ -244,6 +246,6 @@ pub async fn save_as(
     tauri::async_runtime::spawn_blocking(move || std::fs::write(&path_for_write, &text))
         .await
         .map_err(|e| AppError::Other(format!("join error: {e}")))??;
-    editor.assign_path(id, path.clone())?;
+    editor.rebind_path(id, path.clone())?;
     Ok(path.to_string_lossy().into_owned())
 }
