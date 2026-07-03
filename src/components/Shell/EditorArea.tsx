@@ -171,13 +171,8 @@ export function EditorArea() {
       ptY,
     );
     if (!hit) return null;
-    // Map the source line into an editor pixel offset. `getTopForLineNumber`
-    // gives the distance from the top of the scrollable content to the line.
-    const editor = (editorApiRef.current as unknown as {
-      getEditor?: () => { getTopForLineNumber?: (l: number) => number } | null;
-    }).getEditor?.();
-    if (!editor?.getTopForLineNumber) return null;
-    return editor.getTopForLineNumber(hit.line) - ANCHOR_PX;
+    // Map the source line into an editor pixel offset.
+    return api.getLineTopOffset(hit.line) - ANCHOR_PX;
   }, []);
 
   // --- Interpolated sync engine ------------------------------------------

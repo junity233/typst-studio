@@ -45,6 +45,11 @@ export interface MonacoEditorApi {
   /** Set the scroll offset in px (for interpolated scroll-sync). */
   setScrollTop: (top: number) => void;
   /**
+   * Pixel offset of a line from the top of the scrollable content (for
+   * interpolated scroll-sync mapping source-line → editor pixel position).
+   */
+  getLineTopOffset: (line: number) => number;
+  /**
    * Subscribe to editor scroll changes; the callback receives the new top
    * visible line. Returns an unsubscribe function.
    */
@@ -375,6 +380,10 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
       setScrollTop: (top) => {
         const editor = editorAppRef.current?.getEditor() ?? null;
         editor?.setScrollTop(top);
+      },
+      getLineTopOffset: (line) => {
+        const editor = editorAppRef.current?.getEditor() ?? null;
+        return editor ? editor.getTopForLineNumber(line) : 0;
       },
       onDidScrollChange: (cb) => {
         const editor = editorAppRef.current?.getEditor() ?? null;
