@@ -29,8 +29,10 @@ use crate::domain::compile_result::CompileOutcome;
 use crate::domain::compile_status::CompileStatus;
 use crate::domain::diagnostics::{Diagnostic, Range, Severity};
 use crate::domain::document::{DocumentId, DocumentMeta};
+use crate::domain::source_map::LineRect;
 use crate::error::{AppError, Result};
 use crate::render::pipeline::RenderPipeline;
+use crate::render::source_map::build_source_map;
 use crate::render::svg::SvgRenderer;
 use crate::typst_engine::compiler;
 use crate::typst_engine::world::EditorWorld;
@@ -54,8 +56,15 @@ type Workers = Arc<RwLock<HashMap<DocumentId, CompileWorker>>>;
 /// ([`crate::ipc::state::TauriEmitter`]); in tests by a `CapturingEmitter` that
 /// records emits for assertion.
 pub trait Emitter: Send + Sync {
-    /// Notify the frontend of a successful compile with rendered SVG pages.
-    fn emit_compiled(&self, id: DocumentId, pages: Vec<String>, duration_ms: u64);
+    /// Notify the frontend of a successful compile with rendered SVG pages and
+    /// the source map (source line → preview-page bbox).
+    fn emit_compiled(
+        &self,
+        id: DocumentId,
+        pages: Vec<String>,
+        line_map: Vec<LineRect>,
+        duration_ms: u64,
+    );
     /// Notify the frontend of compile errors.
     fn emit_diagnostics(&self, id: DocumentId, diagnostics: Vec<Diagnostic>);
     /// Notify the frontend of a compile status transition.
@@ -300,7 +309,13 @@ impl EditorService {
             if text_before == text_after {
                 if let Some(doc) = doc {
                     let pages = SvgRenderer::new().render(&doc);
-                    emitter.emit_compiled(id, pages, outcome.duration_ms);
+                    // Build the source map from the same compiled document. This
+                    // is cheap (one frame walk, KB-scale output) and runs on the
+                    // compile thread, so it never blocks the editor. Skipped
+                    // alongside SVG when the user kept typing — staying in lock
+                    // step with the rendered pages.
+                    let line_map = build_source_map(&doc, &tab.world);
+                    emitter.emit_compiled(id, pages, line_map, outcome.duration_ms);
                 }
             }
             emitter.emit_status(id, CompileStatus::Success, Some(outcome.duration_ms));
@@ -370,6 +385,7 @@ mod tests {
         Compiled {
             id: DocumentId,
             pages: Vec<String>,
+            line_map: Vec<LineRect>,
             duration_ms: u64,
         },
         Diagnostics {
@@ -412,10 +428,19 @@ mod tests {
     }
 
     impl Emitter for CapturingEmitter {
-        fn emit_compiled(&self, id: DocumentId, pages: Vec<String>, duration_ms: u64) {
-            self.events
-                .lock()
-                .push(CapturedEvent::Compiled { id, pages, duration_ms });
+        fn emit_compiled(
+            &self,
+            id: DocumentId,
+            pages: Vec<String>,
+            line_map: Vec<LineRect>,
+            duration_ms: u64,
+        ) {
+            self.events.lock().push(CapturedEvent::Compiled {
+                id,
+                pages,
+                line_map,
+                duration_ms,
+            });
         }
         fn emit_diagnostics(&self, id: DocumentId, diagnostics: Vec<Diagnostic>) {
             self.events

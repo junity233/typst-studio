@@ -101,7 +101,14 @@ mod tests {
     fn make_editor() -> Arc<EditorService> {
         struct NoopEmitter;
         impl crate::service::editor_service::Emitter for NoopEmitter {
-            fn emit_compiled(&self, _: DocumentId, _: Vec<String>, _: u64) {}
+            fn emit_compiled(
+                &self,
+                _: DocumentId,
+                _: Vec<String>,
+                _: Vec<crate::domain::source_map::LineRect>,
+                _: u64,
+            ) {
+            }
             fn emit_diagnostics(&self, _: DocumentId, _: Vec<Diagnostic>) {}
             fn emit_status(&self, _: DocumentId, _: crate::ipc::events::CompileStatus, _: Option<u64>) {}
         }
