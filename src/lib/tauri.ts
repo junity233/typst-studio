@@ -63,19 +63,33 @@ export async function saveAs(id: DocumentId): Promise<string> {
   return invoke<string>("save_as", { id });
 }
 
-/** Render the document to a PDF via typst-pdf; returns the saved path. */
-export async function exportPdf(id: DocumentId): Promise<string> {
-  return invoke<string>("export_pdf", { id });
+/**
+ * Render the document to a PDF via typst-pdf; returns the saved path.
+ *
+ * `revision` (§9) pins the export to the revision the user is looking at: the
+ * backend renders that revision's compiled document, waiting if it is still
+ * mid-compile (bounded by a timeout) and erroring if it failed — never silently
+ * rendering an older revision's document. The caller passes the tab's current
+ * `revision`.
+ */
+export async function exportPdf(id: DocumentId, revision: number): Promise<string> {
+  return invoke<string>("export_pdf", { id, revision });
 }
 
-/** Render each page to a PNG via typst-render; returns the saved paths. */
-export async function exportPng(id: DocumentId): Promise<string[]> {
-  return invoke<string[]>("export_png", { id });
+/**
+ * Render each page to a PNG via typst-render; returns the saved paths. See
+ * [`exportPdf`] for the `revision` semantics (§9).
+ */
+export async function exportPng(id: DocumentId, revision: number): Promise<string[]> {
+  return invoke<string[]>("export_png", { id, revision });
 }
 
-/** Render each page to an SVG via typst-svg; returns the saved paths. */
-export async function exportSvg(id: DocumentId): Promise<string[]> {
-  return invoke<string[]>("export_svg", { id });
+/**
+ * Render each page to an SVG via typst-svg; returns the saved paths. See
+ * [`exportPdf`] for the `revision` semantics (§9).
+ */
+export async function exportSvg(id: DocumentId, revision: number): Promise<string[]> {
+  return invoke<string[]>("export_svg", { id, revision });
 }
 
 // --- Workspace / filesystem -------------------------------------------------

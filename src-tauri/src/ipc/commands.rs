@@ -103,14 +103,18 @@ pub async fn save_file(state: State<'_, AppState>, id: DocumentId) -> Result<()>
     Ok(())
 }
 
-/// Export the tab's last compiled document to PDF via a save dialog.
+/// Export the tab's compiled document for `revision` to PDF via a save dialog.
 /// Returns the path the PDF was written to. Render + write both run on a
-/// blocking thread.
+/// blocking thread. `revision` (§9) pins the result to the revision the user is
+/// looking at: if that revision already compiled successfully it is rendered;
+/// if mid-compile, export waits (bounded); if it failed, its diagnostics are
+/// returned. Never silently renders an older revision's document.
 #[tauri::command]
 pub async fn export_pdf(
     app: AppHandle,
     state: State<'_, AppState>,
     id: DocumentId,
+    revision: u64,
 ) -> Result<String> {
     let app_for_dialog = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
@@ -130,7 +134,7 @@ pub async fn export_pdf(
     let export = state.export.clone();
     // Render (CPU-bound) + write (blocking IO) together on a blocking thread.
     tauri::async_runtime::spawn_blocking(move || -> Result<()> {
-        let bytes = export.render_pdf(id)?;
+        let bytes = export.render_pdf(id, revision)?;
         std::fs::write(&path, &bytes)?;
         Ok(())
     })
@@ -139,14 +143,16 @@ pub async fn export_pdf(
     Ok(path_str)
 }
 
-/// Export each page of the tab's last compiled document to a PNG. A save dialog
-/// picks the output location; pages are named `{stem}-{n}.png` in that folder.
-/// Render + write run on a blocking thread.
+/// Export each page of the tab's compiled document for `revision` to a PNG. A
+/// save dialog picks the output location; pages are named `{stem}-{n}.png` in
+/// that folder. Render + write run on a blocking thread. See
+/// [`export_pdf`] for the `revision` semantics (§9).
 #[tauri::command]
 pub async fn export_png(
     app: AppHandle,
     state: State<'_, AppState>,
     id: DocumentId,
+    revision: u64,
 ) -> Result<Vec<String>> {
     let app_for_dialog = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
@@ -175,7 +181,7 @@ pub async fn export_png(
     let base_name_clone = base_name.clone();
     // Render (CPU-bound) + write (blocking IO) together on a blocking thread.
     let paths = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>> {
-        let pages = export.render_pngs(id, &base_name_clone)?;
+        let pages = export.render_pngs(id, revision, &base_name_clone)?;
         std::fs::create_dir_all(&save_dir)?;
         let mut written = Vec::with_capacity(pages.len());
         for (name, bytes) in pages {
@@ -190,14 +196,16 @@ pub async fn export_png(
     Ok(paths)
 }
 
-/// Export each page of the tab's last compiled document to an SVG file. A save
-/// dialog picks the output location; pages are named `{stem}-{n}.svg` in that
-/// folder. Render + write run on a blocking thread.
+/// Export each page of the tab's compiled document for `revision` to an SVG
+/// file. A save dialog picks the output location; pages are named
+/// `{stem}-{n}.svg` in that folder. Render + write run on a blocking thread.
+/// See [`export_pdf`] for the `revision` semantics (§9).
 #[tauri::command]
 pub async fn export_svg(
     app: AppHandle,
     state: State<'_, AppState>,
     id: DocumentId,
+    revision: u64,
 ) -> Result<Vec<String>> {
     let app_for_dialog = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
@@ -226,7 +234,7 @@ pub async fn export_svg(
     let base_name_clone = base_name.clone();
     // Render (CPU-bound) + write (blocking IO) together on a blocking thread.
     let paths = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>> {
-        let pages = export.render_svgs(id, &base_name_clone)?;
+        let pages = export.render_svgs(id, revision, &base_name_clone)?;
         std::fs::create_dir_all(&save_dir)?;
         let mut written = Vec::with_capacity(pages.len());
         for (name, bytes) in pages {

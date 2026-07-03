@@ -133,15 +133,21 @@ export async function dispatch(menuId: string): Promise<void> {
         break;
 
       case "export-pdf":
-        if (activeId !== null) await exportPdf(activeId);
+        if (activeId !== null && activeTab !== null) {
+          await exportPdf(activeId, activeTab.revision);
+        }
         break;
 
       case "export-png":
-        if (activeId !== null) await exportPng(activeId);
+        if (activeId !== null && activeTab !== null) {
+          await exportPng(activeId, activeTab.revision);
+        }
         break;
 
       case "export-svg":
-        if (activeId !== null) await exportSvg(activeId);
+        if (activeId !== null && activeTab !== null) {
+          await exportSvg(activeId, activeTab.revision);
+        }
         break;
 
       default:

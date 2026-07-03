@@ -70,6 +70,16 @@ impl FileResolver {
         Ok(id.vpath().realize(&root)?)
     }
 
+    /// Public [`disk_path`](Self::disk_path) for consumers that need the disk
+    /// path of a non-main id without reading the file (e.g. the in-memory VFS
+    /// overlay in [`EditorWorld`](crate::typst_engine::world::EditorWorld) keys
+    /// its lookups by canonical disk path). Returns the same path
+    /// [`read_source`](Self::read_source) / [`read_bytes`](Self::read_bytes)
+    /// would read.
+    pub fn disk_path_of(&self, id: FileId) -> FileResult<PathBuf> {
+        self.disk_path(id)
+    }
+
     /// Read + parse a `.typ` source for `World::source(id)`. Returns a
     /// [`Source`] whose id matches `id` (built via `Source::new`, *not*
     /// `Source::detached`, so include resolution off it is correct).

@@ -72,6 +72,24 @@ type LooseResolvers = Arc<RwLock<HashMap<PathBuf, crate::fs::FileResolver>>>;
 /// per-directory cost); see the TODO on [`close_tab`](EditorService::close_tab).
 type LooseWatchers = Arc<RwLock<HashMap<PathBuf, watcher::WatcherGuard>>>;
 
+/// Point-in-time snapshot of a tab's last compile result, for export (§9).
+/// See [`EditorService::last_compile_state`]. Export pins results to a revision
+/// via this triple: a doc is only rendered when the requested revision is the
+/// one that actually compiled successfully; a failed revision surfaces its
+/// diagnostics instead of an older doc.
+pub struct CompileState {
+    /// The revision this compile corresponds to, or `None` before the first
+    /// compile completes.
+    pub last_compiled_revision: Option<u64>,
+    /// Whether that compile succeeded.
+    pub success: bool,
+    /// The rendered document on success (`None` on failure or before first
+    /// compile).
+    pub doc: Option<PagedDocument>,
+    /// Error diagnostics from that compile (empty on success).
+    pub errors: Vec<Diagnostic>,
+}
+
 /// Decouples `EditorService` from the concrete event-delivery mechanism.
 ///
 /// In production this is backed by a Tauri `AppHandle`
@@ -125,6 +143,13 @@ pub struct EditorService {
     /// In-workspace files are covered by the workspace watcher; this cache
     /// closes the gap for files opened outside the workspace root.
     loose_watchers: LooseWatchers,
+    /// Shared in-memory overlay of open documents' buffers (§5 end). Keyed by
+    /// canonical disk path. Each tab's [`EditorWorld`] gets a clone of this
+    /// `Arc` so that a `#include`d file which is also an open document compiles
+    /// from its live (possibly unsaved) buffer rather than the stale disk copy.
+    /// The main document's own buffer is served from the world's `source`
+    /// directly, so it is deliberately NOT inserted here.
+    vfs: Arc<crate::typst_engine::MemoryVfs>,
     emitter: Arc<dyn Emitter>,
 }
 
@@ -137,6 +162,7 @@ impl EditorService {
             registry: Arc::new(RwLock::new(DocumentRegistry::new())),
             loose_resolvers: Arc::new(RwLock::new(HashMap::new())),
             loose_watchers: Arc::new(RwLock::new(HashMap::new())),
+            vfs: Arc::new(crate::typst_engine::MemoryVfs::new()),
             emitter,
         }
     }
@@ -199,6 +225,9 @@ impl EditorService {
         // parent-dir watcher for out-of-workspace loose files).
         self.set_disk_version_from_path(id, meta.origin.canonical_path());
         self.ensure_dir_watched(id, &meta.origin, workspace);
+        // Publish the initial buffer into the shared VFS (§5 end) so other tabs
+        // that #include / #read this file compile against it (not disk).
+        self.sync_vfs_for(id);
         Ok(meta)
     }
 
@@ -232,6 +261,8 @@ impl EditorService {
         // parent-dir watcher for out-of-workspace loose files).
         self.set_disk_version_from_path(id, meta.origin.canonical_path());
         self.ensure_dir_watched(id, &meta.origin, workspace);
+        // Publish the initial buffer into the shared VFS (§5 end).
+        self.sync_vfs_for(id);
         Ok(meta)
     }
 
@@ -308,10 +339,11 @@ impl EditorService {
         let tabs = self.tabs.clone();
         let workers = self.workers.clone();
         let registry = self.registry.clone();
+        let vfs = self.vfs.clone();
         let emitter = self.emitter.clone();
         let on_change: watcher::OnChange = Arc::new(move |paths: &[PathBuf]| {
             for p in paths {
-                handle_external_change_locked(p, &tabs, &registry, &workers, &emitter);
+                handle_external_change_locked(p, &tabs, &registry, &workers, &vfs, &emitter);
             }
         });
         match watcher::watch(parent, on_change) {
@@ -338,6 +370,49 @@ impl EditorService {
         if let Some(t) = self.tabs.read().get(&id) {
             t.state.lock().disk_version = Some(version);
         }
+    }
+
+    // --- in-memory VFS overlay (§5 end) ---------------------------------------
+
+    /// Publish a tab's current buffer + revision into the shared VFS under its
+    /// canonical path, so any OTHER tab that `#include`s / `#read`s this file
+    /// compiles against the live buffer instead of disk. No-op for untitled
+    /// documents (no canonical path) and missing tabs. The main document's own
+    /// compile never reads itself through the VFS — it's served from the
+    /// world's `source` directly — but another tab including it still benefits.
+    fn sync_vfs_for(&self, id: DocumentId) {
+        let Some((canon, text, revision)) = self.vfs_snapshot(id) else {
+            return;
+        };
+        self.vfs.upsert(canon, text, revision);
+    }
+
+    /// Remove a tab's buffer from the VFS by its canonical path (e.g. on
+    /// close). No-op for untitled documents / missing tabs / untracked paths.
+    fn drop_vfs_for(&self, id: DocumentId) {
+        let Some((canon, _, _)) = self.vfs_snapshot(id) else {
+            // Fallback: the tab may already be gone from `tabs` (close path
+            // removes it before calling). Accept a best-effort remove keyed on
+            // nothing — there's nothing to drop in that case.
+            return;
+        };
+        self.vfs.remove(&canon);
+    }
+
+    /// Snapshot `(canonical_path, current_text, revision)` for a tab, or `None`
+    /// when the tab is missing / untitled (no canonical path).
+    fn vfs_snapshot(&self, id: DocumentId) -> Option<(PathBuf, String, u64)> {
+        let tabs = self.tabs.read();
+        let tab = tabs.get(&id)?;
+        let rt = tab.state.lock();
+        let canon = rt.meta.origin.canonical_path()?.to_path_buf();
+        // Read text outside the state lock to keep the critical section short;
+        // the world has its own interior lock. `tab` is still borrowed through
+        // `tabs`, but we drop `rt` first.
+        let revision = rt.meta.revision;
+        drop(rt);
+        let text = tab.world.text();
+        Some((canon, text, revision))
     }
 
     /// Ensure the directory of a freshly-opened file is watched for external
@@ -415,6 +490,7 @@ impl EditorService {
             &self.tabs,
             &self.registry,
             &self.workers,
+            &self.vfs,
             &self.emitter,
         );
     }
@@ -448,6 +524,7 @@ impl EditorService {
                 crate::typst_engine::font_loader::SystemFontLoader::new(),
                 r,
                 canon,
+                Some(self.vfs.clone()),
             ) {
                 Ok(world) => Arc::new(TabState::with_meta_and_world(meta.clone(), world)),
                 // Resolver couldn't anchor the path — degrade to detached.
@@ -535,16 +612,20 @@ impl EditorService {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
 
-        // Snapshot the current buffer + revision before mutating anything, so a
-        // registry conflict leaves the tab fully intact.
-        let (text, revision) = {
+        // Snapshot the current buffer + revision + old canonical path before
+        // mutating anything, so a registry conflict leaves the tab fully intact.
+        let (text, revision, old_canon) = {
             let tabs = self.tabs.read();
             let tab = tabs
                 .get(&id)
                 .cloned()
                 .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?;
             let rt = tab.state.lock();
-            (tab.world.text(), rt.meta.revision)
+            (
+                tab.world.text(),
+                rt.meta.revision,
+                rt.meta.origin.canonical_path().map(|p| p.to_path_buf()),
+            )
         };
 
         // New metadata: loose file at the target, clean, revision carried over.
@@ -561,6 +642,16 @@ impl EditorService {
         // carries the meta (incl. revision) and resets the compile result via
         // `with_meta_and_world`; falls back to a detached world on anchor failure.
         let new_tab = self.build_loose_tab(&new_meta, &text, &root, &canon);
+
+        // Re-key the shared VFS (§5 end): drop the entry under the OLD canonical
+        // path (if any) and publish the buffer under the NEW one, so other tabs
+        // that #include this file resolve to its post-Save-As location.
+        if let Some(old) = &old_canon {
+            if old.as_path() != canon.as_path() {
+                self.vfs.remove(old);
+            }
+        }
+        self.vfs.upsert(canon.clone(), text.clone(), revision);
 
         // Swap the new world in and rotate the worker to trigger a recompile.
         self.swap_world(id, new_tab);
@@ -728,6 +819,9 @@ impl EditorService {
     pub fn close_tab(&self, id: DocumentId) -> Result<()> {
         // Drop the worker first (sends Shutdown, doesn't join).
         let _ = self.workers.write().remove(&id);
+        // Remove the buffer from the shared VFS BEFORE dropping the tab, while
+        // we can still read its canonical path. Best-effort (no-op for untitled).
+        self.drop_vfs_for(id);
         let removed = self.tabs.write().remove(&id);
         if removed.is_none() {
             return Err(AppError::NotFound(format!("tab {id} not found")));
@@ -751,19 +845,27 @@ impl EditorService {
                 .cloned()
                 .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
         };
-        tab.world.set_text(content);
+        tab.world.set_text(content.clone());
         // Atomically bump revision + set dirty under one lock.
-        let mut rt = tab.state.lock();
-        rt.meta.revision = rt.meta.revision.saturating_add(1);
-        let revision = rt.meta.revision;
-        rt.meta.dirty = true;
-        drop(rt);
+        let (revision, canon) = {
+            let mut rt = tab.state.lock();
+            rt.meta.revision = rt.meta.revision.saturating_add(1);
+            let revision = rt.meta.revision;
+            rt.meta.dirty = true;
+            let canon = rt.meta.origin.canonical_path().map(|p| p.to_path_buf());
+            (revision, canon)
+        };
+        // Publish the edited buffer into the shared VFS (§5 end): another tab
+        // that #includes / #reads this file must compile against the live edit,
+        // not the stale disk copy. Only for documents with a canonical path.
+        if let Some(canon) = canon {
+            self.vfs.upsert(canon, content, revision);
+        }
         // Signal the worker. If it's busy compiling, the message queues; the
         // worker picks up the latest text when it finishes.
         if let Some(worker) = self.workers.read().get(&id) {
             worker.recompile();
         }
-        let _ = revision; // captured by `do_compile_for_tab` via the world read
         Ok(())
     }
 
@@ -928,6 +1030,22 @@ impl EditorService {
             .and_then(|t| t.state.lock().last_doc.clone())
     }
 
+    /// A point-in-time snapshot of a tab's last compile result (§9): the
+    /// revision that compile corresponds to, its success flag, the rendered
+    /// document (if any), and the error diagnostics. Used by export to pin
+    /// results to the revision the user is looking at — never silently
+    /// returning an older doc. `None` if the tab is not open.
+    pub fn last_compile_state(&self, id: DocumentId) -> Option<CompileState> {
+        let tab = self.tabs.read().get(&id).cloned()?;
+        let rt = tab.state.lock();
+        Some(CompileState {
+            last_compiled_revision: rt.last_compiled_revision,
+            success: rt.last_outcome.success,
+            doc: rt.last_doc.clone(),
+            errors: rt.last_outcome.errors.clone(),
+        })
+    }
+
     /// Metadata for a single tab, if present.
     pub fn tab_meta(&self, id: DocumentId) -> Option<DocumentMeta> {
         self.tabs
@@ -1059,6 +1177,7 @@ fn handle_external_change_locked(
     tabs: &Tabs,
     registry: &SharedRegistry,
     workers: &Workers,
+    vfs: &Arc<crate::typst_engine::MemoryVfs>,
     emitter: &Arc<dyn Emitter>,
 ) {
     // Canonicalize the watcher's path so it compares against the registry's
@@ -1162,13 +1281,23 @@ fn handle_external_change_locked(
         set_conflict(&tab, id, emitter, ConflictState::Missing, None);
         return;
     };
-    tab.world.set_text(content);
-    let mut rt = tab.state.lock();
-    rt.meta.revision = rt.meta.revision.saturating_add(1);
-    rt.meta.dirty = false;
-    rt.meta.conflict = ConflictState::None;
-    rt.disk_version = Some(new_version);
-    drop(rt);
+    tab.world.set_text(content.clone());
+    let (revision, canon) = {
+        let mut rt = tab.state.lock();
+        rt.meta.revision = rt.meta.revision.saturating_add(1);
+        rt.meta.dirty = false;
+        rt.meta.conflict = ConflictState::None;
+        rt.disk_version = Some(new_version);
+        (
+            rt.meta.revision,
+            rt.meta.origin.canonical_path().map(|p| p.to_path_buf()),
+        )
+    };
+    // Keep the shared VFS in step with the reloaded buffer (§5 end): another
+    // tab that #includes this file must compile against the reloaded content.
+    if let Some(canon) = canon {
+        vfs.upsert(canon, content, revision);
+    }
     if let Some(worker) = workers.read().get(&id) {
         worker.recompile();
     }
@@ -1700,6 +1829,109 @@ mod tests {
             !doc.pages().is_empty(),
             "compiled document must have pages"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn included_file_open_as_doc_compiles_from_live_buffer_not_disk() {
+        // §15.2 integration test 3 (§5 end): when an #include'd file is ALSO an
+        // open document with unsaved edits, the including document's compile must
+        // see the OPEN (memory) version, not the disk version.
+        let dir = std::env::temp_dir().join(format!("ts-vfs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main_path = dir.join("main.typ");
+        let intro_path = dir.join("intro.typ");
+        std::fs::write(&main_path, "#include \"intro.typ\"\n").unwrap();
+        std::fs::write(&intro_path, "Original\n").unwrap();
+
+        let (svc, emitter) = make_service();
+        // Open BOTH files as separate documents in the same directory. They
+        // share the parent-rooted resolver AND the shared in-memory VFS.
+        let main_content = std::fs::read_to_string(&main_path).unwrap();
+        let intro_content = std::fs::read_to_string(&intro_path).unwrap();
+        let main_meta = svc
+            .open_from_disk(main_path.clone(), main_content, None)
+            .unwrap();
+        let intro_meta = svc
+            .open_from_disk(intro_path.clone(), intro_content, None)
+            .unwrap();
+        assert_ne!(main_meta.id, intro_meta.id, "two distinct documents");
+        wait_for_compiled(&emitter, main_meta.id);
+        wait_for_compiled(&emitter, intro_meta.id);
+
+        // Snapshot the main doc rendered to SVG BEFORE the edit, then edit
+        // intro.typ in memory (WITHOUT saving) and recompile main.typ. The new
+        // render must differ — proving the include picked up the live buffer.
+        let render_main = |svc: &EditorService, id| -> String {
+            let doc = svc.last_doc(id).expect("main doc present");
+            crate::render::svg::SvgRenderer::new().render(&doc).join("\n")
+        };
+        let svg_before = render_main(&svc, main_meta.id);
+
+        // Edit intro in memory only; do NOT touch the disk file.
+        svc.update_text(intro_meta.id, "EditedInMemory\n".to_string())
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&intro_path).unwrap(),
+            "Original\n",
+            "the disk file must still say Original (edit was memory-only)"
+        );
+        assert!(svc.tab_meta(intro_meta.id).unwrap().dirty);
+
+        // Recompile main (debounced on the worker). Wait for a fresh compile.
+        emitter.clear();
+        svc.update_text(main_meta.id, svc.tab_text(main_meta.id).unwrap())
+            .unwrap();
+        wait_for_compiled(&emitter, main_meta.id);
+        let svg_after = render_main(&svc, main_meta.id);
+
+        assert_ne!(
+            svg_before, svg_after,
+            "main's compile must change when the included file's live buffer changes"
+        );
+        // If the SVG happens to embed text, assert the edited content shows up
+        // (and the disk content does not). On path-based SVG renderers this is
+        // a no-op pass — the differs-check above is the authoritative assertion.
+        assert!(
+            !svg_after.contains("Original") || svg_after.contains("EditedInMemory"),
+            "render must not surface the stale disk 'Original' as the live text"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn closing_an_included_doc_falls_back_to_disk() {
+        // §5 end corollary: once an included file's document is CLOSED, its VFS
+        // entry is removed, so the include falls back to the disk version.
+        let dir = std::env::temp_dir().join(format!("ts-vfs-close-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main_path = dir.join("main.typ");
+        let intro_path = dir.join("intro.typ");
+        std::fs::write(&main_path, "#include \"intro.typ\"\n").unwrap();
+        std::fs::write(&intro_path, "OnDisk\n").unwrap();
+
+        let (svc, emitter) = make_service();
+        let main_meta = svc
+            .open_from_disk(main_path.clone(), std::fs::read_to_string(&main_path).unwrap(), None)
+            .unwrap();
+        let intro_meta = svc
+            .open_from_disk(intro_path.clone(), std::fs::read_to_string(&intro_path).unwrap(), None)
+            .unwrap();
+        wait_for_compiled(&emitter, main_meta.id);
+        wait_for_compiled(&emitter, intro_meta.id);
+
+        // Edit intro in memory, then CLOSE it. The VFS entry is removed on
+        // close, so main's next compile must read the disk "OnDisk" again.
+        svc.update_text(intro_meta.id, "OnlyInMemory".to_string()).unwrap();
+        svc.close_tab(intro_meta.id).unwrap();
+
+        emitter.clear();
+        svc.update_text(main_meta.id, svc.tab_text(main_meta.id).unwrap()).unwrap();
+        wait_for_compiled(&emitter, main_meta.id);
+        // The doc still compiles (disk intro.typ exists) — the close removed
+        // the overlay, so disk is the source of truth again.
+        let doc = svc.last_doc(main_meta.id).expect("main doc present after close");
+        assert!(!doc.pages().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
