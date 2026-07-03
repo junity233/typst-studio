@@ -125,7 +125,7 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
       ),
     })),
 
-  markSaved: (id, path) =>
+  markSaved: (id, path) => {
     set((s) => ({
       tabs: s.tabs.map((tab) =>
         tab.id === id
@@ -137,7 +137,11 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
             }
           : tab,
       ),
-    })),
+    }));
+    // Refresh the session's last-file hint on every save (covers Save, Save
+    // As, and the close-guard Save-All), so relaunch reopens the latest file.
+    recordFile(path);
+  },
 }));
 
 let initStarted = false;
