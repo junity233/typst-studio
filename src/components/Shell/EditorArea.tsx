@@ -227,9 +227,12 @@ export function EditorArea() {
     const idle = performance.now() - lastUserScrollAt.current >= IDLE_MS;
 
     // Wrap the apply so the follower's echo scroll events are ignored (they'd
-    // otherwise re-kick the loop in the opposite direction → ping-pong).
+    // otherwise re-kick the loop in the opposite direction → ping-pong). Both a
+    // synchronous flag (covers in-call events) and a timestamp (covers Monaco's
+    // deferred scroll events) are armed.
     const apply = (v: number) => {
       applyingRef.current = true;
+      applyingUntil.current = performance.now() + APPLY_GUARD_MS;
       try {
         applyRaw(v);
       } finally {
@@ -253,10 +256,23 @@ export function EditorArea() {
   };
 
   // Guard so the follower's own scroll events don't re-trigger the loop in the
-  // opposite direction. While we're applying positions in `tick`, the follower
-  // emits scroll events; those must not become new "user scrolls". We track the
-  // active driver and ignore scroll events that originate from the follower.
+  // opposite direction. Two layers:
+  //  (a) `applyingRef` is set synchronously around each programmatic scroll, so
+  //      events fired *during* the apply are ignored.
+  //  (b) `applyingUntil` is a timestamp: some scroll events (Monaco's
+  //      setScrollTop in particular) fire asynchronously, after `apply()`
+  //      returns. We keep the guard armed for a short window after each apply
+  //      so those deferred echoes don't flip the driver and start a ping-pong.
+  // Together these prevent the oscillation where editor→preview moves the
+  // preview, whose echo re-kicks as preview→editor, etc.
   const applyingRef = useRef(false);
+  const applyingUntil = useRef(0);
+  // How long after a programmatic apply to keep ignoring follower echoes.
+  const APPLY_GUARD_MS = 80;
+
+  const isApplying = useCallback(() => {
+    return applyingRef.current || performance.now() < applyingUntil.current;
+  }, []);
 
   // Editor → preview: the editor is the driver.
   useEffect(() => {
@@ -265,21 +281,21 @@ export function EditorArea() {
     if (!api) return;
     const dispose = api.onDidScrollChange((topLine) => {
       // Ignore echoes of our own programmatic editor scroll (preview driving).
-      if (applyingRef.current) return;
+      if (isApplying()) return;
       void topLine;
       kick("editor");
     });
     return dispose;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollSyncOn, editorReadyTick, kick]);
+  }, [scrollSyncOn, editorReadyTick, kick, isApplying]);
 
   // Preview → editor: the preview is the driver.
   const handlePreviewScroll = useCallback(() => {
     if (!scrollSyncOn) return;
     // Ignore echoes of our own programmatic preview scroll (editor driving).
-    if (applyingRef.current) return;
+    if (isApplying()) return;
     kick("preview");
-  }, [scrollSyncOn, kick]);
+  }, [scrollSyncOn, kick, isApplying]);
 
   // Cleanup the animation loop on unmount.
   useEffect(() => {
