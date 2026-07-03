@@ -196,7 +196,7 @@ pub async fn open_file_by_path(
     // resolver so #include/#image resolve against the workspace root.
     let resolver = state.workspace.resolver();
     let editor = state.editor.clone();
-    let meta = editor.open_from_disk(path, content.clone(), resolver);
+    let meta = editor.open_from_disk(path, content.clone(), resolver)?;
     Ok(OpenedDocument { meta, content })
 }
 

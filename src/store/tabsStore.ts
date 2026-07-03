@@ -14,6 +14,12 @@ import { recordFile } from "../lib/session";
  * for scroll-sync and click-to-source. Both live on the Tab (rather than a
  * separate previewStore) so the PreviewPane can read a single selector and tab
  * switches are atomic.
+ *
+ * `revision` (§7) is the authoritative content version. It is bumped
+ * optimistically on every `updateContent` and carried by every compile/status
+ * event from the backend; an event whose `revision` is strictly older than the
+ * tab's current `revision` is discarded, so a slow compile can never overwrite
+ * a newer preview.
  */
 export interface Tab {
   id: string;
@@ -21,6 +27,8 @@ export interface Tab {
   path: string | null;
   dirty: boolean;
   content: string;
+  /** Monotonic content revision; bumped on every edit (§7). */
+  revision: number;
   status: CompileStatus;
   durationMs: number | null;
   svgPages: string[];
@@ -38,10 +46,22 @@ export interface TabsState {
   /** Close on the backend, then drop the local tab. */
   closeTab: (id: string) => Promise<void>;
   activate: (id: string) => void;
+  /** Update content and bump the revision (§7). No-op if unchanged. */
   updateContent: (id: string, content: string) => void;
-  setStatus: (id: string, status: CompileStatus, durationMs?: number) => void;
-  /** Replace the rendered preview pages (and matching source map) for a tab. */
-  setPages: (id: string, svgPages: string[], lineMap: LineRect[]) => void;
+  /** Apply a compile status tagged with `revision`; stale revisions ignored. */
+  setStatus: (
+    id: string,
+    revision: number,
+    status: CompileStatus,
+    durationMs?: number,
+  ) => void;
+  /** Replace preview pages tagged with `revision`; stale revisions ignored. */
+  setPages: (
+    id: string,
+    revision: number,
+    svgPages: string[],
+    lineMap: LineRect[],
+  ) => void;
   markSaved: (id: string, path: string) => void;
 }
 
@@ -55,6 +75,9 @@ function tabFromOpened(doc: OpenedDocument): Tab {
     path: doc.path,
     dirty: doc.dirty,
     content: doc.content,
+    // The backend seeds revision 0 on open; the first compile carries revision
+    // 0 and matches this. Each subsequent edit bumps it.
+    revision: 0,
     status: "idle",
     durationMs: null,
     svgPages: [],
@@ -110,24 +133,32 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
     set((s) => ({
       tabs: s.tabs.map((tab) => {
         if (tab.id !== id || content === tab.content) return tab;
-        return { ...tab, content, dirty: true };
+        // Bump the optimistic revision. The backend's next compile event will
+        // carry this same revision (or higher); older events are then ignored.
+        return { ...tab, content, dirty: true, revision: tab.revision + 1 };
       }),
     })),
 
-  setStatus: (id, status, durationMs) =>
+  setStatus: (id, revision, status, durationMs) =>
     set((s) => ({
-      tabs: s.tabs.map((tab) =>
-        tab.id === id
-          ? { ...tab, status, durationMs: durationMs ?? tab.durationMs }
-          : tab,
-      ),
+      tabs: s.tabs.map((tab) => {
+        if (tab.id !== id) return tab;
+        // §7: discard stale-revision status. A strictly-older revision means a
+        // newer edit already superseded this compile — never overwrite the UI.
+        if (revision < tab.revision) return tab;
+        return { ...tab, status, durationMs: durationMs ?? tab.durationMs };
+      }),
     })),
 
-  setPages: (id, svgPages, lineMap) =>
+  setPages: (id, revision, svgPages, lineMap) =>
     set((s) => ({
-      tabs: s.tabs.map((tab) =>
-        tab.id === id ? { ...tab, svgPages, lineMap } : tab,
-      ),
+      tabs: s.tabs.map((tab) => {
+        if (tab.id !== id) return tab;
+        // §7: discard stale-revision preview. Without this guard, a slow
+        // compile of an older buffer could clobber a newer preview.
+        if (revision < tab.revision) return tab;
+        return { ...tab, svgPages, lineMap };
+      }),
     })),
 
   markSaved: (id, path) => {

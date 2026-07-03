@@ -104,13 +104,21 @@ mod tests {
             fn emit_compiled(
                 &self,
                 _: DocumentId,
+                _: u64,
                 _: Vec<String>,
                 _: Vec<crate::domain::source_map::LineRect>,
                 _: u64,
             ) {
             }
-            fn emit_diagnostics(&self, _: DocumentId, _: Vec<Diagnostic>) {}
-            fn emit_status(&self, _: DocumentId, _: crate::ipc::events::CompileStatus, _: Option<u64>) {}
+            fn emit_diagnostics(&self, _: DocumentId, _: u64, _: Vec<Diagnostic>) {}
+            fn emit_status(
+                &self,
+                _: DocumentId,
+                _: u64,
+                _: crate::ipc::events::CompileStatus,
+                _: Option<u64>,
+            ) {
+            }
         }
         Arc::new(EditorService::new(Arc::new(NoopEmitter)))
     }

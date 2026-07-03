@@ -37,6 +37,7 @@ impl Emitter for TauriEmitter {
     fn emit_compiled(
         &self,
         id: DocumentId,
+        revision: u64,
         pages: Vec<String>,
         line_map: Vec<LineRect>,
         duration_ms: u64,
@@ -45,6 +46,7 @@ impl Emitter for TauriEmitter {
             "compiled",
             CompiledPayload {
                 id,
+                revision,
                 pages,
                 line_map,
                 duration_ms,
@@ -52,15 +54,25 @@ impl Emitter for TauriEmitter {
         );
     }
 
-    fn emit_diagnostics(&self, id: DocumentId, diagnostics: Vec<Diagnostic>) {
-        let _ = self.app.emit("diagnostics", DiagnosticsPayload { id, diagnostics });
+    fn emit_diagnostics(&self, id: DocumentId, revision: u64, diagnostics: Vec<Diagnostic>) {
+        let _ = self.app.emit(
+            "diagnostics",
+            DiagnosticsPayload { id, revision, diagnostics },
+        );
     }
 
-    fn emit_status(&self, id: DocumentId, status: CompileStatus, duration_ms: Option<u64>) {
+    fn emit_status(
+        &self,
+        id: DocumentId,
+        revision: u64,
+        status: CompileStatus,
+        duration_ms: Option<u64>,
+    ) {
         let _ = self.app.emit(
             "status",
             StatusPayload {
                 id,
+                revision,
                 status,
                 duration_ms,
             },

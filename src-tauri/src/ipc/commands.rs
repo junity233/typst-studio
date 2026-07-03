@@ -67,7 +67,7 @@ pub async fn open_file(
     .await
     .map_err(|e| AppError::Other(format!("join error: {e}")))??;
     let editor = state.editor.clone();
-    let meta = editor.open_from_content(path, content.clone());
+    let meta = editor.open_from_content(path, content.clone())?;
     Ok(Some(OpenedDocument { meta, content }))
 }
 

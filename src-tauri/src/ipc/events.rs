@@ -39,6 +39,10 @@ pub struct OpenedDocument {
 /// Payload of the `compiled` event: one self-contained SVG string per page,
 /// plus a source map mapping each source line to its page-space bounding rect
 /// (used by the frontend for scroll-sync and click-to-source).
+///
+/// `revision` (§7) is the document content revision this compile corresponds
+/// to. The frontend discards results whose revision is older than the tab's
+/// current revision, so a slow compile can never overwrite a newer preview.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
@@ -48,6 +52,8 @@ pub struct OpenedDocument {
 )]
 pub struct CompiledPayload {
     pub id: DocumentId,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub revision: u64,
     pub pages: Vec<String>,
     /// Source line → preview-page bbox index, sorted by `(page, y)`. Empty for
     /// documents with no rendered text (or when compilation produced no doc).
@@ -58,7 +64,8 @@ pub struct CompiledPayload {
     pub duration_ms: u64,
 }
 
-/// Payload of the `diagnostics` event.
+/// Payload of the `diagnostics` event. `revision` (§7) tags which buffer
+/// revision the diagnostics correspond to.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
@@ -68,11 +75,13 @@ pub struct CompiledPayload {
 )]
 pub struct DiagnosticsPayload {
     pub id: DocumentId,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub revision: u64,
     pub diagnostics: Vec<Diagnostic>,
 }
 
 /// Payload of the `status` event. `duration_ms` is present only on
-/// `Success` / `Error`.
+/// `Success` / `Error`. `revision` (§7) tags the buffer revision.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
@@ -82,6 +91,8 @@ pub struct DiagnosticsPayload {
 )]
 pub struct StatusPayload {
     pub id: DocumentId,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub revision: u64,
     pub status: CompileStatus,
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub duration_ms: Option<u64>,
@@ -146,6 +157,7 @@ mod tests {
     fn compiled_payload_is_camel_case() {
         let payload = CompiledPayload {
             id: DocumentId::new(),
+            revision: 3,
             pages: vec!["<svg/>".to_string()],
             line_map: Vec::new(),
             duration_ms: 7,
@@ -155,5 +167,6 @@ mod tests {
         assert!(json.contains("\"pages\""));
         assert!(json.contains("\"lineMap\""), "camelCase field expected: {json}");
         assert!(json.contains("\"id\""));
+        assert!(json.contains("\"revision\""), "revision field expected: {json}");
     }
 }

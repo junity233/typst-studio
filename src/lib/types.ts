@@ -26,8 +26,12 @@ export type CompileStatus = "idle" | "compiling" | "success" | "error";
  * Payload of the `compiled` event: one self-contained SVG string per page,
  * plus a source map mapping each source line to its page-space bounding rect
  * (used by the frontend for scroll-sync and click-to-source).
+ *
+ * `revision` (§7) is the document content revision this compile corresponds
+ * to. The frontend discards results whose revision is older than the tab's
+ * current revision, so a slow compile can never overwrite a newer preview.
  */
-export type CompiledPayload = { id: DocumentId, pages: Array<string>, 
+export type CompiledPayload = { id: DocumentId, revision: number, pages: Array<string>, 
 /**
  * Source line → preview-page bbox index, sorted by `(page, y)`. Empty for
  * documents with no rendered text (or when compilation produced no doc).
@@ -49,9 +53,10 @@ export type Diagnostic = { severity: Severity, range: Range, message: string,
 code: bigint | null, };
 
 /**
- * Payload of the `diagnostics` event.
+ * Payload of the `diagnostics` event. `revision` (§7) tags which buffer
+ * revision the diagnostics correspond to.
  */
-export type DiagnosticsPayload = { id: DocumentId, diagnostics: Array<Diagnostic>, };
+export type DiagnosticsPayload = { id: DocumentId, revision: number, diagnostics: Array<Diagnostic>, };
 
 /**
  * A single entry returned by [`read_dir`]: one child of a directory.
@@ -68,22 +73,29 @@ relative: string,
 name: string, kind: EntryKind, };
 
 /**
- * Unique identifier for an open document (tab).
+ * Unique identifier for an open document.
  *
- * Wraps a `Uuid` v4. Serialized as a string across IPC.
+ * Wraps a `Uuid` v4. Serialized as a string across IPC. Stable for the
+ * document's entire open lifetime — origin transitions (Untitled → save,
+ * WorkspaceFile ↔ LooseFile) preserve the id.
  */
 export type DocumentId = string;
 
 /**
- * Metadata for an open document tab. Independent of typst's own `Document`.
+ * Metadata for an open document. Independent of typst's own `Document`.
+ *
+ * `path` and `title` are retained as convenience fields derived from
+ * [`DocumentOrigin`] for IPC consumers; the authoritative classification is
+ * `origin`.
  */
 export type DocumentMeta = { 
 /**
- * Stable unique id for this tab.
+ * Stable unique id for this document (preserved across origin transitions).
  */
 id: DocumentId, 
 /**
- * Filesystem path, if backed by a file. `None` for unsaved/untitled docs.
+ * Filesystem path, if backed by a file. `None` for untitled docs.
+ * Derived from [`DocumentOrigin::canonical_path`].
  */
 path: string | null, 
 /**
@@ -93,7 +105,43 @@ title: string,
 /**
  * Unsaved-changes flag.
  */
-dirty: boolean, };
+dirty: boolean, 
+/**
+ * Origin classification (§4.2). Drives resolution / watching / LSP.
+ */
+origin: DocumentOrigin, 
+/**
+ * Monotonic content revision. Bumped on every `update_text`. Carried by
+ * compile/diagnostics/status events so stale results can be discarded.
+ * `u64` maps to `bigint` by default in ts-rs, but Tauri serializes it as a
+ * JSON number at runtime — override to `number` to match the wire format.
+ */
+revision: number, };
+
+/**
+ * How a document is anchored on disk (§4.2).
+ *
+ * Drives relative-resource resolution (`#include`, `#image()`), file
+ * watching, and LSP folder association. Transitions between variants
+ * preserve the [`DocumentId`].
+ */
+export type DocumentOrigin = { "kind": "untitled" } | { "kind": "workspaceFile", 
+/**
+ * Canonical absolute path of the file.
+ */
+path: string, 
+/**
+ * Owning workspace. Used to re-classify on workspace open/close.
+ */
+workspace_id: WorkspaceId, } | { "kind": "looseFile", 
+/**
+ * Canonical absolute path of the file.
+ */
+path: string, 
+/**
+ * Resolution root: the file's parent directory.
+ */
+root: string, };
 
 /**
  * Whether a tree entry is a file or a directory.
@@ -158,11 +206,12 @@ export type LspStatusPayload = { running: boolean, wsUrl: string, available: boo
  */
 export type OpenedDocument = { content: string, 
 /**
- * Stable unique id for this tab.
+ * Stable unique id for this document (preserved across origin transitions).
  */
 id: DocumentId, 
 /**
- * Filesystem path, if backed by a file. `None` for unsaved/untitled docs.
+ * Filesystem path, if backed by a file. `None` for untitled docs.
+ * Derived from [`DocumentOrigin::canonical_path`].
  */
 path: string | null, 
 /**
@@ -172,7 +221,18 @@ title: string,
 /**
  * Unsaved-changes flag.
  */
-dirty: boolean, };
+dirty: boolean, 
+/**
+ * Origin classification (§4.2). Drives resolution / watching / LSP.
+ */
+origin: DocumentOrigin, 
+/**
+ * Monotonic content revision. Bumped on every `update_text`. Carried by
+ * compile/diagnostics/status events so stale results can be discarded.
+ * `u64` maps to `bigint` by default in ts-rs, but Tauri serializes it as a
+ * JSON number at runtime — override to `number` to match the wire format.
+ */
+revision: number, };
 
 /**
  * A 1-indexed text range (Monaco-friendly). Half-open `[start, end)`.
@@ -186,9 +246,18 @@ export type Severity = "Error" | "Warning" | "Info";
 
 /**
  * Payload of the `status` event. `duration_ms` is present only on
- * `Success` / `Error`.
+ * `Success` / `Error`. `revision` (§7) tags the buffer revision.
  */
-export type StatusPayload = { id: DocumentId, status: CompileStatus, durationMs: number | null, };
+export type StatusPayload = { id: DocumentId, revision: number, status: CompileStatus, durationMs: number | null, };
+
+/**
+ * Identifier for the currently active workspace (§4.2 / §4.3).
+ *
+ * Owned by `WorkspaceService`; embedded in [`DocumentOrigin::WorkspaceFile`]
+ * so a document knows which workspace owns it. When a workspace closes, its
+ * `WorkspaceFile`s become `LooseFile`s, dropping this id.
+ */
+export type WorkspaceId = string;
 
 /**
  * The currently open workspace, if any.

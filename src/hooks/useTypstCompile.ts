@@ -26,9 +26,10 @@ export function useTypstCompile(): void {
       const uCompiled = await onCompiled((p) => {
         const tabs = useTabsStore.getState();
         // Wrap the SVG payload update in a transition so Monaco keystroke
-        // processing is never blocked by preview reconciliation.
+        // processing is never blocked by preview reconciliation. The revision
+        // guard inside setPages discards stale compiles (§7).
         startTransition(() => {
-          tabs.setPages(p.id, p.pages, p.lineMap);
+          tabs.setPages(p.id, p.revision, p.pages, p.lineMap);
         });
       });
       if (cancelled) {
@@ -40,7 +41,7 @@ export function useTypstCompile(): void {
       const uStatus = await onStatus((p) => {
         useTabsStore
           .getState()
-          .setStatus(p.id, p.status, p.durationMs);
+          .setStatus(p.id, p.revision, p.status, p.durationMs);
       });
       if (cancelled) {
         uStatus();

@@ -16,19 +16,22 @@ use parking_lot::Mutex;
 use typst_layout::PagedDocument;
 
 use crate::domain::compile_result::CompileOutcome;
-use crate::domain::document::{DocumentId, DocumentMeta};
+use crate::domain::document::{DocumentId, DocumentMeta, DocumentOrigin};
 use crate::typst_engine::world::EditorWorld;
 
 /// Mutable-per-tab state that changes on compile / save / edit. Behind a Mutex
 /// separate from the world so compile never blocks on it.
 pub struct TabRuntime {
-    /// Tab metadata (id, path, title, dirty).
+    /// Tab metadata (id, path, title, dirty, origin, revision).
     pub meta: DocumentMeta,
     /// The last successfully compiled document (for export). `None` until the
     /// first successful compile, or after a failing compile.
     pub last_doc: Option<PagedDocument>,
     /// The outcome of the last compile (success flag, duration, errors).
     pub last_outcome: CompileOutcome,
+    /// The revision this `last_outcome` / `last_doc` corresponds to. `None`
+    /// until the first compile completes. Used to discard stale results.
+    pub last_compiled_revision: Option<u64>,
 }
 
 /// Per-tab state: the editor world (lock-free during compile) + locked runtime.
@@ -48,6 +51,8 @@ impl TabState {
             path: None,
             title: "Untitled".to_string(),
             dirty: false,
+            origin: DocumentOrigin::Untitled,
+            revision: 0,
         };
         Self::with_meta(meta, initial_text)
     }
@@ -60,6 +65,7 @@ impl TabState {
                 meta,
                 last_doc: None,
                 last_outcome: CompileOutcome::ok(0),
+                last_compiled_revision: None,
             }),
         }
     }
@@ -74,6 +80,7 @@ impl TabState {
                 meta,
                 last_doc: None,
                 last_outcome: CompileOutcome::ok(0),
+                last_compiled_revision: None,
             }),
         }
     }
@@ -99,8 +106,12 @@ mod tests {
 
     #[test]
     fn with_meta_carries_path_and_title() {
-        let meta = DocumentMeta::from_path(std::path::PathBuf::from("/tmp/notes.typ"));
-        let id = meta.id;
+        let id = DocumentId::new();
+        let meta = DocumentMeta::with_loose_path(
+            id,
+            std::path::PathBuf::from("/tmp/notes.typ"),
+            std::path::PathBuf::from("/tmp"),
+        );
         let tab = TabState::with_meta(meta, "#hi".to_string());
         let rt = tab.state.lock();
         assert_eq!(rt.meta.id, id);
