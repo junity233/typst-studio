@@ -3,6 +3,8 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { SettingsApp } from "./components/Settings/SettingsApp";
 import { useSettingsStore } from "./store/settingsStore";
+import { useThemeStore } from "./store/themeStore";
+import { useTheme } from "./hooks/useTheme";
 import "./styles/global.css";
 
 class ErrorBoundary extends Component<
@@ -54,14 +56,18 @@ const isSettingsWindow =
   new URLSearchParams(window.location.search).get("window") === "settings";
 
 /**
- * Root: hydrates the settings store once (both windows need it — the settings
- * window renders the manifest, the main window feeds future consumers), then
+ * Root: hydrates the settings + theme stores once (both windows need them —
+ * the settings window renders the manifest/theme picker, the main window feeds
+ * future consumers), applies the current theme to this window's document, then
  * branches to the settings UI or the app shell.
  */
 function Root() {
   useEffect(() => {
     void useSettingsStore.getState().hydrate();
+    void useThemeStore.getState().hydrate();
   }, []);
+  // Apply the current theme in BOTH windows so the settings window matches.
+  useTheme();
   return isSettingsWindow ? <SettingsApp /> : <App />;
 }
 

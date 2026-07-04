@@ -24,6 +24,8 @@ import type {
   Session,
   StartupProblem,
   StartupProblemsPayload,
+  ThemesChangedPayload,
+  ThemeInfo,
   WindowBounds,
   WorkspaceMeta,
 } from "./types";
@@ -251,6 +253,18 @@ export async function onFsChanged(
 }
 
 /**
+ * Subscribe to theme-list change events. Emitted by the backend watcher
+ * whenever the user themes directory changes (a theme added/removed/edited),
+ * carrying the full refreshed theme list. The frontend replaces its picker
+ * options and re-applies the current theme's CSS.
+ */
+export async function onThemesChanged(
+  handler: (payload: ThemesChangedPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<ThemesChangedPayload>("themes_changed", (e) => handler(e.payload));
+}
+
+/**
  * Subscribe to docs-rebound events (§6.4). Emitted after a rename/move rebinds
  * open documents to their new paths; the handler mirrors the new path into the
  * frontend document store (tab title, breadcrumb, active-file highlight).
@@ -325,6 +339,35 @@ export async function openSettings(): Promise<void> {
  */
 export async function openLogDir(): Promise<string> {
   return invoke<string>("open_log_dir");
+}
+
+// --- Themes ------------------------------------------------------------------
+
+/**
+ * List discovered user themes (folder name + metadata). The built-in `default`
+ * theme is implicit and not included here — the frontend prepends it in the
+ * picker. Returns an empty array when no themes exist or the directory is
+ * absent.
+ */
+export async function listThemes(): Promise<ThemeInfo[]> {
+  return invoke<ThemeInfo[]>("list_themes");
+}
+
+/**
+ * Read the CSS source for one theme. Returns `null` for the built-in default
+ * theme or any unreadable/unknown id (the caller falls back to default by
+ * removing the user-theme `<style>`).
+ */
+export async function getThemeCss(id: string): Promise<string | null> {
+  return invoke<string | null>("get_theme_css", { id });
+}
+
+/**
+ * Open the user themes directory in the OS file manager so the user can
+ * create/edit theme folders. Returns the resolved directory path.
+ */
+export async function openThemesDir(): Promise<string> {
+  return invoke<string>("open_themes_dir");
 }
 
 /**

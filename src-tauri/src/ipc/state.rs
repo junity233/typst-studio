@@ -25,6 +25,7 @@ use crate::service::export_service::ExportService;
 use crate::service::lsp_service::LspService;
 use crate::service::save_coordinator::SaveCoordinator;
 use crate::service::session::SessionService;
+use crate::service::theme_service::ThemeService;
 use crate::service::workspace_service::WorkspaceService;
 use crate::settings::SettingsService;
 
@@ -112,6 +113,8 @@ pub struct AppState {
     pub workspace: Arc<WorkspaceService>,
     /// Dynamic user settings (JSON config + manifest validation).
     pub settings: Arc<SettingsService>,
+    /// User CSS theme discovery + hot-reload (watches `<config>/themes/`).
+    pub themes: Arc<ThemeService>,
     /// Last-opened workspace/file memory (separate from settings).
     pub session: Arc<SessionService>,
     /// Reusable HTTP client (paste remote-image fetch + future downloads).

@@ -22,6 +22,7 @@ pub mod lsp_service;
 pub mod save_coordinator;
 pub mod session;
 pub mod tab_state;
+pub mod theme_service;
 pub mod tab_store;
 pub mod trash;
 pub mod watcher_health;

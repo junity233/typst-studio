@@ -136,6 +136,10 @@ pub fn run() {
             ipc::settings_commands::open_settings,
             // Diagnostics (§7.4): open the rolling-log directory.
             ipc::settings_commands::open_log_dir,
+            // Theme commands (appearance.theme).
+            ipc::theme_commands::list_themes,
+            ipc::theme_commands::get_theme_css,
+            ipc::theme_commands::open_themes_dir,
             // Session memory commands (open documents + active view).
             ipc::session_commands::get_session,
             ipc::session_commands::save_session,
@@ -347,6 +351,18 @@ pub fn run() {
             // Reusable HTTP client shared app-wide via AppState.
             let net = Arc::new(HttpClient::new());
 
+            // User CSS themes (appearance.theme). The themes dir is a sibling of
+            // settings.json/session.json under the config dir; the service scans
+            // it once at construction and watches it for hot-reload, emitting
+            // `themes_changed` on any change. Fault-tolerant like the other
+            // services: a missing/unreadable dir just means "no user themes".
+            let themes_dir = cfg_dir.join("themes");
+            let themes = Arc::new(crate::service::theme_service::ThemeService::new(
+                themes_dir,
+                app.handle().clone(),
+            ));
+            themes.start_watcher();
+
             // §6.3 watcher-health polling fallback. Started from the editor's
             // shared store so the background thread can enumerate open docs and
             // route divergences through the same handle_external_change path
@@ -361,6 +377,7 @@ pub fn run() {
                 lsp,
                 workspace,
                 settings,
+                themes,
                 session,
                 net,
                 save,

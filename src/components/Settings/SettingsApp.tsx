@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { Plus, X, Hammer, Type, Eye, Monitor, Save, Database, type LucideIcon } from "lucide-react";
+import { Plus, X, Hammer, Type, Eye, Monitor, Save, Database, Palette, FolderOpen, type LucideIcon } from "lucide-react";
 import type { ManifestCategory, SettingDef } from "../../lib/settings-types";
 import { useSetting } from "../../hooks/useSetting";
 import { useSettingsStore } from "../../store/settingsStore";
+import { useThemeStore } from "../../store/themeStore";
 import {
   clearRecentWorkspaces,
   openLogDir,
+  openThemesDir,
 } from "../../lib/tauri";
 import { toIpcError } from "../../lib/ipc-error";
 import { Toggle } from "./Toggle";
@@ -18,6 +20,7 @@ const CATEGORY_ICON: Record<string, LucideIcon> = {
   window: Monitor,
   saving: Save,
   data: Database,
+  appearance: Palette,
 };
 
 /**
@@ -83,7 +86,52 @@ function CategoryPane({ category }: { category: ManifestCategory }) {
         {category.settings.map((def, i) => (
           <SettingRow key={def.key} def={def} last={i === category.settings.length - 1} />
         ))}
+        {category.id === "appearance" && <OpenThemesFolderRow />}
       </section>
+    </div>
+  );
+}
+
+/**
+ * The non-setting "Open themes folder" action row appended to the Appearance
+ * card. Opens `<app-data>/themes/` in the OS file manager so the user can
+ * create/edit theme folders. Not driven by the manifest (it carries no value),
+ * so it lives here as a fixed extra row.
+ */
+function OpenThemesFolderRow() {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await openThemesDir();
+    } catch (e) {
+      window.alert(`Action failed: ${toIpcError(e).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="setting-row setting-row-last">
+      <div className="setting-row-text">
+        <span className="setting-label">Themes folder</span>
+        <span className="setting-key">themes/</span>
+        <span className="setting-help">
+          Drop a subfolder here containing <code>theme.css</code> (+ optional
+          <code> theme.json</code>) to add a custom theme. The picker above
+          updates live.
+        </span>
+      </div>
+      <div className="setting-control">
+        <button
+          type="button"
+          className={"setting-action-btn" + (busy ? " setting-action-busy" : "")}
+          onClick={() => void run()}
+          disabled={busy}
+        >
+          <FolderOpen size={13} /> {busy ? "Opening…" : "Open"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -248,13 +296,26 @@ function BooleanControl({ def }: { def: SettingDef }) {
 
 function SelectControl({ def }: { def: SettingDef }) {
   const [value, setValue] = useSetting<string>(def.key);
-  const options = def.options ?? [];
+  // For the theme picker, merge the manifest's static options (just "default")
+  // with the live-discovered user themes from the theme store. This keeps the
+  // picker in sync as the user adds/removes theme folders without persisting
+  // the theme list into the manifest (which would drift from disk).
+  const userThemes = useThemeStore((s) => s.themes);
+  const baseOptions = def.options ?? [];
+  const options =
+    def.key === "appearance.theme"
+      ? mergeThemeOptions(baseOptions, userThemes)
+      : baseOptions;
   const fallback = typeof def.default === "string" ? def.default : (options[0] ?? "");
   const current = typeof value === "string" ? value : fallback;
-  /** Display label for an option: explicit `optionLabels` entry, else the
-   * capitalized option value (the long-standing default). */
-  const labelFor = (opt: string) =>
-    def.optionLabels?.[opt] ?? (opt.charAt(0).toUpperCase() + opt.slice(1));
+  /** Display label for an option: explicit `optionLabels` entry, a theme's
+   *  friendly name, else the capitalized option value (the default). */
+  const labelFor = (opt: string) => {
+    if (def.optionLabels?.[opt]) return def.optionLabels[opt];
+    const theme = userThemes.find((t) => t.id === opt);
+    if (theme) return theme.name;
+    return opt.charAt(0).toUpperCase() + opt.slice(1);
+  };
   return (
     <select
       id={SETTING_ID(def.key)}
@@ -269,6 +330,24 @@ function SelectControl({ def }: { def: SettingDef }) {
       ))}
     </select>
   );
+}
+
+/**
+ * Build the theme `<option>` list: the manifest's static options first (so the
+ * built-in "Default" stays at the top), followed by any user themes whose ids
+ * are not already in the static set (dedup by id). Pure helper, exported for
+ * potential testing.
+ */
+function mergeThemeOptions(staticOptions: string[], themes: { id: string }[]): string[] {
+  const seen = new Set(staticOptions);
+  const merged = [...staticOptions];
+  for (const t of themes) {
+    if (!seen.has(t.id)) {
+      seen.add(t.id);
+      merged.push(t.id);
+    }
+  }
+  return merged;
 }
 
 function PathsControl({ def }: { def: SettingDef }) {

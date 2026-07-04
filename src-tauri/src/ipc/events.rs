@@ -133,6 +133,12 @@ pub struct FsChangedPayload {
     pub paths: Vec<String>,
 }
 
+// `ThemesChangedPayload` is defined in `service::theme_service` (the layer that
+// emits the `themes_changed` event) and re-exported here so existing
+// `ipc::events::ThemesChangedPayload` paths resolve — mirroring how
+// `CompileStatus` lives in `domain` to avoid a service→ipc reverse dependency.
+pub use crate::service::theme_service::ThemesChangedPayload;
+
 /// Payload of the `conflict` event (§8.4): an external disk change to an open
 /// document's file moved it into a conflict state. `disk_content` is present
 /// for `Modified` so the UI can show a diff; absent otherwise.
@@ -262,6 +268,10 @@ mod tests {
         crate::ipc::fs_commands::DeleteResult::export(&cfg).unwrap();
         // §6.3 watcher-health payload.
         crate::ipc::fs_commands::WatcherHealthPayload::export(&cfg).unwrap();
+        // Appearance themes (defined in `service::theme_service`; the payload
+        // is re-exported from this module).
+        crate::service::theme_service::ThemeInfo::export(&cfg).unwrap();
+        crate::service::theme_service::ThemesChangedPayload::export(&cfg).unwrap();
     }
 
     #[test]

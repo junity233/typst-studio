@@ -620,6 +620,44 @@ export type StartupProblemsPayload = { problems: Array<StartupProblem>, };
 export type StatusPayload = { id: DocumentId, revision: number, status: CompileStatus, durationMs: number | null, };
 
 /**
+ * The metadata read from a theme's `theme.json`. Fields are optional and
+ * degrade gracefully: a missing/invalid `theme.json` falls back to the folder
+ * name for `name` and empty for `description`, so a theme that consists of
+ * only `theme.css` still appears in the picker.
+ */
+export type ThemeInfo = { 
+/**
+ * Stable id (the theme's folder name). Used as the stored value of the
+ * `appearance.theme` setting.
+ */
+id: string, 
+/**
+ * Friendly display name. Falls back to `id` when `theme.json` omits it.
+ */
+name: string, 
+/**
+ * Short description shown under the name in the picker. Empty string when
+ * absent.
+ */
+description: string, 
+/**
+ * Light/Dark hint. `"all"` (default) means "no preference". Recorded for
+ * future Monaco/preview-background linkage; not yet acted on.
+ */
+base: string, };
+
+/**
+ * Payload of the `themes_changed` event: the full refreshed theme list,
+ * emitted by this service's watcher whenever the themes directory changes (a
+ * theme added/removed/edited). The frontend replaces its picker options and
+ * re-applies the current theme's CSS.
+ *
+ * Defined here (not in `ipc::events`) so the service layer has no reverse
+ * dependency on the IPC layer — `ipc::events` re-exports it.
+ */
+export type ThemesChangedPayload = { themes: Array<ThemeInfo>, };
+
+/**
  * Wire payload for [`get_watcher_health`].
  */
 export type WatcherHealthPayload = { 
