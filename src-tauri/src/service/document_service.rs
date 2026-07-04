@@ -425,11 +425,32 @@ impl DocumentService {
     /// new disk version equals the stored one and treats the event as
     /// self-induced (no reload, no conflict). Replaces the old
     /// [`clear_dirty`](Self::clear_dirty) in the save path.
-    pub fn mark_saved(&self, id: DocumentId) {
+    ///
+    /// `saved_revision` is the revision whose text was just written. The dirty
+    /// flag + conflict are only cleared when the tab's CURRENT revision still
+    /// equals `saved_revision` — a compare-and-set that prevents a lost-update
+    /// race where an `update_text` lands between the write completing and this
+    /// call (that edit's dirty flag must NOT be clobbered). If the revision
+    /// advanced (the user typed during the save), dirty stays true and the
+    /// recovery snapshot is kept (the new unsaved edit is still recoverable).
+    pub fn mark_saved(&self, id: DocumentId, saved_revision: u64) {
         let path = {
             let tabs = self.store.tabs.read();
             let Some(tab) = tabs.get(&id) else { return };
             let mut rt = tab.state.lock();
+            if rt.meta.revision != saved_revision {
+                // The buffer advanced past the saved revision while the write was
+                // in flight. Do NOT clear dirty/conflict — the newer edit is
+                // still unsaved. The disk version + recovery snapshot stay as-is
+                // (the snapshot reflects the latest buffer via the debounce
+                // worker; the disk version still matches what we just wrote, so
+                // the self-save watcher event is correctly recognized).
+                tracing::debug!(
+                    ?id, saved_revision, current = rt.meta.revision,
+                    "mark_saved: revision advanced during save; keeping dirty"
+                );
+                return;
+            }
             rt.meta.dirty = false;
             rt.meta.conflict = ConflictState::None;
             rt.meta.origin.canonical_path().map(|p| p.to_path_buf())

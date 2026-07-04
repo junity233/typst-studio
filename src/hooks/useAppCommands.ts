@@ -11,6 +11,7 @@ import {
   saveFile,
   markCleanShutdown,
   saveSession,
+  discardRecovery,
 } from "../lib/tauri";
 import { useTabsStore, readOrderedDocuments } from "../store/tabsStore";
 import { useDocumentsStore } from "../store/documentsStore";
@@ -261,6 +262,10 @@ async function handleCloseRequested(): Promise<void> {
   });
   if (choice === "cancel") return;
   if (choice === "discard") {
+    // §5.1.4: discard recovery snapshots for every dirty doc so the user's
+    // explicit "Don't Save" isn't re-offered next launch. The per-tab close
+    // path (closeTabWithConfirm) does this per doc; the app-wide path must too.
+    await Promise.all(dirty.map((t) => discardRecovery(t.id).catch(() => {})));
     await captureAndSaveSession();
     await captureAndSaveWindowState();
     await markCleanShutdown();

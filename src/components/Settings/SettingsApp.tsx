@@ -7,6 +7,7 @@ import {
   clearRecentWorkspaces,
   openLogDir,
 } from "../../lib/tauri";
+import { toIpcError } from "../../lib/ipc-error";
 import { Toggle } from "./Toggle";
 
 /** Icon + accent hue per category id. Falls back to a gear. */
@@ -175,7 +176,9 @@ function ActionControl({ def }: { def: SettingDef }) {
       }
     } catch (e) {
       console.warn(`[settings] action ${def.action} failed:`, e);
-      window.alert(`Action failed: ${e instanceof Error ? e.message : String(e)}`);
+      // IPC rejections arrive as the structured IpcError object (Batch 4 wire
+      // format), not an Error instance — use toIpcError to avoid [object Object].
+      window.alert(`Action failed: ${toIpcError(e).message}`);
     } finally {
       setBusy(false);
     }

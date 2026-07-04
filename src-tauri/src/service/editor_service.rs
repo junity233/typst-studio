@@ -175,8 +175,8 @@ impl EditorService {
     }
 
     /// Delegates to [`DocumentService::mark_saved`].
-    pub fn mark_saved(&self, id: DocumentId) {
-        self.document.mark_saved(id);
+    pub fn mark_saved(&self, id: DocumentId, saved_revision: u64) {
+        self.document.mark_saved(id, saved_revision);
     }
 
     /// Delegates to [`DocumentService::handle_external_change`].
@@ -660,6 +660,40 @@ mod tests {
         assert!(!svc.tab_meta(meta.id).unwrap().dirty, "set_dirty(false) must clear dirty");
         // No-op on an unknown id (must not panic).
         svc.set_dirty(DocumentId::new(), true);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn mark_saved_keeps_dirty_when_revision_advanced_during_save() {
+        // Cross-batch review fix (lost-update race): if an edit lands between
+        // the save's write completing and mark_saved, the new edit's dirty flag
+        // must NOT be clobbered. mark_saved CASes against saved_revision; if the
+        // current revision advanced, dirty stays true (the new edit is unsaved).
+        let tmp = std::env::temp_dir().join(format!("typst-cas-{}.typ", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp, "#set page(width: 10cm)\n\nOriginal").unwrap();
+        let (svc, _) = make_service();
+        let initial = std::fs::read_to_string(&tmp).unwrap();
+        let meta = svc.open_from_content(tmp.clone(), initial, None).unwrap();
+        // First edit (revision 1) — this is what gets "saved".
+        svc.update_text(meta.id, "#set page(width: 10cm)\n\nSaved!".into()).unwrap();
+        let saved_rev = svc.tab_revision(meta.id).unwrap();
+        // Simulate the save's write completing, THEN a second edit landing
+        // before mark_saved runs (revision advances to 2).
+        let (path, text) = svc.prepare_save(meta.id).unwrap();
+        std::fs::write(&path, text).unwrap();
+        svc.update_text(meta.id, "#set page(width: 10cm)\n\nEDITED AFTER SAVE!".into()).unwrap();
+        // Now mark_saved for the OLD revision — must NOT clear dirty (revision 2 is unsaved).
+        svc.mark_saved(meta.id, saved_rev);
+        assert!(
+            svc.tab_meta(meta.id).unwrap().dirty,
+            "dirty must stay true: the post-save edit (rev 2) is unsaved"
+        );
+        // And the buffer reflects the newer edit, not the saved one.
+        assert!(svc.tab_text(meta.id).unwrap().contains("EDITED AFTER SAVE!"));
+        // Sanity: if mark_saved is called with the CURRENT revision, dirty clears.
+        let current_rev = svc.tab_revision(meta.id).unwrap();
+        svc.mark_saved(meta.id, current_rev);
+        assert!(!svc.tab_meta(meta.id).unwrap().dirty, "dirty clears when revision matches");
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -1494,7 +1528,8 @@ mod tests {
         wait_for_compiled(&emitter, id);
         let (path, text) = svc.prepare_save(id).unwrap();
         std::fs::write(&path, &text).unwrap();
-        svc.mark_saved(id); // records the on-disk version of our write.
+        let saved_rev = svc.tab_revision(id).unwrap();
+        svc.mark_saved(id, saved_rev); // records the on-disk version of our write.
         assert!(!svc.tab_meta(id).unwrap().dirty, "mark_saved clears dirty");
         assert_eq!(svc.tab_meta(id).unwrap().conflict, ConflictState::None);
 

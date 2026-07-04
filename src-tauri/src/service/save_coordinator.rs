@@ -248,7 +248,10 @@ impl SaveCoordinator {
         match write_result {
             Ok(Ok(())) => {
                 // 5. Success → clear dirty + record disk version, then Saved.
-                self.document.mark_saved(id);
+                // Pass `revision` so mark_saved can CAS against the current
+                // revision: if the user typed during the spawn_blocking write,
+                // dirty stays true (the new edit is unsaved) — no lost update.
+                self.document.mark_saved(id, revision);
                 self.set_state(id, SaveState::Saved { revision });
                 Ok(())
             }
