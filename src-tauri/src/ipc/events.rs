@@ -112,6 +112,9 @@ pub struct LspStatusPayload {
     pub running: bool,
     pub ws_url: String,
     pub available: bool,
+    /// §6.3: true while the accept loop is in backoff after a fatal listener
+    /// error. The frontend shows a "Reconnecting…" indicator.
+    pub reconnecting: bool,
 }
 
 /// Payload of the `fs_changed` event: paths (absolute) that changed on disk in
@@ -257,6 +260,8 @@ mod tests {
         crate::ipc::fs_commands::DocsReboundPayload::export(&cfg).unwrap();
         crate::ipc::fs_commands::AffectedDoc::export(&cfg).unwrap();
         crate::ipc::fs_commands::DeleteResult::export(&cfg).unwrap();
+        // §6.3 watcher-health payload.
+        crate::ipc::fs_commands::WatcherHealthPayload::export(&cfg).unwrap();
     }
 
     #[test]

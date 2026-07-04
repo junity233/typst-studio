@@ -33,6 +33,7 @@ use crate::domain::registry::{DocumentRegistry, SharedRegistry};
 use crate::fs::watcher;
 use crate::typst_engine::MemoryVfs;
 
+use super::compile_supervisor::CompileSupervisor;
 use super::compile_worker::CompileWorker;
 use super::editor_service::Emitter;
 use super::tab_state::TabState;
@@ -88,6 +89,11 @@ pub struct TabStore {
     /// directly, so it is deliberately NOT inserted here.
     pub vfs: Arc<MemoryVfs>,
     pub emitter: Arc<dyn Emitter>,
+    /// Process-wide compile supervision (§6.2): the concurrency-limiting
+    /// semaphore + the shutdown flag. Shared into each worker's compile closure
+    /// so the cap applies across all tabs. Defaults to a fresh supervisor with
+    /// the policy-derived cap; tests can inject a custom one.
+    pub supervisor: CompileSupervisor,
 }
 
 impl TabStore {
@@ -101,6 +107,7 @@ impl TabStore {
             loose_watchers: Arc::new(RwLock::new(HashMap::new())),
             vfs: Arc::new(MemoryVfs::new()),
             emitter,
+            supervisor: CompileSupervisor::new(),
         }
     }
 

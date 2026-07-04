@@ -112,6 +112,19 @@ fn open_path_as_workspace(
         let _ = app_for_cb.emit("fs_changed", payload);
     });
     let meta = state.workspace.open(root, on_change)?;
+    // §6.3: reflect watcher health. `watcher_healthy()` is true iff the watcher
+    // guard is live (started OK); a start failure leaves it false. Surface that
+    // to the watcher-health service so the frontend can warn "external detection
+    // unavailable" — the polling fallback still runs as compensation.
+    if state.workspace.watcher_healthy() {
+        state.watcher_health.clear_watcher_failed();
+    } else {
+        tracing::warn!(
+            "workspace opened but the filesystem watcher failed to start; \
+             polling fallback will compensate (§6.3)"
+        );
+        state.watcher_health.mark_watcher_failed();
+    }
     // Reclassify now-open documents against the new workspace. The editor and
     // workspace services are siblings (both in `AppState`); the workspace
     // service doesn't own open tabs, so this is the right place to bridge them
@@ -204,6 +217,31 @@ pub async fn get_workspace(state: State<'_, AppState>) -> Result<Option<Workspac
             name,
         }
     }))
+}
+
+/// §6.3: whether the filesystem watcher failed to start. The frontend surfaces
+/// a non-modal "external change detection unavailable" warning when true. The
+/// polling fallback runs regardless (compensating for the failed watcher), so
+/// this is purely a UI affordance — not a capability gate.
+#[tauri::command]
+pub async fn get_watcher_health(state: State<'_, AppState>) -> Result<WatcherHealthPayload> {
+    Ok(WatcherHealthPayload {
+        watcher_failed: state.watcher_health.watcher_failed(),
+    })
+}
+
+/// Wire payload for [`get_watcher_health`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct WatcherHealthPayload {
+    /// True when the workspace watcher failed to start (the polling fallback
+    /// is active as compensation).
+    pub watcher_failed: bool,
 }
 
 /// List the immediate children of a workspace-relative directory ("" = root).

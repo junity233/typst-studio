@@ -8,8 +8,11 @@ import type { Diagnostic, DocumentId, LineRect } from "./types";
 /**
  * Frontend compile lifecycle for a single tab. Drives the StatusBar label.
  * Sent over the `status` event by the Rust backend.
+ *
+ * `slow` (§6.2) is emitted while a compile has run past the slow-compile
+ * threshold; a terminal `success`/`error` follows.
  */
-export type CompileStatus = "idle" | "compiling" | "success" | "error";
+export type CompileStatus = "idle" | "compiling" | "slow" | "success" | "error";
 
 /** Payload of the `compiled` event (svg pages + source map) from the backend. */
 export interface CompiledPayload {
@@ -48,6 +51,9 @@ export interface LspStatusPayload {
   running: boolean;
   wsUrl: string;
   available: boolean;
+  /** §6.3: true while the accept loop is in backoff after a fatal listener
+   * error. The StatusBar shows a "Reconnecting…" indicator. */
+  reconnecting: boolean;
 }
 
 /**

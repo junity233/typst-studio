@@ -121,4 +121,8 @@ pub struct AppState {
     /// A top-level coordinator (like export/recovery) holding an
     /// `Arc<DocumentService>`.
     pub save: Arc<SaveCoordinator>,
+    /// Watcher-health polling fallback (§6.3): a background thread that
+    /// re-checks open docs' DiskVersions as a safety net for a silent/dead
+    /// native watcher, plus the watcher-failed flag the frontend warns on.
+    pub watcher_health: Arc<crate::service::watcher_health::WatcherHealth>,
 }

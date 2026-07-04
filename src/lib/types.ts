@@ -32,8 +32,13 @@ errors: Array<Diagnostic>, };
 
 /**
  * Lifecycle status of a compile, emitted on the `status` event.
+ *
+ * `Slow` (§6.2 "编译超过 2 秒显示编译时间较长") is emitted *instead of* a
+ * plain `Compiling` once a watchdog fires. A `Success` / `Error` always
+ * follows — `Slow` is a transient hint, not a terminal state. The frontend
+ * renders "Compiling… (taking a while)" for it.
  */
-export type CompileStatus = "idle" | "compiling" | "success" | "error";
+export type CompileStatus = "idle" | "compiling" | "slow" | "success" | "error";
 
 /**
  * Payload of the `compiled` event: one self-contained SVG string per page,
@@ -342,7 +347,12 @@ h: number, };
  * transitions (client connects / relay ends / tinymist exits). Lets the
  * frontend subscribe instead of polling `get_lsp_status`.
  */
-export type LspStatusPayload = { running: boolean, wsUrl: string, available: boolean, };
+export type LspStatusPayload = { running: boolean, wsUrl: string, available: boolean, 
+/**
+ * §6.3: true while the accept loop is in backoff after a fatal listener
+ * error. The frontend shows a "Reconnecting…" indicator.
+ */
+reconnecting: boolean, };
 
 /**
  * A single open-document entry in the persisted session. The frontend
@@ -576,6 +586,16 @@ export type StartupProblemsPayload = { problems: Array<StartupProblem>, };
  * `Success` / `Error`. `revision` (§7) tags the buffer revision.
  */
 export type StatusPayload = { id: DocumentId, revision: number, status: CompileStatus, durationMs: number | null, };
+
+/**
+ * Wire payload for [`get_watcher_health`].
+ */
+export type WatcherHealthPayload = { 
+/**
+ * True when the workspace watcher failed to start (the polling fallback
+ * is active as compensation).
+ */
+watcherFailed: boolean, };
 
 /**
  * Identifier for the currently active workspace (§4.2 / §4.3).

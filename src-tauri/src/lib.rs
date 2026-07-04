@@ -121,6 +121,7 @@ pub fn run() {
             ipc::fs_commands::open_workspace_by_path,
             ipc::fs_commands::close_workspace,
             ipc::fs_commands::get_workspace,
+            ipc::fs_commands::get_watcher_health,
             ipc::fs_commands::read_dir,
             ipc::fs_commands::create_entry,
             ipc::fs_commands::rename_entry,
@@ -223,6 +224,7 @@ pub fn run() {
                         running: status.running,
                         ws_url: status.ws_url,
                         available: status.available,
+                        reconnecting: status.reconnecting,
                     };
                     let _ = app_for_lsp.emit("lsp_status", payload);
                 })
@@ -343,6 +345,14 @@ pub fn run() {
             // Reusable HTTP client shared app-wide via AppState.
             let net = Arc::new(HttpClient::new());
 
+            // §6.3 watcher-health polling fallback. Started from the editor's
+            // shared store so the background thread can enumerate open docs and
+            // route divergences through the same handle_external_change path
+            // the native watcher uses. Active only while there are open docs.
+            let watcher_health = Arc::new(
+                crate::service::watcher_health::WatcherHealth::start(editor.document().store_clone()),
+            );
+
             app.manage(AppState {
                 editor,
                 export,
@@ -352,6 +362,7 @@ pub fn run() {
                 session,
                 net,
                 save,
+                watcher_health,
             });
 
             // Emit the recovery-available event (if any) AFTER manage + after a
@@ -380,8 +391,25 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // §6.2 "应用关闭时停止接收任务并有界等待 worker 结束": on Exit, signal
+            // the compile supervisor to drain (no new compiles, suppress in-flight
+            // emits) and give the workers a brief, bounded window to finish their
+            // current compile. Best-effort — Rust can't force-kill a thread, so a
+            // runaway compile outliving the window is simply dropped. We do this on
+            // ExitRequested/Exit, not on every window close, so a Settings-window
+            // toggle doesn't tear down compilation.
+            use tauri::Manager as _;
+            if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+                if let Some(state) = app.try_state::<crate::ipc::state::AppState>() {
+                    state.editor.compile().shutdown();
+                    // §6.3: stop the watcher-health poll thread too.
+                    state.watcher_health.shutdown();
+                }
+            }
+        });
 }
 
 /// Compute the startup recovery payload (§5.1.3), or `None` when no recovery is

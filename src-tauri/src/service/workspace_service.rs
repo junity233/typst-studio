@@ -69,6 +69,14 @@ impl WorkspaceService {
         self.root.read().is_some()
     }
 
+    /// §6.3: whether the workspace filesystem watcher is live. `false` if no
+    /// workspace is open OR the watcher failed to start on the last `open`.
+    /// The IPC layer surfaces this via the watcher-health service so the
+    /// frontend can warn "external detection unavailable".
+    pub fn watcher_healthy(&self) -> bool {
+        self.watcher.read().is_some()
+    }
+
     /// The current workspace root, if open.
     pub fn root(&self) -> Option<PathBuf> {
         self.root.read().clone()

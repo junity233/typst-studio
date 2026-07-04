@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Workbench } from "./components/Shell/Workbench";
 import { CommandBar } from "./components/CommandBar/CommandBar";
 import { StatusBar } from "./components/StatusBar/StatusBar";
+import { StartupProblemsPanel } from "./components/StatusBar/StartupProblemsPanel";
 import { ConfirmDialog } from "./components/Dialogs/ConfirmDialog";
 import { RecoveryDialog } from "./components/Dialogs/RecoveryDialog";
 import { ConflictDialog } from "./components/Dialogs/ConflictDialog";
@@ -84,6 +85,10 @@ export default function App() {
     <div className="app">
       <CommandBar />
       <Workbench />
+      {/* §6.5: non-modal startup-problems panel. Overlays the workbench's
+          bottom-right corner; non-blocking. Renders only when problems exist
+          and haven't been dismissed. */}
+      <StartupProblemsPanel />
       <StatusBar />
       <ConfirmDialog />
       <RecoveryDialog />

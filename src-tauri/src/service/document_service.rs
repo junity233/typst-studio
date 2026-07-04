@@ -127,6 +127,14 @@ impl DocumentService {
         self.store.registry()
     }
 
+    /// A clone of the shared backing store. Used by the watcher-health polling
+    /// fallback (§6.3) to enumerate open docs + route divergences through the
+    /// shared external-change handler. The store is `Clone` (all-`Arc` fields),
+    /// so this is cheap and shares the same underlying maps.
+    pub fn store_clone(&self) -> TabStore {
+        self.store.clone()
+    }
+
     /// Read-only access to the shared backing store (used by the facade's
     /// test-only accessors).
     #[cfg(test)]
