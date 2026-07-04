@@ -45,6 +45,13 @@ export interface FormatApi {
 export interface ActionContext {
   tab: Tab;
   workspace: string | null;
+  /**
+   * Image-destination path template for the toolbar's Insert Image button.
+   * Sourced from the `editor.insertImagePath` setting (added in T3 — default
+   * `${fileDir}/assets/${fileName}`). Distinct from `editor.pasteImagePath`,
+   * which governs the paste-rich-text flow (its default uses a `pasted-`
+   * prefix + `${hash}` for dedup). Both expand via the same pathMacros engine.
+   */
   insertImagePathTemplate: string | undefined;
 }
 
