@@ -36,7 +36,13 @@ export function dispatchAction(
     case "custom":
       // T5 (table grid picker) + T6 (image + link modals) supply the real
       // `run`. The dispatch path is correct today; the stubs just no-op.
-      void action.run(api, ctx);
+      // Swallow rejections here so a failing async action (e.g. image write
+      // in T6) surfaces as a console error rather than an uncaught promise
+      // rejection in the renderer. Each `run` should still handle its own
+      // user-facing error UI; this is the safety net.
+      void Promise.resolve(action.run(api, ctx)).catch((e) => {
+        console.error("[FormatToolbar] custom action failed:", e);
+      });
       return;
   }
 }
@@ -50,13 +56,6 @@ export interface FormatToolbarProps {
    * surface and lets tests pass a minimal mock.
    */
   api: FormatApi | null;
-  /**
-   * Bumped by {@link EditorArea} when the editor API becomes available (refs
-   * don't trigger re-renders). The parent re-renders on tick change and passes
-   * a fresh `api` prop, so this toolbar re-renders naturally — referenced here
-   * only to keep the prop from looking unused under `noUnusedParameters`.
-   */
-  readyTick: number;
   /** The active document, or null when nothing is open. */
   tab: Tab | null;
   /** True when there's no tab to act on; disables every button. */
@@ -74,14 +73,9 @@ export interface FormatToolbarProps {
  */
 export function FormatToolbar({
   api,
-  readyTick,
   tab,
   disabled,
 }: FormatToolbarProps) {
-  // Reference readyTick so the prop is "used" under noUnusedParameters — the
-  // parent's tick bump is what causes *us* to re-render with a fresh `api`.
-  void readyTick;
-
   const workspace = useWorkspaceStore((s) => s.rootPath);
   const [insertImagePathTemplate] = useSetting<string>("editor.insertImagePath");
 

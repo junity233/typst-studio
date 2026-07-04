@@ -368,7 +368,6 @@ export function EditorArea() {
       </div>
       <FormatToolbar
         api={editorApiRef.current}
-        readyTick={editorReadyTick}
         tab={activeTab}
         disabled={activeTab === null}
       />

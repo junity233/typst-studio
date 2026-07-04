@@ -180,7 +180,6 @@ describe("FormatToolbar — rendered structure", () => {
     const c = render(
       <FormatToolbar
         api={makeMockApi()}
-        readyTick={1}
         tab={FAKE_TAB}
         disabled={false}
       />,
@@ -195,7 +194,6 @@ describe("FormatToolbar — rendered structure", () => {
     const c = render(
       <FormatToolbar
         api={makeMockApi()}
-        readyTick={1}
         tab={FAKE_TAB}
         disabled={false}
       />,
@@ -208,7 +206,6 @@ describe("FormatToolbar — rendered structure", () => {
     const c = render(
       <FormatToolbar
         api={makeMockApi()}
-        readyTick={1}
         tab={FAKE_TAB}
         disabled={false}
       />,
@@ -221,7 +218,6 @@ describe("FormatToolbar — rendered structure", () => {
     const c = render(
       <FormatToolbar
         api={makeMockApi()}
-        readyTick={1}
         tab={FAKE_TAB}
         disabled={false}
       />,
@@ -239,7 +235,6 @@ describe("FormatToolbar — rendered structure", () => {
     const c = render(
       <FormatToolbar
         api={makeMockApi()}
-        readyTick={1}
         tab={FAKE_TAB}
         disabled={false}
       />,
@@ -262,7 +257,6 @@ describe("FormatToolbar — disabled state", () => {
     const c = render(
       <FormatToolbar
         api={makeMockApi()}
-        readyTick={1}
         tab={FAKE_TAB}
         disabled={true}
       />,
@@ -278,7 +272,6 @@ describe("FormatToolbar — disabled state", () => {
     const c = render(
       <FormatToolbar
         api={null}
-        readyTick={0}
         tab={FAKE_TAB}
         disabled={false}
       />,
@@ -293,7 +286,6 @@ describe("FormatToolbar — disabled state", () => {
     const c = render(
       <FormatToolbar
         api={makeMockApi()}
-        readyTick={1}
         tab={FAKE_TAB}
         disabled={false}
       />,
@@ -328,7 +320,6 @@ describe("FormatToolbar — click wires to the right FormatApi method", () => {
     const c = render(
       <FormatToolbar
         api={api}
-        readyTick={1}
         tab={FAKE_TAB}
         disabled={false}
       />,
@@ -343,7 +334,6 @@ describe("FormatToolbar — click wires to the right FormatApi method", () => {
     const c = render(
       <FormatToolbar
         api={api}
-        readyTick={1}
         tab={FAKE_TAB}
         disabled={false}
       />,
@@ -358,7 +348,6 @@ describe("FormatToolbar — click wires to the right FormatApi method", () => {
     const c = render(
       <FormatToolbar
         api={api}
-        readyTick={1}
         tab={FAKE_TAB}
         disabled={false}
       />,
@@ -373,7 +362,6 @@ describe("FormatToolbar — click wires to the right FormatApi method", () => {
     const c = render(
       <FormatToolbar
         api={api}
-        readyTick={1}
         tab={FAKE_TAB}
         disabled={true}
       />,
