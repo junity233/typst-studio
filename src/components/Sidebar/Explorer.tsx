@@ -15,7 +15,8 @@ import {
 } from "lucide-react";
 import type { DirEntry, EntryKind } from "../../lib/types";
 import { useWorkspaceStore } from "../../store/workspaceStore";
-import { useTabsStore } from "../../store/tabsStore";
+import { useTabsStore, readOrderedDocuments } from "../../store/tabsStore";
+import { useDocumentsStore } from "../../store/documentsStore";
 import { openFileByPath, revealInFinder } from "../../lib/tauri";
 import { useContextMenuStore } from "./contextMenuStore";
 
@@ -158,7 +159,9 @@ interface TreeRowProps {
 function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendingNew }: TreeRowProps) {
   const openPath = useTabsStore((s) => s.openPath);
   const activeId = useTabsStore((s) => s.activeId);
-  const tabs = useTabsStore((s) => s.tabs);
+  // Subscribe to the documents map so the active-file highlight tracks path
+  // changes (e.g. after Save As) and dirty/open state.
+  const documents = useDocumentsStore((s) => s.documents);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const renameEntry = useWorkspaceStore((s) => s.renameEntry);
   const deleteEntry = useWorkspaceStore((s) => s.deleteEntry);
@@ -175,9 +178,10 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
   const children = isDir ? tree[entry.relative] : undefined;
 
   const isActiveFile =
-    !isDir && rootPath !== null && tabs.some(
-      (t) => t.id === activeId && t.path === `${rootPath}/${entry.relative}`,
-    );
+    !isDir &&
+    rootPath !== null &&
+    activeId !== null &&
+    documents[activeId]?.path === `${rootPath}/${entry.relative}`;
 
   // Folders expand/collapse on single click (standard tree behavior); files
   // open on DOUBLE click so a single click just selects/focuses the row,
@@ -197,7 +201,7 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
     try {
       setLoading(true);
       const abs = `${rootPath}/${entry.relative}`;
-      const existing = useTabsStore.getState().tabs.find((t) => t.path === abs);
+      const existing = readOrderedDocuments().find((t) => t.path === abs);
       if (existing) {
         useTabsStore.getState().activate(existing.id);
         return;

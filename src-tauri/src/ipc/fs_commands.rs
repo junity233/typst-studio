@@ -21,20 +21,43 @@ use crate::service::workspace_service::WorkspaceMeta;
 
 /// Open `root` as the workspace (set root + resolver, start the watcher). Shared
 /// by the dialog picker and the default-workspace (cwd) opener. Builds the
-/// `fs_changed` emitter callback.
+/// `fs_changed` emitter callback. After a successful open, asks the editor
+/// service to reclassify already-open documents so those inside the new root
+/// switch from `LooseFile` to `WorkspaceFile` (§4.3).
 fn open_path_as_workspace(
     app: &AppHandle,
-    workspace: &std::sync::Arc<crate::service::workspace_service::WorkspaceService>,
+    state: &AppState,
     root: PathBuf,
 ) -> Result<WorkspaceMeta> {
+    // The watcher callback needs two things: the AppHandle (to emit `fs_changed`
+    // for the frontend's tree refresh) and an Arc<EditorService> (to route
+    // document paths into conflict/reload handling, §8.4). Both are cloned out
+    // here because the closure must be 'static + Send + Sync — a State<'_> is
+    // neither. The Arc clones are cheap and keep the services alive for the
+    // watcher's lifetime.
     let app_for_cb = app.clone();
+    let editor_for_cb = state.editor.clone();
     let on_change: watcher::OnChange = Arc::new(move |paths: &[PathBuf]| {
+        // §8.4: route each changed path to the editor so an open document whose
+        // backing file changed is reloaded (clean buffer) or marked conflict
+        // (dirty buffer / deleted). Safe on the watcher flush thread.
+        for p in paths {
+            editor_for_cb.handle_external_change(p);
+        }
+        // Notify the frontend to refresh its file tree (independent of the
+        // document-handling above — the tree shows all files, not just docs).
         let payload = FsChangedPayload {
             paths: paths.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         };
         let _ = app_for_cb.emit("fs_changed", payload);
     });
-    workspace.open(root, on_change)
+    let meta = state.workspace.open(root, on_change)?;
+    // Reclassify now-open documents against the new workspace. The editor and
+    // workspace services are siblings (both in `AppState`); the workspace
+    // service doesn't own open tabs, so this is the right place to bridge them
+    // (§6.2).
+    state.editor.reclassify_documents(&state.workspace);
+    Ok(meta)
 }
 
 /// A native folder pick → open it as the workspace. Returns the workspace
@@ -57,7 +80,7 @@ pub async fn open_workspace(
         .into_path()
         .map_err(|e| AppError::InvalidInput(format!("invalid folder path: {e}")))?;
 
-    let meta = open_path_as_workspace(&app, &state.workspace, root)?;
+    let meta = open_path_as_workspace(&app, &state, root)?;
     Ok(Some(meta))
 }
 
@@ -75,7 +98,7 @@ pub async fn open_default_workspace(
     if !cwd.is_dir() {
         return Ok(None);
     }
-    let meta = open_path_as_workspace(&app, &state.workspace, cwd)?;
+    let meta = open_path_as_workspace(&app, &state, cwd)?;
     Ok(Some(meta))
 }
 
@@ -92,14 +115,18 @@ pub async fn open_workspace_by_path(
     if !root.is_absolute() || !root.is_dir() {
         return Ok(None);
     }
-    let meta = open_path_as_workspace(&app, &state.workspace, root)?;
+    let meta = open_path_as_workspace(&app, &state, root)?;
     Ok(Some(meta))
 }
 
 /// Close the current workspace (stops the watcher; open tabs are untouched).
+/// Asks the editor service to reclassify already-open documents so former
+/// `WorkspaceFile`s demote to `LooseFile` (rooted at their parent dir, so
+/// same-dir `#include` still resolves) (§4.3).
 #[tauri::command]
 pub async fn close_workspace(state: State<'_, AppState>) -> Result<()> {
     state.workspace.close();
+    state.editor.reclassify_documents(&state.workspace);
     Ok(())
 }
 
@@ -176,8 +203,11 @@ pub async fn reveal_in_finder(
 }
 
 /// Open a file by its absolute path (no dialog) as a tab — used when clicking a
-/// `.typ` entry in the file tree. If the path is inside the open workspace, the
-/// tab compiles with `#include` resolution; otherwise it's a detached tab.
+/// `.typ` entry in the file tree. The editor service derives the world's
+/// resolver from the document's origin: a loose file (outside any workspace)
+/// gets a parent-directory-rooted resolver so same-dir `#include` /
+/// `#image()` resolve; a workspace file would get the workspace resolver
+/// (plumbed in Task B).
 #[tauri::command]
 pub async fn open_file_by_path(
     state: State<'_, AppState>,
@@ -192,11 +222,11 @@ pub async fn open_file_by_path(
     .await
     .map_err(|e| AppError::Other(format!("join error: {e}")))??;
 
-    // If a workspace is open and the file lives under it, give the tab a
-    // resolver so #include/#image resolve against the workspace root.
-    let resolver = state.workspace.resolver();
+    // The editor service classifies the file (loose vs workspace) and builds a
+    // resolver-anchored world accordingly. A workspace file gets the workspace
+    // resolver; a loose file gets the parent-rooted one.
     let editor = state.editor.clone();
-    let meta = editor.open_from_disk(path, content.clone(), resolver);
+    let meta = editor.open_from_disk(path, content.clone(), Some(&state.workspace))?;
     Ok(OpenedDocument { meta, content })
 }
 
@@ -244,6 +274,6 @@ pub async fn save_as(
     tauri::async_runtime::spawn_blocking(move || std::fs::write(&path_for_write, &text))
         .await
         .map_err(|e| AppError::Other(format!("join error: {e}")))??;
-    editor.assign_path(id, path.clone())?;
+    editor.rebind_path(id, path.clone())?;
     Ok(path.to_string_lossy().into_owned())
 }

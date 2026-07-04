@@ -23,6 +23,15 @@ pub enum AppError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
+    /// A document at the given canonical path is already open (§4.1 uniqueness).
+    /// Carries the existing document's id so callers can focus its view instead
+    /// of creating a duplicate.
+    #[error("document already open: {path} (id {existing_id})")]
+    AlreadyOpen {
+        existing_id: crate::domain::document::DocumentId,
+        path: String,
+    },
+
     #[error("{0}")]
     Other(String),
 }

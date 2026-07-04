@@ -10,11 +10,13 @@ import {
   saveAs as saveAsBE,
   saveFile,
 } from "../lib/tauri";
-import { useTabsStore } from "../store/tabsStore";
+import { useTabsStore, readOrderedDocuments } from "../store/tabsStore";
+import { useDocumentsStore } from "../store/documentsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { useUiStore } from "../store/uiStore";
 import { useDialogStore } from "../store/dialogStore";
 import { closeTabWithConfirm, saveTab } from "../lib/commands";
+import { captureAndSaveSession } from "../lib/session";
 
 /**
  * Centralized command dispatch for the native app menu. Subscribes to the
@@ -89,7 +91,10 @@ export function useAppCommands(): void {
 export async function dispatch(menuId: string): Promise<void> {
   const tabs = useTabsStore.getState();
   const activeId = tabs.activeId;
-  const activeTab = tabs.tabs.find((t) => t.id === activeId) ?? null;
+  const activeTab =
+    activeId !== null
+      ? (useDocumentsStore.getState().documents[activeId] ?? null)
+      : null;
   const ws = useWorkspaceStore.getState();
   const ui = useUiStore.getState();
 
@@ -132,15 +137,21 @@ export async function dispatch(menuId: string): Promise<void> {
         break;
 
       case "export-pdf":
-        if (activeId !== null) await exportPdf(activeId);
+        if (activeId !== null && activeTab !== null) {
+          await exportPdf(activeId, activeTab.revision);
+        }
         break;
 
       case "export-png":
-        if (activeId !== null) await exportPng(activeId);
+        if (activeId !== null && activeTab !== null) {
+          await exportPng(activeId, activeTab.revision);
+        }
         break;
 
       case "export-svg":
-        if (activeId !== null) await exportSvg(activeId);
+        if (activeId !== null && activeTab !== null) {
+          await exportSvg(activeId, activeTab.revision);
+        }
         break;
 
       default:
@@ -164,11 +175,19 @@ async function handleOpenFile(): Promise<void> {
 /**
  * Close the app, guarding unsaved tabs. Reads the tab list fresh (no React
  * selector) so the check reflects current edits at the moment of close.
+ *
+ * Before destroying the window the session is re-captured (awaited) so the
+ * final tab list + active view is persisted for the next launch — the
+ * fire-and-forget captures from the store actions may otherwise be cut off by
+ * the window going away.
  */
 async function handleCloseRequested(): Promise<void> {
-  const tabs = useTabsStore.getState().tabs;
-  const dirty = tabs.filter((t) => t.dirty);
+  // Read the live view order + domain state fresh (no React selector) so the
+  // dirty check reflects current edits at the moment of close.
+  const docs = readOrderedDocuments();
+  const dirty = docs.filter((t) => t.dirty);
   if (dirty.length === 0) {
+    await captureAndSaveSession();
     await getCurrentWindow().destroy();
     return;
   }
@@ -181,6 +200,7 @@ async function handleCloseRequested(): Promise<void> {
   });
   if (choice === "cancel") return;
   if (choice === "discard") {
+    await captureAndSaveSession();
     await getCurrentWindow().destroy();
     return;
   }
@@ -188,6 +208,7 @@ async function handleCloseRequested(): Promise<void> {
   for (const t of dirty) {
     if (!(await saveTab(t.id))) return;
   }
+  await captureAndSaveSession();
   await getCurrentWindow().destroy();
 }
 

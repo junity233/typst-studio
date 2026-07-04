@@ -1,5 +1,6 @@
 import { saveFile, saveAs as saveAsBE } from "./tauri";
 import { useTabsStore } from "../store/tabsStore";
+import { useDocumentsStore } from "../store/documentsStore";
 import { useDialogStore } from "../store/dialogStore";
 
 /**
@@ -8,7 +9,7 @@ import { useDialogStore } from "../store/dialogStore";
  * error). Shared by the per-tab close guard and the app-wide Save-All guard.
  */
 export async function saveTab(id: string): Promise<boolean> {
-  const tab = useTabsStore.getState().tabs.find((t) => t.id === id) ?? null;
+  const tab = useDocumentsStore.getState().documents[id] ?? null;
   if (tab === null) return false;
   try {
     if (tab.path === null) {
@@ -35,7 +36,7 @@ export async function saveTab(id: string): Promise<boolean> {
  * Returns true if the tab was closed, false if cancelled.
  */
 export async function closeTabWithConfirm(id: string): Promise<boolean> {
-  const tab = useTabsStore.getState().tabs.find((t) => t.id === id) ?? null;
+  const tab = useDocumentsStore.getState().documents[id] ?? null;
   if (tab === null) return false;
 
   if (tab.dirty) {

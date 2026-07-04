@@ -1,6 +1,6 @@
 import { useEffect, useTransition } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { onCompiled, onStatus } from "../lib/tauri";
+import { onCompiled, onConflict, onStatus } from "../lib/tauri";
 import { useTabsStore } from "../store/tabsStore";
 
 /**
@@ -26,9 +26,10 @@ export function useTypstCompile(): void {
       const uCompiled = await onCompiled((p) => {
         const tabs = useTabsStore.getState();
         // Wrap the SVG payload update in a transition so Monaco keystroke
-        // processing is never blocked by preview reconciliation.
+        // processing is never blocked by preview reconciliation. The revision
+        // guard inside setPages discards stale compiles (§7).
         startTransition(() => {
-          tabs.setPages(p.id, p.pages, p.lineMap);
+          tabs.setPages(p.id, p.revision, p.pages, p.lineMap);
         });
       });
       if (cancelled) {
@@ -40,13 +41,24 @@ export function useTypstCompile(): void {
       const uStatus = await onStatus((p) => {
         useTabsStore
           .getState()
-          .setStatus(p.id, p.status, p.durationMs);
+          .setStatus(p.id, p.revision, p.status, p.durationMs);
       });
       if (cancelled) {
         uStatus();
         return;
       }
       unlistens.push(uStatus);
+
+      // §8.4: external-modification conflict. Surface the backend's conflict
+      // state on the tab (the resolution UI is a later task).
+      const uConflict = await onConflict((p) => {
+        useTabsStore.getState().setConflict(p.id, p.conflict);
+      });
+      if (cancelled) {
+        uConflict();
+        return;
+      }
+      unlistens.push(uConflict);
     })();
 
     return () => {

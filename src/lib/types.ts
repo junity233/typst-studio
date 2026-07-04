@@ -26,8 +26,12 @@ export type CompileStatus = "idle" | "compiling" | "success" | "error";
  * Payload of the `compiled` event: one self-contained SVG string per page,
  * plus a source map mapping each source line to its page-space bounding rect
  * (used by the frontend for scroll-sync and click-to-source).
+ *
+ * `revision` (§7) is the document content revision this compile corresponds
+ * to. The frontend discards results whose revision is older than the tab's
+ * current revision, so a slow compile can never overwrite a newer preview.
  */
-export type CompiledPayload = { id: DocumentId, pages: Array<string>, 
+export type CompiledPayload = { id: DocumentId, revision: number, pages: Array<string>, 
 /**
  * Source line → preview-page bbox index, sorted by `(page, y)`. Empty for
  * documents with no rendered text (or when compilation produced no doc).
@@ -40,6 +44,31 @@ lineMap: Array<LineRect>,
 durationMs: number, };
 
 /**
+ * Payload of the `conflict` event (§8.4): an external disk change to an open
+ * document's file moved it into a conflict state. `disk_content` is present
+ * for `Modified` so the UI can show a diff; absent otherwise.
+ *
+ * `revision` (§7) tags the buffer revision the conflict corresponds to.
+ */
+export type ConflictPayload = { id: DocumentId, revision: number, conflict: ConflictState, 
+/**
+ * The current disk content, present on `Modified` (so the UI can show a
+ * diff). `None` for `None` / `Missing`.
+ */
+diskContent: string | null, };
+
+/**
+ * External-modification conflict state for a document (§8.4).
+ *
+ * Set by [`EditorService::handle_external_change`](crate::service::editor_service::EditorService::handle_external_change)
+ * when a filesystem watcher reports a change to a document's backing file.
+ * The user resolves a `Modified` / `Missing` state via explicit actions (use
+ * disk, overwrite disk, Save As); the resolution UI is out of scope for the
+ * state-tracking layer — this enum is just the data.
+ */
+export type ConflictState = "none" | "modified" | "missing";
+
+/**
  * A single diagnostic, IPC/serialization-friendly.
  */
 export type Diagnostic = { severity: Severity, range: Range, message: string, 
@@ -49,9 +78,10 @@ export type Diagnostic = { severity: Severity, range: Range, message: string,
 code: bigint | null, };
 
 /**
- * Payload of the `diagnostics` event.
+ * Payload of the `diagnostics` event. `revision` (§7) tags which buffer
+ * revision the diagnostics correspond to.
  */
-export type DiagnosticsPayload = { id: DocumentId, diagnostics: Array<Diagnostic>, };
+export type DiagnosticsPayload = { id: DocumentId, revision: number, diagnostics: Array<Diagnostic>, };
 
 /**
  * A single entry returned by [`read_dir`]: one child of a directory.
@@ -68,22 +98,29 @@ relative: string,
 name: string, kind: EntryKind, };
 
 /**
- * Unique identifier for an open document (tab).
+ * Unique identifier for an open document.
  *
- * Wraps a `Uuid` v4. Serialized as a string across IPC.
+ * Wraps a `Uuid` v4. Serialized as a string across IPC. Stable for the
+ * document's entire open lifetime — origin transitions (Untitled → save,
+ * WorkspaceFile ↔ LooseFile) preserve the id.
  */
 export type DocumentId = string;
 
 /**
- * Metadata for an open document tab. Independent of typst's own `Document`.
+ * Metadata for an open document. Independent of typst's own `Document`.
+ *
+ * `path` and `title` are retained as convenience fields derived from
+ * [`DocumentOrigin`] for IPC consumers; the authoritative classification is
+ * `origin`.
  */
 export type DocumentMeta = { 
 /**
- * Stable unique id for this tab.
+ * Stable unique id for this document (preserved across origin transitions).
  */
 id: DocumentId, 
 /**
- * Filesystem path, if backed by a file. `None` for unsaved/untitled docs.
+ * Filesystem path, if backed by a file. `None` for untitled docs.
+ * Derived from [`DocumentOrigin::canonical_path`].
  */
 path: string | null, 
 /**
@@ -93,7 +130,49 @@ title: string,
 /**
  * Unsaved-changes flag.
  */
-dirty: boolean, };
+dirty: boolean, 
+/**
+ * Origin classification (§4.2). Drives resolution / watching / LSP.
+ */
+origin: DocumentOrigin, 
+/**
+ * Monotonic content revision. Bumped on every `update_text`. Carried by
+ * compile/diagnostics/status events so stale results can be discarded.
+ * `u64` maps to `bigint` by default in ts-rs, but Tauri serializes it as a
+ * JSON number at runtime — override to `number` to match the wire format.
+ */
+revision: number, 
+/**
+ * External-modification conflict state (§8.4). `None` when in sync with
+ * disk; `Modified` / `Missing` when the watcher detected an external disk
+ * change that could not be auto-applied (dirty buffer / deleted file).
+ */
+conflict: ConflictState, };
+
+/**
+ * How a document is anchored on disk (§4.2).
+ *
+ * Drives relative-resource resolution (`#include`, `#image()`), file
+ * watching, and LSP folder association. Transitions between variants
+ * preserve the [`DocumentId`].
+ */
+export type DocumentOrigin = { "kind": "untitled" } | { "kind": "workspaceFile", 
+/**
+ * Canonical absolute path of the file.
+ */
+path: string, 
+/**
+ * Owning workspace. Used to re-classify on workspace open/close.
+ */
+workspace_id: WorkspaceId, } | { "kind": "looseFile", 
+/**
+ * Canonical absolute path of the file.
+ */
+path: string, 
+/**
+ * Resolution root: the file's parent directory.
+ */
+root: string, };
 
 /**
  * Whether a tree entry is a file or a directory.
@@ -152,17 +231,30 @@ h: number, };
 export type LspStatusPayload = { running: boolean, wsUrl: string, available: boolean, };
 
 /**
+ * A single open-document entry in the persisted session. The frontend
+ * assembles this in display order from its tab list.
+ *
+ * Variants are deliberately coarse (`Disk` vs `Untitled`): the
+ * workspace-file vs loose-file distinction is a *derived* classification
+ * recomputed on restore (§4.3), so it is not stored. `dirty` is carried so a
+ * restore can re-mark a document (for disk files, a dirty record means "you
+ * had unsaved edits at shutdown that are now lost" — see the restore path).
+ */
+export type OpenDocRecord = { "kind": "disk", path: string, dirty: boolean, } | { "kind": "untitled", content: string, dirty: boolean, };
+
+/**
  * Response of `new_tab` / `open_file`: the tab's metadata paired with its
  * current source text, so the frontend can hydrate Monaco without re-reading
  * the file from disk.
  */
 export type OpenedDocument = { content: string, 
 /**
- * Stable unique id for this tab.
+ * Stable unique id for this document (preserved across origin transitions).
  */
 id: DocumentId, 
 /**
- * Filesystem path, if backed by a file. `None` for unsaved/untitled docs.
+ * Filesystem path, if backed by a file. `None` for untitled docs.
+ * Derived from [`DocumentOrigin::canonical_path`].
  */
 path: string | null, 
 /**
@@ -172,12 +264,65 @@ title: string,
 /**
  * Unsaved-changes flag.
  */
-dirty: boolean, };
+dirty: boolean, 
+/**
+ * Origin classification (§4.2). Drives resolution / watching / LSP.
+ */
+origin: DocumentOrigin, 
+/**
+ * Monotonic content revision. Bumped on every `update_text`. Carried by
+ * compile/diagnostics/status events so stale results can be discarded.
+ * `u64` maps to `bigint` by default in ts-rs, but Tauri serializes it as a
+ * JSON number at runtime — override to `number` to match the wire format.
+ */
+revision: number, 
+/**
+ * External-modification conflict state (§8.4). `None` when in sync with
+ * disk; `Modified` / `Missing` when the watcher detected an external disk
+ * change that could not be auto-applied (dirty buffer / deleted file).
+ */
+conflict: ConflictState, };
 
 /**
  * A 1-indexed text range (Monaco-friendly). Half-open `[start, end)`.
  */
 export type Range = { start_line: number, start_column: number, end_line: number, end_column: number, };
+
+/**
+ * What we remember between launches. All fields default so an OLD session.json
+ * (with only `lastWorkspace`/`lastFile`) still loads cleanly.
+ *
+ * `rename_all = "camelCase"` so the on-disk shape matches what the frontend
+ * sends in a `save_session` patch (`openDocuments`, `activeDocumentId`, …) and
+ * what older builds wrote (`lastWorkspace`/`lastFile`). Without it serde would
+ * look for snake_case keys and silently drop every camelCase field.
+ */
+export type Session = { 
+/**
+ * Absolute path of the last workspace folder, or "".
+ *
+ * The `alias` lets us read **real legacy `session.json` files** written
+ * by older builds, which serialized in snake_case (no `rename_all` then).
+ * Without it, those files would silently default to "" on upgrade and the
+ * user's remembered workspace would stop reopening.
+ */
+lastWorkspace: string, 
+/**
+ * Absolute path of the last file, or "". Kept for backward-compat with
+ * older session.json files; superseded by `open_documents`. Same alias
+ * story as `last_workspace`.
+ */
+lastFile: string, 
+/**
+ * Every open document, in display (tab) order. See [`OpenDocRecord`].
+ */
+openDocuments: Array<OpenDocRecord>, 
+/**
+ * The active view's document id (as a string). May reference a doc that
+ * fails to restore; the caller falls back to the last successfully opened
+ * view in that case.
+ */
+activeDocumentId: string | null, };
 
 /**
  * Severity of a diagnostic message.
@@ -186,9 +331,18 @@ export type Severity = "Error" | "Warning" | "Info";
 
 /**
  * Payload of the `status` event. `duration_ms` is present only on
- * `Success` / `Error`.
+ * `Success` / `Error`. `revision` (§7) tags the buffer revision.
  */
-export type StatusPayload = { id: DocumentId, status: CompileStatus, durationMs: number | null, };
+export type StatusPayload = { id: DocumentId, revision: number, status: CompileStatus, durationMs: number | null, };
+
+/**
+ * Identifier for the currently active workspace (§4.2 / §4.3).
+ *
+ * Owned by `WorkspaceService`; embedded in [`DocumentOrigin::WorkspaceFile`]
+ * so a document knows which workspace owns it. When a workspace closes, its
+ * `WorkspaceFile`s become `LooseFile`s, dropping this id.
+ */
+export type WorkspaceId = string;
 
 /**
  * The currently open workspace, if any.

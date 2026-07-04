@@ -48,9 +48,12 @@ use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World};
 
+use std::sync::Arc;
+
 use crate::fs::FileResolver;
 
 use super::font_loader::{FontLoader, SystemFontLoader};
+use super::vfs::MemoryVfs;
 
 /// The production [`World`] for Typst Studio: one editable main document,
 /// optionally backed by a workspace root for `#include` / asset resolution.
@@ -66,6 +69,13 @@ pub struct EditorWorld {
     /// When `Some`, non-main files resolve against the workspace root on disk.
     /// `None` for untitled tabs (single-file MVP behavior).
     resolver: Option<FileResolver>,
+    /// In-memory overlay of OTHER open documents' buffers (§5 end). When `Some`,
+    /// [`World::source`](World::source) / [`World::file`](World::file) consult it
+    /// BEFORE reading disk, so a `#include`d file that is also an open document
+    /// compiles from its live (possibly unsaved) buffer rather than the stale
+    /// disk copy. `None` for detached / test worlds. The main document's own
+    /// buffer is intentionally NOT in here — it's already served from `source`.
+    vfs: Option<Arc<MemoryVfs>>,
     /// Font book + lazy font loader.
     fonts: SystemFontLoader,
     /// "Today" frozen at construction. Typst's `datetime` functions read this.
@@ -80,7 +90,7 @@ impl EditorWorld {
         Self::with_font_loader(initial_text, SystemFontLoader::new())
     }
 
-    /// Create a new world backed by a specific font loader. Useful for tests
+    /// Create a world backed by a specific font loader. Useful for tests
     /// that want the deterministic, embedded-only set. No workspace resolver.
     pub fn with_font_loader(initial_text: impl Into<String>, fonts: SystemFontLoader) -> Self {
         let source = Source::detached(initial_text.into());
@@ -90,6 +100,7 @@ impl EditorWorld {
             source: RwLock::new(source),
             source_id,
             resolver: None,
+            vfs: None,
             fonts,
             today: chrono::Utc::now(),
         }
@@ -101,6 +112,11 @@ impl EditorWorld {
     /// `#image()` resolve relative to the main file's directory — and any other
     /// file in the workspace is readable.
     ///
+    /// `vfs` is the shared in-memory overlay of other open documents' buffers
+    /// (§5 end): when `Some`, a `#include`d / `#read` file that is also an open
+    /// document compiles from its live buffer rather than disk. Pass `None` to
+    /// disable the overlay (detached / test worlds).
+    ///
     /// The main text is still edited in place via [`set_text`](Self::set_text),
     /// so incremental compilation across edits is preserved.
     pub fn with_resolver(
@@ -108,6 +124,7 @@ impl EditorWorld {
         fonts: SystemFontLoader,
         resolver: FileResolver,
         main_disk_path: &Path,
+        vfs: Option<Arc<MemoryVfs>>,
     ) -> FileResult<Self> {
         let main_id = resolver.file_id_for(main_disk_path)?;
         let source = Source::new(main_id, initial_text.into());
@@ -116,9 +133,21 @@ impl EditorWorld {
             source: RwLock::new(source),
             source_id: main_id,
             resolver: Some(resolver),
+            vfs,
             fonts,
             today: chrono::Utc::now(),
         })
+    }
+
+    /// Attach (or replace) the in-memory VFS overlay after construction. Used
+    /// when a world was built without a resolver/VFS and later needs to consult
+    /// the shared overlay.
+    ///
+    /// Note: the overlay is only consulted for non-main files, which require a
+    /// resolver — so attaching a VFS to a resolver-less world is harmless (it
+    /// will simply never be read), but has no effect.
+    pub fn set_vfs(&mut self, vfs: Arc<MemoryVfs>) {
+        self.vfs = Some(vfs);
     }
 
     /// Replace the entire source text in place.
@@ -142,14 +171,34 @@ impl EditorWorld {
     }
 
     /// Fetch a source by id, for diagnostic span resolution. The main source is
-    /// returned from memory; any other id is read from disk via the resolver
-    /// (or, without a resolver, synthesized as detached so ranges degrade
-    /// gracefully). Used by the compiler to translate per-file error spans.
+    /// returned from memory; any other id prefers the in-memory VFS overlay
+    /// (so error spans point at the live buffer the user actually sees) and
+    /// falls back to disk via the resolver (or, without a resolver, synthesized
+    /// as detached so ranges degrade gracefully). Used by the compiler to
+    /// translate per-file error spans.
     pub fn source_for_id(&self, id: FileId) -> Option<Source> {
         if id == self.source_id {
             return Some(self.source.read().clone());
         }
+        if let Some(text) = self.vfs_text_for(id) {
+            return Some(Source::new(id, text));
+        }
         self.resolver.as_ref()?.read_source(id).ok()
+    }
+
+    /// Consult the in-memory VFS overlay for a non-main id's live buffer.
+    /// Returns the text if the id's disk path is a tracked open document, else
+    /// `None`. Resolves the id → disk path via the resolver; if the id can't be
+    /// mapped (no resolver, or the path escapes the root), there is no overlay
+    /// entry to find, so `None` lets the caller fall through to disk.
+    fn vfs_text_for(&self, id: FileId) -> Option<String> {
+        let vfs = self.vfs.clone()?;
+        let resolver = self.resolver.as_ref()?;
+        // disk_path can fail (id outside the resolver root); treat that as a
+        // miss so the caller falls through to its existing NotFound / disk path.
+        let path = resolver.disk_path_of(id).ok()?;
+        let entry = vfs.get(&path)?;
+        Some(entry.text.clone())
     }
 
     /// Whether this world can resolve files from disk (a workspace is open).
@@ -174,15 +223,21 @@ impl World for EditorWorld {
     fn source(&self, id: FileId) -> FileResult<Source> {
         if id == self.source_id {
             // The main source is always served from memory (the editable buffer).
-            Ok(self.source.read().clone())
-        } else {
-            // A non-main file: resolve from disk if a workspace is open.
-            match &self.resolver {
-                Some(resolver) => resolver.read_source(id),
-                None => Err(FileError::NotFound(
-                    id.vpath().get_with_slash().to_owned().into(),
-                )),
-            }
+            return Ok(self.source.read().clone());
+        }
+        // A non-main file. Consult the in-memory VFS overlay FIRST (§5 end): if
+        // this id's disk path is an open document with a live buffer, serve that
+        // — so a `#include`d file reflects unsaved edits instead of the stale
+        // disk copy. On a miss (file not open, or no overlay) fall through to
+        // the resolver's disk read.
+        if let Some(text) = self.vfs_text_for(id) {
+            return Ok(Source::new(id, text));
+        }
+        match &self.resolver {
+            Some(resolver) => resolver.read_source(id),
+            None => Err(FileError::NotFound(
+                id.vpath().get_with_slash().to_owned().into(),
+            )),
         }
     }
 
@@ -193,10 +248,16 @@ impl World for EditorWorld {
                 // internal callers of `file` for the main id get the live
                 // buffer, not a stale disk read.
                 if id == self.source_id {
-                    Ok(Bytes::from_string(self.source.read().text().to_string()))
-                } else {
-                    resolver.read_bytes(id)
+                    return Ok(Bytes::from_string(self.source.read().text().to_string()));
                 }
+                // Same VFS overlay as `source`, but as bytes — so `#read` of an
+                // open text document also sees the live buffer. Binary assets
+                // (images) are never inserted into the VFS, so they miss here
+                // and fall through to the disk read below.
+                if let Some(text) = self.vfs_text_for(id) {
+                    return Ok(Bytes::from_string(text));
+                }
+                resolver.read_bytes(id)
             }
             None => Err(FileError::NotFound(
                 id.vpath().get_with_slash().to_owned().into(),
@@ -309,6 +370,7 @@ mod tests {
             SystemFontLoader::embedded_only(),
             resolver,
             &main,
+            None,
         )
         .expect("world with resolver should construct");
         (world, root)
@@ -350,6 +412,123 @@ mod tests {
                 .contains("#include"),
             "file(main) must return the live main text"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // --- VFS overlay (§5 end) ------------------------------------------------
+
+    /// Build a workspace world whose resolver is the same as `workspace_world`
+    /// but whose world consults a fresh shared VFS. Returns the world + the VFS
+    /// + the (canonical) root, so a test can upsert overlays and observe the
+    /// effect. The resolver root is canonicalized to mirror production
+    /// (EditorService anchors resolvers at canonical paths), so `disk_path_of`
+    /// produces the same canonical path the VFS is keyed by.
+    fn workspace_world_with_vfs(
+    ) -> (EditorWorld, std::sync::Arc<MemoryVfs>, std::path::PathBuf) {
+        let raw = std::env::temp_dir().join(format!("typst-world-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&raw).unwrap();
+        std::fs::write(raw.join("main.typ"), "#include \"intro.typ\"").unwrap();
+        std::fs::write(raw.join("intro.typ"), "OnDisk").unwrap();
+        // Canonicalize the root so resolver disk paths match VFS keys (macOS
+        // temp lives under /var, a symlink to /private/var).
+        let root = std::fs::canonicalize(&raw).unwrap();
+        let resolver = FileResolver::new(root.clone());
+        let main = root.join("main.typ");
+        let vfs = std::sync::Arc::new(MemoryVfs::new());
+        let world = EditorWorld::with_resolver(
+            "#include \"intro.typ\"",
+            SystemFontLoader::embedded_only(),
+            resolver,
+            &main,
+            Some(vfs.clone()),
+        )
+        .expect("world with resolver + vfs should construct");
+        (world, vfs, root)
+    }
+
+    #[test]
+    fn vfs_serves_non_main_source_from_memory_when_present() {
+        // intro.typ is on disk as "OnDisk". With an overlay entry under its
+        // canonical path, World::source(intro_id) must return the live buffer.
+        let (world, vfs, root) = workspace_world_with_vfs();
+        let resolver = FileResolver::new(root.clone());
+        let intro_disk = root.join("intro.typ");
+        let intro_id = resolver.file_id_for(&intro_disk).unwrap();
+        // Sanity: without the overlay it reads disk.
+        assert_eq!(world.source(intro_id).unwrap().text(), "OnDisk");
+        // Now publish a live buffer and confirm the world serves it instead.
+        vfs.upsert(
+            // Canonicalize: macOS temp lives under /var → /private/var.
+            std::fs::canonicalize(&intro_disk).unwrap(),
+            "Edited".to_string(),
+            7,
+        );
+        let src = world.source(intro_id).expect("intro source");
+        assert_eq!(src.text(), "Edited", "VFS overlay must win over disk");
+        assert_eq!(src.id(), intro_id, "Source must keep the requested FileId");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vfs_miss_falls_through_to_disk_for_source() {
+        let (world, _vfs, root) = workspace_world_with_vfs();
+        let resolver = FileResolver::new(root.clone());
+        let intro_id = resolver.file_id_for(&root.join("intro.typ")).unwrap();
+        // No overlay entry → disk read.
+        assert_eq!(world.source(intro_id).unwrap().text(), "OnDisk");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vfs_overlay_is_reflected_in_file_bytes_for_text() {
+        // `#read` of an open text document should also see the live buffer.
+        let (world, vfs, root) = workspace_world_with_vfs();
+        let resolver = FileResolver::new(root.clone());
+        let intro_disk = root.join("intro.typ");
+        let intro_id = resolver.file_id_for(&intro_disk).unwrap();
+        vfs.upsert(
+            std::fs::canonicalize(&intro_disk).unwrap(),
+            "LiveRead".to_string(),
+            3,
+        );
+        let bytes = world.file(intro_id).expect("intro as bytes");
+        assert_eq!(
+            String::from_utf8(bytes.to_vec()).unwrap(),
+            "LiveRead",
+            "file(id) for a text file in the VFS must return the live buffer"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vfs_miss_falls_through_to_disk_for_binary_file() {
+        // Binary assets are never in the VFS → always read from disk.
+        let (world, _vfs, root) = workspace_world_with_vfs();
+        let png_path = root.join("logo.png");
+        std::fs::write(&png_path, b"PNG").unwrap();
+        let resolver = FileResolver::new(root.clone());
+        let png_id = resolver.file_id_for(&png_path).unwrap();
+        let bytes = world.file(png_id).expect("png bytes");
+        assert_eq!(bytes.as_ref(), b"PNG", "binary asset must read from disk");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vfs_overlay_takes_precedence_in_compile() {
+        // End-to-end at the world level: main.typ #includes intro.typ. With the
+        // overlay holding "Edited", the compiled document must reflect "Edited"
+        // (not the disk "OnDisk").
+        let (world, vfs, root) = workspace_world_with_vfs();
+        let intro_disk = root.join("intro.typ");
+        vfs.upsert(
+            std::fs::canonicalize(&intro_disk).unwrap(),
+            "EditedContent".to_string(),
+            1,
+        );
+        let (outcome, doc) = super::super::compiler::compile(&world);
+        assert!(outcome.success, "errors: {:?}", outcome.errors);
+        let doc = doc.expect("document on success");
+        assert!(!doc.pages().is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 

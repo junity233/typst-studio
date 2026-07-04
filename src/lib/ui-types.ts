@@ -14,6 +14,12 @@ export type CompileStatus = "idle" | "compiling" | "success" | "error";
 /** Payload of the `compiled` event (svg pages + source map) from the backend. */
 export interface CompiledPayload {
   id: DocumentId;
+  /**
+   * Document content revision this compile corresponds to (§7). If it is
+   * strictly less than the tab's current `revision`, the result is stale and
+   * must be discarded — a newer edit already won.
+   */
+  revision: number;
   pages: string[];
   /** Source line → preview-page bbox index (scroll-sync / click-to-source). */
   lineMap: LineRect[];
@@ -23,12 +29,16 @@ export interface CompiledPayload {
 /** Payload of the `diagnostics` event emitted by the Rust backend. */
 export interface DiagnosticsPayload {
   id: DocumentId;
+  /** Document content revision these diagnostics correspond to (§7). */
+  revision: number;
   diagnostics: Diagnostic[];
 }
 
 /** Payload of the `status` event emitted by the Rust backend. */
 export interface StatusPayload {
   id: DocumentId;
+  /** Document content revision this status corresponds to (§7). */
+  revision: number;
   status: CompileStatus;
   durationMs?: number;
 }

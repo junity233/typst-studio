@@ -1,375 +1,309 @@
-//! `EditorService` — multi-tab orchestration owning one `EditorWorld` per tab.
+//! `EditorService` — the IPC-facing facade over [`DocumentService`] +
+//! [`CompileService`] (Phase 4, §6.1 / §6.3 / §14).
 //!
-//! This is the core of the backend. It owns the [`tabs`](Self::tabs) map (an
-//! `Arc<RwLock<HashMap>>` so debounced compile closures can capture clones of
-//! just the shared state, avoiding a circular `Arc<EditorService>` reference),
-//! a [`CompileScheduler`] for 300ms debounced compiles, and an [`Emitter`]
-//! abstraction decoupling it from Tauri's `AppHandle`.
+//! ## Why a facade?
 //!
-//! ## Compile flow
+//! Phase 4 splits the old monolithic editor along two seams:
+//! - [`DocumentService`](super::document_service::DocumentService) — document
+//!   identity, buffers, registry, origin transitions, conflict state (§6.1).
+//! - [`CompileService`](super::compile_service::CompileService) — per-document
+//!   compile workers, scheduling, revision-tagged results, rendering (§6.3).
 //!
-//! [`update_text`](Self::update_text) updates the world's source and schedules a
-//! debounced compile. When the timer fires (or immediately via
-//! [`compile_now`](Self::compile_now)), [`do_compile`](Self::do_compile):
-//! 1. emits `status: compiling`,
-//! 2. locks the tab and runs [`compile`](crate::typst_engine::compiler::compile),
-//! 3. stores the outcome + document on the tab,
-//! 4. on success renders SVG pages and emits `compiled` + `status: success`,
-//!    on failure emits `diagnostics` + `status: error`.
+//! Per the spec's "保持 IPC facade，在内部迁移调用方" / "渐进拆分" guidance,
+//! the IPC command layer keeps calling `state.editor.<method>()` unchanged
+//! (no signature churn across ~15 command files). [`EditorService`] is now a
+//! thin holder of the two services that delegates every method one-to-one. The
+//! real logic lives in the service that owns it; this struct exists to preserve
+//! the facade contract and to wire the two siblings together at construction.
+//!
+//! ## What stays here
+//!
+//! Two cross-cutting types that both services (and the IPC/event layer) depend
+//! on remain defined in this module for source compatibility:
+//! - the [`Emitter`] trait (the event-delivery abstraction), and
+//! - [`CompileState`] (the revision-pinned snapshot used by export).
+//!
+//! The shared backing state lives in
+//! [`TabStore`](super::tab_store::TabStore); the per-tab world + runtime in
+//! [`TabState`](super::tab_state::TabState).
 
-use std::collections::HashMap;
-use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use parking_lot::RwLock;
 use typst_layout::PagedDocument;
 
-use crate::domain::compile_result::CompileOutcome;
 use crate::domain::compile_status::CompileStatus;
-use crate::domain::diagnostics::{Diagnostic, Range, Severity};
-use crate::domain::document::{DocumentId, DocumentMeta};
+use crate::domain::diagnostics::Diagnostic;
+use crate::domain::document::{ConflictState, DocumentId, DocumentMeta};
+use crate::domain::registry::SharedRegistry;
 use crate::domain::source_map::LineRect;
-use crate::error::{AppError, Result};
-use crate::render::pipeline::RenderPipeline;
-use crate::render::source_map::build_source_map;
-use crate::render::svg::SvgRenderer;
-use crate::typst_engine::compiler;
-use crate::typst_engine::world::EditorWorld;
+use crate::error::Result;
 
-use super::compile_worker::CompileWorker;
-use super::tab_state::TabState;
+use super::compile_service::CompileService;
+use super::document_service::DocumentService;
+use super::tab_store::TabStore;
+use super::workspace_service::WorkspaceService;
 
-/// Default content for a fresh untitled tab.
-const DEFAULT_TEMPLATE: &str = "#set page(width: 21cm, height: 29.7cm)\n\nHello, Typst!\n";
+use std::path::{Path, PathBuf};
 
-/// Shared tab map. The world is NOT behind a per-tab Mutex (it has its own
-/// interior `RwLock<Source>`), so compile can proceed without holding any
-/// tab-level lock — eliminating contention between typing and compiling.
-type Tabs = Arc<RwLock<HashMap<DocumentId, Arc<TabState>>>>;
-/// Per-tab compile workers (one long-lived thread each).
-type Workers = Arc<RwLock<HashMap<DocumentId, CompileWorker>>>;
-
-/// Decouples `EditorService` from the concrete event-delivery mechanism.
+/// Decouples the service layer from the concrete event-delivery mechanism.
 ///
 /// In production this is backed by a Tauri `AppHandle`
 /// ([`crate::ipc::state::TauriEmitter`]); in tests by a `CapturingEmitter` that
 /// records emits for assertion.
+///
+/// Every emit carries a `revision` (§7): the document revision the result
+/// corresponds to. Stale-revision results are discarded by the frontend.
 pub trait Emitter: Send + Sync {
     /// Notify the frontend of a successful compile with rendered SVG pages and
     /// the source map (source line → preview-page bbox).
     fn emit_compiled(
         &self,
         id: DocumentId,
+        revision: u64,
         pages: Vec<String>,
         line_map: Vec<LineRect>,
         duration_ms: u64,
     );
     /// Notify the frontend of compile errors.
-    fn emit_diagnostics(&self, id: DocumentId, diagnostics: Vec<Diagnostic>);
+    fn emit_diagnostics(&self, id: DocumentId, revision: u64, diagnostics: Vec<Diagnostic>);
     /// Notify the frontend of a compile status transition.
-    fn emit_status(&self, id: DocumentId, status: CompileStatus, duration_ms: Option<u64>);
+    fn emit_status(
+        &self,
+        id: DocumentId,
+        revision: u64,
+        status: CompileStatus,
+        duration_ms: Option<u64>,
+    );
+    /// Notify the frontend of an external-modification conflict (§8.4). Emits
+    /// the disk content (for `Modified`, so the UI can show a diff) and the
+    /// new conflict state. `revision` tags the buffer revision.
+    fn emit_conflict(
+        &self,
+        id: DocumentId,
+        revision: u64,
+        conflict: ConflictState,
+        disk_content: Option<String>,
+    );
 }
 
-/// The multi-tab editor orchestrator.
+/// Point-in-time snapshot of a tab's last compile result, for export (§9).
+/// See [`EditorService::last_compile_state`]. Export pins results to a revision
+/// via this triple: a doc is only rendered when the requested revision is the
+/// one that actually compiled successfully; a failed revision surfaces its
+/// diagnostics instead of an older doc.
+pub struct CompileState {
+    /// The revision this compile corresponds to, or `None` before the first
+    /// compile completes.
+    pub last_compiled_revision: Option<u64>,
+    /// Whether that compile succeeded.
+    pub success: bool,
+    /// The rendered document on success (`None` on failure or before first
+    /// compile).
+    pub doc: Option<PagedDocument>,
+    /// Error diagnostics from that compile (empty on success).
+    pub errors: Vec<Diagnostic>,
+}
+
+/// The IPC-facing facade over the document + compile services (Phase 4).
+///
+/// Holds the two sibling services and delegates every method one-to-one. IPC
+/// commands keep calling `state.editor.<method>()` — no signature changes. The
+/// actual logic lives in [`DocumentService`] and [`CompileService`]; this struct
+/// exists to preserve the facade contract and to wire the siblings' back
+/// references at construction time.
 pub struct EditorService {
-    tabs: Tabs,
-    workers: Workers,
-    emitter: Arc<dyn Emitter>,
+    document: Arc<DocumentService>,
+    compile: Arc<CompileService>,
 }
 
 impl EditorService {
-    /// Construct a new service with the given emitter.
+    /// Construct the facade, building the two sibling services over one shared
+    /// [`TabStore`] and wiring the document service's compile back-reference.
     pub fn new(emitter: Arc<dyn Emitter>) -> Self {
-        Self {
-            tabs: Arc::new(RwLock::new(HashMap::new())),
-            workers: Arc::new(RwLock::new(HashMap::new())),
-            emitter,
-        }
+        let store = TabStore::new(emitter);
+        let document = Arc::new(DocumentService::new(store.clone()));
+        let compile = Arc::new(CompileService::new(store));
+        // Wire the document → compile back-reference used for worker rotation
+        // on origin changes (Save As, reclassify).
+        document.with_compile(compile.clone());
+        Self { document, compile }
     }
 
-    /// Create a new untitled tab and start its compile worker. Returns
-    /// immediately; the initial compile runs on the worker thread.
+    /// The document-identity service (§6.1). Exposed so new IPC callers (and
+    /// tests) can address it directly; existing callers keep using the
+    /// delegated methods below.
+    pub fn document(&self) -> &Arc<DocumentService> {
+        &self.document
+    }
+
+    /// The compile service (§6.3).
+    pub fn compile(&self) -> &Arc<CompileService> {
+        &self.compile
+    }
+
+    // --- delegation: document identity / buffers -----------------------------
+
+    /// Read-only access to the document registry. Delegates to
+    /// [`DocumentService::registry`].
+    pub fn registry(&self) -> &SharedRegistry {
+        self.document.registry()
+    }
+
+    /// Delegates to [`DocumentService::new_tab`].
     pub fn new_tab(&self, content: Option<String>) -> DocumentMeta {
-        let text = content.unwrap_or_else(|| DEFAULT_TEMPLATE.to_string());
-        let meta = DocumentMeta::new_untitled();
-        let id = meta.id;
-        let tab = Arc::new(TabState::with_meta(meta.clone(), text));
-        self.tabs.write().insert(id, tab.clone());
-        self.create_worker(id, tab);
-        meta
+        self.document.new_tab(content)
     }
 
-    /// Open a tab from already-read content (the command layer handles IO).
-    /// Sets the path + title from `path`. A worker is started for the tab.
-    pub fn open_from_content(&self, path: PathBuf, content: String) -> DocumentMeta {
-        let meta = DocumentMeta::from_path(path);
-        let id = meta.id;
-        let tab = Arc::new(TabState::with_meta(meta.clone(), content));
-        self.tabs.write().insert(id, tab.clone());
-        self.create_worker(id, tab);
-        meta
+    /// Delegates to [`DocumentService::open_from_content`].
+    pub fn open_from_content(
+        &self,
+        path: PathBuf,
+        content: String,
+        workspace: Option<&WorkspaceService>,
+    ) -> Result<DocumentMeta> {
+        self.document.open_from_content(path, content, workspace)
     }
 
-    /// Open a tab backed by a real file in a workspace, so it compiles with
-    /// `#include` / `#image()` resolution against the workspace root. Like
-    /// [`open_from_content`](Self::open_from_content) but builds the world with
-    /// the given [`FileResolver`]. Falls back to a detached world if the
-    /// resolver can't anchor the path (e.g. outside the root).
+    /// Delegates to [`DocumentService::open_from_disk`].
     pub fn open_from_disk(
         &self,
         path: PathBuf,
         content: String,
-        resolver: Option<crate::fs::FileResolver>,
-    ) -> DocumentMeta {
-        let meta = DocumentMeta::from_path(path.clone());
-        let id = meta.id;
-        let tab = match resolver {
-            Some(r) => match EditorWorld::with_resolver(
-                content.clone(),
-                crate::typst_engine::font_loader::SystemFontLoader::new(),
-                r,
-                &path,
-            ) {
-                Ok(world) => Arc::new(TabState::with_meta_and_world(meta.clone(), world)),
-                // Resolver couldn't anchor the path — degrade to detached.
-                Err(_) => Arc::new(TabState::with_meta(meta.clone(), content)),
-            },
-            None => Arc::new(TabState::with_meta(meta.clone(), content)),
-        };
-        self.tabs.write().insert(id, tab.clone());
-        self.create_worker(id, tab);
-        meta
+        workspace: Option<&WorkspaceService>,
+    ) -> Result<DocumentMeta> {
+        self.document.open_from_disk(path, content, workspace)
     }
 
-    /// Assign a new on-disk path to a tab (Save As). Used after writing an
-    /// untitled tab to a new file: updates meta path/title and clears dirty so
-    /// the tab becomes a normal file-backed tab. No recompile is needed — the
-    /// source text is unchanged.
+    /// Delegates to [`DocumentService::mark_saved`].
+    pub fn mark_saved(&self, id: DocumentId) {
+        self.document.mark_saved(id);
+    }
+
+    /// Delegates to [`DocumentService::handle_external_change`].
+    pub fn handle_external_change(&self, path: &Path) {
+        self.document.handle_external_change(path);
+    }
+
+    /// Delegates to [`DocumentService::rebind_path`].
+    pub fn rebind_path(&self, id: DocumentId, target_path: PathBuf) -> Result<()> {
+        self.document.rebind_path(id, target_path)
+    }
+
+    /// Deprecated alias — delegates to [`DocumentService::assign_path`].
+    #[deprecated(note = "use rebind_path — it rebuilds the world and recompiles")]
     pub fn assign_path(&self, id: DocumentId, path: PathBuf) -> Result<()> {
-        let tab = {
-            let tabs = self.tabs.read();
-            tabs.get(&id)
-                .cloned()
-                .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
-        };
-        let mut rt = tab.state.lock();
-        rt.meta = DocumentMeta::from_path(path);
-        rt.meta.dirty = false;
-        Ok(())
+        #[allow(deprecated)]
+        self.document.assign_path(id, path)
     }
 
-    /// Spawn a [`CompileWorker`] for `id` whose closure compiles `tab` and
-    /// emits results. Signals an initial compile immediately.
-    fn create_worker(&self, id: DocumentId, tab: Arc<TabState>) {
-        let emitter = self.emitter.clone();
-        let compile_fn: Arc<dyn Fn() + Send + Sync> =
-            Arc::new(move || Self::do_compile_for_tab(&tab, &emitter, id));
-        let worker = CompileWorker::spawn(compile_fn);
-        worker.recompile(); // initial compile
-        self.workers.write().insert(id, worker);
+    /// Delegates to [`DocumentService::reclassify_documents`].
+    pub fn reclassify_documents(&self, ws: &WorkspaceService) {
+        self.document.reclassify_documents(ws);
     }
 
-    /// Close a tab, releasing its world and compile worker. The worker thread
-    /// finishes its current compile (if any) then exits in the background —
-    /// this method returns immediately.
+    /// Delegates to [`DocumentService::close_tab`].
     pub fn close_tab(&self, id: DocumentId) -> Result<()> {
-        // Drop the worker first (sends Shutdown, doesn't join).
-        let _ = self.workers.write().remove(&id);
-        let removed = self.tabs.write().remove(&id);
-        if removed.is_none() {
-            return Err(AppError::NotFound(format!("tab {id} not found")));
-        }
-        Ok(())
+        self.document.close_tab(id)
     }
 
-    /// Update a tab's source text and signal its worker to recompile. Returns
-    /// instantly — `set_text` writes directly to the world's interior RwLock,
-    /// and `recompile` is a non-blocking channel send.
+    /// Delegates to [`DocumentService::update_text`].
     pub fn update_text(&self, id: DocumentId, content: String) -> Result<()> {
-        let tab = {
-            let tabs = self.tabs.read();
-            tabs.get(&id)
-                .cloned()
-                .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
-        };
-        tab.world.set_text(content);
-        tab.state.lock().meta.dirty = true;
-        // Signal the worker. If it's busy compiling, the message queues; the
-        // worker picks up the latest text when it finishes.
-        if let Some(worker) = self.workers.read().get(&id) {
-            worker.recompile();
-        }
-        Ok(())
+        self.document.update_text(id, content)
     }
 
-    /// Prepare data needed to save a tab: returns `(path, current_text)`. The
-    /// command layer does the actual disk write (async). Errors if the tab is
-    /// untitled (no path) or missing.
+    /// Delegates to [`DocumentService::prepare_save`].
     pub fn prepare_save(&self, id: DocumentId) -> Result<(PathBuf, String)> {
-        let tab = {
-            let tabs = self.tabs.read();
-            tabs.get(&id)
-                .cloned()
-                .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
-        };
-        let path = tab
-            .state
-            .lock()
-            .meta
-            .path
-            .clone()
-            .ok_or_else(|| AppError::InvalidInput("tab has no on-disk path".into()))?;
-        Ok((path, tab.world.text()))
+        self.document.prepare_save(id)
     }
 
-    /// Clear the dirty flag after a successful save.
+    /// Delegates to [`DocumentService::clear_dirty`].
     pub fn clear_dirty(&self, id: DocumentId) {
-        if let Some(t) = self.tabs.read().get(&id) {
-            t.state.lock().meta.dirty = false;
-        }
+        self.document.clear_dirty(id);
     }
 
-    /// Compile a tab synchronously (bypassing the worker). Used in tests.
+    /// Delegates to [`DocumentService::set_dirty`].
+    pub fn set_dirty(&self, id: DocumentId, dirty: bool) {
+        self.document.set_dirty(id, dirty);
+    }
+
+    // --- delegation: compile --------------------------------------------------
+
+    /// Delegates to [`CompileService::compile_now`].
     pub fn compile_now(&self, id: DocumentId) {
-        if let Some(tab) = self.tabs.read().get(&id).cloned() {
-            Self::do_compile_for_tab(&tab, &self.emitter, id);
-        }
+        self.compile.compile_now(id);
     }
 
-    /// The shared compile pipeline: status → compile (no lock, panic-safe) →
-    /// conditionally render → emit.
-    ///
-    /// **Compile/render separation**: diagnostics are emitted on every compile
-    /// (fast feedback), but SVG rendering is **skipped** if the source text
-    /// changed during compile (user kept typing). This avoids wasting 1–20 ms
-    /// per page on intermediate previews that would be immediately superseded.
-    /// The worker model guarantees that after a skipped render, the latest text
-    /// is compiled immediately (no debounce delay).
-    ///
-    /// Runs inside [`std::panic::catch_unwind`] because the compile executes on
-    /// the worker's large-stack thread — without catching, a typst panic would
-    /// silently kill the thread and the frontend would see `compiling` forever.
-    fn do_compile_for_tab(tab: &Arc<TabState>, emitter: &Arc<dyn Emitter>, id: DocumentId) {
-        emitter.emit_status(id, CompileStatus::Compiling, None);
-
-        // Snapshot the text BEFORE compile. If it differs after compile, the
-        // user typed during compilation → skip SVG render (the worker will
-        // immediately recompile with the latest text).
-        let text_before = tab.world.text();
-
-        // Compile WITHOUT holding any tab-level lock.
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            compiler::compile(&tab.world)
-        }));
-
-        let (outcome, doc) = match result {
-            Ok(pair) => pair,
-            Err(payload) => {
-                let msg = payload
-                    .downcast_ref::<String>().cloned()
-                    .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "unknown compiler panic".to_string());
-                let diag = Diagnostic {
-                    severity: Severity::Error,
-                    range: Range {
-                        start_line: 1,
-                        start_column: 1,
-                        end_line: 1,
-                        end_column: 1,
-                    },
-                    message: format!("Internal compiler error: {msg}"),
-                    code: None,
-                };
-                {
-                    let mut rt = tab.state.lock();
-                    rt.last_outcome = CompileOutcome::fail(vec![diag.clone()], 0);
-                    rt.last_doc = None;
-                }
-                emitter.emit_diagnostics(id, vec![diag]);
-                emitter.emit_status(id, CompileStatus::Error, Some(0));
-                return;
-            }
-        };
-
-        // Store results under a brief lock.
-        {
-            let mut rt = tab.state.lock();
-            rt.last_outcome = outcome.clone();
-            rt.last_doc = doc.clone();
-        }
-
-        if outcome.success {
-            // Always emit (possibly empty) diagnostics so the frontend clears
-            // stale error markers from a previous failed compile.
-            emitter.emit_diagnostics(id, outcome.errors.clone());
-
-            // Only render SVG if the text didn't change during compile.
-            let text_after = tab.world.text();
-            if text_before == text_after {
-                if let Some(doc) = doc {
-                    let pages = SvgRenderer::new().render(&doc);
-                    // Build the source map from the same compiled document. This
-                    // is cheap (one frame walk, KB-scale output) and runs on the
-                    // compile thread, so it never blocks the editor. Skipped
-                    // alongside SVG when the user kept typing — staying in lock
-                    // step with the rendered pages.
-                    let line_map = build_source_map(&doc, &tab.world);
-                    emitter.emit_compiled(id, pages, line_map, outcome.duration_ms);
-                }
-            }
-            emitter.emit_status(id, CompileStatus::Success, Some(outcome.duration_ms));
-        } else {
-            emitter.emit_diagnostics(id, outcome.errors.clone());
-            emitter.emit_status(id, CompileStatus::Error, Some(outcome.duration_ms));
-        }
-    }
-
-    // --- accessors -----------------------------------------------------------
-
-    /// Current diagnostics for a tab (empty if the tab or last outcome has none).
+    /// Delegates to [`CompileService::get_diagnostics`].
     pub fn get_diagnostics(&self, id: DocumentId) -> Vec<Diagnostic> {
-        self.tabs
-            .read()
-            .get(&id)
-            .map(|t| t.state.lock().last_outcome.errors.clone())
-            .unwrap_or_default()
+        self.compile.get_diagnostics(id)
     }
 
-    /// The last successfully compiled document for a tab (for export).
+    /// Delegates to [`CompileService::last_doc`] via
+    /// Delegates to [`CompileService::last_doc`].
     pub fn last_doc(&self, id: DocumentId) -> Option<PagedDocument> {
-        self.tabs
-            .read()
-            .get(&id)
-            .and_then(|t| t.state.lock().last_doc.clone())
+        self.compile.last_doc(id)
     }
 
-    /// Metadata for a single tab, if present.
+    /// Delegates to [`CompileService::last_compile_state`].
+    pub fn last_compile_state(&self, id: DocumentId) -> Option<CompileState> {
+        self.compile.last_compile_state(id)
+    }
+
+    // --- delegation: accessors ------------------------------------------------
+
+    /// Delegates to [`DocumentService::tab_meta`].
     pub fn tab_meta(&self, id: DocumentId) -> Option<DocumentMeta> {
-        self.tabs
+        self.document.tab_meta(id)
+    }
+
+    /// Delegates to [`DocumentService::tab_revision`].
+    pub fn tab_revision(&self, id: DocumentId) -> Option<u64> {
+        self.document.tab_revision(id)
+    }
+
+    /// Delegates to [`DocumentService::list_tabs`].
+    pub fn list_tabs(&self) -> Vec<DocumentMeta> {
+        self.document.list_tabs()
+    }
+
+    /// Delegates to [`DocumentService::tab_text`].
+    pub fn tab_text(&self, id: DocumentId) -> Option<String> {
+        self.document.tab_text(id)
+    }
+
+    /// Number of parent directories currently cached in the loose-resolver map.
+    /// Test-only accessor for asserting cache sharing (§4.2).
+    #[cfg(test)]
+    pub fn loose_resolver_cache_len(&self) -> usize {
+        self.document.loose_resolver_cache_len()
+    }
+
+    /// Number of out-of-workspace parent dirs currently watched by loose-file
+    /// watchers. Test-only accessor for asserting watcher installation (§4.2).
+    #[cfg(test)]
+    pub fn loose_watcher_count(&self) -> usize {
+        self.document.loose_watcher_count()
+    }
+
+    /// Test-only: whether the on-disk version has been seeded for `id` (used by
+    /// the external-change tests to await open completion). Routes through the
+    /// shared store rather than exposing the tab map.
+    #[cfg(test)]
+    pub(crate) fn disk_version_seeded(&self, id: DocumentId) -> bool {
+        self.document
+            .store()
+            .tabs
             .read()
             .get(&id)
-            .map(|t| t.state.lock().meta.clone())
-    }
-
-    /// Metadata for all open tabs (for a tab-list / sidebar).
-    pub fn list_tabs(&self) -> Vec<DocumentMeta> {
-        self.tabs
-            .read()
-            .values()
-            .map(|t| t.state.lock().meta.clone())
-            .collect()
-    }
-
-    /// Current source text of a tab (the in-memory buffer, possibly dirty).
-    pub fn tab_text(&self, id: DocumentId) -> Option<String> {
-        self.tabs.read().get(&id).map(|t| t.world.text())
+            .map(|t| t.state.lock().disk_version.is_some())
+            .unwrap_or(false)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::pipeline::RenderPipeline;
     use parking_lot::Mutex;
 
     // --- test doubles --------------------------------------------------------
@@ -378,24 +312,34 @@ mod tests {
     ///
     /// The payload fields mirror the real wire format so a test asserting on
     /// specifics (pages, diagnostics, status) has the data available, even
-    /// though current assertions only check event presence + id.
+    /// though current assertions only check event presence + id. The `revision`
+    /// field is the document revision the result corresponds to (§7).
     #[allow(dead_code)]
     #[derive(Clone, Debug)]
     enum CapturedEvent {
         Compiled {
             id: DocumentId,
+            revision: u64,
             pages: Vec<String>,
             line_map: Vec<LineRect>,
             duration_ms: u64,
         },
         Diagnostics {
             id: DocumentId,
+            revision: u64,
             diagnostics: Vec<Diagnostic>,
         },
         Status {
             id: DocumentId,
+            revision: u64,
             status: CompileStatus,
             duration_ms: Option<u64>,
+        },
+        Conflict {
+            id: DocumentId,
+            revision: u64,
+            conflict: ConflictState,
+            disk_content: Option<String>,
         },
     }
 
@@ -425,32 +369,71 @@ mod tests {
                 })
                 .collect()
         }
+        /// Revisions of all `compiled` events for `id`, in emit order.
+        fn compiled_revisions_for(&self, id: DocumentId) -> Vec<u64> {
+            self.snapshot()
+                .into_iter()
+                .filter_map(|e| match e {
+                    CapturedEvent::Compiled { id: eid, revision, .. } if eid == id => Some(revision),
+                    _ => None,
+                })
+                .collect()
+        }
+        /// Conflict states emitted for `id`, in emit order.
+        fn conflicts_for(&self, id: DocumentId) -> Vec<ConflictState> {
+            self.snapshot()
+                .into_iter()
+                .filter_map(|e| match e {
+                    CapturedEvent::Conflict { id: eid, conflict, .. } if eid == id => Some(conflict),
+                    _ => None,
+                })
+                .collect()
+        }
     }
 
     impl Emitter for CapturingEmitter {
         fn emit_compiled(
             &self,
             id: DocumentId,
+            revision: u64,
             pages: Vec<String>,
             line_map: Vec<LineRect>,
             duration_ms: u64,
         ) {
             self.events.lock().push(CapturedEvent::Compiled {
                 id,
+                revision,
                 pages,
                 line_map,
                 duration_ms,
             });
         }
-        fn emit_diagnostics(&self, id: DocumentId, diagnostics: Vec<Diagnostic>) {
+        fn emit_diagnostics(&self, id: DocumentId, revision: u64, diagnostics: Vec<Diagnostic>) {
             self.events
                 .lock()
-                .push(CapturedEvent::Diagnostics { id, diagnostics });
+                .push(CapturedEvent::Diagnostics { id, revision, diagnostics });
         }
-        fn emit_status(&self, id: DocumentId, status: CompileStatus, duration_ms: Option<u64>) {
+        fn emit_status(
+            &self,
+            id: DocumentId,
+            revision: u64,
+            status: CompileStatus,
+            duration_ms: Option<u64>,
+        ) {
             self.events
                 .lock()
-                .push(CapturedEvent::Status { id, status, duration_ms });
+                .push(CapturedEvent::Status { id, revision, status, duration_ms });
+        }
+        fn emit_conflict(
+            &self,
+            id: DocumentId,
+            revision: u64,
+            conflict: ConflictState,
+            disk_content: Option<String>,
+        ) {
+            self.events
+                .lock()
+                .push(CapturedEvent::Conflict { id, revision, conflict, disk_content });
         }
     }
 
@@ -624,7 +607,7 @@ mod tests {
         let (svc, _) = make_service();
         // Simulate what the command layer does: read content, open tab, then save.
         let initial = std::fs::read_to_string(&tmp).unwrap();
-        let meta = svc.open_from_content(tmp.clone(), initial);
+        let meta = svc.open_from_content(tmp.clone(), initial, None).unwrap();
         // Edit + prepare_save + write + clear_dirty (mirrors the async command).
         svc.update_text(meta.id, "#set page(width: 10cm)\n\nSaved!".into())
             .unwrap();
@@ -634,6 +617,27 @@ mod tests {
         let on_disk = std::fs::read_to_string(&tmp).unwrap();
         assert!(on_disk.contains("Saved!"));
         assert!(!svc.tab_meta(meta.id).unwrap().dirty, "dirty flag must clear on save");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn set_dirty_round_trips_and_is_noop_for_missing_tab() {
+        // set_dirty is used on session restore to re-mark a doc that was dirty
+        // at shutdown. Verify it sets + clears, and is a no-op for an unknown id.
+        let tmp = std::env::temp_dir().join(format!("typst-setdirty-{}.typ", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp, "#set page(width: 10cm)\n\nX").unwrap();
+        let (svc, _) = make_service();
+        let meta = svc.open_from_content(tmp.clone(), "x".into(), None).unwrap();
+        // A freshly opened file is clean.
+        assert!(!svc.tab_meta(meta.id).unwrap().dirty);
+        // Mark dirty (as restore would for a doc that had unsaved edits at shutdown).
+        svc.set_dirty(meta.id, true);
+        assert!(svc.tab_meta(meta.id).unwrap().dirty, "set_dirty(true) must mark dirty");
+        // Clearing via set_dirty mirrors the boolean toggle.
+        svc.set_dirty(meta.id, false);
+        assert!(!svc.tab_meta(meta.id).unwrap().dirty, "set_dirty(false) must clear dirty");
+        // No-op on an unknown id (must not panic).
+        svc.set_dirty(DocumentId::new(), true);
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -675,5 +679,909 @@ mod tests {
         emitter.clear();
         wait_for_compiled(&emitter, meta.id);
         assert!(svc.tab_text(meta.id).unwrap().contains("Edited again"));
+    }
+
+    #[test]
+    fn update_text_bumps_revision_monotonically() {
+        let (svc, _) = make_service();
+        let meta = svc.new_tab(None);
+        let r0 = svc.tab_revision(meta.id).unwrap();
+        svc.update_text(meta.id, "a".into()).unwrap();
+        let r1 = svc.tab_revision(meta.id).unwrap();
+        svc.update_text(meta.id, "b".into()).unwrap();
+        let r2 = svc.tab_revision(meta.id).unwrap();
+        assert!(r1 > r0, "revision must increase on edit");
+        assert!(r2 > r1, "revision must be strictly monotonic");
+    }
+
+    #[test]
+    fn compiled_events_carry_revision() {
+        // §7: every compile-related event carries the revision it corresponds
+        // to, so the frontend can discard stale results.
+        let (svc, emitter) = make_service();
+        let meta = svc.new_tab(Some("#set page(width: 10cm)\n\nHello".into()));
+        wait_for_compiled(&emitter, meta.id);
+        // The initial compile (revision 0) must carry revision 0.
+        let revs = emitter.compiled_revisions_for(meta.id);
+        assert!(revs.contains(&0), "initial compile must carry revision 0, got {revs:?}");
+    }
+
+    #[test]
+    fn opening_same_canonical_path_dedups() {
+        // §4.1 / §8.1: opening the same file twice yields one document.
+        let tmp = std::env::temp_dir().join(format!("ts-dedup-{}.typ", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp, "#set page(width: 10cm)\n\nOne").unwrap();
+        let (svc, _) = make_service();
+        let first = svc.open_from_content(tmp.clone(), "x".into(), None).unwrap();
+        // Open via a different lexical path (`.` component) that canonicalizes
+        // to the same file — must NOT create a second document.
+        let via_dot = tmp.parent().unwrap().join(".").join(tmp.file_name().unwrap());
+        let second = svc.open_from_content(via_dot, "y".into(), None).unwrap();
+        assert_eq!(first.id, second.id, "same canonical path must dedup");
+        assert_eq!(svc.list_tabs().len(), 1);
+        assert_eq!(svc.registry().read().len(), 1);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn save_as_preserves_id_and_rebinds_registry() {
+        // §4.1 / §8.3: Save As keeps the DocumentId and updates the canonical
+        // path index.
+        let dir = std::env::temp_dir().join(format!("ts-saveas-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("a.typ");
+        std::fs::write(&src, "#set page(width: 10cm)\n\nA").unwrap();
+        let (svc, _) = make_service();
+        let meta = svc.open_from_content(src.clone(), "x".into(), None).unwrap();
+        let id_before = meta.id;
+        // Save As to a new path in the same dir.
+        let dst = dir.join("b.typ");
+        std::fs::write(&dst, "x").unwrap(); // simulate the command layer's write
+        svc.rebind_path(meta.id, dst.clone()).unwrap();
+        // Canonicalize for comparison: `temp_dir()` may live under a symlink
+        // (macOS `/var` → `/private/var`), and the registry stores canonical paths.
+        let src_canon = crate::domain::path::canonicalize_for_identity(&src).unwrap();
+        let dst_canon = crate::domain::path::canonicalize_for_identity(&dst).unwrap();
+        let after = svc.tab_meta(meta.id).unwrap();
+        assert_eq!(after.id, id_before, "Save As must preserve the DocumentId");
+        assert_eq!(after.path.as_deref(), Some(dst_canon.as_path()));
+        // Old canonical slot is free; new one is claimed.
+        assert_eq!(
+            svc.registry().read().find_by_canonical(&src_canon),
+            None,
+            "old canonical slot must be released after Save As"
+        );
+        assert_eq!(svc.registry().read().find_by_canonical(&dst_canon), Some(id_before));
+        assert_eq!(svc.list_tabs().len(), 1, "still one document after rebind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_as_to_already_open_path_rejected() {
+        // §8.3: target already bound to another document → reject, don't merge.
+        let dir = std::env::temp_dir().join(format!("ts-conflict-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.typ");
+        let b = dir.join("b.typ");
+        std::fs::write(&a, "x").unwrap();
+        std::fs::write(&b, "y").unwrap();
+        // Canonicalize once — the registry keys on canonical paths, which may
+        // differ from the literal `dir.join(...)` if `temp_dir()` is symlinked.
+        let a_canon = crate::domain::path::canonicalize_for_identity(&a).unwrap();
+        let b_canon = crate::domain::path::canonicalize_for_identity(&b).unwrap();
+        let (svc, _) = make_service();
+        let meta_a = svc.open_from_content(a.clone(), "x".into(), None).unwrap();
+        let meta_b = svc.open_from_content(b.clone(), "y".into(), None).unwrap();
+        // Try to Save As b onto a's path → must error.
+        let err = svc.rebind_path(meta_b.id, a.clone()).unwrap_err();
+        assert!(matches!(err, crate::error::AppError::AlreadyOpen { .. }));
+        // Both documents intact.
+        assert_eq!(svc.list_tabs().len(), 2);
+        assert_eq!(svc.tab_meta(meta_a.id).unwrap().path.as_deref(), Some(a_canon.as_path()));
+        assert_eq!(svc.tab_meta(meta_b.id).unwrap().path.as_deref(), Some(b_canon.as_path()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loose_file_resolves_same_dir_include() {
+        // §4.2: a loose file compiles with a parent-directory-rooted resolver,
+        // so a same-dir `#include` resolves (broken before Task A).
+        let dir = std::env::temp_dir().join(format!("ts-loose-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.typ");
+        std::fs::write(&main, "#include \"intro.typ\"\n").unwrap();
+        std::fs::write(dir.join("intro.typ"), "Intro\n").unwrap();
+        let (svc, emitter) = make_service();
+        let content = std::fs::read_to_string(&main).unwrap();
+        let meta = svc.open_from_disk(main.clone(), content, None).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        // The include must resolve → a document with at least one page exists.
+        let doc = svc
+            .last_doc(meta.id)
+            .expect("loose file should compile with same-dir #include");
+        assert!(
+            !doc.pages().is_empty(),
+            "compiled document must have pages"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn included_file_open_as_doc_compiles_from_live_buffer_not_disk() {
+        // §15.2 integration test 3 (§5 end): when an #include'd file is ALSO an
+        // open document with unsaved edits, the including document's compile must
+        // see the OPEN (memory) version, not the disk version.
+        let dir = std::env::temp_dir().join(format!("ts-vfs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main_path = dir.join("main.typ");
+        let intro_path = dir.join("intro.typ");
+        std::fs::write(&main_path, "#include \"intro.typ\"\n").unwrap();
+        std::fs::write(&intro_path, "Original\n").unwrap();
+
+        let (svc, emitter) = make_service();
+        // Open BOTH files as separate documents in the same directory. They
+        // share the parent-rooted resolver AND the shared in-memory VFS.
+        let main_content = std::fs::read_to_string(&main_path).unwrap();
+        let intro_content = std::fs::read_to_string(&intro_path).unwrap();
+        let main_meta = svc
+            .open_from_disk(main_path.clone(), main_content, None)
+            .unwrap();
+        let intro_meta = svc
+            .open_from_disk(intro_path.clone(), intro_content, None)
+            .unwrap();
+        assert_ne!(main_meta.id, intro_meta.id, "two distinct documents");
+        wait_for_compiled(&emitter, main_meta.id);
+        wait_for_compiled(&emitter, intro_meta.id);
+
+        // Snapshot the main doc rendered to SVG BEFORE the edit, then edit
+        // intro.typ in memory (WITHOUT saving) and recompile main.typ. The new
+        // render must differ — proving the include picked up the live buffer.
+        let render_main = |svc: &EditorService, id| -> String {
+            let doc = svc.last_doc(id).expect("main doc present");
+            crate::render::svg::SvgRenderer::new().render(&doc).join("\n")
+        };
+        let svg_before = render_main(&svc, main_meta.id);
+
+        // Edit intro in memory only; do NOT touch the disk file.
+        svc.update_text(intro_meta.id, "EditedInMemory\n".to_string())
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&intro_path).unwrap(),
+            "Original\n",
+            "the disk file must still say Original (edit was memory-only)"
+        );
+        assert!(svc.tab_meta(intro_meta.id).unwrap().dirty);
+
+        // Recompile main (debounced on the worker). Wait for a fresh compile.
+        emitter.clear();
+        svc.update_text(main_meta.id, svc.tab_text(main_meta.id).unwrap())
+            .unwrap();
+        wait_for_compiled(&emitter, main_meta.id);
+        let svg_after = render_main(&svc, main_meta.id);
+
+        assert_ne!(
+            svg_before, svg_after,
+            "main's compile must change when the included file's live buffer changes"
+        );
+        // If the SVG happens to embed text, assert the edited content shows up
+        // (and the disk content does not). On path-based SVG renderers this is
+        // a no-op pass — the differs-check above is the authoritative assertion.
+        assert!(
+            !svg_after.contains("Original") || svg_after.contains("EditedInMemory"),
+            "render must not surface the stale disk 'Original' as the live text"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn closing_an_included_doc_falls_back_to_disk() {
+        // §5 end corollary: once an included file's document is CLOSED, its VFS
+        // entry is removed, so the include falls back to the disk version.
+        let dir = std::env::temp_dir().join(format!("ts-vfs-close-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main_path = dir.join("main.typ");
+        let intro_path = dir.join("intro.typ");
+        std::fs::write(&main_path, "#include \"intro.typ\"\n").unwrap();
+        std::fs::write(&intro_path, "OnDisk\n").unwrap();
+
+        let (svc, emitter) = make_service();
+        let main_meta = svc
+            .open_from_disk(main_path.clone(), std::fs::read_to_string(&main_path).unwrap(), None)
+            .unwrap();
+        let intro_meta = svc
+            .open_from_disk(intro_path.clone(), std::fs::read_to_string(&intro_path).unwrap(), None)
+            .unwrap();
+        wait_for_compiled(&emitter, main_meta.id);
+        wait_for_compiled(&emitter, intro_meta.id);
+
+        // Edit intro in memory, then CLOSE it. The VFS entry is removed on
+        // close, so main's next compile must read the disk "OnDisk" again.
+        svc.update_text(intro_meta.id, "OnlyInMemory".to_string()).unwrap();
+        svc.close_tab(intro_meta.id).unwrap();
+
+        emitter.clear();
+        svc.update_text(main_meta.id, svc.tab_text(main_meta.id).unwrap()).unwrap();
+        wait_for_compiled(&emitter, main_meta.id);
+        // The doc still compiles (disk intro.typ exists) — the close removed
+        // the overlay, so disk is the source of truth again.
+        let doc = svc.last_doc(main_meta.id).expect("main doc present after close");
+        assert!(!doc.pages().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rebind_path_rebuilds_world_and_recompiles() {
+        // §8.3 / §4.2: Save As rebuilds the world against the NEW parent dir, so
+        // the recompiled document reflects the target's neighbors.
+        let dir1 = std::env::temp_dir().join(format!("ts-rebind-1-{}", uuid::Uuid::new_v4()));
+        let dir2 = std::env::temp_dir().join(format!("ts-rebind-2-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir1).unwrap();
+        std::fs::create_dir_all(&dir2).unwrap();
+        // Source file includes intro.typ from its own directory.
+        let src = dir1.join("main.typ");
+        let text = "#include \"intro.typ\"\n";
+        std::fs::write(&src, text).unwrap();
+        std::fs::write(dir1.join("intro.typ"), "Intro in dir1\n").unwrap();
+        // Target directory has its own intro.typ with different content.
+        let dst = dir2.join("main.typ");
+        std::fs::write(&dst, text).unwrap();
+        std::fs::write(dir2.join("intro.typ"), "Intro in dir2\n").unwrap();
+
+        let (svc, emitter) = make_service();
+        let meta = svc.open_from_disk(src.clone(), text.to_string(), None).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+
+        // Save As into dir2. The buffer + id are preserved, but the world is
+        // rebuilt against dir2's parent — so the next compile resolves dir2's
+        // intro.typ.
+        emitter.clear(); // drop the initial-compile event so the wait below
+                         // only returns once the post-rebind compile finishes.
+        svc.rebind_path(meta.id, dst.clone()).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+
+        // id preserved, registry points at the new canonical path, document
+        // compiles (the new include resolved).
+        let after = svc.tab_meta(meta.id).unwrap();
+        assert_eq!(after.id, meta.id, "Save As must preserve the DocumentId");
+        let dst_canon = crate::domain::path::canonicalize_for_identity(&dst).unwrap();
+        assert_eq!(after.path.as_deref(), Some(dst_canon.as_path()));
+        assert_eq!(
+            svc.registry().read().find_by_canonical(&dst_canon),
+            Some(meta.id)
+        );
+        assert!(
+            svc.last_doc(meta.id)
+                .map(|d| !d.pages().is_empty())
+                .unwrap_or(false),
+            "rebound tab must recompile to a non-empty document"
+        );
+        let _ = std::fs::remove_dir_all(&dir1);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn rebind_path_preserves_buffer_and_revision() {
+        // §4.1 / §7: Save As keeps the in-memory buffer and the revision counter.
+        let dir = std::env::temp_dir().join(format!("ts-rebind-buf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("a.typ");
+        std::fs::write(&src, "#set page(width: 10cm)\n\nOriginal").unwrap();
+        let (svc, emitter) = make_service();
+        let content = std::fs::read_to_string(&src).unwrap();
+        let meta = svc.open_from_disk(src.clone(), content, None).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        // Edit to bump the revision.
+        svc.update_text(meta.id, "#set page(width: 10cm)\n\nEdited".into())
+            .unwrap();
+        let text_before = svc.tab_text(meta.id).unwrap();
+        let rev_before = svc.tab_revision(meta.id).unwrap();
+        assert!(rev_before > 0, "edit must have bumped the revision");
+
+        let dst = dir.join("b.typ");
+        std::fs::write(&dst, &text_before).unwrap();
+        svc.rebind_path(meta.id, dst.clone()).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+
+        assert_eq!(
+            svc.tab_text(meta.id).as_deref(),
+            Some(text_before.as_str()),
+            "buffer must survive rebind"
+        );
+        assert_eq!(
+            svc.tab_revision(meta.id),
+            Some(rev_before),
+            "revision must survive rebind"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rebind_path_to_already_open_target_rejected() {
+        // §8.3: rebinding onto another document's path is rejected; both intact.
+        let dir = std::env::temp_dir().join(format!("ts-rebind-conf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.typ");
+        let b = dir.join("b.typ");
+        std::fs::write(&a, "#set page(width: 10cm)\n\nA").unwrap();
+        std::fs::write(&b, "#set page(width: 10cm)\n\nB").unwrap();
+        let a_canon = crate::domain::path::canonicalize_for_identity(&a).unwrap();
+        let b_canon = crate::domain::path::canonicalize_for_identity(&b).unwrap();
+        let (svc, _) = make_service();
+        let meta_a = svc.open_from_disk(a.clone(), "x".into(), None).unwrap();
+        let meta_b = svc.open_from_disk(b.clone(), "y".into(), None).unwrap();
+        // Rebind b onto a's path → conflict.
+        let err = svc.rebind_path(meta_b.id, a.clone()).unwrap_err();
+        assert!(matches!(err, crate::error::AppError::AlreadyOpen { .. }));
+        // Both documents intact at their original paths.
+        assert_eq!(svc.list_tabs().len(), 2);
+        assert_eq!(
+            svc.tab_meta(meta_a.id).unwrap().path.as_deref(),
+            Some(a_canon.as_path())
+        );
+        assert_eq!(
+            svc.tab_meta(meta_b.id).unwrap().path.as_deref(),
+            Some(b_canon.as_path())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loose_resolver_cache_shares_same_parent() {
+        // §4.2: two loose files in the same directory share one cached resolver.
+        let dir = std::env::temp_dir().join(format!("ts-cache-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let one = dir.join("one.typ");
+        let two = dir.join("two.typ");
+        std::fs::write(&one, "#set page(width: 10cm)\n\nOne").unwrap();
+        std::fs::write(&two, "#set page(width: 10cm)\n\nTwo").unwrap();
+        let (svc, emitter) = make_service();
+        let a = svc
+            .open_from_disk(one.clone(), "#set page(width: 10cm)\n\nOne".into(), None)
+            .unwrap();
+        let b = svc
+            .open_from_disk(two.clone(), "#set page(width: 10cm)\n\nTwo".into(), None)
+            .unwrap();
+        wait_for_compiled(&emitter, a.id);
+        wait_for_compiled(&emitter, b.id);
+        assert_ne!(a.id, b.id, "two distinct files → two distinct docs");
+        assert_eq!(
+            svc.loose_resolver_cache_len(),
+            1,
+            "both files share one parent → exactly one cached resolver"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- workspace reclassification (§4.3) -----------------------------------
+
+    /// A no-op fs-change callback for the workspace watcher in tests.
+    fn noop_on_change() -> crate::fs::watcher::OnChange {
+        Arc::new(|_: &[PathBuf]| {})
+    }
+
+    /// §4.3: opening a workspace reclassifies an already-open loose file inside
+    /// it to a `WorkspaceFile`, preserving id/buffer/revision and still
+    /// compiling.
+    #[test]
+    fn reclassify_loose_to_workspace_on_open() {
+        let dir = std::env::temp_dir().join(format!("ts-recl-open-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.typ");
+        std::fs::write(&main, "#set page(width: 10cm)\n\nHello").unwrap();
+
+        let (svc, emitter) = make_service();
+        // Open the file with NO workspace → it's a loose file.
+        let content = std::fs::read_to_string(&main).unwrap();
+        let meta = svc.open_from_disk(main.clone(), content, None).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        let id_before = meta.id;
+        assert!(
+            matches!(meta.origin, crate::domain::document::DocumentOrigin::LooseFile { .. }),
+            "without a workspace the file must classify as LooseFile"
+        );
+
+        // Open a workspace rooted at the file's dir and reclassify.
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        let ws_id = ws.workspace_id().unwrap();
+        emitter.clear(); // drop the initial-compile event so the wait below
+                         // only returns once the post-reclassify compile finishes.
+        svc.reclassify_documents(&ws);
+
+        let after = svc.tab_meta(meta.id).unwrap();
+        assert_eq!(after.id, id_before, "DocumentId must survive reclassify");
+        match after.origin {
+            crate::domain::document::DocumentOrigin::WorkspaceFile { workspace_id, .. } => {
+                assert_eq!(workspace_id, ws_id, "origin must carry the new workspace id");
+            }
+            ref other => panic!("expected WorkspaceFile, got {other:?}"),
+        }
+        // Buffer + revision preserved.
+        assert_eq!(svc.tab_text(meta.id).as_deref(), Some("#set page(width: 10cm)\n\nHello"));
+        assert_eq!(svc.tab_revision(meta.id), Some(0));
+
+        // The rebuilt world still compiles (the worker recompiles).
+        wait_for_compiled(&emitter, meta.id);
+        assert!(
+            svc.last_doc(meta.id).map(|d| !d.pages().is_empty()).unwrap_or(false),
+            "reclassified tab must recompile to a non-empty document"
+        );
+        ws.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §4.3: closing a workspace demotes a `WorkspaceFile` to a `LooseFile`
+    /// rooted at its parent dir (so same-dir `#include` still resolves),
+    /// preserving id/buffer.
+    #[test]
+    fn reclassify_workspace_to_loose_on_close() {
+        let dir = std::env::temp_dir().join(format!("ts-recl-close-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.typ");
+        // An include that must keep resolving after demotion (parent-rooted).
+        std::fs::write(&main, "#include \"intro.typ\"\n").unwrap();
+        std::fs::write(dir.join("intro.typ"), "Intro\n").unwrap();
+
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        let (svc, emitter) = make_service();
+        let content = std::fs::read_to_string(&main).unwrap();
+        // Open WITH a workspace → it's a WorkspaceFile.
+        let meta = svc.open_from_disk(main.clone(), content, Some(&ws)).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        let id_before = meta.id;
+        assert!(
+            matches!(meta.origin, crate::domain::document::DocumentOrigin::WorkspaceFile { .. }),
+            "inside an open workspace the file must classify as WorkspaceFile"
+        );
+
+        // Close the workspace and reclassify → demote to LooseFile.
+        ws.close();
+        emitter.clear();
+        svc.reclassify_documents(&ws);
+
+        let after = svc.tab_meta(meta.id).unwrap();
+        assert_eq!(after.id, id_before, "DocumentId must survive reclassify");
+        match &after.origin {
+            crate::domain::document::DocumentOrigin::LooseFile { root, .. } => {
+                assert_eq!(root, &crate::domain::path::canonicalize_for_identity(&dir).unwrap());
+            }
+            other => panic!("expected LooseFile after close, got {other:?}"),
+        }
+        assert_eq!(svc.tab_text(meta.id).as_deref(), Some("#include \"intro.typ\"\n"));
+
+        // The parent-rooted resolver still resolves the same-dir include.
+        wait_for_compiled(&emitter, meta.id);
+        assert!(
+            svc.last_doc(meta.id).map(|d| !d.pages().is_empty()).unwrap_or(false),
+            "demoted loose file must still resolve its same-dir #include"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §4.3 / §7: reclassification preserves `dirty` and `revision` (only Save
+    /// As / save clears dirty).
+    #[test]
+    fn reclassify_preserves_dirty_and_revision() {
+        let dir = std::env::temp_dir().join(format!("ts-recl-dirty-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.typ");
+        std::fs::write(&main, "#set page(width: 10cm)\n\nOriginal").unwrap();
+
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        let (svc, emitter) = make_service();
+        let content = std::fs::read_to_string(&main).unwrap();
+        let meta = svc.open_from_disk(main.clone(), content, Some(&ws)).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        // Edit → dirty + bumped revision.
+        svc.update_text(meta.id, "#set page(width: 10cm)\n\nEdited".into())
+            .unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        let rev_before = svc.tab_revision(meta.id).unwrap();
+        let text_before = svc.tab_text(meta.id).unwrap();
+        assert!(rev_before > 0, "edit must have bumped the revision");
+        assert!(svc.tab_meta(meta.id).unwrap().dirty, "must be dirty after edit");
+
+        // Close + reclassify → dirty + revision survive.
+        ws.close();
+        svc.reclassify_documents(&ws);
+
+        let after = svc.tab_meta(meta.id).unwrap();
+        assert_eq!(svc.tab_revision(meta.id), Some(rev_before), "revision preserved");
+        assert!(after.dirty, "dirty must survive reclassification");
+        assert_eq!(svc.tab_text(meta.id).as_deref(), Some(text_before.as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §4.3: `Untitled` documents are never reclassified.
+    #[test]
+    fn reclassify_untitled_untouched() {
+        let (svc, emitter) = make_service();
+        let meta = svc.new_tab(None);
+        wait_for_compiled(&emitter, meta.id);
+        let text_before = svc.tab_text(meta.id).unwrap();
+        let rev_before = svc.tab_revision(meta.id).unwrap();
+
+        let ws = WorkspaceService::new();
+        let dir = std::env::temp_dir().join(format!("ts-recl-unt-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        svc.reclassify_documents(&ws);
+        ws.close();
+        svc.reclassify_documents(&ws);
+
+        let after = svc.tab_meta(meta.id).unwrap();
+        assert!(
+            after.origin.is_untitled(),
+            "untitled origin must be untouched by reclassify"
+        );
+        assert_eq!(svc.tab_text(meta.id).as_deref(), Some(text_before.as_str()));
+        assert_eq!(svc.tab_revision(meta.id), Some(rev_before));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §4.3: a loose file OUTSIDE the workspace root stays loose when a
+    /// workspace opens.
+    #[test]
+    fn reclassify_outside_workspace_stays_loose() {
+        let ws_dir =
+            std::env::temp_dir().join(format!("ts-recl-out-ws-{}", uuid::Uuid::new_v4()));
+        let outside_dir =
+            std::env::temp_dir().join(format!("ts-recl-out-file-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&ws_dir).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let main = outside_dir.join("main.typ");
+        std::fs::write(&main, "#set page(width: 10cm)\n\nOutside").unwrap();
+
+        let (svc, emitter) = make_service();
+        let content = std::fs::read_to_string(&main).unwrap();
+        let meta = svc.open_from_disk(main.clone(), content, None).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        let id_before = meta.id;
+        assert!(matches!(meta.origin, crate::domain::document::DocumentOrigin::LooseFile { .. }));
+
+        // Open a workspace that does NOT contain the file → stays loose.
+        let ws = WorkspaceService::new();
+        ws.open(ws_dir.clone(), noop_on_change()).unwrap();
+        svc.reclassify_documents(&ws);
+
+        let after = svc.tab_meta(meta.id).unwrap();
+        assert_eq!(after.id, id_before);
+        assert!(
+            matches!(after.origin, crate::domain::document::DocumentOrigin::LooseFile { .. }),
+            "file outside the workspace must stay LooseFile"
+        );
+        ws.close();
+        let _ = std::fs::remove_dir_all(&ws_dir);
+        let _ = std::fs::remove_dir_all(&outside_dir);
+    }
+
+    #[test]
+    fn reclassify_stale_workspacefile_is_reclaimed_with_new_id() {
+        // Open a file as WorkspaceFile(id1), close the workspace (demotes to
+        // LooseFile), reopen the SAME folder (new id2), reclassify — the doc
+        // must be re-claimed as WorkspaceFile carrying id2 (not left stale).
+        let dir = std::env::temp_dir().join(format!("ts-recl-stale-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.typ");
+        std::fs::write(&main, "#set page(width: 10cm)\n\nStale").unwrap();
+
+        let (svc, emitter) = make_service();
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        let id1 = ws.workspace_id().expect("workspace open has an id");
+        // Open inside the workspace → classifies as WorkspaceFile(id1).
+        let content = std::fs::read_to_string(&main).unwrap();
+        let meta = svc.open_from_disk(main.clone(), content, Some(&ws)).unwrap();
+        wait_for_compiled(&emitter, meta.id);
+        match &svc.tab_meta(meta.id).unwrap().origin {
+            crate::domain::document::DocumentOrigin::WorkspaceFile { workspace_id, .. } => {
+                assert_eq!(*workspace_id, id1, "should be claimed by the first workspace");
+            }
+            other => panic!("expected WorkspaceFile, got {other:?}"),
+        }
+
+        // Close → demote to LooseFile.
+        ws.close();
+        svc.reclassify_documents(&ws);
+        assert!(matches!(
+            svc.tab_meta(meta.id).unwrap().origin,
+            crate::domain::document::DocumentOrigin::LooseFile { .. }
+        ));
+
+        // Reopen the SAME folder → a fresh WorkspaceId.
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        let id2 = ws.workspace_id().expect("reopened workspace has an id");
+        assert_ne!(id1, id2, "each open must mint a fresh WorkspaceId");
+        svc.reclassify_documents(&ws);
+
+        // The doc is re-claimed by the new workspace, carrying id2.
+        let id_preserved = meta.id;
+        match &svc.tab_meta(meta.id).unwrap().origin {
+            crate::domain::document::DocumentOrigin::WorkspaceFile { workspace_id, .. } => {
+                assert_eq!(*workspace_id, id2, "stale doc must be re-claimed with the new id");
+            }
+            other => panic!("expected WorkspaceFile after reopen, got {other:?}"),
+        }
+        assert_eq!(svc.tab_meta(meta.id).unwrap().id, id_preserved, "DocumentId stable");
+
+        ws.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- external-modification handling (§8.4, Task B2) ---------------------
+
+    /// Create a temp `.typ` file with the given content and return its path.
+    fn make_tmp_file(content: &str) -> PathBuf {
+        let p =
+            std::env::temp_dir().join(format!("ts-conflict-{}.typ", uuid::Uuid::new_v4()));
+        std::fs::write(&p, content).unwrap();
+        p
+    }
+
+    /// Open a file as a disk-backed tab (clean) and wait for its first compile.
+    fn open_clean_file(svc: &EditorService, emitter: &CapturingEmitter, path: &Path) -> DocumentId {
+        let content = std::fs::read_to_string(path).unwrap();
+        let meta = svc.open_from_disk(path.to_path_buf(), content, None).unwrap();
+        wait_for_compiled(emitter, meta.id);
+        // Wait for the disk_version to be seeded (open_from_disk sets it after
+        // the worker is created; it reads the file synchronously).
+        for _ in 0..40 {
+            if svc.disk_version_seeded(meta.id) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        meta.id
+    }
+
+    /// §8.4: a clean buffer auto-reloads from disk on external change (revision
+    /// bumps, dirty stays false, content updates), then recompiles.
+    #[test]
+    fn handle_external_change_clean_buffer_auto_reloads() {
+        let tmp = make_tmp_file("#set page(width: 10cm)\n\nOriginal");
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &tmp);
+        let rev_before = svc.tab_revision(id).unwrap();
+        assert!(!svc.tab_meta(id).unwrap().dirty);
+
+        // Externally modify the file (buffer is clean).
+        std::fs::write(&tmp, "#set page(width: 10cm)\n\nChanged on disk").unwrap();
+        svc.handle_external_change(&tmp);
+
+        // Buffer reloaded to the new content; revision bumped; still not dirty.
+        assert_eq!(
+            svc.tab_text(id).as_deref(),
+            Some("#set page(width: 10cm)\n\nChanged on disk"),
+            "clean buffer must reload from disk"
+        );
+        assert!(
+            svc.tab_revision(id).unwrap() > rev_before,
+            "reload must bump the revision"
+        );
+        assert!(
+            !svc.tab_meta(id).unwrap().dirty,
+            "auto-reload must not mark the buffer dirty"
+        );
+        assert_eq!(svc.tab_meta(id).unwrap().conflict, ConflictState::None);
+        // The reload signals a recompile.
+        emitter.clear();
+        wait_for_compiled(&emitter, id);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// §8.4: a dirty buffer with an external change enters `Modified` conflict
+    /// — the buffer is NEVER clobbered.
+    #[test]
+    fn handle_external_change_dirty_buffer_enters_conflict() {
+        let tmp = make_tmp_file("#set page(width: 10cm)\n\nOriginal");
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &tmp);
+        // Dirty the buffer with unsaved edits.
+        svc.update_text(id, "#set page(width: 10cm)\n\nMy local edit".into())
+            .unwrap();
+        wait_for_compiled(&emitter, id);
+        let text_before = svc.tab_text(id).unwrap();
+        let rev_before = svc.tab_revision(id).unwrap();
+
+        // Externally modify the file — buffer is dirty → conflict, no clobber.
+        std::fs::write(&tmp, "#set page(width: 10cm)\n\nChanged on disk").unwrap();
+        svc.handle_external_change(&tmp);
+
+        assert_eq!(
+            svc.tab_text(id).as_deref(),
+            Some(text_before.as_str()),
+            "dirty buffer must NOT be clobbered"
+        );
+        assert_eq!(svc.tab_revision(id), Some(rev_before), "no reload → no revision bump");
+        assert_eq!(
+            svc.tab_meta(id).unwrap().conflict,
+            ConflictState::Modified,
+            "must enter Modified conflict"
+        );
+        // A conflict event was emitted.
+        assert!(
+            emitter.conflicts_for(id).contains(&ConflictState::Modified),
+            "expected a Modified conflict event"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// §8.4: deleting the backing file marks the document `Missing` but
+    /// preserves the buffer.
+    #[test]
+    fn handle_external_change_deleted_file_marks_missing() {
+        let tmp = make_tmp_file("#set page(width: 10cm)\n\nHello");
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &tmp);
+        let text_before = svc.tab_text(id).unwrap();
+
+        // Delete the file then deliver the watcher event.
+        std::fs::remove_file(&tmp).unwrap();
+        svc.handle_external_change(&tmp);
+
+        assert_eq!(
+            svc.tab_text(id).as_deref(),
+            Some(text_before.as_str()),
+            "buffer must be preserved on deletion"
+        );
+        assert_eq!(
+            svc.tab_meta(id).unwrap().conflict,
+            ConflictState::Missing,
+            "deleted file must mark Missing"
+        );
+        assert!(emitter.conflicts_for(id).contains(&ConflictState::Missing));
+    }
+
+    /// §8.4 "仅时间戳变化但内容未变": a touch (same bytes, new mtime) must NOT
+    /// reload — the revision is unchanged.
+    #[test]
+    fn handle_external_change_mtime_only_no_reload() {
+        let tmp = make_tmp_file("#set page(width: 10cm)\n\nSame");
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &tmp);
+        let rev_before = svc.tab_revision(id).unwrap();
+        let text_before = svc.tab_text(id).unwrap();
+
+        // Rewrite identical bytes after a short sleep to advance the mtime.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&tmp, "#set page(width: 10cm)\n\nSame").unwrap();
+        svc.handle_external_change(&tmp);
+
+        assert_eq!(svc.tab_revision(id), Some(rev_before), "mtime-only change must not bump revision");
+        assert_eq!(svc.tab_text(id), Some(text_before), "buffer unchanged");
+        assert_eq!(svc.tab_meta(id).unwrap().conflict, ConflictState::None);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// §8.2: the app's own save must NOT trigger a conflict/reload. After the
+    /// save path (prepare_save → write → mark_saved), the watcher event for our
+    /// write compares equal (disk_version matches) → no-op.
+    #[test]
+    fn self_save_does_not_trigger_conflict() {
+        let tmp = make_tmp_file("#set page(width: 10cm)\n\nOriginal");
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &tmp);
+        // Edit + save via the same path the command layer uses.
+        svc.update_text(id, "#set page(width: 10cm)\n\nSaved!".into())
+            .unwrap();
+        wait_for_compiled(&emitter, id);
+        let (path, text) = svc.prepare_save(id).unwrap();
+        std::fs::write(&path, &text).unwrap();
+        svc.mark_saved(id); // records the on-disk version of our write.
+        assert!(!svc.tab_meta(id).unwrap().dirty, "mark_saved clears dirty");
+        assert_eq!(svc.tab_meta(id).unwrap().conflict, ConflictState::None);
+
+        let rev_before = svc.tab_revision(id).unwrap();
+        let text_before = svc.tab_text(id).unwrap();
+
+        // Simulate the watcher firing for our own write.
+        svc.handle_external_change(&tmp);
+
+        assert_eq!(
+            svc.tab_revision(id),
+            Some(rev_before),
+            "self-save must not bump the revision"
+        );
+        assert_eq!(svc.tab_text(id), Some(text_before), "buffer unchanged on self-save");
+        assert_eq!(
+            svc.tab_meta(id).unwrap().conflict,
+            ConflictState::None,
+            "self-save must not enter conflict"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// §4.2 / §8.4: opening a loose file OUTSIDE the workspace installs a
+    /// parent-directory watcher (the workspace watcher does not cover it).
+    #[test]
+    fn loose_file_watcher_installed_for_out_of_workspace_file() {
+        let dir = std::env::temp_dir()
+            .join(format!("ts-loose-watch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.typ");
+        std::fs::write(&main, "#set page(width: 10cm)\n\nLoose").unwrap();
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &main);
+        assert!(
+            matches!(svc.tab_meta(id).unwrap().origin, crate::domain::document::DocumentOrigin::LooseFile { .. }),
+            "without a workspace the file must be loose"
+        );
+        assert_eq!(
+            svc.loose_watcher_count(),
+            1,
+            "exactly one parent-dir watcher for the loose file"
+        );
+
+        // Behaviourally: a real external change reaches handle_external_change
+        // (we call it directly since the watcher's 300ms debounce is timing-
+        // dependent and already tested in watcher.rs).
+        std::fs::write(&main, "#set page(width: 10cm)\n\nChanged").unwrap();
+        svc.handle_external_change(&main);
+        assert_eq!(
+            svc.tab_text(id).as_deref(),
+            Some("#set page(width: 10cm)\n\nChanged"),
+            "loose-file external change reloads the clean buffer"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Same-dir loose files share ONE watcher (§4.2 cache sharing for watchers
+    /// too), and a second distinct dir gets a second watcher.
+    #[test]
+    fn loose_watchers_share_same_parent_dir() {
+        let dir1 = std::env::temp_dir()
+            .join(format!("ts-loose-share-1-{}", uuid::Uuid::new_v4()));
+        let dir2 = std::env::temp_dir()
+            .join(format!("ts-loose-share-2-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir1).unwrap();
+        std::fs::create_dir_all(&dir2).unwrap();
+        let a = dir1.join("a.typ");
+        let b = dir1.join("b.typ");
+        let c = dir2.join("c.typ");
+        std::fs::write(&a, "x").unwrap();
+        std::fs::write(&b, "y").unwrap();
+        std::fs::write(&c, "z").unwrap();
+        let (svc, emitter) = make_service();
+        open_clean_file(&svc, &emitter, &a);
+        open_clean_file(&svc, &emitter, &b);
+        assert_eq!(svc.loose_watcher_count(), 1, "two same-dir files share one watcher");
+        open_clean_file(&svc, &emitter, &c);
+        assert_eq!(svc.loose_watcher_count(), 2, "a second distinct dir adds a second watcher");
+        let _ = std::fs::remove_dir_all(&dir1);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn handle_external_change_for_unrelated_path_is_noop() {
+        // The workspace watcher routes EVERY changed path through
+        // handle_external_change; most don't correspond to an open document and
+        // must be silently ignored (no panic, no events, no state change).
+        let dir = std::env::temp_dir().join(format!("ts-noop-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.typ");
+        std::fs::write(&main, "#set page(width: 10cm)\n\nUnrelated").unwrap();
+        let (svc, emitter) = make_service();
+        open_clean_file(&svc, &emitter, &main);
+        emitter.clear();
+
+        // A path with no open document — must not panic or emit anything.
+        let other = dir.join("notes.typ");
+        std::fs::write(&other, "changed").unwrap();
+        svc.handle_external_change(&other);
+        // Also exercise a totally bogus path.
+        svc.handle_external_change(std::path::Path::new("/nonexistent-ts-xyz/none.typ"));
+
+        // No conflict, no compile events for our tab.
+        let snaps = emitter.snapshot();
+        assert!(
+            snaps.iter().all(|e| !matches!(
+                e,
+                CapturedEvent::Conflict { id, .. } if *id == svc.tab_meta(svc.list_tabs()[0].id).unwrap().id
+            )),
+            "unrelated path must not raise a conflict: {snaps:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

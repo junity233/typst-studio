@@ -22,10 +22,11 @@ import { recordWorkspace, loadSession } from "../lib/session";
  * map hasn't been expanded. This keeps large workspaces cheap: only expanded
  * folders are loaded (via the backend's lazy `read_dir`).
  *
- * This store deliberately does NOT own document content — that's `tabsStore`.
- * A tree click loads the file's content via `openFileByPath` and hands the
- * resulting `OpenedDocument` to `tabsStore.openPath`, keeping the two stores
- * decoupled.
+ * This store deliberately does NOT own document content — that's the domain
+ * `documentsStore` (with `tabsStore` as the views store). A tree click loads
+ * the file's content via `openFileByPath` and hands the resulting
+ * `OpenedDocument` to `tabsStore.openPath`, which fans out into both stores,
+ * keeping the stores decoupled.
  */
 export interface WorkspaceState {
   /** Absolute path of the open workspace root, or null when closed. */

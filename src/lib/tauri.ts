@@ -1,11 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ConflictPayload,
   DirEntry,
   DocumentId,
   EntryKind,
   FsChangedPayload,
   OpenedDocument,
+  OpenDocRecord,
+  Session,
   WorkspaceMeta,
 } from "./types";
 import type {
@@ -60,19 +63,33 @@ export async function saveAs(id: DocumentId): Promise<string> {
   return invoke<string>("save_as", { id });
 }
 
-/** Render the document to a PDF via typst-pdf; returns the saved path. */
-export async function exportPdf(id: DocumentId): Promise<string> {
-  return invoke<string>("export_pdf", { id });
+/**
+ * Render the document to a PDF via typst-pdf; returns the saved path.
+ *
+ * `revision` (§9) pins the export to the revision the user is looking at: the
+ * backend renders that revision's compiled document, waiting if it is still
+ * mid-compile (bounded by a timeout) and erroring if it failed — never silently
+ * rendering an older revision's document. The caller passes the tab's current
+ * `revision`.
+ */
+export async function exportPdf(id: DocumentId, revision: number): Promise<string> {
+  return invoke<string>("export_pdf", { id, revision });
 }
 
-/** Render each page to a PNG via typst-render; returns the saved paths. */
-export async function exportPng(id: DocumentId): Promise<string[]> {
-  return invoke<string[]>("export_png", { id });
+/**
+ * Render each page to a PNG via typst-render; returns the saved paths. See
+ * [`exportPdf`] for the `revision` semantics (§9).
+ */
+export async function exportPng(id: DocumentId, revision: number): Promise<string[]> {
+  return invoke<string[]>("export_png", { id, revision });
 }
 
-/** Render each page to an SVG via typst-svg; returns the saved paths. */
-export async function exportSvg(id: DocumentId): Promise<string[]> {
-  return invoke<string[]>("export_svg", { id });
+/**
+ * Render each page to an SVG via typst-svg; returns the saved paths. See
+ * [`exportPdf`] for the `revision` semantics (§9).
+ */
+export async function exportSvg(id: DocumentId, revision: number): Promise<string[]> {
+  return invoke<string[]>("export_svg", { id, revision });
 }
 
 // --- Workspace / filesystem -------------------------------------------------
@@ -185,6 +202,18 @@ export async function onFsChanged(
   return listen<FsChangedPayload>("fs_changed", (e) => handler(e.payload));
 }
 
+/**
+ * Subscribe to external-modification conflict events (§8.4). Emitted when the
+ * filesystem watcher detects a disk change to an open document's backing file
+ * that could not be auto-applied (dirty buffer → Modified; deleted → Missing).
+ * `diskContent` is present on `Modified` so the UI can show a diff.
+ */
+export async function onConflict(
+  handler: (payload: ConflictPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<ConflictPayload>("conflict", (e) => handler(e.payload));
+}
+
 /** Subscribe to native menu activation events. */
 export async function onMenuEvent(
   handler: (payload: MenuEventPayload) => void,
@@ -258,25 +287,46 @@ export async function onCloseRequested(
 
 // --- Session memory ----------------------------------------------------------
 
-export interface Session {
-  lastWorkspace: string;
-  lastFile: string;
-}
+/**
+ * The persisted session (§13). Re-exported from the generated `types.ts` so the
+ * frontend and backend stay in sync via ts-rs. Captures the last workspace,
+ * every open document (disk path or untitled content) in display order, and the
+ * active view id.
+ */
+export type { Session } from "./types";
 
-/** Read the persisted session (last-opened workspace + file). */
+/** Read the persisted session. Missing/malformed file → an empty session. */
 export async function getSession(): Promise<Session> {
   return invoke<Session>("get_session");
 }
 
 /**
- * Merge a partial update into the session. Only `lastWorkspace` / `lastFile`
- * (when present) are applied; both are absolute paths (or "" to clear).
+ * Merge a partial update into the session. Only present fields are applied by
+ * the backend (`lastWorkspace`, `lastFile`, `openDocuments`,
+ * `activeDocumentId`); a wrong-type field is skipped, not fatal. The capture
+ * path always sends a full `openDocuments` array + `activeDocumentId`,
+ * replacing the prior values wholesale.
  */
 export async function saveSession(patch: {
   lastWorkspace?: string;
   lastFile?: string;
+  openDocuments?: OpenDocRecord[];
+  activeDocumentId?: string | null;
 }): Promise<Session> {
   return invoke<Session>("save_session", { patch });
+}
+
+/**
+ * Set a tab's dirty flag (§13). Used by the session-restore path to re-mark a
+ * restored document dirty when it was dirty at shutdown (for a disk file this
+ * signals "you had unsaved edits at shutdown that are now lost"). No-op if the
+ * tab is not open.
+ */
+export async function setDirty(
+  id: DocumentId,
+  dirty: boolean,
+): Promise<void> {
+  await invoke("set_dirty", { id, dirty });
 }
 
 // --- Paste-feature: remote image download -----------------------------------
