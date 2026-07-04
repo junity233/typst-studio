@@ -1,0 +1,25 @@
+{
+  "name": "search",
+  "version": "0.1.0",
+  "displayName": "Search",
+  "description": "Cross-file search in the workspace",
+  "main": "./index.ts",
+  "contributes": {
+    "views": [
+      {
+        "id": "workbench.search",
+        "title": "Search",
+        "icon": "search",
+        "order": 10,
+        "when": "workspace"
+      }
+    ],
+    "commands": [
+      {
+        "id": "workbench.action.findInFiles",
+        "title": "Find in Files",
+        "category": "Search"
+      }
+    ]
+  }
+}

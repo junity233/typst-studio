@@ -296,7 +296,15 @@ impl CompileService {
                     // alongside SVG when the user kept typing — staying in lock
                     // step with the rendered pages.
                     let line_map = build_source_map(&doc, &tab.world);
-                    emitter.emit_compiled(id, revision, pages, line_map, outcome.duration_ms);
+                    let outline = crate::render::outline::build_outline(&doc, &tab.world);
+                    emitter.emit_compiled(
+                        id,
+                        revision,
+                        pages,
+                        line_map,
+                        outline,
+                        outcome.duration_ms,
+                    );
                 }
             }
             emitter.emit_status(id, revision, CompileStatus::Success, Some(outcome.duration_ms));
@@ -419,10 +427,12 @@ mod tests {
             _revision: u64,
             _pages: Vec<String>,
             _line_map: Vec<LineRect>,
+            _outline: Vec<crate::domain::outline::OutlineNode>,
             _duration_ms: u64,
         ) {
             // Unused for supervision tests.
             let _ = _line_map;
+            let _ = _outline;
         }
         fn emit_diagnostics(
             &self,

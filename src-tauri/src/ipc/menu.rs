@@ -37,6 +37,17 @@ pub mod ids {
     pub const CLOSE_TAB: &str = "close-tab";
     pub const TOGGLE_SIDEBAR: &str = "toggle-sidebar";
     pub const TOGGLE_PREVIEW: &str = "toggle-preview";
+    /// Cross-file Find in Files (§Search view). The frontend dispatch routes
+    /// this to the registered `workbench.action.findInFiles` command, which
+    /// opens the bottom Search panel.
+    pub const FIND_IN_FILES: &str = "workbench.action.findInFiles";
+    /// Show the Source Control view (§Source Control). The frontend dispatch
+    /// routes this to the registered `workbench.view.scm` command, which
+    /// activates the SCM sidebar view.
+    pub const SOURCE_CONTROL: &str = "workbench.view.scm";
+    /// Show the Outline view (§Outline). Routes to the registered
+    /// `workbench.view.outline` command, which activates the Outline sidebar.
+    pub const OUTLINE: &str = "workbench.view.outline";
     pub const EXPORT_PDF: &str = "export-pdf";
     pub const EXPORT_PNG: &str = "export-png";
     pub const EXPORT_SVG: &str = "export-svg";
@@ -92,13 +103,7 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         &[
             &MenuItem::with_id(app, ids::NEW_TAB, "New Tab", true, Some("CmdOrCtrl+T"))?,
             &MenuItem::with_id(app, ids::OPEN_FILE, "Open File…", true, Some("CmdOrCtrl+O"))?,
-            &MenuItem::with_id(
-                app,
-                ids::OPEN_FOLDER,
-                "Open Folder…",
-                true,
-                Some("CmdOrCtrl+Shift+O"),
-            )?,
+            &MenuItem::with_id(app, ids::OPEN_FOLDER, "Open Folder…", true, None::<&str>)?,
             &open_recent,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, ids::SAVE, "Save", true, Some("CmdOrCtrl+S"))?,
@@ -136,12 +141,34 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 
     let edit = Submenu::with_items(app, "Edit", true, &edit_items)?;
 
-    // ---- View (toggle items) ----
+    // ---- View (Find in Files + toggle items) ----
     let view = Submenu::with_items(
         app,
         "View",
         true,
         &[
+            &MenuItem::with_id(
+                app,
+                ids::FIND_IN_FILES,
+                "Find in Files",
+                true,
+                Some("CmdOrCtrl+Shift+F"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                ids::SOURCE_CONTROL,
+                "Source Control",
+                true,
+                Some("CmdOrCtrl+Shift+G"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                ids::OUTLINE,
+                "Outline",
+                true,
+                Some("CmdOrCtrl+Shift+O"),
+            )?,
+            &PredefinedMenuItem::separator(app)?,
             &CheckMenuItem::with_id(
                 app,
                 ids::TOGGLE_SIDEBAR,

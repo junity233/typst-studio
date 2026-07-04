@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { CompileStatus } from "../lib/ui-types";
-import type { ConflictState, LineRect, OpenedDocument } from "../lib/types";
+import type { ConflictState, LineRect, OpenedDocument, OutlineNode } from "../lib/types";
 import {
   closeTab as closeTabBE,
   newTab as newTabBE,
@@ -65,6 +65,7 @@ export interface TabsState {
     revision: number,
     svgPages: string[],
     lineMap: LineRect[],
+    outline: OutlineNode[],
   ) => void;
   /**
    * Set a document's conflict state (§5.4 / §8.4). Delegates to documentsStore.
@@ -142,8 +143,8 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
   setStatus: (id, revision, status, durationMs) =>
     useDocumentsStore.getState().setStatus(id, revision, status, durationMs),
 
-  setPages: (id, revision, svgPages, lineMap) =>
-    useDocumentsStore.getState().setPages(id, revision, svgPages, lineMap),
+  setPages: (id, revision, svgPages, lineMap, outline) =>
+    useDocumentsStore.getState().setPages(id, revision, svgPages, lineMap, outline),
 
   setConflict: (id, conflict, diskContent) =>
     useDocumentsStore.getState().setConflict(id, conflict, diskContent),

@@ -32,7 +32,7 @@ const ICON_SIZE = 14;
  *
  * Drag-to-move is deferred — create/rename/delete cover the daily cases.
  */
-export function Explorer() {
+export function Explorer(_props: { viewId?: string }) {
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const name = useWorkspaceStore((s) => s.name);
   const tree = useWorkspaceStore((s) => s.tree);

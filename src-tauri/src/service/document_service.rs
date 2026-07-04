@@ -1184,6 +1184,7 @@ mod tests {
             _revision: u64,
             _pages: Vec<String>,
             _line_map: Vec<LineRect>,
+            _outline: Vec<crate::domain::outline::OutlineNode>,
             _duration_ms: u64,
         ) {
             self.compiled_ids.lock().push(id);

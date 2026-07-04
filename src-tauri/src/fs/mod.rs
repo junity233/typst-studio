@@ -14,6 +14,7 @@
 //! mapping and the ignore rules.
 
 pub mod resolver;
+pub mod search;
 pub mod tree;
 pub mod watcher;
 

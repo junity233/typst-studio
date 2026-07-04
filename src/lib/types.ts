@@ -60,7 +60,13 @@ export type CompiledPayload = { id: DocumentId, revision: number, pages: Array<s
  * Source line → preview-page bbox index, sorted by `(page, y)`. Empty for
  * documents with no rendered text (or when compilation produced no doc).
  */
-lineMap: Array<LineRect>, 
+lineMap: Array<LineRect>,
+/**
+ * Document heading outline (§Outline view). Flat array with parent indices;
+ * empty if there are no outlineable headings or compilation produced no doc.
+ * Stays revision-consistent with `pages` / `lineMap`.
+ */
+outline: Array<OutlineNode>,
 /**
  * `u64` maps to `bigint` by default in ts-rs, but Tauri serializes it as a
  * JSON number at runtime — override to `number` to match the contract.
@@ -364,9 +370,45 @@ w: number,
 h: number, };
 
 /**
+ * One node in the document outline (§Outline view). Returned as part of the
+ * `compiled` event payload, alongside `pages` and `lineMap`.
+ *
+ * NOTE: hand-written here because `cargo test --features export-types` cannot
+ * run on Windows (pre-existing Tauri test-binary loader crash). Field casing
+ * matches the Rust struct's `#[serde(rename_all = "camelCase")]` wire format
+ * (all single-word fields, so wire name == Rust name).
+ */
+export type OutlineNode = {
+/**
+ * 1-indexed source line (matches LineRect.line / Diagnostic range).
+ */
+line: number,
+/**
+ * Absolute heading level (1 = H1). Post-synthesis (offset + depth applied).
+ */
+level: number,
+/**
+ * Plain-text title.
+ */
+title: string,
+/**
+ * Numbering text (e.g. "1.2.3"), null if unnumbered.
+ */
+numbering: string | null,
+/**
+ * Index into the same array of this node's parent; null for top-level.
+ */
+parent: number | null,
+};
+
+/**
  * Why the LSP generation was bumped (§6.4 `restartReason`). Surfaced on the
  * wire only when the accompanying status reflects a restart/crash; serialized
  * camelCase to match `LspStatusKind`.
+ *
+ * NOTE: hand-written here because `cargo test --features export-types` cannot
+ * run in this environment (Windows Tauri test-binary loader crash). Matches
+ * the Rust enum's `#[serde(rename_all = "camelCase")]` wire format.
  */
 export type LspRestartReason = "workspaceChange" | "settingsChange" | "childCrash" | "relayError" | "manual" | "generationMismatch";
 
@@ -574,6 +616,57 @@ export type SaveState = "idle" | { "saving": { revision: number, } } | { "saved"
 export type SaveStateChangedPayload = { id: DocumentId, state: SaveState, };
 
 /**
+ * One search hit (§Search view). Returned by the `search_workspace` command.
+ *
+ * NOTE: hand-written here because `cargo test --features export-types` cannot
+ * run on Windows (pre-existing Tauri test-binary loader crash). Field names
+ * match the Rust struct's `#[serde(rename_all = "camelCase")]` wire format.
+ */
+export type SearchHit = {
+/**
+ * Path relative to workspace root (forward-slash separators).
+ */
+relative: string,
+/**
+ * 1-indexed source line.
+ */
+line: number,
+/**
+ * 1-indexed column (Unicode scalar values).
+ */
+column: number,
+/**
+ * The full line text (truncated for display if very long).
+ */
+lineText: string,
+	/**
+	 * Char offset of the match start within lineText.
+	 */
+	matchStart: number,
+	/**
+	 * Char offset of the match end within lineText.
+	 */
+	matchEnd: number,
+};
+
+/**
+ * Cross-file search request (§Search view). Sent to `search_workspace`.
+ *
+ * NOTE: hand-written here because `cargo test --features export-types` cannot
+ * run on Windows (pre-existing Tauri test-binary loader crash). Field names
+ * match the Rust struct's `#[serde(rename_all = "camelCase")]` wire format.
+ */
+export type SearchQuery = {
+pattern: string,
+isRegex: boolean,
+caseSensitive: boolean,
+wholeWord: boolean,
+includeGlob: string | null,
+maxPerFile: number,
+maxTotal: number,
+};
+
+/**
  * What we remember between launches. All fields default so an OLD session.json
  * (with only `lastWorkspace`/`lastFile`) still loads cleanly.
  *
@@ -752,8 +845,37 @@ export type WorkspaceMeta = {
 /**
  * Absolute path to the workspace root.
  */
-root: string, 
+root: string,
 /**
  * Display name (the root folder's basename).
  */
 name: string, };
+
+/**
+ * Git status classification for one side (staged or unstaged) of a file
+ * (§Source Control). Serialized as kebab-case to match the Rust enum's
+ * `#[serde(rename_all = "kebab-case")]`.
+ *
+ * NOTE: hand-written here because `cargo test --features export-types` cannot
+ * run on Windows (pre-existing Tauri test-binary loader crash).
+ */
+export type GitStatusKind = "unchanged" | "modified" | "added" | "deleted" | "untracked" | "renamed" | "type-changed";
+
+/**
+ * One file's git status (§Source Control). `staged` is head↔index, `unstaged`
+ * is index↔worktree (matching `git status --porcelain` XY format).
+ *
+ * NOTE: hand-written here because `cargo test --features export-types` cannot
+ * run on Windows (pre-existing Tauri test-binary loader crash). Field casing
+ * matches the Rust struct's `#[serde(rename_all = "camelCase")]` wire format.
+ */
+export type GitFileStatus = { path: string, staged: GitStatusKind, unstaged: GitStatusKind, };
+
+/**
+ * One commit in the recent log (§Source Control).
+ *
+ * NOTE: hand-written here because `cargo test --features export-types` cannot
+ * run on Windows (pre-existing Tauri test-binary loader crash). Field casing
+ * matches the Rust struct's `#[serde(rename_all = "camelCase")]` wire format.
+ */
+export type CommitLog = { id: string, message: string, author: string, time: number, };

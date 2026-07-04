@@ -44,6 +44,7 @@ function freshDocument(overrides: Partial<Document> = {}): Document {
     durationMs: null,
     svgPages: [],
     lineMap: [],
+    outline: [],
     ...overrides,
   };
 }
@@ -92,7 +93,7 @@ describe("documentsStore revision guard (§7)", () => {
     useDocumentsStore.setState({
       documents: { "tab-1": freshDocument({ revision: 3 }) },
     });
-    useDocumentsStore.getState().setPages("tab-1", 3, ["<svg p3/>"], []);
+    useDocumentsStore.getState().setPages("tab-1", 3, ["<svg p3/>"], [], []);
     const doc = useDocumentsStore.getState().documents["tab-1"];
     expect(doc.svgPages).toEqual(["<svg p3/>"]);
   });
@@ -105,7 +106,7 @@ describe("documentsStore revision guard (§7)", () => {
         "tab-1": freshDocument({ revision: 5, svgPages: ["<svg current/>"] }),
       },
     });
-    useDocumentsStore.getState().setPages("tab-1", 3, ["<svg stale/>"], []);
+    useDocumentsStore.getState().setPages("tab-1", 3, ["<svg stale/>"], [], []);
     const doc = useDocumentsStore.getState().documents["tab-1"];
     expect(doc.svgPages).toEqual(["<svg current/>"]);
   });
@@ -130,7 +131,7 @@ describe("documentsStore revision guard (§7)", () => {
 
   it("ignores events for unknown documents without throwing", () => {
     expect(() =>
-      useDocumentsStore.getState().setPages("nope", 1, ["<svg/>"], []),
+      useDocumentsStore.getState().setPages("nope", 1, ["<svg/>"], [], []),
     ).not.toThrow();
     expect(() =>
       useDocumentsStore.getState().setStatus("nope", 1, "success"),
@@ -304,12 +305,12 @@ describe("views store (tabsStore) operates on an id list (§10)", () => {
     });
     useTabsStore.setState({ tabs: ["d1"], activeId: "d1" });
     // A stale-revision event (revision 1 < 2) is discarded via delegation.
-    useTabsStore.getState().setPages("d1", 1, ["<stale/>"], []);
+    useTabsStore.getState().setPages("d1", 1, ["<stale/>"], [], []);
     expect(useDocumentsStore.getState().documents["d1"].svgPages).toEqual([
       "<current/>",
     ]);
     // A current-revision event applies.
-    useTabsStore.getState().setPages("d1", 2, ["<fresh/>"], []);
+    useTabsStore.getState().setPages("d1", 2, ["<fresh/>"], [], []);
     expect(useDocumentsStore.getState().documents["d1"].svgPages).toEqual([
       "<fresh/>",
     ]);

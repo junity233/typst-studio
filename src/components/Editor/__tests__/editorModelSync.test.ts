@@ -35,6 +35,7 @@ function makeDoc(
     durationMs: null,
     svgPages: [],
     lineMap: [],
+    outline: [],
     ...overrides,
   };
 }

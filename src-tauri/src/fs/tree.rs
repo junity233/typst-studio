@@ -46,7 +46,7 @@ pub struct DirEntry {
 /// Directories that are always noise — never listed in the tree. We don't prune
 /// by file extension (the frontend may want to show `.png` assets next to
 /// `.typ` sources); only by these well-known heavy/hidden dirs.
-const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules"];
+pub(crate) const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules"];
 
 /// List the immediate children of `dir` (relative to `root`), excluding the
 /// always-ignored directories. Returns an empty vec for a file or missing path.

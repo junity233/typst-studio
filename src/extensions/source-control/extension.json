@@ -1,0 +1,22 @@
+{
+  "name": "source-control",
+  "version": "0.1.0",
+  "displayName": "Source Control",
+  "description": "Git integration for the workspace",
+  "main": "./index.ts",
+  "contributes": {
+    "views": [
+      {
+        "id": "workbench.scm",
+        "title": "Source Control",
+        "icon": "git-branch",
+        "order": 20,
+        "when": "workspace"
+      }
+    ],
+    "commands": [
+      { "id": "workbench.view.scm", "title": "Show Source Control", "category": "View" },
+      { "id": "git.refresh", "title": "Git: Refresh", "category": "Git" }
+    ]
+  }
+}

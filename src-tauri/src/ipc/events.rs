@@ -12,6 +12,7 @@
 
 use crate::domain::diagnostics::Diagnostic;
 use crate::domain::document::{DocumentId, DocumentMeta};
+use crate::domain::outline::OutlineNode;
 use crate::domain::source_map::LineRect;
 
 // `CompileStatus` is defined in `domain::compile_status` (moved out of this
@@ -58,6 +59,10 @@ pub struct CompiledPayload {
     /// Source line → preview-page bbox index, sorted by `(page, y)`. Empty for
     /// documents with no rendered text (or when compilation produced no doc).
     pub line_map: Vec<LineRect>,
+    /// Document heading outline (§Outline view). Flat `Vec` with parent
+    /// indices; empty if there are no outlineable headings or compilation
+    /// produced no doc. Stays revision-consistent with `pages` / `line_map`.
+    pub outline: Vec<OutlineNode>,
     /// `u64` maps to `bigint` by default in ts-rs, but Tauri serializes it as a
     /// JSON number at runtime — override to `number` to match the contract.
     #[cfg_attr(feature = "export-types", ts(type = "number"))]
@@ -322,6 +327,7 @@ mod tests {
             revision: 3,
             pages: vec!["<svg/>".to_string()],
             line_map: Vec::new(),
+            outline: Vec::new(),
             duration_ms: 7,
         };
         let json = serde_json::to_string(&payload).unwrap();

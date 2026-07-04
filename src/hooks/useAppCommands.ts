@@ -2,11 +2,7 @@ import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { onMenuEvent, onCloseRequested } from "../lib/tauri";
 import {
-  exportPdf,
-  exportPng,
-  exportSvg,
   openFile,
-  openSettings,
   saveAs as saveAsBE,
   saveFile,
   markCleanShutdown,
@@ -14,15 +10,23 @@ import {
   discardRecovery,
 } from "../lib/tauri";
 import { useTabsStore, readOrderedDocuments } from "../store/tabsStore";
-import { useDocumentsStore } from "../store/documentsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { useUiStore } from "../store/uiStore";
 import { useDialogStore } from "../store/dialogStore";
-import { closeTabWithConfirm, saveTab } from "../lib/commands";
+import { saveTab } from "../lib/commands";
 import { captureAndSaveSession } from "../lib/session";
 import { captureWindowBounds } from "../lib/windowState";
 import { captureLayout } from "../lib/layoutState";
 import { toIpcError } from "../lib/ipc-error";
+import { commandRegistry } from "../extensions/registry";
+import { createHostApi } from "../extensions/api";
+// Import the workbench extension's lazy activator. Activating is deferred to
+// first dispatch() call (NOT module load) to avoid a circular init: this file
+// exports helpers that the workbench module imports back, so running activate()
+// during import would reach those helpers before they are initialized.
+import { ensureActivated as ensureWorkbenchActivated } from "../extensions/workbench";
+
+const hostApi = createHostApi("workbench.dispatch");
 
 /**
  * Centralized command dispatch for the native app menu. Subscribes to the
@@ -62,6 +66,29 @@ export function useAppCommands(): void {
         e.stopPropagation();
         void dispatch("save-as");
       }
+      // Cmd/Ctrl+Shift+F → Find in Files (§Search view). Same capture-phase
+      // rationale as Cmd+S: Monaco can swallow the keystroke before the OS menu
+      // accelerator fires, so intercept it directly and dispatch.
+      if (mod && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        e.stopPropagation();
+        void dispatch("workbench.action.findInFiles");
+      }
+      // Cmd/Ctrl+Shift+G → Show Source Control (§Source Control). Same
+      // capture-phase rationale as the other Shift shortcuts.
+      if (mod && e.shiftKey && e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        e.stopPropagation();
+        void dispatch("workbench.view.scm");
+      }
+      // Cmd/Ctrl+Shift+O → Show Outline (§Outline). Same capture-phase
+      // rationale as the other Shift shortcuts: Monaco can swallow the
+      // keystroke before the OS menu accelerator fires.
+      if (mod && e.shiftKey && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        e.stopPropagation();
+        void dispatch("workbench.view.outline");
+      }
     };
     document.addEventListener("keydown", onKeyDown, true);
 
@@ -95,81 +122,26 @@ export function useAppCommands(): void {
 
 /** Run the action for a menu id. Exported for testing / programmatic dispatch. */
 export async function dispatch(menuId: string): Promise<void> {
-  const tabs = useTabsStore.getState();
-  const activeId = tabs.activeId;
-  const activeTab =
-    activeId !== null
-      ? (useDocumentsStore.getState().documents[activeId] ?? null)
-      : null;
-  const ws = useWorkspaceStore.getState();
-  const ui = useUiStore.getState();
-
+  // Register the core commands on first use (idempotent). Deferred from module
+  // load to avoid a circular init with the workbench extension.
+  ensureWorkbenchActivated();
   try {
-    // "Open Recent > <workspace>" submenu (§7.2): the id is `open-recent:<i>`,
-    // where <i> indexes into the session's recent_workspaces. Resolve + open.
+    // "Open Recent > <workspace>" submenu (§7.2): id is `open-recent:<i>`.
+    // Dynamic id — kept as a special case, not a registered command.
     if (menuId.startsWith("open-recent:")) {
       await handleOpenRecent(menuId);
       return;
     }
-    switch (menuId) {
-      case "new-tab":
-        await tabs.openTab();
-        break;
 
-      case "open-file":
-        await handleOpenFile();
-        break;
-
-      case "open-folder":
-        await ws.openWorkspace();
-        break;
-
-      case "save":
-        await handleSave(activeId, activeTab);
-        break;
-
-      case "save-as":
-        await handleSaveAs(activeId);
-        break;
-
-      case "close-tab":
-        if (activeId !== null) await closeTabWithConfirm(activeId);
-        break;
-
-      case "toggle-sidebar":
-        ui.toggleSidebar();
-        break;
-
-      case "toggle-preview":
-        ui.togglePreview();
-        break;
-
-      case "open-settings":
-        await openSettings();
-        break;
-
-      case "export-pdf":
-        if (activeId !== null && activeTab !== null) {
-          await exportPdf(activeId, activeTab.revision);
-        }
-        break;
-
-      case "export-png":
-        if (activeId !== null && activeTab !== null) {
-          await exportPng(activeId, activeTab.revision);
-        }
-        break;
-
-      case "export-svg":
-        if (activeId !== null && activeTab !== null) {
-          await exportSvg(activeId, activeTab.revision);
-        }
-        break;
-
-      default:
-        // Unknown / predefined items are handled natively; ignore here.
-        break;
+    // Look up in the registry (workbench extension registers the core commands).
+    const cmd = commandRegistry.get(menuId);
+    if (cmd) {
+      if (cmd.enablement && !cmd.enablement(hostApi)) return;
+      await cmd.handler(hostApi);
+      return;
     }
+
+    // Unknown / predefined items (Cut/Copy/Quit/etc.) handled natively; ignore.
   } catch (e) {
     // §5.3: a Cancelled code (dismissed dialog) is not a failure — silent.
     const ipc = toIpcError(e);
@@ -177,12 +149,14 @@ export async function dispatch(menuId: string): Promise<void> {
       return;
     }
     console.warn(`[menu:${menuId}] failed:`, ipc.code, ipc.message);
-    window.alert(`${labelFor(menuId)}: ${ipc.message}`);
+    const cmd = commandRegistry.get(menuId);
+    const label = cmd?.title ?? labelFor(menuId) ?? menuId;
+    window.alert(`${label}: ${ipc.message}`);
   }
 }
 
 /** Open a single file via the native dialog and add it as a tab. */
-async function handleOpenFile(): Promise<void> {
+export async function handleOpenFile(): Promise<void> {
   const doc = await openFile();
   if (doc === null) return;
   useTabsStore.getState().openPath(doc);
@@ -347,7 +321,7 @@ function readDiagnosticsVisible(): boolean {
 }
 
 /** Save the active tab in place, or Save As if it's untitled. */
-async function handleSave(
+export async function handleSave(
   activeId: string | null,
   activeTab: { path: string | null } | null,
 ): Promise<void> {
@@ -361,14 +335,14 @@ async function handleSave(
 }
 
 /** Save As: write to a new file and rebind the tab to it. */
-async function handleSaveAs(activeId: string | null): Promise<void> {
+export async function handleSaveAs(activeId: string | null): Promise<void> {
   if (activeId === null) return;
   const path = await saveAsBE(activeId);
   useTabsStore.getState().markSaved(activeId, path);
 }
 
 /** Human label for an alert, given a menu id. */
-function labelFor(menuId: string): string {
+export function labelFor(menuId: string): string {
   switch (menuId) {
     case "open-file": return "Open File";
     case "open-folder": return "Open Folder";

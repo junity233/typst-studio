@@ -113,41 +113,55 @@ impl FileIdentity {
     pub fn from_path(path: &Path) -> Self {
         std::fs::symlink_metadata(path)
             .ok()
-            .and_then(|m| {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::MetadataExt;
-                    // (dev, ino) uniquely identifies a file on a Unix volume.
-                    Some(Self(hash_pair(m.dev(), m.ino())))
-                }
-                #[cfg(windows)]
-                {
-                    use std::os::windows::fs::MetadataExt;
-                    // NOTE: the ideal Windows identity is
-                    // (volume_serial_number, file_index) from
-                    // `GetFileInformationByHandle`, but those require the
-                    // unstable `windows_by_handle` feature and so are not
-                    // available on stable Rust. Fall back to the stable
-                    // `MetadataExt` surface: creation_time (FILETIME, u64) +
-                    // file_size. This is strictly weaker than an inode pair — a
-                    // same-size rewrite that preserves creation time would not
-                    // be detected as `Replaced` — but `FileIdentity` is
-                    // documented best-effort and degrades safely to
-                    // [`FileIdentity::UNKNOWN`] (the `Replaced` check simply
-                    // never fires) when it cannot distinguish two files.
-                    // TODO: restore (volume_serial_number, file_index) via the
-                    // `windows-sys` crate's `GetFileInformationByHandle` for a
-                    // true inode-style identity.
-                    let created = m.creation_time();
-                    let size = m.file_size();
-                    Some(Self(hash_pair(created, size)))
-                }
-                #[cfg(not(any(unix, windows)))]
-                {
-                    None
-                }
-            })
+            .and_then(|m| Self::from_metadata(path, &m))
             .unwrap_or(Self::UNKNOWN)
+    }
+
+    #[cfg(unix)]
+    fn from_metadata(_path: &Path, m: &std::fs::Metadata) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        // (dev, ino) uniquely identifies a file on a Unix volume.
+        Some(Self(hash_pair(m.dev(), m.ino())))
+    }
+
+    #[cfg(windows)]
+    fn from_metadata(path: &Path, _m: &std::fs::Metadata) -> Option<Self> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+
+        // Open with FILE_FLAG_BACKUP_SEMANTICS (0x02000000) so we can get a handle
+        // on directories too — matches the Unix branch's symlink_metadata semantics.
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(0x02000000)
+            .open(path)
+            .ok()?;
+        let handle = file.as_raw_handle() as isize;
+        if handle == INVALID_HANDLE_VALUE as isize {
+            return None;
+        }
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        let ok = unsafe { GetFileInformationByHandle(handle as *mut _, &mut info) };
+        // `file` drops here and closes the handle; explicit CloseHandle is redundant
+        // but cheap and matches the FFI contract documentation.
+        unsafe { CloseHandle(handle as *mut _) };
+        if ok == 0 {
+            return None;
+        }
+        let vol = info.dwVolumeSerialNumber as u64;
+        let idx_high = info.nFileIndexHigh as u64;
+        let idx_low = info.nFileIndexLow as u64;
+        let idx = (idx_high << 32) | idx_low;
+        Some(Self(hash_pair(vol, idx)))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn from_metadata(_path: &Path, _m: &std::fs::Metadata) -> Option<Self> {
+        None
     }
 }
 
@@ -202,6 +216,42 @@ mod tests {
         let bogus = std::env::temp_dir()
             .join(format!("ts-dv-missing-{}.typ", uuid::Uuid::new_v4()));
         assert!(DiskVersion::from_path(&bogus).is_err());
+    }
+
+    /// `FileIdentity::from_path` must return a real (non-UNKNOWN) identity for an
+    /// existing file, and the identity must be stable across calls. On Windows
+    /// this exercises the `GetFileInformationByHandle` FFI path.
+    #[test]
+    fn file_identity_is_stable_for_existing_file() {
+        let tmp = std::env::temp_dir()
+            .join(format!("ts-dv-fid-{}.typ", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp, b"hello identity").unwrap();
+
+        let a = FileIdentity::from_path(&tmp);
+        let b = FileIdentity::from_path(&tmp);
+
+        #[cfg(any(unix, windows))]
+        {
+            assert_ne!(
+                a,
+                FileIdentity::UNKNOWN,
+                "supported platforms must surface a real identity for an existing file"
+            );
+        }
+        assert_eq!(
+            a, b,
+            "identity must be stable across reads of the same file"
+        );
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// A missing file degrades safely to `FileIdentity::UNKNOWN` — never panics.
+    #[test]
+    fn file_identity_is_unknown_for_missing_file() {
+        let bogus = std::env::temp_dir()
+            .join(format!("ts-dv-fid-missing-{}.typ", uuid::Uuid::new_v4()));
+        assert_eq!(FileIdentity::from_path(&bogus), FileIdentity::UNKNOWN);
     }
 
     /// §8.4 "仅时间戳变化但内容未变": a `touch` (same bytes, new mtime) must NOT

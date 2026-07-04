@@ -4,7 +4,7 @@
 // LspStatusKind, LspRestartReason, ...) live in ./types and are auto-generated
 // by ts-rs — do not duplicate here.
 
-import type { Diagnostic, DocumentId, LineRect } from "./types";
+import type { Diagnostic, DocumentId, LineRect, OutlineNode } from "./types";
 
 // Re-export the wire types so existing `from "./ui-types"` import sites keep
 // resolving after the LSP payload moved to the generated `types.ts` (Task 7).
@@ -35,6 +35,8 @@ export interface CompiledPayload {
   pages: string[];
   /** Source line → preview-page bbox index (scroll-sync / click-to-source). */
   lineMap: LineRect[];
+  /** Document heading outline (§Outline view). Empty if no headings. */
+  outline: OutlineNode[];
   durationMs: number;
 }
 

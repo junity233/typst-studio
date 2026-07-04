@@ -19,6 +19,7 @@ import { useAutosave } from "./hooks/useAutosave";
 // wrapper's client still drives the live session). Mounted so the subscription
 // is live and ready the moment the rewire lands.
 import { useLspWorkspaceReconnect } from "./hooks/useLspWorkspaceReconnect";
+import { activateAll } from "./extensions";
 import {
   onSettingsWindow,
   onStartupProblems,
@@ -55,6 +56,12 @@ export default function App() {
   useAutosave();
   useLspWorkspaceReconnect();
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Activate all in-tree extensions (registers their views/commands). Runs once;
+  // extensions are idempotent-safe via the registry's duplicate-id guard.
+  useEffect(() => {
+    void activateAll();
+  }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;

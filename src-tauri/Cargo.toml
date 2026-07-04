@@ -82,6 +82,17 @@ chrono = { version = "0.4", features = ["serde"] }
 # Workspace filesystem watching (file-tree live updates).
 notify = "8"
 
+# Recursive directory traversal for the Search view.
+walkdir = "2"
+# Regex matching for the Search view (literal mode is hand-rolled; regex mode uses this).
+regex = "1"
+
+# Pure-Rust Git implementation for the Source Control view (Phase 4).
+# Repository is Send but NOT Sync — re-discovered per command, all gix I/O on
+# spawn_blocking. `status` gates Repository::status(); `index` exposes the
+# in-memory index for stage/unstage.
+gix = { version = "0.85", features = ["status", "index"] }
+
 # Safe deletion via the system trash / recycle bin (§5.5). Cross-platform:
 # macOS NSWorkspace recycle, Windows FileOperation FO_DELETE with recycle, Linux
 # freedesktop Trash.
@@ -98,6 +109,12 @@ time = { version = "=0.3.36", default-features = false, features = ["std", "macr
 # HTTP client for remote image fetch (paste feature) + future reuse.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
+# Stable FFI for GetFileInformationByHandle — used by FileIdentity on Windows
+# (std's volume_serial_number/file_index are nightly-only behind windows_by_handle).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+
 [dev-dependencies]
 mockito = "1"
+tempfile = "3"
 

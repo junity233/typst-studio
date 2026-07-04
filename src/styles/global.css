@@ -445,6 +445,401 @@ button {
 
 
 /* ============================================================================
+   Search panel (bottom, §Search view)
+   ========================================================================= */
+.search-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--color-canvas);
+  border-top: 1px solid var(--color-hairline);
+}
+
+.search-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.search-input {
+  flex: 1 1 auto;
+  font: var(--text-body);
+  padding: 4px 8px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.search-options {
+  display: flex;
+  gap: 2px;
+}
+
+.search-options button {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+}
+
+.search-options button:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.search-options button.active {
+  background: var(--color-canvas-parchment);
+  border-color: var(--color-primary);
+  color: var(--color-ink);
+}
+
+.search-close {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-ink-muted-48);
+  font-size: 18px;
+  line-height: 1;
+  border-radius: var(--radius-sm);
+}
+
+.search-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--color-ink);
+}
+
+.search-results {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-xs) 0;
+}
+
+.search-file-group {
+  margin-bottom: var(--space-xs);
+}
+
+.search-file-name {
+  font: var(--text-caption-strong);
+  padding: 4px var(--space-sm);
+  color: var(--color-ink);
+}
+
+.search-hit-count {
+  color: var(--color-ink-muted-48);
+  font-weight: normal;
+}
+
+.search-hit-row {
+  display: flex;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 2px var(--space-sm) 2px 24px;
+  cursor: pointer;
+  gap: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-ink);
+}
+
+.search-hit-row:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.search-hit-line {
+  flex: 0 0 auto;
+  color: var(--color-ink-muted-48);
+}
+
+.search-hit-text {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-hit-text mark {
+  background: rgba(255, 213, 0, 0.4);
+  color: inherit;
+}
+
+.search-status,
+.search-error {
+  padding: var(--space-xs) var(--space-sm);
+  color: var(--color-ink-muted-48);
+  font: var(--text-caption);
+}
+
+.search-error {
+  color: var(--color-error);
+}
+
+
+/* ============================================================================
+   Outline (§Outline) — document heading tree sidebar panel.
+   ========================================================================= */
+.outline-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--space-xs) 0;
+}
+
+.outline-empty {
+  padding: var(--space-sm);
+  color: var(--color-ink-muted-48);
+  font: var(--text-caption);
+}
+
+.outline-row {
+  display: flex;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 3px var(--space-sm);
+  cursor: pointer;
+  gap: var(--space-xs);
+  font: var(--text-body);
+  color: var(--color-ink);
+  border-radius: 0;
+}
+
+.outline-row:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.outline-numbering {
+  flex: 0 0 auto;
+  color: var(--color-ink-muted-48);
+  font: var(--text-caption-strong);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.outline-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
+/* ============================================================================
+   Source Control (§Source Control) — SCM sidebar panel.
+   ========================================================================= */
+.scm-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-canvas);
+}
+
+.scm-empty {
+  padding: var(--space-sm);
+  color: var(--color-ink-muted-80);
+  font: var(--text-body);
+}
+
+.scm-empty .scm-hint {
+  color: var(--color-ink-muted-48);
+  font: var(--text-caption);
+  margin-top: var(--space-xs);
+}
+
+.scm-commit-box {
+  flex: 0 0 auto;
+  padding: var(--space-xs) var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.scm-commit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.scm-message {
+  font: var(--text-body);
+  padding: 6px 8px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  resize: vertical;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+.scm-message:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.scm-commit-btn {
+  flex: 1 1 auto;
+  padding: 4px 16px;
+  border: none;
+  background: var(--color-primary);
+  color: white;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: var(--text-body);
+}
+
+.scm-commit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scm-refresh {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 16px;
+  color: var(--color-ink-muted-80);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.scm-refresh:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.scm-changes {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-xs) 0;
+}
+
+.scm-section {
+  margin-bottom: var(--space-xs);
+}
+
+.scm-section-title {
+  font: var(--text-caption-strong);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-ink-muted-48);
+  padding: 4px var(--space-sm);
+}
+
+.scm-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 2px var(--space-sm);
+  font: var(--text-body);
+}
+
+.scm-row:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.scm-badge {
+  flex: 0 0 auto;
+  width: 16px;
+  text-align: center;
+  font: var(--text-caption-strong);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* Status badge colors (no semantic tokens exist, so use hex). */
+.scm-modified { color: #e0ac00; }
+.scm-added { color: #28a745; }
+.scm-deleted { color: #d73a49; }
+.scm-untracked { color: var(--color-ink-muted-48); }
+.scm-renamed { color: var(--color-primary); }
+.scm-type-changed { color: #8b008b; }
+.scm-unchanged { color: var(--color-ink-muted-48); }
+
+.scm-path {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink);
+}
+
+.scm-action {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-ink-muted-80);
+  font-size: 16px;
+  line-height: 1;
+  border-radius: var(--radius-sm);
+}
+
+.scm-action:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--color-ink);
+}
+
+.scm-status,
+.scm-error {
+  padding: var(--space-xs) var(--space-sm);
+  font: var(--text-caption);
+  color: var(--color-ink-muted-48);
+}
+
+.scm-error {
+  color: var(--color-error);
+}
+
+.scm-log {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--color-hairline);
+  padding: var(--space-xs) 0;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.scm-log-row {
+  display: flex;
+  flex-direction: column;
+  padding: 4px var(--space-sm);
+  font: var(--text-caption);
+}
+
+.scm-log-msg {
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scm-log-author {
+  color: var(--color-ink-muted-48);
+  font-size: 11px;
+}
+
+
+/* ============================================================================
    Status bar (footer / fine-print)
    ========================================================================= */
 .statusbar {
@@ -840,6 +1235,92 @@ button {
   min-width: 0;
   overflow: hidden;
 }
+
+/* ---- Activity Bar (far-left icon strip) ---------------------------------- */
+.activity-bar {
+  flex: 0 0 auto;
+  width: 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-xs) 0;
+  background: var(--color-canvas-parchment);
+  border-right: 1px solid var(--color-hairline);
+  gap: var(--space-xxs);
+}
+
+.activity-item {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-ink-muted-48);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  position: relative;
+  transition: background-color 80ms ease, color 80ms ease;
+}
+
+.activity-item:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--color-ink);
+}
+
+.activity-item.active {
+  color: var(--color-ink);
+}
+
+.activity-item.active::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--color-primary);
+  border-radius: 1px;
+}
+
+.activity-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---- Sidebar host shell (header + body) ---------------------------------- */
+.sidebar-header {
+  flex: 0 0 auto;
+  height: 35px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-sm);
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.sidebar-title {
+  font: var(--text-caption-strong);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-ink-muted-48);
+}
+
+.sidebar-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-loading {
+  padding: var(--space-sm);
+  color: var(--color-ink-muted-48);
+  font: var(--text-caption);
+}
+
 .explorer {
   display: flex;
   flex-direction: column;

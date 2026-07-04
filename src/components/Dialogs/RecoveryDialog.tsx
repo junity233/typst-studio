@@ -112,6 +112,7 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
         durationMs: null,
         svgPages: [],
         lineMap: [],
+        outline: [],
       });
       markDecided(snap.documentId);
     } catch (e) {

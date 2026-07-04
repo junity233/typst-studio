@@ -15,6 +15,7 @@ pub mod domain;
 pub mod diagnostics;
 pub mod error;
 pub mod fs;
+pub mod git;
 pub mod ipc;
 pub mod lsp;
 pub mod net;
@@ -123,11 +124,18 @@ pub fn run() {
             ipc::fs_commands::get_workspace,
             ipc::fs_commands::get_watcher_health,
             ipc::fs_commands::read_dir,
+            ipc::fs_commands::search_workspace,
             ipc::fs_commands::create_entry,
             ipc::fs_commands::rename_entry,
             ipc::fs_commands::delete_entry,
             ipc::fs_commands::open_file_by_path,
             ipc::fs_commands::reveal_in_finder,
+            // Git (Source Control view, Phase 4).
+            ipc::git_commands::git_status,
+            ipc::git_commands::git_stage,
+            ipc::git_commands::git_unstage,
+            ipc::git_commands::git_commit,
+            ipc::git_commands::git_log,
             // Settings commands.
             ipc::settings_commands::get_all_settings,
             ipc::settings_commands::get_setting,
