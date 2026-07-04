@@ -54,6 +54,12 @@ class FakeEditor implements EditEditor {
   undoStopCount = 0;
   /** Counts `focus()` calls so tests can assert the editor was focused. */
   focusCount = 0;
+  /**
+   * Counts `executeEdits` CALLS (not edits). Batching edits into one call is
+   * what guarantees a single undo step on real Monaco (each executeEdits is its
+   * own undo unit), so tests assert this stays at 1 for a multi-line toggle.
+   */
+  executeEditsCallCount = 0;
   /** Last source string passed to `executeEdits` (for debugging assertions). */
   lastEditSource: string | null | undefined = null;
 
@@ -98,17 +104,38 @@ class FakeEditor implements EditEditor {
 
   /**
    * Apply edits, matching `IStandaloneCodeEditor.executeEdits`. Each edit
-   * replaces its `range` with `text`. Edits are applied in order; because
-   * helpers pass a single edit at a time we don't need offset adjustment
-   * across multiple edits in one call.
+   * replaces its `range` with `text`. Edits are applied in order; we apply them
+   * back-to-front by buffer offset so earlier edits don't shift later ranges'
+   * offsets. The only multi-edit caller is `applyToggleLinePrefix`, whose edits
+   * sit on distinct lines (prefix toggling never adds/removes newlines), so the
+   * ranges don't overlap regardless of order — back-to-front keeps it robust.
    */
   executeEdits(
     source: string | null | undefined,
     edits: Monaco.editor.IIdentifiedSingleEditOperation[],
   ): boolean {
     this.lastEditSource = source;
-    for (const edit of edits) {
-      this.applyRangeReplace(edit.range, edit.text ?? "");
+    this.executeEditsCallCount++;
+    // Apply back-to-front by buffer offset so an earlier edit can't shift a
+    // later edit's range. (Real Monaco applies the full batch atomically
+    // against the pre-edit document; this emulates that ordering.)
+    const withOffsets = edits.map((edit) => ({
+      startOffset: this.toOffset({
+        lineNumber: edit.range.startLineNumber,
+        column: edit.range.startColumn,
+      }),
+      endOffset: this.toOffset({
+        lineNumber: edit.range.endLineNumber,
+        column: edit.range.endColumn,
+      }),
+      text: edit.text ?? "",
+    }));
+    withOffsets.sort((a, b) => b.startOffset - a.startOffset);
+    for (const edit of withOffsets) {
+      this.buffer =
+        this.buffer.slice(0, edit.startOffset) +
+        edit.text +
+        this.buffer.slice(edit.endOffset);
     }
     return true;
   }
@@ -128,20 +155,6 @@ class FakeEditor implements EditEditor {
     }
     offset += c.column - 1;
     return offset;
-  }
-
-  /** Replace `range` with `text`, mutating the buffer in place. */
-  private applyRangeReplace(range: Monaco.IRange, text: string): void {
-    const startOffset = this.toOffset({
-      lineNumber: range.startLineNumber,
-      column: range.startColumn,
-    });
-    const endOffset = this.toOffset({
-      lineNumber: range.endLineNumber,
-      column: range.endColumn,
-    });
-    this.buffer =
-      this.buffer.slice(0, startOffset) + text + this.buffer.slice(endOffset);
   }
 }
 
@@ -346,12 +359,13 @@ describe("applyWrapSelection", () => {
     });
   });
 
-  it("uses 'paste-convert'-style executeEdits (single edit, real range)", () => {
+  it("uses 'paste-convert'-style executeEdits with a stable source label", () => {
     // The fake records the source; helpers should pass a stable source label.
+    // `applyWrapSelection` uses "format-wrap" so undo/redo stack labels are
+    // predictable.
     const ed = sel(1, 3, "abcdef");
     applyWrapSelection(ed, "*", "*");
-    expect(ed.lastEditSource).toBeTypeOf("string");
-    expect(ed.lastEditSource).not.toBe("");
+    expect(ed.lastEditSource).toBe("format-wrap");
   });
 });
 
@@ -424,6 +438,12 @@ describe("applyReplaceSelection", () => {
       positionLineNumber: 1,
       positionColumn: 1,
     });
+  });
+
+  it("passes the 'format-replace' source label to executeEdits", () => {
+    const ed = caret("foo", 4);
+    applyReplaceSelection(ed, "X");
+    expect(ed.lastEditSource).toBe("format-replace");
   });
 });
 
@@ -518,6 +538,37 @@ describe("applyToggleLinePrefix", () => {
       expect(s.positionLineNumber).toBe(1);
       expect(s.positionColumn).toBe(6);
     });
+
+    it("strips a `> ` block-quote prefix before adding the new prefix", () => {
+      // `> quoted` starts with a known Typst block-quote prefix; toggling `- `
+      // must strip the `> ` first then add `- ` → `- quoted`.
+      const ed = caret("> quoted", 9);
+      applyToggleLinePrefix(ed, "- ");
+
+      expect(ed.getModel().getLineContent(1)).toBe("- quoted");
+    });
+
+    it("strips a `=== ` heading prefix before adding `- ` (deep → bullet)", () => {
+      // From `=== deep`, toggle `- `: strip `=== ` then add `- ` → `- deep`.
+      // Hardens the multi-char heading strip path.
+      const ed = caret("=== deep", 9);
+      applyToggleLinePrefix(ed, "- ");
+
+      expect(ed.getModel().getLineContent(1)).toBe("- deep");
+    });
+
+    it("tracks the caret column on a mid-line toggle (caretDelta math)", () => {
+      // Caret at col 3 of `Hello` (between `He` and `llo`). Toggling `= ` adds
+      // 2 chars before the line, so the caret should track to col 5 of
+      // `= Hello` (still between `He` and `llo`).
+      const ed = caret("Hello", 3);
+      applyToggleLinePrefix(ed, "= ");
+
+      expect(ed.getModel().getLineContent(1)).toBe("= Hello");
+      const s = ed.getSelection();
+      expect(s.positionLineNumber).toBe(1);
+      expect(s.positionColumn).toBe(5);
+    });
   });
 
   describe("multi-line selection", () => {
@@ -588,5 +639,36 @@ describe("applyToggleLinePrefix", () => {
 
     expect(ed.undoStopCount).toBe(2);
     expect(ed.focusCount).toBe(1);
+  });
+
+  it("passes the 'format-toggle' source label to executeEdits", () => {
+    const ed = caret("Hello", 6);
+    applyToggleLinePrefix(ed, "= ");
+    expect(ed.lastEditSource).toBe("format-toggle");
+  });
+
+  it("batches a single-line toggle into exactly ONE executeEdits call", () => {
+    // One executeEdits call = one undo step on real Monaco.
+    const ed = caret("Hello", 6);
+    applyToggleLinePrefix(ed, "= ");
+    expect(ed.executeEditsCallCount).toBe(1);
+  });
+
+  it("batches a multi-line toggle into exactly ONE executeEdits call", () => {
+    // The whole toggle must be ONE undo unit (spec §5.1/§5.2), so a 5-line
+    // toggle makes 1 executeEdits call, not 5 — otherwise it'd cost 5 Ctrl+Z
+    // presses to undo. This guards against regressing back to a per-line loop.
+    const ed = new FakeEditor("a\nb\nc\nd\ne", {
+      selectionStartLineNumber: 1,
+      selectionStartColumn: 1,
+      positionLineNumber: 5,
+      positionColumn: 2,
+    });
+    applyToggleLinePrefix(ed, "- ");
+
+    expect(ed.executeEditsCallCount).toBe(1);
+    const m = ed.getModel();
+    expect(m.getLineContent(1)).toBe("- a");
+    expect(m.getLineContent(5)).toBe("- e");
   });
 });

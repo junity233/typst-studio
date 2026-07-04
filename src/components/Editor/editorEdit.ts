@@ -63,14 +63,14 @@ export interface EditEditor {
 
 /**
  * Known Typst line-prefix markers this editor toggles. A run of one or more
- * `=` followed by a single space (headings `=`, `==`, `===`, …), or `- `
- * (bullet), or `+ ` (numbered). Capture group 1 is the matched prefix (without
- * needing to know which alternative fired).
+ * `=` followed by a single space (headings `=`, `==`, `===`, …), `- ` (bullet),
+ * `+ ` (numbered), or `> ` (block quote). Capture group 1 is the matched prefix
+ * (without needing to know which alternative fired).
  *
  * Note the trailing space is part of the prefix: `=Hello` (no space) is NOT a
  * heading and must not be stripped — that's the user's literal text.
  */
-const LINE_PREFIX_RE = /^(=+ |- |\+ )/;
+const LINE_PREFIX_RE = /^(=+ |- |\+ |> )/;
 
 /**
  * Wrap the current selection (or insert a placeholder when empty) with
@@ -238,24 +238,26 @@ export function applyToggleLinePrefix(
 
   editor.pushUndoStop();
 
-  // Walk lines in order; each line is its own edit so the prefix math stays
-  // local (line numbers don't shift since we never add/remove line breaks).
+  // Precompute each line's new content and batch into a SINGLE executeEdits
+  // call so the whole toggle is ONE undo unit (spec §5.1/§5.2: one toolbar
+  // action = one undo step). Each executeEdits call is its own undoable unit,
+  // so a per-line loop would make an N-line toggle cost N Ctrl+Z presses.
+  // Prefix toggling never adds/removes newlines, so line numbers and column
+  // math stay stable across the batch and the edits don't shift each other.
+  const edits: { range: Monaco.IRange; text: string }[] = [];
   for (let line = startLine; line <= endLine; line++) {
     const content = model.getLineContent(line);
-    const newContent = applyPrefixToLine(content, prefix);
-
-    editor.executeEdits("format-toggle", [
-      {
-        range: {
-          startLineNumber: line,
-          startColumn: 1,
-          endLineNumber: line,
-          endColumn: content.length + 1,
-        },
-        text: newContent,
+    edits.push({
+      range: {
+        startLineNumber: line,
+        startColumn: 1,
+        endLineNumber: line,
+        endColumn: content.length + 1,
       },
-    ]);
+      text: applyPrefixToLine(content, prefix),
+    });
   }
+  editor.executeEdits("format-toggle", edits);
 
   // Restore a sensible cursor. Single-line: keep the caret on its line, its
   // column shifted by the prefix delta on that line. Multi-line: collapse to
