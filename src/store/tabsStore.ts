@@ -111,7 +111,7 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
       // Backend may reject (already gone); still drop the local tab.
       console.warn("[closeTab] backend rejected:", e);
     }
-    useDiagnosticsStore.getState().clear(id);
+    useDiagnosticsStore.getState().clearAll(id);
     useDocumentsStore.getState().closeDocument(id);
     useSaveStateStore.getState().clear(id);
     set((s) => {

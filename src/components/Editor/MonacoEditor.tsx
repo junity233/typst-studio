@@ -7,14 +7,8 @@ import type {
   EditorAppConfig,
 } from "monaco-languageclient/editorApp";
 import type { LanguageClientManager } from "monaco-languageclient/lcwrapper";
-import { StandaloneServices } from "@codingame/monaco-vscode-api/vscode/vs/editor/standalone/browser/standaloneServices";
-import { IMarkerService } from "@codingame/monaco-vscode-api/vscode/vs/platform/markers/common/markers.service";
-import { MarkerSeverity, type IMarkerData } from "@codingame/monaco-vscode-api/vscode/vs/platform/markers/common/markers";
-import { Uri } from "vscode";
 import { updateText } from "../../lib/tauri";
 import type { Tab } from "../../store/tabsStore";
-import type { Diagnostic } from "../../lib/types";
-import { useDiagnosticsStore } from "../../store/diagnosticsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
@@ -23,6 +17,7 @@ import { useLspStatus } from "../../store/lspStore";
 import { useSetting } from "../../hooks/useSetting";
 import { buildVscodeApiConfig, buildLanguageClientConfig } from "./lspClient";
 import { monacoModelRegistry } from "./monacoModelRegistry";
+import { installLspDiagnosticsBridge } from "./lspDiagnosticsBridge";
 import { computeModelSyncPlan } from "./editorModelSync";
 import { registerTypstHighlighting } from "./typstHighlighting";
 import { usePasteConvert } from "./usePasteConvert";
@@ -75,64 +70,6 @@ interface MonacoEditorProps {
 }
 
 const vscodeApiConfig = buildVscodeApiConfig();
-
-/**
- * Map a Monaco `MarkerSeverity` bitmask (Error=8, Warning=4, Info=2, Hint=1)
- * → the app's Diagnostic severity union.
- */
-function markerSeverity(s: MarkerSeverity): Diagnostic["severity"] {
-  if ((s & MarkerSeverity.Error) === MarkerSeverity.Error) return "Error";
-  if ((s & MarkerSeverity.Warning) === MarkerSeverity.Warning) return "Warning";
-  if ((s & MarkerSeverity.Info) === MarkerSeverity.Info) return "Info";
-  return "Info";
-}
-
-/**
- * Resolve a marker URI to a document id via the model registry (§13.2). Real
- * `file:` URIs, untitled URIs, and migrated/stale URIs all go through the
- * registry's canonical uri→id map; returns null for unknown URIs (closed docs,
- * stale uris after a Save As migration) so the diagnostics bridge drops them.
- */
-function docIdFromUri(uriStr: string): string | null {
-  return monacoModelRegistry.resolveDocumentId(uriStr);
-}
-
-// One-shot bridge from Monaco's marker service into the per-document
-// diagnostics store. Installed after services are up; idempotent. The marker
-// service holds the authoritative diagnostics (the language client's
-// diagnostics feature pushes `publishDiagnostics` there AND renders squiggles
-// from it), so we read markers — never subscribe to publishDiagnostics (that
-// would clobber the feature handler and silence the squiggles).
-let diagBridgeInstalled = false;
-function ensureDiagBridge(): void {
-  if (diagBridgeInstalled) return;
-  diagBridgeInstalled = true;
-  const markers = StandaloneServices.get(IMarkerService);
-
-  const sync = (uris: readonly { toString(): string }[]): void => {
-    for (const u of uris) {
-      const id = docIdFromUri(u.toString());
-      if (id === null) continue;
-      const data: IMarkerData[] = markers.read({
-        resource: Uri.parse(u.toString()),
-      }) as unknown as IMarkerData[];
-      const diags: Diagnostic[] = data.map((m) => ({
-        severity: markerSeverity(m.severity),
-        message: m.message ?? "",
-        code: null,
-        range: {
-          start_line: m.startLineNumber,
-          start_column: m.startColumn,
-          end_line: m.endLineNumber,
-          end_column: m.endColumn,
-        },
-      }));
-      useDiagnosticsStore.getState().set(id, diags);
-    }
-  };
-
-  markers.onMarkerChanged((uris) => sync(uris));
-}
 
 export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // Single source of truth for LSP status across the app (shared with
@@ -447,11 +384,11 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   ): void => {
     // The language client's built-in diagnostics feature already routes
     // `publishDiagnostics` into Monaco's marker service (which renders the
-    // squiggles). We do NOT subscribe to publishDiagnostics directly — that
-    // would clobber the feature handler and kill the squiggles. Instead, once
-    // services are up, we read the marker service for every open model and
-    // mirror markers into the per-document diagnosticsStore (which the panel reads).
-    ensureDiagBridge();
+    // squiggles). The bridge (spec §13.2 / §17) reads the marker service and
+    // mirrors markers into the per-document diagnosticsStore's `tinymist` slot
+    // (which the panel reads). It is generation-aware: on an LSP restart it
+    // clears stale tinymist diagnostics from the dead session. Idempotent.
+    installLspDiagnosticsBridge();
 
     onReady?.({
       revealLine: (line, column) => {

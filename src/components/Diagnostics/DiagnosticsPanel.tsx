@@ -1,9 +1,6 @@
 import { useMemo } from "react";
-import { useDiagnosticsStore } from "../../store/diagnosticsStore";
+import { useDiagnosticsForDoc } from "../../store/diagnosticsStore";
 import type { Diagnostic, Range } from "../../lib/types";
-
-/** Stable empty array so the selector returns the same reference when unset. */
-const EMPTY_DIAGNOSTICS: readonly never[] = Object.freeze([]) as never[];
 
 interface DiagnosticsPanelProps {
   tabId?: string;
@@ -43,11 +40,9 @@ export function DiagnosticsPanel({
   onToggle,
   onGoto,
 }: DiagnosticsPanelProps) {
-  const diagnostics = useDiagnosticsStore((s) =>
-    tabId !== undefined
-      ? (s.byTab[tabId] ?? EMPTY_DIAGNOSTICS)
-      : EMPTY_DIAGNOSTICS,
-  );
+  // §13.1: the combined view (compiler + tinymist) for this doc. The selector
+  // returns a stable empty array when there is nothing to show.
+  const diagnostics = useDiagnosticsForDoc(tabId);
 
   // Sort by start line, then column — stable, predictable top-to-bottom order.
   const sorted = useMemo(

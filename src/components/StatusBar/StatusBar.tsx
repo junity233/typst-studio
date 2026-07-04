@@ -1,4 +1,4 @@
-import { useDiagnosticsStore } from "../../store/diagnosticsStore";
+import { useDiagnosticsForDoc } from "../../store/diagnosticsStore";
 import { useActiveDocument } from "../../store/tabsStore";
 import type { CompileStatus } from "../../lib/ui-types";
 import { useLspStatus } from "../../store/lspStore";
@@ -8,9 +8,6 @@ import { useConflictDialogStore } from "../../store/conflictDialogStore";
 import { useWatcherHealthStore } from "../../store/watcherHealthStore";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect } from "react";
-
-/** Stable empty array so the selector returns the same reference when unset. */
-const EMPTY_DIAGNOSTICS: readonly never[] = Object.freeze([]) as never[];
 
 function statusLabel(
   status: CompileStatus,
@@ -52,9 +49,8 @@ function lspLabel(
 
 export function StatusBar() {
   const tab = useActiveDocument();
-  const diagnostics = useDiagnosticsStore((s) =>
-    tab !== null ? (s.byTab[tab.id] ?? EMPTY_DIAGNOSTICS) : EMPTY_DIAGNOSTICS,
-  );
+  // §13.1: combined diagnostics (compiler + tinymist) for the active doc.
+  const diagnostics = useDiagnosticsForDoc(tab?.id ?? null);
   const errorCount = diagnostics.filter((d) => d.severity === "Error").length;
   const status = tab?.status ?? "idle";
   const statusClass =
