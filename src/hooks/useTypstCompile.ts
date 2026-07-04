@@ -40,7 +40,7 @@ export function useTypstCompile(): void {
         // processing is never blocked by preview reconciliation. The revision
         // guard inside setPages discards stale compiles (§7).
         startTransition(() => {
-          tabs.setPages(p.id, p.revision, p.pages, p.lineMap);
+          tabs.setPages(p.id, p.revision, p.pages, p.lineMap, p.outline);
         });
       });
       if (cancelled) {

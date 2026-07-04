@@ -44,6 +44,7 @@ impl Emitter for TauriEmitter {
         revision: u64,
         pages: Vec<String>,
         line_map: Vec<LineRect>,
+        outline: Vec<crate::domain::outline::OutlineNode>,
         duration_ms: u64,
     ) {
         let _ = self.app.emit(
@@ -53,6 +54,7 @@ impl Emitter for TauriEmitter {
                 revision,
                 pages,
                 line_map,
+                outline,
                 duration_ms,
             },
         );

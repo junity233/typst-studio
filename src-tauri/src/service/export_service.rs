@@ -207,6 +207,7 @@ mod tests {
                 _: u64,
                 _: Vec<String>,
                 _: Vec<crate::domain::source_map::LineRect>,
+                _: Vec<crate::domain::outline::OutlineNode>,
                 _: u64,
             ) {
             }

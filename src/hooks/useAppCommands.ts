@@ -81,6 +81,14 @@ export function useAppCommands(): void {
         e.stopPropagation();
         void dispatch("workbench.view.scm");
       }
+      // Cmd/Ctrl+Shift+O → Show Outline (§Outline). Same capture-phase
+      // rationale as the other Shift shortcuts: Monaco can swallow the
+      // keystroke before the OS menu accelerator fires.
+      if (mod && e.shiftKey && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        e.stopPropagation();
+        void dispatch("workbench.view.outline");
+      }
     };
     document.addEventListener("keydown", onKeyDown, true);
 

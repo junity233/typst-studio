@@ -45,6 +45,9 @@ pub mod ids {
     /// routes this to the registered `workbench.view.scm` command, which
     /// activates the SCM sidebar view.
     pub const SOURCE_CONTROL: &str = "workbench.view.scm";
+    /// Show the Outline view (§Outline). Routes to the registered
+    /// `workbench.view.outline` command, which activates the Outline sidebar.
+    pub const OUTLINE: &str = "workbench.view.outline";
     pub const EXPORT_PDF: &str = "export-pdf";
     pub const EXPORT_PNG: &str = "export-png";
     pub const EXPORT_SVG: &str = "export-svg";
@@ -163,6 +166,13 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 "Source Control",
                 true,
                 Some("CmdOrCtrl+Shift+G"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                ids::OUTLINE,
+                "Outline",
+                true,
+                Some("CmdOrCtrl+Shift+O"),
             )?,
             &PredefinedMenuItem::separator(app)?,
             &CheckMenuItem::with_id(

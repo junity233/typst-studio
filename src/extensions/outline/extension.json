@@ -1,0 +1,25 @@
+{
+  "name": "outline",
+  "version": "0.1.0",
+  "displayName": "Outline",
+  "description": "Document heading tree",
+  "main": "./index.ts",
+  "contributes": {
+    "views": [
+      {
+        "id": "workbench.outline",
+        "title": "Outline",
+        "icon": "list",
+        "order": 30,
+        "when": "always"
+      }
+    ],
+    "commands": [
+      {
+        "id": "workbench.view.outline",
+        "title": "Show Outline",
+        "category": "View"
+      }
+    ]
+  }
+}

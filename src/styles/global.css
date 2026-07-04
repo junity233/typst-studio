@@ -593,6 +593,56 @@ button {
 
 
 /* ============================================================================
+   Outline (§Outline) — document heading tree sidebar panel.
+   ========================================================================= */
+.outline-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--space-xs) 0;
+}
+
+.outline-empty {
+  padding: var(--space-sm);
+  color: var(--color-ink-muted-48);
+  font: var(--text-caption);
+}
+
+.outline-row {
+  display: flex;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 3px var(--space-sm);
+  cursor: pointer;
+  gap: var(--space-xs);
+  font: var(--text-body);
+  color: var(--color-ink);
+  border-radius: 0;
+}
+
+.outline-row:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.outline-numbering {
+  flex: 0 0 auto;
+  color: var(--color-ink-muted-48);
+  font: var(--text-caption-strong);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.outline-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
+/* ============================================================================
    Source Control (§Source Control) — SCM sidebar panel.
    ========================================================================= */
 .scm-panel {

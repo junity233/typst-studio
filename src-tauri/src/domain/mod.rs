@@ -7,6 +7,7 @@ pub mod disk_version;
 pub mod document;
 pub mod git_status;
 pub mod path;
+pub mod outline;
 pub mod registry;
 pub mod search;
 pub mod source_map;

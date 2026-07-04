@@ -54,7 +54,13 @@ export type CompiledPayload = { id: DocumentId, revision: number, pages: Array<s
  * Source line → preview-page bbox index, sorted by `(page, y)`. Empty for
  * documents with no rendered text (or when compilation produced no doc).
  */
-lineMap: Array<LineRect>, 
+lineMap: Array<LineRect>,
+/**
+ * Document heading outline (§Outline view). Flat array with parent indices;
+ * empty if there are no outlineable headings or compilation produced no doc.
+ * Stays revision-consistent with `pages` / `lineMap`.
+ */
+outline: Array<OutlineNode>,
 /**
  * `u64` maps to `bigint` by default in ts-rs, but Tauri serializes it as a
  * JSON number at runtime — override to `number` to match the contract.
@@ -358,11 +364,43 @@ w: number,
 h: number, };
 
 /**
+ * One node in the document outline (§Outline view). Returned as part of the
+ * `compiled` event payload, alongside `pages` and `lineMap`.
+ *
+ * NOTE: hand-written here because `cargo test --features export-types` cannot
+ * run on Windows (pre-existing Tauri test-binary loader crash). Field casing
+ * matches the Rust struct's `#[serde(rename_all = "camelCase")]` wire format
+ * (all single-word fields, so wire name == Rust name).
+ */
+export type OutlineNode = {
+/**
+ * 1-indexed source line (matches LineRect.line / Diagnostic range).
+ */
+line: number,
+/**
+ * Absolute heading level (1 = H1). Post-synthesis (offset + depth applied).
+ */
+level: number,
+/**
+ * Plain-text title.
+ */
+title: string,
+/**
+ * Numbering text (e.g. "1.2.3"), null if unnumbered.
+ */
+numbering: string | null,
+/**
+ * Index into the same array of this node's parent; null for top-level.
+ */
+parent: number | null,
+};
+
+/**
  * Payload of the `lsp_status` event, emitted when the LSP connection
  * transitions (client connects / relay ends / tinymist exits). Lets the
  * frontend subscribe instead of polling `get_lsp_status`.
  */
-export type LspStatusPayload = { running: boolean, wsUrl: string, available: boolean, 
+export type LspStatusPayload = { running: boolean, wsUrl: string, available: boolean,
 /**
  * §6.3: true while the accept loop is in backoff after a fatal listener
  * error. The frontend shows a "Reconnecting…" indicator.

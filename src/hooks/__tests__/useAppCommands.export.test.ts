@@ -52,6 +52,7 @@ function seedActiveTab(revision: number): void {
         durationMs: null,
         svgPages: [],
         lineMap: [],
+        outline: [],
       },
     },
   });

@@ -5,6 +5,7 @@ import type {
   DocumentOrigin,
   LineRect,
   OpenedDocument,
+  OutlineNode,
 } from "../lib/types";
 
 /**
@@ -73,6 +74,8 @@ export interface Document {
   svgPages: string[];
   /** Source line → preview-page bbox, from the last `compiled` event. */
   lineMap: LineRect[];
+  /** Document heading outline (§Outline view), from the last `compiled` event. */
+  outline: OutlineNode[];
 }
 
 /** A blank document seeded from a freshly-opened document payload. */
@@ -97,6 +100,7 @@ export function documentFromOpened(doc: OpenedDocument): Document {
     durationMs: null,
     svgPages: [],
     lineMap: [],
+    outline: [],
   };
 }
 
@@ -190,6 +194,7 @@ export interface DocumentsState {
     revision: number,
     svgPages: string[],
     lineMap: LineRect[],
+    outline: OutlineNode[],
   ) => void;
   /**
    * Set a document's external-modification conflict state (§5.4 / §8.4). A
@@ -280,7 +285,7 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
       };
     }),
 
-  setPages: (id, revision, svgPages, lineMap) =>
+  setPages: (id, revision, svgPages, lineMap, outline) =>
     set((s) => {
       const doc = s.documents[id];
       if (!doc) return s;
@@ -288,7 +293,7 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
       // of an older buffer could clobber a newer preview.
       if (revision < doc.revision) return s;
       return {
-        documents: { ...s.documents, [id]: { ...doc, svgPages, lineMap } },
+        documents: { ...s.documents, [id]: { ...doc, svgPages, lineMap, outline } },
       };
     }),
 

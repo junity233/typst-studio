@@ -62,6 +62,7 @@ pub trait Emitter: Send + Sync {
         revision: u64,
         pages: Vec<String>,
         line_map: Vec<LineRect>,
+        outline: Vec<crate::domain::outline::OutlineNode>,
         duration_ms: u64,
     );
     /// Notify the frontend of compile errors.
@@ -344,6 +345,7 @@ mod tests {
             revision: u64,
             pages: Vec<String>,
             line_map: Vec<LineRect>,
+            outline: Vec<crate::domain::outline::OutlineNode>,
             duration_ms: u64,
         },
         Diagnostics {
@@ -420,6 +422,7 @@ mod tests {
             revision: u64,
             pages: Vec<String>,
             line_map: Vec<LineRect>,
+            outline: Vec<crate::domain::outline::OutlineNode>,
             duration_ms: u64,
         ) {
             self.events.lock().push(CapturedEvent::Compiled {
@@ -427,6 +430,7 @@ mod tests {
                 revision,
                 pages,
                 line_map,
+                outline,
                 duration_ms,
             });
         }

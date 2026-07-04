@@ -54,6 +54,7 @@ describe("closeTabWithConfirm 'Don't Save' calls discard_recovery (§5.1.4)", ()
       durationMs: null,
       svgPages: [],
       lineMap: [],
+      outline: [],
     });
     useTabsStore.setState({ tabs: ["doc-x"], activeId: "doc-x" });
 
@@ -90,6 +91,7 @@ describe("closeTabWithConfirm 'Don't Save' calls discard_recovery (§5.1.4)", ()
       durationMs: null,
       svgPages: [],
       lineMap: [],
+      outline: [],
     });
     useTabsStore.setState({ tabs: ["doc-y"], activeId: "doc-y" });
 
@@ -118,6 +120,7 @@ describe("closeTabWithConfirm 'Don't Save' calls discard_recovery (§5.1.4)", ()
       durationMs: null,
       svgPages: [],
       lineMap: [],
+      outline: [],
     });
     useTabsStore.setState({ tabs: ["doc-clean"], activeId: "doc-clean" });
 
@@ -143,6 +146,7 @@ describe("closeTabWithConfirm 'Don't Save' calls discard_recovery (§5.1.4)", ()
       durationMs: null,
       svgPages: [],
       lineMap: [],
+      outline: [],
     });
     useTabsStore.setState({ tabs: ["doc-cancel"], activeId: "doc-cancel" });
 

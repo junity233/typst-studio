@@ -55,6 +55,7 @@ function seedTitledDoc(id: string, path: string, conflict: "none" | "modified"):
     durationMs: null,
     svgPages: [],
     lineMap: [],
+    outline: [],
   });
   useTabsStore.setState({ tabs: [id], activeId: id });
 }
