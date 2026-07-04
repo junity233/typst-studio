@@ -76,8 +76,11 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   },
 
   clear: () => {
+    // Bumping runSeq discards any in-flight run(); resetting `searching` too,
+    // because that run's completion is now guarded out and would otherwise
+    // leave the "Searching…" indicator stuck on.
     ++runSeq;
-    set({ query: "", results: [], error: null });
+    set({ query: "", results: [], error: null, searching: false });
   },
   toggle: () => set((s) => ({ visible: !s.visible })),
   show: () => set({ visible: true }),
