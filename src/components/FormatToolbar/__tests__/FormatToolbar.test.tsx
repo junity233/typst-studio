@@ -11,6 +11,7 @@ import {
   FORMAT_BUTTON_GROUPS,
   type FormatAction,
   type FormatApi,
+  type ActionContext,
   type FormatButton,
 } from "../formatActions";
 import type { Tab } from "../../../store/tabsStore";
@@ -90,11 +91,19 @@ const cleanup = () => {
 // ----------------------------------------------------------------------------
 
 describe("dispatchAction — per-kind dispatch", () => {
-  const ctx = {
+  const ctx: ActionContext = {
     tab: FAKE_TAB,
-    workspace: "/ws" as string | null,
+    workspace: "/ws",
     insertImagePathTemplate: undefined,
+    openModal: vi.fn(),
+    insertImage: vi.fn(async () => {}),
   };
+
+  beforeEach(() => {
+    // The image/link action-delegation tests below assert call counts against
+    // the shared ctx mocks, so clear them between tests.
+    vi.clearAllMocks();
+  });
 
   it("wrap → calls wrapSelection(prefix, suffix, placeholder)", () => {
     const api = makeMockApi();
@@ -166,6 +175,26 @@ describe("dispatchAction — per-kind dispatch", () => {
         expectedCustom,
       );
     }
+  });
+
+  it("image action delegates to ctx.insertImage (not a render-loop ternary)", () => {
+    const api = makeMockApi();
+    const button = ALL_BUTTONS.find((b) => b.id === "image")!;
+    expect(button.action.kind).toBe("custom");
+    dispatchAction(button.action, api, ctx);
+    // The action table is the single dispatch source: image goes through
+    // ctx.insertImage, NOT a special-cased onClick in the render loop.
+    expect(ctx.insertImage).toHaveBeenCalledTimes(1);
+    expect(ctx.insertImage).toHaveBeenCalledWith(api);
+  });
+
+  it("link action delegates to ctx.openModal('link') (not a render-loop ternary)", () => {
+    const api = makeMockApi();
+    const button = ALL_BUTTONS.find((b) => b.id === "link")!;
+    expect(button.action.kind).toBe("custom");
+    dispatchAction(button.action, api, ctx);
+    expect(ctx.openModal).toHaveBeenCalledTimes(1);
+    expect(ctx.openModal).toHaveBeenCalledWith("link");
   });
 });
 

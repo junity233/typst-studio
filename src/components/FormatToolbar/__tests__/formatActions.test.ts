@@ -293,13 +293,17 @@ describe("exported types are usable", () => {
     expect(typeof api.wrapSelection).toBe("function");
   });
 
-  it("ActionContext carries tab + workspace + image template", () => {
+  it("ActionContext carries tab + workspace + image template + openModal + insertImage", () => {
     const ctx: ActionContext = {
       tab: { id: "t1", path: null } as ActionContext["tab"],
       workspace: null,
       insertImagePathTemplate: undefined,
+      openModal: () => {},
+      insertImage: async () => {},
     };
     expect(ctx.tab.id).toBe("t1");
+    expect(typeof ctx.openModal).toBe("function");
+    expect(typeof ctx.insertImage).toBe("function");
   });
 
   it("FormatButtonGroup type is satisfied by the table", () => {

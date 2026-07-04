@@ -39,8 +39,9 @@ export interface FormatApi {
 /**
  * Context handed to {@link FormatAction} `custom` handlers. The non-edit
  * details a dialog-driven action (image / table / link) needs: which document
- * to act on, where the workspace root is (for resolving relative paths), and
- * the configured image-path template (mirrors the paste-convert hook).
+ * to act on, where the workspace root is (for resolving relative paths), the
+ * configured image-path template (mirrors the paste-convert hook), and the two
+ * React-driven escape hatches (`openModal` / `insertImage`).
  */
 export interface ActionContext {
   tab: Tab;
@@ -53,6 +54,21 @@ export interface ActionContext {
    * prefix + `${hash}` for dedup). Both expand via the same pathMacros engine.
    */
   insertImagePathTemplate: string | undefined;
+  /**
+   * Open a React-rendered modal (currently just the link URL prompt).
+   * Popups that need React UI call this from `action.run`; the FormatToolbar
+   * component owns the modal state and renders it. Keeps the action table as
+   * the single dispatch source — no render-loop id-matching needed (contrast
+   * the table button, which predates this mechanism).
+   */
+  openModal: (kind: "link") => void;
+  /**
+   * Kick off the insert-image flow (open native picker → copy into assets →
+   * insert `#image("…")`). Async (Tauri IPC) but not React UI, so it runs
+   * cleanly inside `action.run` — the FormatToolbar builds this from the
+   * {@link useInsertImage} hook and threads it in here.
+   */
+  insertImage: (api: FormatApi) => Promise<void>;
 }
 
 /**
@@ -110,6 +126,15 @@ export interface FormatButtonGroup {
 export const TABLE_BUTTON_ID = "table";
 
 /**
+ * The stable id of the link-insert button. Parallel to {@link TABLE_BUTTON_ID}:
+ * exported for any id-based checks. Unlike the table button, the link flow does
+ * NOT use a render-loop ternary — it goes through `ActionContext.openModal`
+ * (`action.run` calls `ctx.openModal("link")`) so the action table stays the
+ * single dispatch source and the toolbar component owns the React modal state.
+ */
+export const LINK_BUTTON_ID = "link";
+
+/**
  * The complete button table for the format toolbar — four groups, 15 buttons.
  *
  * The Typst strings here are pinned to the `src/lib/htmlToTypst/` converter
@@ -144,13 +169,14 @@ export const FORMAT_BUTTON_GROUPS: FormatButtonGroup[] = [
       { id: "strikethrough", icon: Strikethrough, label: "Strikethrough", action: { kind: "wrap", prefix: "#strike[", suffix: "]", placeholder: "text" } },
       { id: "code", icon: Code, label: "Inline code", action: { kind: "wrap", prefix: "`", suffix: "`", placeholder: "code" } },
       {
-        id: "link",
+        id: LINK_BUTTON_ID,
         icon: Link,
         label: "Link",
-        // TODO(T6): replace with the link modal (href + text) →
-        // `#link("href")[text]` (see inline.ts `<a>` case). The placeholder
-        // just no-ops until the dialog ships.
-        action: { kind: "custom", run: () => { /* link modal — T6 */ } },
+        // Opens the link modal via ActionContext.openModal — NOT a render-loop
+        // ternary (unlike the table button). The FormatToolbar owns the modal
+        // state and inserts `#link("url")[label]` (or `#link("url")` bare) on
+        // confirm. See inline.ts `<a>` case for the Typst syntax.
+        action: { kind: "custom", run: (_api, ctx) => { ctx.openModal("link"); } },
       },
     ],
   },
@@ -187,9 +213,11 @@ export const FORMAT_BUTTON_GROUPS: FormatButtonGroup[] = [
         id: "image",
         icon: Image,
         label: "Insert image",
-        // TODO(T6): replace with the image picker → `#image("path")` using
-        // ctx.insertImagePathTemplate (see htmlToTypst/images.ts).
-        action: { kind: "custom", run: () => { /* image picker — T6 */ } },
+        // Delegates to ActionContext.insertImage, built by FormatToolbar from
+        // the useInsertImage hook (open native picker → copy into assets →
+        // insert `#image("…")`). Image flow is async (Tauri IPC) but not React
+        // UI, so `run` works cleanly without openModal / a ternary.
+        action: { kind: "custom", run: (api, ctx) => { void ctx.insertImage(api); } },
       },
       {
         id: TABLE_BUTTON_ID,

@@ -12,6 +12,9 @@ import {
 import { FormatToolbarButton } from "./FormatToolbarButton";
 import { TableGridPicker } from "./TableGridPicker";
 import { buildTableSnippet } from "./buildTableSnippet";
+import { LinkModal } from "./LinkModal";
+import { escapeTypstStr } from "../../lib/htmlToTypst/escape";
+import { useInsertImage } from "./useInsertImage";
 
 /**
  * Dispatch a single button action against a {@link FormatApi} (+ the optional
@@ -38,10 +41,10 @@ export function dispatchAction(
       api.toggleLinePrefix(action.prefix);
       return;
     case "custom":
-      // T5 (table grid picker) + T6 (image + link modals) supply the real
-      // `run`. The dispatch path is correct today; the stubs just no-op.
-      // Swallow rejections here so a failing async action (e.g. image write
-      // in T6) surfaces as a console error rather than an uncaught promise
+      // T5 (table grid picker, no-op run + render-loop ternary) + T6 (image
+      // flow via ctx.insertImage, link modal via ctx.openModal) supply the real
+      // `run`. Swallow rejections here so a failing async action (e.g. image
+      // write) surfaces as a console error rather than an uncaught promise
       // rejection in the renderer. Each `run` should still handle its own
       // user-facing error UI; this is the safety net.
       void Promise.resolve(action.run(api, ctx)).catch((e) => {
@@ -72,10 +75,12 @@ export interface FormatToolbarProps {
  *
  * Reads the button table from {@link FORMAT_BUTTON_GROUPS} (pure data) and
  * dispatches each click via {@link dispatchAction}. `wrap` / `replace` /
- * `linePrefix` buttons are fully functional today; the table button opens the
+ * `linePrefix` buttons are fully functional; the table button opens the
  * {@link TableGridPicker} (special-cased by {@link TABLE_BUTTON_ID} in the
- * render loop). The image and link insert buttons still call no-op stubs that
- * T6 will replace.
+ * render loop — predates the openModal mechanism). The image button runs the
+ * async insert flow via `ActionContext.insertImage` (built from {@link
+ * useInsertImage}), and the link button opens the {@link LinkModal} via
+ * `ActionContext.openModal`.
  */
 export function FormatToolbar({
   api,
@@ -88,11 +93,26 @@ export function FormatToolbar({
   // button's onClick from its own bounding rect; cleared by the picker's
   // onCancel / onSelect.
   const [tablePickerAnchor, setTablePickerAnchor] = useState<{ x: number; y: number } | null>(null);
+  // The link modal's open flag. No anchor needed — it's centered like the
+  // other dialogs (reuses .dialog-overlay / .dialog).
+  const [linkModalOpen, setLinkModalOpen] = useState(false);
+
+  // The insert-image flow (picker → copy → insert). The hook tolerates a null
+  // tab (bails internally) so we can always call it at the top level and pass
+  // the current tab through; each render's closure captures the latest ctx.
+  const insertImage = useInsertImage({ tab, workspace, insertImagePathTemplate });
 
   // All buttons disable when there's no tab or no editor API yet. The `disabled`
   // prop already covers the no-tab case; the api check is defensive (e.g. tab
   // open but Monaco still mounting).
   const isDisabled = disabled || api === null;
+
+  // openModal dispatches a React-rendered popup from an action's `run`. Today
+  // only "link" exists; the switch leaves room to add more without touching the
+  // action table.
+  const openModal = (kind: "link") => {
+    if (kind === "link") setLinkModalOpen(true);
+  };
 
   // Build the FormatApi lazily per click rather than memoizing on `api` — the
   // object is tiny (3 method refs) and memoizing on a ref-backed api that
@@ -108,8 +128,28 @@ export function FormatToolbar({
       tab,
       workspace,
       insertImagePathTemplate,
+      openModal,
+      insertImage,
     };
     dispatchAction(action, formatApi, actionCtx);
+  };
+
+  // Link confirm: insert `#link("url")[label]` (or `#link("url")` bare when
+  // the label is empty). Uses replaceSelection with the full string since we
+  // already have both parts from the modal — simpler than wrapSelection here.
+  // Note: the URL is escaped via escapeTypstStr (matches inline.ts `<a>`); the
+  // label is inserted verbatim into the `[…]` content (Typst content markup,
+  // not a string literal, so backslash/quote escaping is intentionally not
+  // applied — escaping it would show literal backslashes in the rendered link).
+  // The label is NOT pre-filled from the editor selection in v1: the toolbar
+  // only holds the FormatApi edit methods, not a selection-read surface.
+  // Reading the selection for pre-fill is a documented follow-up.
+  const handleLinkConfirm = (url: string, label: string) => {
+    if (api !== null) {
+      const head = '#link("' + escapeTypstStr(url) + '")';
+      api.replaceSelection(label === "" ? head : head + "[" + label + "]");
+    }
+    setLinkModalOpen(false);
   };
 
   // Table grid picker: open below the clicked button (4px gap), then insert the
@@ -156,6 +196,13 @@ export function FormatToolbar({
           anchor={tablePickerAnchor}
           onSelect={handleTableSelect}
           onCancel={() => setTablePickerAnchor(null)}
+        />
+      )}
+      {linkModalOpen && (
+        <LinkModal
+          // v1: no selection pre-fill (see handleLinkConfirm comment).
+          onConfirm={handleLinkConfirm}
+          onCancel={() => setLinkModalOpen(false)}
         />
       )}
     </div>
