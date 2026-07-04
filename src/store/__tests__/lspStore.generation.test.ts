@@ -3,18 +3,17 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 /**
  * lspStore generation tracking (spec §6.4 / §16 / §17).
  *
- * The wire `lsp_status` payload does not carry a generation field yet (Task 7
- * adds it); for Task 5 generation is threaded through the `appLanguageClient`
- * singleton, which bumps on every restart / reconnect. The store mirrors that
- * number via `setGeneration` (forward-only) and exposes a pure
- * `shouldAcceptStatusEvent` gate consumers will use the moment the payload
- * carries a generation.
+ * Task 7 threads generation onto the wire `lsp_status` payload, so the store
+ * now drives its generation from the wire (forward-only via
+ * `shouldAcceptStatusEvent`, applied in `applyPayload`) — with the
+ * `appLanguageClient` singleton remaining a secondary feed. These tests
+ * exercise: the pure stale-event gate, the forward-only `setGeneration`, and
+ * the wire-payload-driven generation (stale dropped, current/future accepted).
  *
  * The full `appLanguageClient` → store wiring runs through the ref-counted
  * `useLspStatus` React hook (a render effect), which is awkward to drive from a
- * store unit test; the spec-critical logic — the forward-only generation bump
- * and the stale-event gate — is exercised here directly against the store
- * actions and the pure helper.
+ * store unit test; the spec-critical logic is exercised here directly against
+ * the store actions and the pure helpers.
  *
  * `lspStore` imports the `appLanguageClient` singleton, which transitively
  * pulls Monaco (widget CSS that jsdom can't run). We mock the module so the
@@ -31,7 +30,27 @@ vi.mock("../../components/Editor/appLanguageClient", () => ({
 import {
   useLspStore,
   shouldAcceptStatusEvent,
+  applyPayload,
+  payloadToStatus,
 } from "../lspStore";
+import type { LspStatusPayload } from "../../lib/types";
+
+/** Build a wire payload for tests (defaults to a Running gen-1 status). */
+function payload(
+  generation: number,
+  over: Partial<LspStatusPayload> = {},
+): LspStatusPayload {
+  return {
+    available: true,
+    enabled: true,
+    status: "running",
+    generation,
+    wsUrl: `ws://127.0.0.1:1/lsp/main/${generation}?token=tok`,
+    restartReason: null,
+    message: null,
+    ...over,
+  };
+}
 
 describe("shouldAcceptStatusEvent (§6.4 generation gate)", () => {
   it("accepts an event whose generation equals the current one", () => {
@@ -90,5 +109,56 @@ describe("lspStore generation (§16)", () => {
     useLspStore.getState().setGeneration(4);
     useLspStore.getState().setGeneration(0);
     expect(useLspStore.getState().generation).toBe(4);
+  });
+});
+
+describe("applyPayload — wire-payload-driven generation (Task 7)", () => {
+  beforeEach(() => {
+    // Reset the generation + status back to baseline between tests.
+    useLspStore.setState({ generation: 0, status: payloadToStatus(payload(0)) });
+  });
+
+  it("applies a current-generation wire payload (accepts equal)", () => {
+    useLspStore.getState().setGeneration(3);
+    const before = useLspStore.getState().status;
+    applyPayload(payload(3, { status: "running" }));
+    expect(useLspStore.getState().generation).toBe(3);
+    expect(useLspStore.getState().status.statusKind).toBe("running");
+    // Sanity: the status object changed.
+    expect(useLspStore.getState().status).not.toBe(before);
+  });
+
+  it("applies a future-generation wire payload (accepts newer)", () => {
+    useLspStore.getState().setGeneration(3);
+    applyPayload(payload(7, { status: "restarting", restartReason: "manual" }));
+    expect(useLspStore.getState().generation).toBe(7);
+    expect(useLspStore.getState().status.statusKind).toBe("restarting");
+    expect(useLspStore.getState().status.restartReason).toBe("manual");
+  });
+
+  it("drops a stale wire payload (strictly-older generation)", () => {
+    // Store is at gen 5; a payload claiming gen 3 is stale → dropped, no churn.
+    useLspStore.getState().setGeneration(5);
+    const before = useLspStore.getState();
+    applyPayload(payload(3, { status: "failed" }));
+    // Generation NOT rewound.
+    expect(useLspStore.getState().generation).toBe(5);
+    // Status NOT overwritten (the stale event did not clobber the live view).
+    expect(useLspStore.getState().status).toBe(before.status);
+  });
+
+  it("payloadToStatus renames wire `status` → `statusKind` and normalizes nulls", () => {
+    const s = payloadToStatus(payload(2, {
+      status: "awaitingClient",
+      // wire uses `null | undefined` for optional fields; internal normalizes to `null`.
+    }));
+    expect(s.statusKind).toBe("awaitingClient");
+    expect(s.generation).toBe(2);
+    expect(s.restartReason).toBeNull();
+    expect(s.message).toBeNull();
+    // And a payload carrying a reason round-trips it.
+    const s2 = payloadToStatus(payload(4, { restartReason: "childCrash", message: "boom" }));
+    expect(s2.restartReason).toBe("childCrash");
+    expect(s2.message).toBe("boom");
   });
 });

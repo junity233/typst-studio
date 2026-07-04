@@ -98,9 +98,24 @@ pub struct StatusPayload {
     pub duration_ms: Option<u64>,
 }
 
-/// Payload of the `lsp_status` event, emitted when the LSP connection
-/// transitions (client connects / relay ends / tinymist exits). Lets the
-/// frontend subscribe instead of polling `get_lsp_status`.
+// `LspStatusKind` + `LspRestartReason` are defined in `lsp::manager` (the
+// low-level layer that produces them) and re-exported here so existing
+// `ipc::events::LspStatusKind` paths resolve AND ts-rs exports them as part of
+// the single wire-type generation entry point — mirroring how `CompileStatus`
+// lives in `domain` and is re-exported here.
+pub use crate::lsp::manager::{LspRestartReason, LspStatusKind};
+
+/// Payload of the `lsp_status` event (§6.4), emitted when the LSP connection
+/// transitions (client connects / relay ends / tinymist exits / restart). Lets
+/// the frontend subscribe instead of polling `get_lsp_status`.
+///
+/// Carries the generation-aware status: the frontend drops any event whose
+/// `generation` is strictly less than its current generation ("前端只接受不小于
+/// 当前 generation 的状态事件"), so a stale event from a superseded connection
+/// can never clobber the live view. `restartReason` is present only on events
+/// that announce a generation bump caused by a restart/crash; `message` carries
+/// an optional human-readable hint (e.g. the `Failed` "manual restart required"
+/// text).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
@@ -109,12 +124,35 @@ pub struct StatusPayload {
     ts(export_to = "../../src/lib/types.ts")
 )]
 pub struct LspStatusPayload {
-    pub running: bool,
-    pub ws_url: String,
     pub available: bool,
-    /// §6.3: true while the accept loop is in backoff after a fatal listener
-    /// error. The frontend shows a "Reconnecting…" indicator.
-    pub reconnecting: bool,
+    pub enabled: bool,
+    pub status: LspStatusKind,
+    /// `u64` maps to `bigint` by default in ts-rs, but Tauri serializes it as a
+    /// JSON number at runtime — override to `number` to match the wire contract
+    /// (consistent with `revision` / `durationMs` elsewhere in this file).
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub generation: u64,
+    pub ws_url: String,
+    pub restart_reason: Option<LspRestartReason>,
+    pub message: Option<String>,
+}
+
+impl From<crate::lsp::manager::LspStatus> for LspStatusPayload {
+    /// The internal manager status and the wire payload carry the same field
+    /// set; this is the single mapping point (the `lib.rs` status callback and
+    /// `get_lsp_status` both go through it). Field-for-field identical, so a
+    /// change to the manager's status shape must be mirrored here.
+    fn from(s: crate::lsp::manager::LspStatus) -> Self {
+        Self {
+            available: s.available,
+            enabled: s.enabled,
+            status: s.status,
+            generation: s.generation,
+            ws_url: s.ws_url,
+            restart_reason: s.restart_reason,
+            message: s.message,
+        }
+    }
 }
 
 /// Payload of the `fs_changed` event: paths (absolute) that changed on disk in
@@ -240,6 +278,9 @@ mod tests {
         StatusPayload::export(&cfg).unwrap();
         OpenedDocument::export(&cfg).unwrap();
         LspStatusPayload::export(&cfg).unwrap();
+        // §6.4 enums re-exported from `lsp::manager`.
+        LspStatusKind::export(&cfg).unwrap();
+        LspRestartReason::export(&cfg).unwrap();
         FsChangedPayload::export(&cfg).unwrap();
         ConflictPayload::export(&cfg).unwrap();
         // Crash-recovery payloads (§5.1).

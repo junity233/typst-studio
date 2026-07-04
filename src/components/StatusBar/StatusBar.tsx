@@ -1,6 +1,7 @@
 import { useDiagnosticsForDoc } from "../../store/diagnosticsStore";
 import { useActiveDocument } from "../../store/tabsStore";
 import type { CompileStatus } from "../../lib/ui-types";
+import type { LspStatusKind } from "../../lib/types";
 import { useLspStatus } from "../../store/lspStore";
 import { useStartupProblemsStore } from "../../store/startupProblemsStore";
 import { useSaveStateStore } from "../../store/saveStateStore";
@@ -31,20 +32,54 @@ function statusLabel(
 }
 
 /**
- * §6.3: LSP status label reflecting the supervision states. The label grows
- * from the prior 3-state (not installed / stopped / connected) to include
- * "Reconnecting…" (during backoff) and "Restart needed" (after backoff
- * exhaustion). `restartLsp` is wired to the existing `restart_lsp` IPC.
+ * §6.4: LSP status label reflecting the lifecycle kind. Maps each
+ * `LspStatusKind` to a short StatusBar string; surfaces the optional
+ * `message` hint (e.g. the `Failed` "manual restart required" text) and the
+ * `restartReason` trigger when present.
  */
 function lspLabel(
-  running: boolean,
+  statusKind: LspStatusKind,
   available: boolean,
-  reconnecting: boolean,
+  message: string | null,
 ): string {
-  if (!available) return "LSP: not installed";
-  if (reconnecting) return "LSP: reconnecting…";
-  if (!running) return "LSP: restart needed";
-  return "LSP: connected";
+  if (!available && statusKind === "unavailable") return "LSP: not installed";
+  switch (statusKind) {
+    case "disabled":
+      return "LSP: off";
+    case "unavailable":
+      return "LSP: not installed";
+    case "failed":
+      // `message` carries the "manual restart required" hint on this branch.
+      return message ? `LSP: ${message}` : "LSP: restart needed";
+    case "restarting":
+      return "LSP: reconnecting…";
+    case "starting":
+    case "awaitingClient":
+      return "LSP: connecting…";
+    case "running":
+      return "LSP: connected";
+    default:
+      return "LSP: restart needed";
+  }
+}
+
+/**
+ * Whether the LSP status bar entry should show a clickable "Restart"
+ * affordance. True whenever the LSP is enabled but not yet `running`
+ * (restarting/failed/awaiting-client/etc.) — i.e. the user can productively
+ * nudge it with a manual restart. `disabled`/`unavailable` hide the button
+ * (a restart won't help: tinymist is missing or LSP is turned off).
+ */
+function lspNeedsAction(statusKind: LspStatusKind, available: boolean): boolean {
+  if (!available && statusKind === "unavailable") return false;
+  switch (statusKind) {
+    case "disabled":
+    case "unavailable":
+    case "running":
+      return false;
+    default:
+      return true;
+  }
 }
 
 export function StatusBar() {
@@ -104,13 +139,14 @@ export function StatusBar() {
     void refreshWatcherHealth();
   }, [refreshWatcherHealth]);
 
-  // §6.3: show a clickable "Restart" affordance whenever LSP is not connected
-  // (stopped, reconnecting, restart-needed, or not installed). The button
-  // invokes the existing `restart_lsp` IPC, which re-arms the supervisor and
-  // (if parked) revives the accept loop. A no-op click when already connected.
-  const lspNeedsAction =
-    lspStatus.available &&
-    (lspStatus.reconnecting || !lspStatus.running);
+  // §6.3/§6.4: show a clickable "Restart" affordance whenever the LSP is
+  // enabled but not yet running (restarting/failed/awaiting-client/etc.). The
+  // button invokes the existing `restart_lsp` IPC (Manual reason), which
+  // re-arms the supervisor and (if parked) revives the accept loop.
+  const needsAction = lspNeedsAction(
+    lspStatus.statusKind,
+    lspStatus.available,
+  );
   const restartLsp = () => {
     // Fire-and-forget; the lsp_status event updates the UI.
     invoke("restart_lsp").catch(() => {
@@ -167,11 +203,16 @@ export function StatusBar() {
       <span
         className={
           "statusbar-section statusbar-lsp" +
-          (lspNeedsAction ? " statusbar-lsp--action" : "")
+          (needsAction ? " statusbar-lsp--action" : "")
+        }
+        title={
+          lspStatus.restartReason
+            ? `Last trigger: ${lspStatus.restartReason}`
+            : lspStatus.message ?? undefined
         }
       >
-        {lspLabel(lspStatus.running, lspStatus.available, lspStatus.reconnecting)}
-        {lspNeedsAction && (
+        {lspLabel(lspStatus.statusKind, lspStatus.available, lspStatus.message)}
+        {needsAction && (
           <button
             type="button"
             className="statusbar-lsp-restart"

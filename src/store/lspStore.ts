@@ -4,6 +4,11 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { onLspStatus } from "../lib/tauri";
 import { appLanguageClient } from "../components/Editor/appLanguageClient";
+import type {
+  LspStatusPayload,
+  LspStatusKind,
+  LspRestartReason,
+} from "../lib/types";
 
 /**
  * LSP connection status, shared app-wide via a single subscription.
@@ -15,26 +20,35 @@ import { appLanguageClient } from "../components/Editor/appLanguageClient";
  *
  * The subscription is established lazily on first `useLspStatus()` call and
  * torn down when the last reader unmounts (`refCount`).
+ *
+ * The shape mirrors the wire `LspStatusPayload` (the generated `types.ts` is
+ * authoritative). The store holds it directly so consumers (StatusBar) read
+ * `statusKind`, `restartReason`, and `message` without a second mapping layer.
  */
 export interface LspStatus {
-  running: boolean;
-  wsUrl: string;
   available: boolean;
-  /** §6.3: true while the accept loop is in backoff after a fatal listener
-   * error (waiting to retry). The StatusBar shows a "Reconnecting…" indicator. */
-  reconnecting: boolean;
+  enabled: boolean;
+  statusKind: LspStatusKind;
+  generation: number;
+  wsUrl: string;
+  /** §6.4: present only on events that announce a generation bump caused by a
+   * restart/crash; `null` otherwise. */
+  restartReason: LspRestartReason | null;
+  /** §6.4: optional human-readable hint (e.g. the `Failed` message). */
+  message: string | null;
 }
 
 interface LspStoreState {
   status: LspStatus;
   loading: boolean;
   /**
-   * LSP generation (spec §6.4 / §16). The wire `lsp_status` payload does NOT
-   * carry a generation yet (Task 7 adds it); for Task 5 generation is threaded
-   * through the `appLanguageClient` singleton — it bumps on every restart /
-   * reconnect that constructs a new client. Consumers (the diagnostics bridge,
-   * future generation-aware event handlers) read this to drop data belonging
-   * to a dead generation. Defaults to 0; only ever moves forward.
+   * LSP generation (spec §6.4 / §16). Task 7: the wire `lsp_status` payload
+   * now carries `generation`, so this is driven by the wire (forward-only via
+   * `shouldAcceptStatusEvent`). The `appLanguageClient` singleton still bumps
+   * its own generation on client reconnect and mirrors here as a secondary
+   * feed — both should converge on the same number for a healthy session.
+   * Consumers (the diagnostics bridge) read this to drop data belonging to a
+   * dead generation. Defaults to 0; only ever moves forward.
    */
   generation: number;
   /** Bumped by each subscriber; the subscription is held while > 0. */
@@ -42,12 +56,20 @@ interface LspStoreState {
   /** Internal: set by the store actions, not by callers. */
   setStatus: (s: LspStatus) => void;
   setLoading: (b: boolean) => void;
-  /** Record the current LSP generation (from `appLanguageClient`). Forward-only. */
+  /** Record the current LSP generation. Forward-only. */
   setGeneration: (n: number) => void;
   setRefCount: (fn: (n: number) => number) => void;
 }
 
-const OFFLINE: LspStatus = { running: false, wsUrl: "", available: false, reconnecting: false };
+const OFFLINE: LspStatus = {
+  available: false,
+  enabled: false,
+  statusKind: "disabled",
+  generation: 0,
+  wsUrl: "",
+  restartReason: null,
+  message: null,
+};
 
 export const useLspStore = create<LspStoreState>((set) => ({
   status: OFFLINE,
@@ -72,16 +94,33 @@ export const useLspStore = create<LspStoreState>((set) => ({
  *
  * Boundary: an event whose generation EQUALS the current one is accepted (it is
  * a refresh of the same generation, not stale). Only a strictly-older event is
- * dropped. Until Task 7 threads a generation field onto the wire payload,
- * callers that don't have an event generation pass the store's current
- * generation (always accepted) — the helper exists now so the gate is in place
- * the moment the payload carries it.
+ * dropped.
  */
 export function shouldAcceptStatusEvent(
   eventGeneration: number,
   currentGeneration: number,
 ): boolean {
   return eventGeneration >= currentGeneration;
+}
+
+/**
+ * Map a wire `LspStatusPayload` to the store's internal `LspStatus`. Single
+ * mapping point: the only field rename is `status` → `statusKind` (the wire
+ * field is `status`; the store spells the discriminator `statusKind` so it
+ * doesn't shadow the `status` slot on other store slices). `restartReason` /
+ * `message` arrive as `T | null | undefined` on the wire and normalize to
+ * `T | null` internally.
+ */
+export function payloadToStatus(p: LspStatusPayload): LspStatus {
+  return {
+    available: p.available,
+    enabled: p.enabled,
+    statusKind: p.status,
+    generation: p.generation,
+    wsUrl: p.wsUrl,
+    restartReason: p.restartReason ?? null,
+    message: p.message ?? null,
+  };
 }
 
 // --- the single shared subscription -----------------------------------------
@@ -96,6 +135,22 @@ export function shouldAcceptStatusEvent(
 let acquirePromise: Promise<UnlistenFn> | null = null;
 
 /**
+ * Apply a wire `LspStatusPayload` to the store, honoring the §6.4 generation
+ * gate: an event whose `generation` is strictly less than the store's current
+ * generation is dropped (a stale event from a superseded connection must not
+ * clobber the live view). When accepted, both the status and the store's
+ * top-level `generation` advance (the latter forward-only via `setGeneration`).
+ */
+export function applyPayload(p: LspStatusPayload): void {
+  const store = useLspStore.getState();
+  if (!shouldAcceptStatusEvent(p.generation, store.generation)) {
+    return;
+  }
+  store.setGeneration(p.generation);
+  store.setStatus(payloadToStatus(p));
+}
+
+/**
  * Start (or join an in-progress) subscription. Resolves to the single unlisten
  * handle. Idempotent: concurrent callers share one Promise and one `listen()`.
  */
@@ -106,18 +161,19 @@ function acquireSubscription(): Promise<UnlistenFn> {
     // Seed with the current status so readers aren't stuck "offline" before
     // the first transition. Race against a timeout so a hung IPC can't leave
     // the editor gated on "Loading..." forever — local IPC resolves in ms,
-    // 5s is a generous backstop.
+    // 5s is a generous backstop. The fetch returns the wire payload type, so
+    // it goes through `applyPayload` (which also seeds the generation).
     try {
-      const initial = await Promise.race<LspStatus>([
-        invoke<LspStatus>("get_lsp_status"),
-        new Promise<LspStatus>((_, reject) =>
+      const initial = await Promise.race<LspStatusPayload>([
+        invoke<LspStatusPayload>("get_lsp_status"),
+        new Promise<LspStatusPayload>((_, reject) =>
           setTimeout(
             () => reject(new Error("get_lsp_status timed out")),
             5000,
           ),
         ),
       ]);
-      useLspStore.getState().setStatus(initial);
+      applyPayload(initial);
     } catch {
       // ignore — the event subscription catches up if the backend recovers.
     } finally {
@@ -126,7 +182,7 @@ function acquireSubscription(): Promise<UnlistenFn> {
 
     // Exactly one listen() per acquirePromise. The handle is returned to the
     // caller; release happens only when refCount drops to 0 (see below).
-    return onLspStatus((p) => useLspStore.getState().setStatus(p));
+    return onLspStatus((p) => applyPayload(p));
   })();
 
   // If the acquire itself fails (shouldn't, but be safe), clear the memo so a
@@ -159,21 +215,25 @@ function releaseSubscription(): void {
 
 // --- generation mirror (appLanguageClient → lspStore) -----------------------
 //
-// §6.4 / §16: the wire `lsp_status` payload does not yet carry a generation
-// field (Task 7). For Task 5, the LSP generation is owned by the
-// `appLanguageClient` singleton — it bumps on every start()-of-a-new-client
-// (restart / reconnect). We mirror that number into the store here so any
-// consumer with access to the store (the diagnostics bridge, future event
-// handlers) can drop stale per-generation data.
+// §6.4 / §16: Task 7 makes the wire `lsp_status` payload the PRIMARY source of
+// the LSP generation (`payload.generation`, applied via `applyPayload` above).
+// The `appLanguageClient` singleton still bumps its OWN generation on every
+// `start()`-of-a-new-client (restart / reconnect) and we mirror it here as a
+// SECONDARY feed so the store's generation stays live even before the first
+// wire event arrives (e.g. before the status subscription is established) and
+// tracks client-side reconnects that haven't yet produced a wire event. Both
+// feeds are forward-only (`setGeneration`), so they converge on the same
+// number for a healthy session; in the rare case they diverge transiently the
+// higher wins.
 //
 // The mirror is installed ONCE at module load (not ref-counted with the status
 // subscription). `appLanguageClient.subscribe` is cheap and never throws — it
 // just adds to a Set — so an always-on module-level listener keeps
 // `lspStore.generation` live even before any React reader mounts. This matters
-// for module-level event handlers (Task 6/11) that gate on the generation
-// independently of the UI. We seed with the current generation first so the
-// store isn't stuck at 0 if the client had already bumped before this module
-// loaded (it won't in practice, but the seed is free).
+// for module-level event handlers (the diagnostics bridge) that gate on the
+// generation independently of the UI. We seed with the current generation first
+// so the store isn't stuck at 0 if the client had already bumped before this
+// module loaded (it won't in practice, but the seed is free).
 
 useLspStore.getState().setGeneration(appLanguageClient.getGeneration());
 appLanguageClient.subscribe((snap) => {

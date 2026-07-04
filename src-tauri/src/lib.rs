@@ -226,12 +226,11 @@ pub fn run() {
             let lsp = tauri::async_runtime::block_on(async {
                 LspService::start(lsp_config, move |status| {
                     use crate::ipc::events::LspStatusPayload;
-                    let payload = LspStatusPayload {
-                        running: status.running,
-                        ws_url: status.ws_url,
-                        available: status.available,
-                        reconnecting: status.reconnecting,
-                    };
+                    // The manager now produces the richer `LspStatus` directly;
+                    // `LspStatusPayload: From<LspStatus>` is the single
+                    // field-for-field mapping point, so this closure is a
+                    // pass-through.
+                    let payload = LspStatusPayload::from(status);
                     let _ = app_for_lsp.emit("lsp_status", payload);
                 })
                 .await
@@ -239,8 +238,12 @@ pub fn run() {
             let lsp = match lsp {
                 Ok(svc) => {
                     let status = svc.status();
-                    tracing::info!("LSP service started: running={}, available={}, ws_url={}",
-                        status.running, status.available, status.ws_url);
+                    tracing::info!(
+                        "LSP service started: status={:?}, available={}, enabled={}, \
+                         generation={}, ws_url={}",
+                        status.status, status.available, status.enabled,
+                        status.generation, status.ws_url
+                    );
                     Arc::new(svc)
                 }
                 Err(e) => {

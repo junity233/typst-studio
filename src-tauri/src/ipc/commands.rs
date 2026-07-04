@@ -19,9 +19,8 @@ use tauri_plugin_dialog::DialogExt;
 use crate::domain::diagnostics::Diagnostic;
 use crate::domain::document::DocumentId;
 use crate::error::{AppError, Result};
-use crate::ipc::events::OpenedDocument;
+use crate::ipc::events::{LspStatusPayload, OpenedDocument};
 use crate::ipc::state::AppState;
-use crate::lsp::manager::LspStatus;
 
 /// Create a new untitled tab. `content` defaults to the built-in template.
 /// The initial compile is spawned asynchronously — this returns immediately.
@@ -294,13 +293,16 @@ pub async fn get_diagnostics(
     Ok(state.editor.get_diagnostics(id))
 }
 
-/// Get the LSP server status (running, ws_url, available).
+/// Get the LSP server status (§6.4 generation-aware payload). The frontend
+/// seeds its store from this on mount and then subscribes to the `lsp_status`
+/// event for live transitions.
 #[tauri::command]
-pub async fn get_lsp_status(state: State<'_, AppState>) -> Result<LspStatus> {
-    Ok(state.lsp.status())
+pub async fn get_lsp_status(state: State<'_, AppState>) -> Result<LspStatusPayload> {
+    Ok(state.lsp.status().into())
 }
 
-/// Restart the LSP server (e.g. after settings change).
+/// Restart the LSP server (e.g. after the user clicks "Restart Language
+/// Server"). Routes through `restart()` which stamps the `Manual` reason.
 #[tauri::command]
 pub async fn restart_lsp(state: State<'_, AppState>) -> Result<()> {
     state.lsp.restart();

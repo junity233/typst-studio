@@ -10,7 +10,7 @@
 
 use parking_lot::Mutex;
 
-use crate::lsp::manager::{LspConfig, LspManager, LspStatus};
+use crate::lsp::manager::{LspConfig, LspManager, LspRestartReason, LspStatus, LspStatusKind};
 use crate::error::Result;
 
 /// Owns the tinymist bridge and exposes the surface the IPC layer uses.
@@ -43,26 +43,41 @@ impl LspService {
         }
     }
 
-    /// Current LSP connection status. Returns a "fully off" status when no
-    /// manager is present (e.g. after shutdown).
+    /// Current LSP connection status (§6.4 generation-aware payload). Returns a
+    /// `Disabled` status when no manager is present (e.g. after shutdown) so
+    /// the frontend renders "LSP off" rather than an ambiguous offline state.
     pub fn status(&self) -> LspStatus {
         match self.manager.lock().as_ref() {
             Some(m) => m.status(),
             None => LspStatus {
-                running: false,
-                ws_url: String::new(),
                 available: false,
-                reconnecting: false,
+                enabled: false,
+                status: LspStatusKind::Disabled,
+                generation: 0,
+                ws_url: String::new(),
+                restart_reason: None,
+                message: None,
             },
         }
     }
 
-    /// Restart the active LSP connection (supersede the live relay + child).
-    /// The frontend reconnects automatically and re-runs the `initialize`
-    /// handshake against a fresh tinymist. No-op when LSP is disabled.
+    /// Restart the active LSP connection with the `Manual` reason — the IPC
+    /// path (`restart_lsp`, the "Restart Language Server" button). Supersedes
+    /// the live relay + child; the frontend reconnects automatically and
+    /// re-runs the `initialize` handshake against a fresh tinymist. No-op when
+    /// LSP is disabled.
     pub fn restart(&self) {
+        self.request_restart(LspRestartReason::Manual);
+    }
+
+    /// Restart the active LSP connection with an explicit reason (§6.3). Used
+    /// by Task 8's workspace-change handler (`WorkspaceChange`), the
+    /// settings-change handler (`SettingsChange`), and any other programmatic
+    /// caller that needs the wire `restartReason` to reflect the trigger. The
+    /// manual IPC button routes through [`restart`] (which passes `Manual`).
+    pub fn request_restart(&self, reason: LspRestartReason) {
         if let Some(m) = self.manager.lock().as_ref() {
-            m.restart();
+            m.restart(reason);
         }
     }
 }
@@ -76,14 +91,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_when_no_manager_reports_off() {
+    fn status_when_no_manager_reports_disabled() {
         let svc = LspService {
             manager: Mutex::new(None),
         };
         let s = svc.status();
-        assert!(!s.running);
         assert!(!s.available);
+        assert!(!s.enabled);
+        assert_eq!(s.status, LspStatusKind::Disabled);
         assert!(s.ws_url.is_empty());
+        assert_eq!(s.generation, 0);
+        assert!(s.restart_reason.is_none());
+        assert!(s.message.is_none());
     }
 
     #[test]
@@ -93,5 +112,6 @@ mod tests {
         };
         // Must not panic.
         svc.restart();
+        svc.request_restart(LspRestartReason::WorkspaceChange);
     }
 }

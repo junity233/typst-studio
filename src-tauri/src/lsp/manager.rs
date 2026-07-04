@@ -124,21 +124,122 @@ impl LspSupervisor {
     }
 }
 
-/// Status of the LSP connection, exposed to the frontend.
+/// Lifecycle kind the LSP reports on the `lsp_status` event (§6.4). Serialized
+/// as a camelCase string so the frontend gets a string-literal union (`"running"`
+/// / `"awaitingClient"` / …). The convention matches `DocumentOrigin`'s
+/// `rename_all = "camelCase"` (multi-word variants like `WorkspaceFile` become
+/// `workspaceFile`); `CompileStatus` uses `lowercase` only because all its
+/// variants are single words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub enum LspStatusKind {
+    /// LSP features disabled (`enabled=false`) — not started at all.
+    Disabled,
+    /// Enabled but tinymist was not found (`available=false`); LSP features
+    /// can't run.
+    Unavailable,
+    /// Listener bound, no tinymist client has connected yet for this
+    /// generation. The frontend may publish the URL and wait for its client.
+    Starting,
+    /// Listener bound; a WebSocket client has NOT yet connected for the
+    /// current generation (waiting on the frontend to dial `wsUrl`).
+    AwaitingClient,
+    /// A tinymist client is connected and its relay is live.
+    Running,
+    /// A `restart()` is in progress (old connection superseded, awaiting the
+    /// next client), OR the accept loop is in backoff after a fatal listener
+    /// error (still trying).
+    Restarting,
+    /// The supervisor exhausted its backoff schedule; the loop is parked and a
+    /// manual restart is required to recover.
+    Failed,
+}
+
+/// Why the LSP generation was bumped (§6.4 `restartReason`). Surfaced on the
+/// wire only when the accompanying status reflects a restart/crash; serialized
+/// camelCase to match [`LspStatusKind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub enum LspRestartReason {
+    /// Workspace open/close/switch (Task 8 wires the caller).
+    WorkspaceChange,
+    /// An initialize-time LSP setting changed.
+    SettingsChange,
+    /// tinymist exited unexpectedly (unsolicited relay end).
+    ChildCrash,
+    /// Unrecoverable relay error.
+    RelayError,
+    /// User clicked "Restart Language Server" (`restart_lsp` IPC).
+    Manual,
+    /// The frontend's endpoint generation didn't match the current server
+    /// generation — a forced reconnect.
+    GenerationMismatch,
+}
+
+/// Pure mapping from the manager's raw supervision flags to a wire
+/// [`LspStatusKind`] (§6.4). Extracted from `LspManager::status()` so the
+/// mapping is unit-testable without binding a listener or spawning tinymist.
+///
+/// Resolution order (first match wins):
+/// 1. `!enabled` → `Disabled` (LSP turned off entirely).
+/// 2. `enabled && !available` → `Unavailable` (tinymist missing).
+/// 3. `exhausted` → `Failed` (supervisor gave up; manual restart required).
+/// 4. `restarting` → `Restarting` (explicit `restart()` in flight, or backoff).
+/// 5. `running` → `Running` (a tinymist client is connected and relaying).
+/// 6. otherwise → `AwaitingClient` (listener bound, no client yet for this gen).
+pub(crate) fn status_kind_for(
+    available: bool,
+    enabled: bool,
+    running: bool,
+    restarting: bool,
+    exhausted: bool,
+) -> LspStatusKind {
+    if !enabled {
+        LspStatusKind::Disabled
+    } else if !available {
+        LspStatusKind::Unavailable
+    } else if exhausted {
+        LspStatusKind::Failed
+    } else if restarting {
+        LspStatusKind::Restarting
+    } else if running {
+        LspStatusKind::Running
+    } else {
+        LspStatusKind::AwaitingClient
+    }
+}
+
+/// Status of the LSP connection, exposed to the frontend (§6.4). The wire form
+/// is `ipc::events::LspStatusPayload` (`From<LspStatus>` maps field-for-field);
+/// this is the richer internal version the manager constructs directly.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LspStatus {
-    /// Whether the LSP server is accepting WebSocket connections.
-    pub running: bool,
-    /// The WebSocket URL the frontend should connect to (empty if not running).
-    pub ws_url: String,
     /// Whether tinymist was found on the system.
     pub available: bool,
-    /// Whether the accept-loop is in backoff after a fatal listener error
-    /// (§6.3 "状态栏显示不可用、重启中和已降级"). True while waiting to retry;
-    /// the frontend shows a "Reconnecting…" spinner. Distinct from `running`
-    /// (an active client connection) and `available` (tinymist found).
-    pub reconnecting: bool,
+    /// Whether LSP features are enabled at all (`LspConfig.enabled`).
+    pub enabled: bool,
+    /// Lifecycle kind derived from the supervision flags (`status_kind_for`).
+    pub status: LspStatusKind,
+    /// Current LSP generation (bumped on `restart()` / unsolicited relay end).
+    pub generation: u64,
+    /// The WebSocket URL the frontend should connect to (empty if not running).
+    pub ws_url: String,
+    /// Why the generation was bumped, when the status reflects a restart/crash.
+    pub restart_reason: Option<LspRestartReason>,
+    /// Optional human-readable hint (e.g. the `Failed` "manual restart
+    /// required" message).
+    pub message: Option<String>,
 }
 
 // ============================================================================
@@ -337,10 +438,19 @@ pub struct LspManager {
     conn_shutdown: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     running: Arc<AtomicBool>,
     /// §6.3: set true while the accept loop is in backoff after a fatal
-    /// listener error (waiting to retry). Surfaced in `LspStatus::reconnecting`
-    /// so the frontend can show a "Reconnecting…" spinner.
+    /// listener error (waiting to retry). Feeds `status_kind_for`'s `restarting`
+    /// arm so the frontend shows a "Reconnecting…" indicator.
     reconnecting: Arc<AtomicBool>,
+    /// §6.4: set true by `restart()` BEFORE the supersede and cleared when the
+    /// next client's relay starts (the `running` publish site). Distinguishes an
+    /// explicit restart-in-flight from the listener-backoff sense of
+    /// "reconnecting"; both map to `LspStatusKind::Restarting`.
+    restart_in_progress: Arc<AtomicBool>,
     available: bool,
+    /// Whether LSP features are enabled at all (`LspConfig.enabled`). Surfaced
+    /// verbatim on the wire so the frontend can distinguish "disabled" from
+    /// "enabled but tinymist missing".
+    enabled: bool,
     /// §6.1: the per-app-start capability token. Generated ONCE in `start`,
     /// held in memory only (never persisted), shared across all generations
     /// (only generation changes on restart). Embedded in the published URL and
@@ -355,6 +465,15 @@ pub struct LspManager {
     /// policy. Shared with the accept loop task (records failures) and with
     /// `restart()` (re-arms after exhaustion).
     supervisor: Arc<Mutex<LspSupervisor>>,
+    /// §6.4: the most recent restart reason / message, carried on the wire
+    /// (`restartReason` / `message`) across the brief Restarting/Failed window.
+    /// Set by `restart(reason)` before the bump, by the crash path on an
+    /// unsolicited relay end (`ChildCrash`), and by the supervisor-exhaustion
+    /// publish (a `Failed` message). Cleared when a fresh client connects
+    /// (`running` → the new generation's relay start), so a steady-state
+    /// `Running` status doesn't echo a stale reason.
+    last_restart_reason: Arc<Mutex<Option<LspRestartReason>>>,
+    last_message: Arc<Mutex<Option<String>>>,
     /// Invoked whenever the connection status transitions (connect/disconnect).
     /// Lets the service layer emit a Tauri event without polling.
     on_status_change: Arc<dyn Fn(LspStatus) + Send + Sync>,
@@ -388,6 +507,7 @@ impl LspManager {
         F: Fn(LspStatus) + Send + Sync + 'static,
     {
         let available = Self::check_available(&config);
+        let enabled = config.enabled;
 
         if !available || !config.enabled {
             tracing::warn!(
@@ -402,13 +522,17 @@ impl LspManager {
                 conn_shutdown: Arc::new(Mutex::new(None)),
                 running: Arc::new(AtomicBool::new(false)),
                 reconnecting: Arc::new(AtomicBool::new(false)),
+                restart_in_progress: Arc::new(AtomicBool::new(false)),
                 available,
+                enabled,
                 token: Arc::from(""),
                 generation: Arc::new(AtomicU64::new(1)),
                 supervisor: Arc::new(Mutex::new(LspSupervisor::default())),
+                last_restart_reason: Arc::new(Mutex::new(None)),
+                last_message: Arc::new(Mutex::new(None)),
                 on_status_change,
             };
-            // Announce the initial (unavailable) state.
+            // Announce the initial (unavailable/disabled) state.
             (mgr.on_status_change)(mgr.status());
             return Ok(mgr);
         }
@@ -422,8 +546,16 @@ impl LspManager {
         let (wake_tx, wake_rx) = watch::channel(0u64);
         let running = Arc::new(AtomicBool::new(false));
         let reconnecting = Arc::new(AtomicBool::new(false));
+        let restart_in_progress = Arc::new(AtomicBool::new(false));
         let conn_shutdown = Arc::new(Mutex::new(None::<oneshot::Sender<()>>));
         let supervisor = Arc::new(Mutex::new(LspSupervisor::default()));
+        // §6.4: the restart-reason / message slots are SHARED between the
+        // manager (`restart()` writes; `status()` reads) and the accept loop
+        // (relay-start clears; crash stamps `ChildCrash`; exhaustion stamps the
+        // Failed message). Created here so the spawn and the struct see the
+        // same Arc.
+        let last_restart_reason = Arc::new(Mutex::new(None));
+        let last_message = Arc::new(Mutex::new(None));
         let on_status_change = Arc::new(on_status_change);
         // §6.1: capability token + initial generation. Both live for the
         // process lifetime; generation is bumped on restart/crash, the token
@@ -433,12 +565,16 @@ impl LspManager {
 
         let running_clone = running.clone();
         let reconnecting_clone = reconnecting.clone();
+        let restart_in_progress_clone = restart_in_progress.clone();
         let config_clone = config.clone();
         let conn_shutdown_clone = conn_shutdown.clone();
         let supervisor_clone = supervisor.clone();
+        let last_restart_reason_clone = last_restart_reason.clone();
+        let last_message_clone = last_message.clone();
         let on_status_clone = on_status_change.clone();
         let token_clone = token.clone();
         let generation_clone = generation.clone();
+        let enabled_clone = enabled;
 
         tokio::spawn(async move {
             if let Err(e) = Self::accept_loop(
@@ -447,13 +583,17 @@ impl LspManager {
                 wake_rx,
                 running_clone,
                 reconnecting_clone,
+                restart_in_progress_clone,
                 conn_shutdown_clone,
                 supervisor_clone,
+                last_restart_reason_clone,
+                last_message_clone,
                 on_status_clone,
                 ws_port,
                 config_clone,
                 token_clone,
                 generation_clone,
+                enabled_clone,
             )
             .await
             {
@@ -469,10 +609,14 @@ impl LspManager {
             conn_shutdown,
             running,
             reconnecting,
+            restart_in_progress,
             available,
+            enabled,
             token,
             generation,
             supervisor,
+            last_restart_reason,
+            last_message,
             on_status_change,
         })
     }
@@ -498,22 +642,49 @@ impl LspManager {
         }
     }
 
-    /// Current status.
+    /// Current status. Derives the `LspStatusKind` from the supervision flags
+    /// via the pure [`status_kind_for`] helper so the mapping stays in one
+    /// unit-tested place.
     pub fn status(&self) -> LspStatus {
+        let running = self.running.load(Ordering::Relaxed);
+        // `restarting` covers BOTH the explicit `restart_in_progress` flag
+        // (an in-flight `restart()` between bump and next client connect) AND
+        // the listener-backoff `reconnecting` flag — both surface as
+        // `LspStatusKind::Restarting` per §6.4.
+        let restarting = self.reconnecting.load(Ordering::Relaxed)
+            || self.restart_in_progress.load(Ordering::Relaxed);
+        let exhausted = self.supervisor.lock().is_exhausted();
+        let kind = status_kind_for(self.available, self.enabled, running, restarting, exhausted);
         LspStatus {
-            running: self.running.load(Ordering::Relaxed),
-            ws_url: self.ws_url(),
             available: self.available,
-            reconnecting: self.reconnecting.load(Ordering::Relaxed),
+            enabled: self.enabled,
+            status: kind,
+            generation: self.generation.load(Ordering::Relaxed),
+            ws_url: self.ws_url(),
+            // The status-kind helper is the source of truth for `status`; a
+            // reason/message is only present when `restart()`/crash set it
+            // explicitly on the field, not here. `status()` is a snapshot read
+            // — the reason/message persist on the manager only across the
+            // brief Restarting/Failed window, carried via the dedicated fields
+            // below.
+            restart_reason: self.last_restart_reason(),
+            message: self.last_message(),
         }
     }
 
-    /// Restart the active LSP connection: bump the generation (so the OLD
-    /// endpoint URL is immediately invalid), then signal the live relay to
-    /// wind down, which kills its tinymist child. The next WebSocket
-    /// connection (the frontend reconnects automatically to the NEW URL after
-    /// receiving the status event) spawns a fresh tinymist and re-runs the
-    /// `initialize` handshake.
+    /// Restart the active LSP connection: announce `Restarting` (carrying
+    /// `reason`), bump the generation (so the OLD endpoint URL is immediately
+    /// invalid), then signal the live relay to wind down, which kills its
+    /// tinymist child. The next WebSocket connection (the frontend reconnects
+    /// automatically to the NEW URL after receiving the status event) spawns a
+    /// fresh tinymist, re-runs the `initialize` handshake, and clears the
+    /// `Restarting` state → `Running`.
+    ///
+    /// Per §6.3 the order is: set `restart_reason` + `restart_in_progress`,
+    /// publish `Restarting`, THEN bump generation + send `conn_shutdown`. This
+    /// way the frontend observes a coherent transition (Restarting with the
+    /// reason, then a generation bump carrying the new URL) instead of a
+    /// generation jump with no explanation.
     ///
     /// Generation bump happens BEFORE the supersede (§6.3) so that by the time
     /// the old relay is winding down, the old URL no longer validates — a
@@ -525,15 +696,33 @@ impl LspManager {
     /// error begins backoff from the top. In the common case (no exhaustion)
     /// this is a no-op on the supervisor.
     ///
-    /// No-op if no connection is currently active (and not exhausted).
-    pub fn restart(&self) {
+    /// No-op-ish if no connection is currently active (and not exhausted): the
+    /// generation still bumps so a fresh handshake is forced, but no relay is
+    /// torn down. Callers pass the reason so the wire `restartReason` reflects
+    /// the trigger (`Manual` for the IPC button, `WorkspaceChange` for Task 8's
+    /// workspace handler, `SettingsChange`, …).
+    pub fn restart(&self, reason: LspRestartReason) {
+        // §6.4: stamp the restart reason BEFORE anything else so the first
+        // `Restarting` publish carries it. Set `restart_in_progress` so
+        // `status_kind_for` resolves to `Restarting` (the explicit-restart
+        // arm, distinct from listener-backoff `reconnecting`).
+        {
+            let mut r = self.last_restart_reason.lock();
+            *r = Some(reason);
+        }
+        {
+            let mut m = self.last_message.lock();
+            *m = None;
+        }
+        self.restart_in_progress.store(true, Ordering::Relaxed);
+
         // §6.3: re-arm the supervisor so a manual restart recovers from
         // exhaustion. Clear the reconnecting flag (we're acting, not waiting).
         let was_exhausted = self.supervisor.lock().is_exhausted();
         if was_exhausted {
             self.supervisor.lock().re_arm();
             self.reconnecting.store(false, Ordering::Relaxed);
-            tracing::info!("LSP manual restart re-armed the supervisor after exhaustion");
+            tracing::info!("LSP restart ({reason:?}) re-armed the supervisor after exhaustion");
             // Re-announce: the frontend should clear its "manual restart
             // required" state. Bump the wake channel to revive a parked loop.
             if let Some(tx) = &self.wake_tx {
@@ -548,7 +737,8 @@ impl LspManager {
         let prev_gen = self.generation.fetch_add(1, Ordering::Relaxed);
         let new_gen = prev_gen + 1;
         tracing::info!(
-            "LSP restart requested: bumping generation {} -> {} (old endpoint invalidated)",
+            "LSP restart ({reason:?}) requested: bumping generation {} -> {} \
+             (old endpoint invalidated)",
             prev_gen,
             new_gen
         );
@@ -560,25 +750,29 @@ impl LspManager {
             // what actually happened, not an optimistic assumption.
             match tx.send(()) {
                 Ok(()) => tracing::info!(
-                    "LSP restart superseding active connection (generation {})",
+                    "LSP restart ({reason:?}) superseding active connection \
+                     (generation {})",
                     new_gen
                 ),
                 Err(_) => tracing::info!(
-                    "LSP restart requested: connection had already ended \
-                     (relay exited); the next client connects fresh at generation {}",
+                    "LSP restart ({reason:?}) requested: connection had already \
+                     ended (relay exited); the next client connects fresh at \
+                     generation {}",
                     new_gen
                 ),
             }
         } else if !was_exhausted {
             tracing::debug!(
-                "LSP restart requested but no active connection to supersede \
-                 (generation advanced to {})",
+                "LSP restart ({reason:?}) requested but no active connection to \
+                 supersede (generation advanced to {})",
                 new_gen
             );
         }
 
         // Publish the new endpoint so the frontend fetches the fresh URL.
         // (If unavailable, ws_url is empty and this is a no-op announcement.)
+        // `restart_in_progress` stays set; the next client's relay-start
+        // publish clears it (→ Running).
         (self.on_status_change)(self.status());
     }
 
@@ -591,6 +785,21 @@ impl LspManager {
     }
 
     // -- internal ----------------------------------------------------------
+
+    /// Snapshot the last restart reason (§6.4). Carried on the wire as
+    /// `restartReason` across the Restarting/Failed window; cleared on the
+    /// `running` → `Running` publish so a steady-state status doesn't echo a
+    /// stale trigger.
+    fn last_restart_reason(&self) -> Option<LspRestartReason> {
+        *self.last_restart_reason.lock()
+    }
+
+    /// Snapshot the last human-readable status message (§6.4). Set on the
+    /// supervisor-exhaustion `Failed` publish; cleared on the `running` →
+    /// `Running` publish alongside the reason.
+    fn last_message(&self) -> Option<String> {
+        self.last_message.lock().clone()
+    }
 
     /// Accept loop: waits for WebSocket connections and spawns a tinymist
     /// child + relay for each one.
@@ -608,13 +817,17 @@ impl LspManager {
         mut wake_rx: watch::Receiver<u64>,
         running: Arc<AtomicBool>,
         reconnecting: Arc<AtomicBool>,
+        restart_in_progress: Arc<AtomicBool>,
         conn_shutdown: Arc<Mutex<Option<oneshot::Sender<()>>>>,
         supervisor: Arc<Mutex<LspSupervisor>>,
+        last_restart_reason: Arc<Mutex<Option<LspRestartReason>>>,
+        last_message: Arc<Mutex<Option<String>>>,
         on_status_change: Arc<dyn Fn(LspStatus) + Send + Sync>,
         ws_port: u16,
         config: LspConfig,
         token: Arc<str>,
         generation: Arc<AtomicU64>,
+        enabled: bool,
     ) -> anyhow::Result<()> {
         // `conn_shutdown` doubles as the live-relay flag: `Some` ⇒ a relay is
         // active for the current generation. The single-gen-single-connection
@@ -655,14 +868,21 @@ impl LspManager {
                                 Some(delay) => {
                                     reconnecting.store(true, Ordering::Relaxed);
                                     on_status_change(LspStatus {
-                                        running: false,
+                                        available: true,
+                                        enabled,
+                                        status: LspStatusKind::Restarting,
+                                        generation: generation.load(Ordering::Relaxed),
                                         ws_url: build_ws_url(
                                             ws_port,
                                             token.as_ref(),
                                             generation.load(Ordering::Relaxed),
                                         ),
-                                        available: true,
-                                        reconnecting: true,
+                                        // Backoff is a listener-level reconnect,
+                                        // not a generation-bump restart trigger;
+                                        // surface any reason/message previously
+                                        // stamped (or None).
+                                        restart_reason: *last_restart_reason.lock(),
+                                        message: last_message.lock().clone(),
                                     });
                                     tracing::warn!(
                                         "LSP accept loop backing off for {delay:?} \
@@ -697,11 +917,24 @@ impl LspManager {
                                          parking until manual restart or shutdown"
                                     );
                                     reconnecting.store(false, Ordering::Relaxed);
+                                    {
+                                        let mut m = last_message.lock();
+                                        if m.is_none() {
+                                            *m = Some(
+                                                "LSP listener exhausted retries; \
+                                                 manual restart required"
+                                                    .to_string(),
+                                            );
+                                        }
+                                    }
                                     on_status_change(LspStatus {
-                                        running: false,
-                                        ws_url: String::new(),
                                         available: true,
-                                        reconnecting: false,
+                                        enabled,
+                                        status: LspStatusKind::Failed,
+                                        generation: generation.load(Ordering::Relaxed),
+                                        ws_url: String::new(),
+                                        restart_reason: *last_restart_reason.lock(),
+                                        message: last_message.lock().clone(),
                                     });
                                     // Park. A wake re-arms + resumes; a shutdown
                                     // exits. Either way the loop continues from
@@ -890,15 +1123,31 @@ impl LspManager {
                     });
 
                     running.store(true, Ordering::Relaxed);
+                    // A fresh client connected for the current generation: clear
+                    // the explicit-restart flag + any Restarting/Failed reason
+                    // so the `Running` publish is clean (a steady-state Running
+                    // must not echo a stale trigger).
+                    restart_in_progress.store(false, Ordering::Relaxed);
+                    {
+                        let mut r = last_restart_reason.lock();
+                        *r = None;
+                    }
+                    {
+                        let mut m = last_message.lock();
+                        *m = None;
+                    }
                     on_status_change(LspStatus {
-                        running: true,
+                        available: true,
+                        enabled,
+                        status: LspStatusKind::Running,
+                        generation: generation.load(Ordering::Relaxed),
                         ws_url: build_ws_url(
                             ws_port,
                             token.as_ref(),
                             generation.load(Ordering::Relaxed),
                         ),
-                        available: true,
-                        reconnecting: false,
+                        restart_reason: None,
+                        message: None,
                     });
 
                     let (conn_shutdown_tx, conn_shutdown_rx) = oneshot::channel::<()>();
@@ -918,6 +1167,11 @@ impl LspManager {
                     // until a manual restart(). Only `restart()` otherwise
                     // `.take()`s the slot.
                     let conn_shutdown_slot = conn_shutdown.clone();
+                    // §6.4: clone the restart-reason slot + the `enabled` flag
+                    // so the unsolicited-end (crash) publish can stamp
+                    // `ChildCrash` and build a full `LspStatus` on the wire.
+                    let last_restart_reason_clone = last_restart_reason.clone();
+                    let enabled_clone = enabled;
                     tokio::spawn(async move {
                         // Race the relay against an explicit supersede signal.
                         //
@@ -997,15 +1251,25 @@ impl LspManager {
                         // in that case to avoid a flicker.
                         if !ended_by_restart {
                             running_clone.store(false, Ordering::Relaxed);
+                            // §6.4: an unsolicited relay end is a child crash —
+                            // stamp `ChildCrash` so the wire `restartReason`
+                            // explains the bump the frontend just received.
+                            {
+                                let mut r = last_restart_reason_clone.lock();
+                                *r = Some(LspRestartReason::ChildCrash);
+                            }
                             on_status_clone(LspStatus {
-                                running: false,
+                                available: true,
+                                enabled: enabled_clone,
+                                status: LspStatusKind::Restarting,
+                                generation: generation_clone.load(Ordering::Relaxed),
                                 ws_url: build_ws_url(
                                     ws_port,
                                     token_clone.as_ref(),
                                     generation_clone.load(Ordering::Relaxed),
                                 ),
-                                available: true,
-                                reconnecting: false,
+                                restart_reason: Some(LspRestartReason::ChildCrash),
+                                message: None,
                             });
                         }
                         let _ = child.kill().await;
@@ -1474,20 +1738,147 @@ mod tests {
         assert!(should_bump_on_relay_end(false));
     }
 
-    // -- LspStatus wire shape (unchanged for Task 6) -----------------------
+    // -- LspStatus wire shape (Task 7 generation-aware payload) ------------
 
     #[test]
-    fn lsp_status_carries_reconnecting_field() {
-        // The wire type must round-trip the new field.
+    fn lsp_status_round_trips_new_fields() {
+        // The wire type must round-trip the generation-aware fields and the
+        // camelCase enum tags.
         let s = LspStatus {
-            running: false,
-            ws_url: "ws://127.0.0.1:1/lsp/main/1?token=x".into(),
             available: true,
-            reconnecting: true,
+            enabled: true,
+            status: LspStatusKind::Restarting,
+            generation: 7,
+            ws_url: "ws://127.0.0.1:1/lsp/main/7?token=x".into(),
+            restart_reason: Some(LspRestartReason::Manual),
+            message: Some("manual restart".into()),
         };
         let json = serde_json::to_string(&s).expect("serialize");
-        assert!(json.contains("\"reconnecting\":true"), "json: {json}");
-        assert!(json.contains("\"wsUrl\""), "camelCase wire field: {json}");
+        assert!(json.contains("\"status\":\"restarting\""), "camelCase kind: {json}");
+        assert!(json.contains("\"restartReason\":\"manual\""), "camelCase reason: {json}");
+        assert!(json.contains("\"generation\":7"), "generation field: {json}");
+        assert!(json.contains("\"wsUrl\""), "camelCase ws_url: {json}");
+        assert!(json.contains("\"enabled\":true"), "enabled field: {json}");
+        // Round-trips back with the same tags.
+        let back: LspStatus = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.status, LspStatusKind::Restarting);
+        assert_eq!(back.restart_reason, Some(LspRestartReason::Manual));
+        assert_eq!(back.generation, 7);
+    }
+
+    #[test]
+    fn lsp_status_kind_serializes_camel_case() {
+        // Multi-word variants must be camelCase on the wire (matching
+        // `DocumentOrigin`'s convention), NOT kebab-case.
+        assert_eq!(
+            serde_json::to_string(&LspStatusKind::AwaitingClient).unwrap(),
+            "\"awaitingClient\""
+        );
+        assert_eq!(
+            serde_json::to_string(&LspRestartReason::WorkspaceChange).unwrap(),
+            "\"workspaceChange\""
+        );
+        assert_eq!(
+            serde_json::to_string(&LspRestartReason::ChildCrash).unwrap(),
+            "\"childCrash\""
+        );
+        assert_eq!(
+            serde_json::to_string(&LspRestartReason::GenerationMismatch).unwrap(),
+            "\"generationMismatch\""
+        );
+    }
+
+    // -- status_kind_for mapping (§6.4 / §16) ------------------------------
+
+    #[test]
+    fn status_kind_for_disabled_when_not_enabled() {
+        // Disabled wins over everything (even if tinymist is "available").
+        assert_eq!(
+            status_kind_for(true, false, true, false, false),
+            LspStatusKind::Disabled
+        );
+        assert_eq!(
+            status_kind_for(true, false, false, true, true),
+            LspStatusKind::Disabled
+        );
+    }
+
+    #[test]
+    fn status_kind_for_unavailable_when_enabled_but_not_found() {
+        assert_eq!(
+            status_kind_for(false, true, false, false, false),
+            LspStatusKind::Unavailable
+        );
+    }
+
+    #[test]
+    fn status_kind_for_failed_when_supervisor_exhausted() {
+        assert_eq!(
+            status_kind_for(true, true, false, false, true),
+            LspStatusKind::Failed
+        );
+    }
+
+    #[test]
+    fn status_kind_for_restarting_when_reconnecting() {
+        // Either the explicit restart_in_progress flag OR the listener-backoff
+        // reconnecting flag maps to Restarting (both arrive as `restarting=true`
+        // from `status()`).
+        assert_eq!(
+            status_kind_for(true, true, false, true, false),
+            LspStatusKind::Restarting
+        );
+    }
+
+    #[test]
+    fn status_kind_for_running_when_client_connected() {
+        assert_eq!(
+            status_kind_for(true, true, true, false, false),
+            LspStatusKind::Running
+        );
+    }
+
+    #[test]
+    fn status_kind_for_awaiting_client_when_listener_bound_no_client() {
+        // The default/otherwise arm: enabled, available, not exhausted, not
+        // restarting, not running → waiting for the first client.
+        assert_eq!(
+            status_kind_for(true, true, false, false, false),
+            LspStatusKind::AwaitingClient
+        );
+    }
+
+    #[test]
+    fn status_kind_for_resolution_order() {
+        // Disabled > Unavailable > Failed > Restarting > Running > AwaitingClient.
+        // Exhausted-but-restarting still wins Failed? No — Failed is checked
+        // BEFORE restarting in `status_kind_for`, so an exhausted supervisor
+        // reports Failed even mid-backoff. But the real `status()` only feeds
+        // `exhausted=true` once the loop parks (reconnecting=false at that
+        // point), so this ordering is about the pure helper's precedence.
+        assert_eq!(
+            status_kind_for(true, true, false, true, true),
+            LspStatusKind::Failed
+        );
+        // Running beats Restarting only if not restarting — but a running
+        // client implies restart_in_progress=false in practice. The helper
+        // checks restarting before running, so a contradictory (running AND
+        // restarting) input reports Restarting.
+        assert_eq!(
+            status_kind_for(true, true, true, true, false),
+            LspStatusKind::Restarting
+        );
+    }
+
+    #[test]
+    fn status_kind_for_starting_is_not_produced_by_the_helper() {
+        // `Starting` is the brief pre-listener-bound window (construction only);
+        // `status_kind_for` never returns it (it has no input flag for "not yet
+        // bound"). The degraded `start()` branch announces Disabled/Unavailable
+        // directly. Documented here so a future reader doesn't expect the
+        // helper to cover it.
+        // (No assertion on the helper — just confirms the variant exists.)
+        let _ = LspStatusKind::Starting;
     }
 
     // -- LspManager state-only construction (no listener) ------------------
