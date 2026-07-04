@@ -10,7 +10,28 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::error::{AppError, Result};
 use crate::ipc::state::AppState;
+use crate::lsp::manager::LspRestartReason;
 use crate::settings::{window, Manifest};
+
+/// The settings-key prefix reserved for initialize-time LSP settings (spec §18:
+/// "仅 initialize-time LSP settings 变更触发 restart"). A change to ANY key
+/// under this prefix requires restarting tinymist, because such values are sent
+/// only in the `initialize` payload and cannot be re-applied to a running
+/// server via `workspace/didChangeConfiguration`.
+///
+/// NOTE: no `lsp.*` key exists in the manifest yet (forward-looking hook per
+/// Task 8 part B). Until one is added this branch is never taken; the hook is
+/// in place so the day an `lsp.*` setting lands, the restart is automatic.
+const LSP_SETTING_PREFIX: &str = "lsp.";
+
+/// Pure decision helper for §18: whether a setting change at `key` should
+/// trigger an LSP restart. Returns `true` iff `key` starts with `lsp.` (an
+/// initialize-time LSP setting). Extracted as a free function so the §18
+/// "only initialize-time LSP settings trigger restart" contract is
+/// unit-testable without a live LSP listener or a populated manifest.
+pub(crate) fn should_restart_for_setting(key: &str) -> bool {
+    key.starts_with(LSP_SETTING_PREFIX)
+}
 
 /// Return the full runtime config document.
 #[tauri::command]
@@ -39,7 +60,16 @@ pub async fn set_setting(
     value: Value,
     state: State<'_, AppState>,
 ) -> Result<()> {
-    state.settings.set(&path, value)
+    state.settings.set(&path, value)?;
+    // §18: only initialize-time LSP settings (`lsp.*`) require restarting
+    // tinymist — they ride in the `initialize` payload and can't be re-applied
+    // to a running server. No such setting exists in the manifest yet, so this
+    // branch is dormant; the hook is here so the day one lands the restart is
+    // automatic. Non-LSP settings (editor.*, compiler.*, …) never restart.
+    if should_restart_for_setting(&path) {
+        state.lsp.request_restart(LspRestartReason::SettingsChange);
+    }
+    Ok(())
 }
 
 /// Return a clone of the embedded manifest so the frontend can render controls.
@@ -69,4 +99,36 @@ pub async fn open_log_dir(app: AppHandle) -> Result<String> {
         .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
         .map_err(|e| AppError::Other(e.to_string()))?;
     Ok(dir.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_restart_for_setting;
+
+    #[test]
+    fn lsp_prefixed_key_triggers_restart() {
+        // §18: any `lsp.*` (initialize-time LSP) setting change restarts.
+        assert!(should_restart_for_setting("lsp.format"));
+        assert!(should_restart_for_setting("lsp.diagnostics"));
+        assert!(should_restart_for_setting("lsp.some.deeply.nested.key"));
+    }
+
+    #[test]
+    fn non_lsp_setting_does_not_restart() {
+        // Editor / compiler / theme settings are NOT initialize-time LSP
+        // settings — they apply without restarting tinymist.
+        assert!(!should_restart_for_setting("editor.fontSize"));
+        assert!(!should_restart_for_setting("compiler.foo"));
+        assert!(!should_restart_for_setting("theme.name"));
+        assert!(!should_restart_for_setting("window.width"));
+    }
+
+    #[test]
+    fn near_match_not_prefixed_does_not_restart() {
+        // A key that merely CONTAINS "lsp" but isn't under the `lsp.` prefix
+        // must NOT trigger a restart (e.g. a future `editor.lspVerbosity`).
+        assert!(!should_restart_for_setting("editor.lspVerbosity"));
+        assert!(!should_restart_for_setting("lsp")); // exactly "lsp", no dot
+        assert!(!should_restart_for_setting(""));
+    }
 }

@@ -18,6 +18,7 @@ use crate::fs::tree::EntryKind;
 use crate::fs::watcher;
 use crate::ipc::events::{FsChangedPayload, OpenedDocument};
 use crate::ipc::state::AppState;
+use crate::lsp::manager::LspRestartReason;
 use crate::service::workspace_service::WorkspaceMeta;
 
 /// Wire view of one document rebound by a rename/move (§6.4). Emitted in the
@@ -130,6 +131,14 @@ fn open_path_as_workspace(
     // service doesn't own open tabs, so this is the right place to bridge them
     // (§6.2).
     state.editor.reclassify_documents(&state.workspace);
+    // §14.1 / §14.3: a workspace open (incl. a switch — `open()` overwrites the
+    // prior root in place, so a switch is a SINGLE open here, not a close+open)
+    // requests exactly ONE LSP restart AFTER reclassify succeeds, so the new
+    // root is in effect when the next tinymist starts. The restart bumps the
+    // generation and publishes a fresh endpoint; the frontend reconnects via
+    // appLanguageClient (Task 8 part C). Non-blocking from the caller's
+    // perspective — it just signals the accept loop.
+    state.lsp.request_restart(LspRestartReason::WorkspaceChange);
     Ok(meta)
 }
 
@@ -198,8 +207,21 @@ pub async fn open_workspace_by_path(
 /// same-dir `#include` still resolves) (§4.3).
 #[tauri::command]
 pub async fn close_workspace(state: State<'_, AppState>) -> Result<()> {
+    // §14.2: only request an LSP restart if a workspace was actually open —
+    // closing when nothing is open (stale menu state, double-close) would
+    // otherwise spuriously restart tinymist. Matches the
+    // `workspace_change_triggers_restart(_, false) == None` contract.
+    let was_open = state.workspace.root().is_some();
     state.workspace.close();
     state.editor.reclassify_documents(&state.workspace);
+    if was_open {
+        // A workspace close requests ONE LSP restart AFTER reclassify succeeds
+        // (so former WorkspaceFiles have demoted to LooseFile before the next
+        // tinymist starts with `workspaceFolders=null`). The frontend reconnects
+        // via appLanguageClient. A switch is NOT a close+open — it is a single
+        // `open()` overwrite — so this path is only the explicit close.
+        state.lsp.request_restart(LspRestartReason::WorkspaceChange);
+    }
     Ok(())
 }
 
@@ -482,3 +504,84 @@ pub async fn save_as(
         })?;
     Ok(path.to_string_lossy().into_owned())
 }
+
+/// Pure decision helper for §14: whether a workspace open/close transition
+/// should request an LSP restart. Returns `Some(WorkspaceChange)` whenever the
+/// workspace-rooted state actually changed (a root was opened, replaced, or
+/// closed), and `None` only when nothing changed.
+///
+/// `prev_open` is whether a workspace was open BEFORE the op; `new_open` is
+/// whether one is open AFTER. The only no-op is `true → true` in the sense that
+/// a re-open of the SAME path would still be a restart (tinymist needs a fresh
+/// `initialize` to re-resolve against the root) — but per spec §14.1/§14.3 any
+/// open (including a same-path reopen, which mints a fresh workspace id per
+/// `WorkspaceService::open`) is a workspace change worth a single restart.
+/// Therefore this helper returns `Some` for every transition except
+/// `false → false` (no workspace before or after — e.g. a no-op close when
+/// nothing was open, or a failed open that left state unchanged).
+///
+/// Extracted as a free function so the §14 "ONE restart per user-visible
+/// workspace change" contract is unit-testable without standing up a live LSP
+/// listener. The actual `state.lsp.request_restart(...)` IPC wiring is verified
+/// by reading `fs_commands.rs` (every workspace command calls it after
+/// reclassify); this helper pins the DECISION, hence the `allow(dead_code)` —
+/// it is exercised by the unit tests below.
+#[allow(dead_code)]
+pub(crate) fn workspace_change_triggers_restart(
+    prev_open: bool,
+    new_open: bool,
+) -> Option<LspRestartReason> {
+    if !prev_open && !new_open {
+        // No workspace before or after: nothing changed, no restart.
+        None
+    } else {
+        // Any other transition (open, replace/switch, close) is a workspace
+        // change → exactly one WorkspaceChange restart.
+        Some(LspRestartReason::WorkspaceChange)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_from_closed_triggers_restart() {
+        // §14.1: closing → opening a workspace is a workspace change.
+        assert_eq!(
+            workspace_change_triggers_restart(false, true),
+            Some(LspRestartReason::WorkspaceChange)
+        );
+    }
+
+    #[test]
+    fn switch_open_over_open_triggers_one_restart() {
+        // §14.3: a switch is a single `open()` overwrite, NOT a close+open.
+        // From the decision helper's view, true → true is still a workspace
+        // change (a new root / fresh workspace id), and it yields ONE restart
+        // reason — not two. The caller surfaces this once
+        // (open_path_as_workspace requests restart exactly once; close_workspace
+        // is NOT also invoked on a switch).
+        assert_eq!(
+            workspace_change_triggers_restart(true, true),
+            Some(LspRestartReason::WorkspaceChange)
+        );
+    }
+
+    #[test]
+    fn close_open_to_closed_triggers_restart() {
+        // §14.2: closing a workspace is a workspace change.
+        assert_eq!(
+            workspace_change_triggers_restart(true, false),
+            Some(LspRestartReason::WorkspaceChange)
+        );
+    }
+
+    #[test]
+    fn no_workspace_before_or_after_is_no_restart() {
+        // A no-op close when nothing was open, or a failed open that left state
+        // unchanged, must NOT trigger a restart.
+        assert_eq!(workspace_change_triggers_restart(false, false), None);
+    }
+}
+

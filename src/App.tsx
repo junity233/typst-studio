@@ -13,6 +13,12 @@ import { useExternalFileRouting } from "./hooks/useExternalFileRouting";
 import { useStartupSession } from "./hooks/useStartupSession";
 import { useWindowRestore } from "./hooks/useWindowRestore";
 import { useAutosave } from "./hooks/useAutosave";
+// Task 8 part C: react to a backend WorkspaceChange LSP restart by reconnecting
+// appLanguageClient. Currently INERT — gated on appLanguageClient.isRunning(),
+// which is false until the Phase-C rewire makes it the active client (today the
+// wrapper's client still drives the live session). Mounted so the subscription
+// is live and ready the moment the rewire lands.
+import { useLspWorkspaceReconnect } from "./hooks/useLspWorkspaceReconnect";
 import {
   onSettingsWindow,
   onStartupProblems,
@@ -47,6 +53,7 @@ export default function App() {
   useStartupSession();
   useWindowRestore();
   useAutosave();
+  useLspWorkspaceReconnect();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
