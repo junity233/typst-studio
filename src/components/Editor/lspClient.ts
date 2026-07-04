@@ -9,6 +9,7 @@ import filesServiceOverride, {
 } from "@codingame/monaco-vscode-files-service-override";
 import { Uri } from "vscode";
 import { configureDefaultWorkerFactory } from "monaco-languageclient/workerFactory";
+import { buildLanguageClientOptions } from "./appLanguageClient";
 
 /**
  * Virtual path prefix under which in-memory Typst tabs live. We use the
@@ -132,19 +133,26 @@ export function buildVscodeApiConfig(): MonacoVscodeApiConfig {
  * Build the `LanguageClientConfig` for connecting to the Rust-backend
  * WebSocket relay.
  *
- * `rootPath` is the absolute workspace root (or null for a single-file/untitled
- * tab). tinymist is a *project-scoped* LSP: it compiles the document in its own
- * Typst World, and that World needs a root to resolve `#include` / `@preview`
- * packages and scan for `typst.toml`. Without it, completion degrades to a
- * rootless "detached file" mode. We set `initializationOptions.rootPath`
- * (tinymist's authoritative root override) — reliable here because our
- * in-memory documents live under a virtual path (`file:///typst-studio-mem`)
- * that isn't under the real workspace, so tinymist's path-based root discovery
- * would otherwise fail.
+ * The §7-compliant `clientOptions` (documentSelector for both `file`/`untitled`
+ * schemes per §9.2, workspace rooting via `workspaceFolder` per §7.1/§7.2, the
+ * three workspace-independent trigger flags per §7.3, and the §7.3/§21 #13
+ * guarantee of NO global `rootPath`/`rootUri` override) are built by the SHARED
+ * [`buildLanguageClientOptions`](./appLanguageClient.buildLanguageClientOptions)
+ * helper. That helper is the single source of truth for the §7 options shape —
+ * this wrapper path (the live `@typefox/monaco-editor-react` client) and the
+ * `appLanguageClient` singleton path both emit identical options through it,
+ * so the §7.3 rootPath tripwire test covers both for free.
+ *
+ * NOTE: This config drives the EXISTING wrapper-based client
+ * (`@typefox/monaco-editor-react`'s `languageClientConfig` prop). Task 4 also
+ * introduces `appLanguageClient.ts`, a standalone singleton that bypasses the
+ * wrapper; the two coexist briefly until a later task rewires MonacoEditor to
+ * use the singleton. Both paths emit the same §7-compliant options shape.
  */
 export function buildLanguageClientConfig(
   wsUrl: string,
-  rootPath: string | null,
+  workspaceRootPath: string | null,
+  workspaceName: string | null,
 ): LanguageClientConfig {
   return {
     languageId: "typst",
@@ -169,25 +177,12 @@ export function buildLanguageClientConfig(
     // this component (via a `key` derived from wsUrl in MonacoEditor), which
     // the backend supports because it spawns a fresh tinymist per connection —
     // so each remount runs a legal `initialize` handshake.
-    clientOptions: {
-      documentSelector: [{ language: "typst" }],
-      // tinymist is project-scoped: it roots its compile World on a project
-      // directory to resolve #include / @preview. `initializationOptions.rootPath`
-      // is tinymist's authoritative root override (config.rs:510-516) and is the
-      // reliable way to set it from monaco-languageclient, whose
-      // LanguageClientOptions surface doesn't expose `workspaceFolders`. Must be
-      // absolute (relative values are rejected). Null for untitled/no-workspace
-      // tabs → tinymist degrades to single-file mode (still functional).
-      initializationOptions: {
-        ...(rootPath !== null ? { rootPath } : {}),
-        // Client-capability flags tinymist checks to enable richer completion UX
-        // (trigger-suggest after typing certain tokens, HTML in hover, etc).
-        // See tinymist config.rs CONFIG_ITEMS.
-        triggerSuggest: true,
-        triggerParameterHints: true,
-        supportHtmlInMarkdown: true,
-      },
-    },
+    // §7.1/§7.2/§7.3 options sourced from the shared helper (single source of
+    // truth) — see appLanguageClient.buildLanguageClientOptions.
+    clientOptions: buildLanguageClientOptions(
+      workspaceRootPath,
+      workspaceName,
+    ),
   };
 }
 

@@ -143,23 +143,22 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // tinymist is unavailable — in that case the editor renders without LSP).
   const wsUrl = lspStatus.wsUrl || null;
 
-  // The workspace root, used to root tinymist's World so completion resolves
-  // #include / @preview against the real project. Null when no folder is open.
-  // Read via a ref so a workspace-open does NOT churn the mounted editor —
-  // tinymist's rootPath is fixed at `initialize` and can't change mid-session
-  // anyway, and re-creating the config mid-mount destabilizes the language
-  // client (the wrapper reacts to a new config object by tearing the client
-  // down, which races the backend's single-connection relay). The value is
-  // captured fresh whenever the editor naturally (re)mounts (initial load, a
-  // wsUrl recovery) — which is exactly when rootPath can take effect.
-  //
-  // NOTE (Phase A interim, spec §17 移除 list): rootPath stays in the language-
-  // client config for now. Task 4 (Phase B) lifts the LanguageClient out of
-  // this component and removes rootPath from initialize entirely (§7.3 / §21
-  // #13). Minimal change here to avoid scope creep into the client lifecycle.
+  // The workspace root + name, used to root tinymist's World via
+  // `clientOptions.workspaceFolder` (§7.1) so completion resolves #include /
+  // @preview against the real project. Null when no folder is open (§7.2). Read
+  // via refs so a workspace-open does NOT churn the mounted editor — tinymist's
+  // root is fixed at `initialize` and can't change mid-session anyway, and
+  // re-creating the config mid-mount destabilizes the language client (the
+  // wrapper reacts to a new config object by tearing the client down, which
+  // races the backend's single-connection relay). The value is captured fresh
+  // whenever the editor naturally (re)mounts (initial load, a wsUrl recovery)
+  // — which is exactly when the workspace folder can take effect.
   const rootPath = useWorkspaceStore((s) => s.rootPath);
+  const workspaceName = useWorkspaceStore((s) => s.name);
   const rootPathRef = useRef(rootPath);
   rootPathRef.current = rootPath;
+  const workspaceNameRef = useRef(workspaceName);
+  workspaceNameRef.current = workspaceName;
 
   // Debounced backend push for the compile pipeline (SVG preview).
   const pushToBackend = useDebouncedCallback((id: string, value: string) => {
@@ -168,12 +167,19 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     );
   }, 100);
 
-  // Memoize the language-client config on `wsUrl` ONLY (not rootPath). A
+  // Memoize the language-client config on `wsUrl` ONLY (not workspace). A
   // workspace-open must not rebuild the config for a mounted editor — that
   // would restart the client and race the relay (see rootPathRef note). The
-  // fresh rootPath is picked up on the next natural mount.
+  // fresh workspace folder is picked up on the next natural mount.
   const languageClientConfig = useMemo(
-    () => (wsUrl ? buildLanguageClientConfig(wsUrl, rootPathRef.current) : undefined),
+    () =>
+      wsUrl
+        ? buildLanguageClientConfig(
+            wsUrl,
+            rootPathRef.current,
+            workspaceNameRef.current,
+          )
+        : undefined,
     [wsUrl],
   );
 
