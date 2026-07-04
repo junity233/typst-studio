@@ -246,12 +246,15 @@ appLanguageClient.subscribe((snap) => {
  * is ref-counted so it stays alive while at least one reader is mounted.
  *
  * Lifecycle: the first mount triggers `acquireSubscription()` (fetch + listen,
- * memoized so concurrent mounters share one operation) AND
- * `acquireGenerationMirror()` (an `appLanguageClient.subscribe` listener that
- * records generation bumps). Each mount bumps `refCount`; cleanup decrements
- * it. When it reaches zero we release both, but the release is deferred to a
- * microtask so a synchronous unmount+remount (tab switch, React re-render)
- * doesn't tear down and rebuild the subscription.
+ * memoized so concurrent mounters share one operation). Each mount bumps
+ * `refCount`; cleanup decrements it. When it reaches zero the status
+ * subscription is released, but the release is deferred to a microtask so a
+ * synchronous unmount+remount (tab switch, React re-render) doesn't tear down
+ * and rebuild it. The generation mirror is installed once at module load (see
+ * the `appLanguageClient.subscribe` block above) and is NOT ref-counted — it
+ * stays live for the process lifetime so module-level consumers (e.g. the
+ * diagnostics bridge) can gate on the generation independent of any React
+ * reader being mounted.
  */
 export function useLspStatus(): {
   status: LspStatus;
