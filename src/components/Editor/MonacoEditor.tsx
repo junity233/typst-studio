@@ -1,7 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { MonacoEditorReactComp } from "@typefox/monaco-editor-react";
 import type * as Monaco from "@codingame/monaco-vscode-editor-api";
-import type { TextContents, EditorApp } from "monaco-languageclient/editorApp";
+import type {
+  TextContents,
+  EditorApp,
+  EditorAppConfig,
+} from "monaco-languageclient/editorApp";
 import type { LanguageClientManager } from "monaco-languageclient/lcwrapper";
 import { StandaloneServices } from "@codingame/monaco-vscode-api/vscode/vs/editor/standalone/browser/standaloneServices";
 import { IMarkerService } from "@codingame/monaco-vscode-api/vscode/vs/platform/markers/common/markers.service";
@@ -11,18 +15,15 @@ import { updateText } from "../../lib/tauri";
 import type { Tab } from "../../store/tabsStore";
 import type { Diagnostic } from "../../lib/types";
 import { useDiagnosticsStore } from "../../store/diagnosticsStore";
+import { useDocumentsStore } from "../../store/documentsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
 import { useDebouncedCallback } from "../../hooks/useDebounce";
 import { useLspStatus } from "../../store/lspStore";
 import { useSetting } from "../../hooks/useSetting";
-import {
-  buildVscodeApiConfig,
-  buildLanguageClientConfig,
-  buildEditorAppConfig,
-  registerTypstMemFile,
-  MEM_ROOT,
-} from "./lspClient";
+import { buildVscodeApiConfig, buildLanguageClientConfig } from "./lspClient";
+import { monacoModelRegistry } from "./monacoModelRegistry";
+import { computeModelSyncPlan } from "./editorModelSync";
 import { registerTypstHighlighting } from "./typstHighlighting";
 import { usePasteConvert } from "./usePasteConvert";
 
@@ -87,29 +88,21 @@ function markerSeverity(s: MarkerSeverity): Diagnostic["severity"] {
 }
 
 /**
- * Extract the tab id from a `file:///typst-studio-mem/<id>.typ` URI string, or
- * null if the URI isn't one of our in-memory tab URIs.
+ * Resolve a marker URI to a document id via the model registry (§13.2). Real
+ * `file:` URIs, untitled URIs, and migrated/stale URIs all go through the
+ * registry's canonical uri→id map; returns null for unknown URIs (closed docs,
+ * stale uris after a Save As migration) so the diagnostics bridge drops them.
  */
-function tabIdFromUri(uriStr: string): string | null {
-  let path: string;
-  try {
-    path = Uri.parse(uriStr).path;
-  } catch {
-    return null;
-  }
-  const prefix = `${MEM_ROOT}/`;
-  if (!path.startsWith(prefix)) return null;
-  const file = path.slice(prefix.length);
-  if (!file.endsWith(".typ")) return null;
-  return file.slice(0, -".typ".length);
+function docIdFromUri(uriStr: string): string | null {
+  return monacoModelRegistry.resolveDocumentId(uriStr);
 }
 
-// One-shot bridge from Monaco's marker service into the per-tab diagnostics
-// store. Installed after services are up; idempotent. The marker service holds
-// the authoritative diagnostics (the language client's diagnostics feature
-// pushes `publishDiagnostics` there AND renders squiggles from it), so we read
-// markers — never subscribe to publishDiagnostics (that would clobber the
-// feature handler and silence the squiggles).
+// One-shot bridge from Monaco's marker service into the per-document
+// diagnostics store. Installed after services are up; idempotent. The marker
+// service holds the authoritative diagnostics (the language client's
+// diagnostics feature pushes `publishDiagnostics` there AND renders squiggles
+// from it), so we read markers — never subscribe to publishDiagnostics (that
+// would clobber the feature handler and silence the squiggles).
 let diagBridgeInstalled = false;
 function ensureDiagBridge(): void {
   if (diagBridgeInstalled) return;
@@ -118,7 +111,7 @@ function ensureDiagBridge(): void {
 
   const sync = (uris: readonly { toString(): string }[]): void => {
     for (const u of uris) {
-      const id = tabIdFromUri(u.toString());
+      const id = docIdFromUri(u.toString());
       if (id === null) continue;
       const data: IMarkerData[] = markers.read({
         resource: Uri.parse(u.toString()),
@@ -158,8 +151,12 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // client (the wrapper reacts to a new config object by tearing the client
   // down, which races the backend's single-connection relay). The value is
   // captured fresh whenever the editor naturally (re)mounts (initial load, a
-  // tab switch, a wsUrl recovery) — which is exactly when rootPath can take
-  // effect.
+  // wsUrl recovery) — which is exactly when rootPath can take effect.
+  //
+  // NOTE (Phase A interim, spec §17 移除 list): rootPath stays in the language-
+  // client config for now. Task 4 (Phase B) lifts the LanguageClient out of
+  // this component and removes rootPath from initialize entirely (§7.3 / §21
+  // #13). Minimal change here to avoid scope creep into the client lifecycle.
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const rootPathRef = useRef(rootPath);
   rootPathRef.current = rootPath;
@@ -179,21 +176,6 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     () => (wsUrl ? buildLanguageClientConfig(wsUrl, rootPathRef.current) : undefined),
     [wsUrl],
   );
-
-  // The editor instance + tinymist client are SHARED across tabs: the `key`
-  // does NOT include `tab.id`, so switching tabs does NOT remount the editor.
-  // `lcsManager` (the language-client manager) is a module-level singleton in
-  // @typefox/monaco-editor-react, so the tinymist session survives tab
-  // switches — no cold-start, no lost incremental-parse state.
-  //
-  // Recovery on WebSocket drop: monaco-languageclient's `restartOptions` path
-  // is dead code (the onClose handler stops the client before restart runs),
-  // so a dropped connection permanently kills the language client. We recover
-  // by remounting only when `wsUrl` changes — a new `key` forces a full
-  // unmount+mount, which disposes the dead client and runs a fresh
-  // `initialize`. The backend spawns a brand-new tinymist per connection, so
-  // this is a legal handshake rather than a protocol-violating repeat.
-  const editorKey = `lsp-${wsUrl ?? "nolsp"}`;
 
   // Editor + preview settings (reactive). Each `useSetting` re-renders this
   // component when its value changes, which flows new options into the memo
@@ -220,9 +202,9 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   previewVisibleRef.current = previewVisible;
 
   // Settings-derived editor options. Only keys that are actually set are
-  // overridden; everything else falls through to buildEditorAppConfig's
-  // built-in defaults. `editor.fontFamily` is applied only when non-empty so
-  // an unset value keeps Monaco's own font stack.
+  // overridden; everything else falls through to the built-in defaults below.
+  // `editor.fontFamily` is applied only when non-empty so an unset value keeps
+  // Monaco's own font stack.
   const settingsOptions =
     useMemo<Monaco.editor.IStandaloneEditorConstructionOptions>(() => {
       const opts: Monaco.editor.IStandaloneEditorConstructionOptions = {};
@@ -239,27 +221,43 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
       return opts;
     }, [fontSize, fontFamily, tabSize, wordWrap, lineNumbers, minimap]);
 
-  // The editor-app config is rebuilt per tab so the model URI differs per tab.
-  // Changing the URI (vs only the text) is what routes through
-  // `triggerReprocessConfig` → `updateCodeResources` → `editor.setModel`,
-  // which fires automatic didClose(old) + didOpen(new) on the SAME tinymist
-  // session (verified in the installed @typefox/monaco-editor-react bundle).
-  //
-  // The config is ALSO rebuilt when `settingsOptions` changes so the wrapper
-  // live-applies new editor options. To keep that rebuild from re-pushing the
-  // live document text through `updateCode` (which would churn the mounted
-  // editor — cursor/undo disruption), the `codeResources` text is pinned to
-  // the seed captured at tab switch via `seedContentRef`. Live edits flow
-  // through the model, never the config.
-  const seedContentRef = useRef(tab.content);
-  const seededTabIdRef = useRef(tab.id);
-  if (seededTabIdRef.current !== tab.id) {
-    seededTabIdRef.current = tab.id;
-    seedContentRef.current = tab.content;
-  }
-  const editorAppConfig = useMemo(
-    () => buildEditorAppConfig(tab.id, seedContentRef.current, settingsOptions),
-    [tab.id, settingsOptions], // eslint-disable-line react-hooks/exhaustive-deps
+  // Phase A (spec §8.3 / §10.5): models are owned by `monacoModelRegistry`,
+  // NOT by the wrapper's `editorAppConfig` URI. The wrapper still needs an
+  // `editorAppConfig`, but the model is now driven by the registry: the wrapper
+  // mounts with its throwaway default model (no `codeResources` provided), and
+  // `handleEditorStartDone` immediately calls `activate` to swap in the real
+  // registry model. Tab switches thereafter are pure `editor.setModel` via
+  // `activate` — NO remount, NO `didClose`/`didOpen` (§10.5).
+  const editorAppConfig = useMemo<EditorAppConfig>(
+    () => ({
+      // Editor options only — no `codeResources`. The registry owns the model.
+      editorOptions: {
+        fontSize: 13,
+        fontFamily:
+          '"SF Mono", Menlo, Monaco, "Cascadia Code", Consolas, monospace',
+        fontLigatures: true,
+        minimap: { enabled: false },
+        scrollBeyondLastLine: false,
+        automaticLayout: true,
+        tabSize: 2,
+        wordWrap: "on",
+        renderWhitespace: "selection",
+        // Reclaim editable width: drop the glyph margin and slim the line-number
+        // gutter. Typst needs neither breakpoints nor a wide number column.
+        glyphMargin: false,
+        lineNumbersMinChars: 3,
+        folding: false,
+        // Disable CodeLens: tinymist publishes a "1@Export PDF" clickable lens at
+        // the top of the document. The app exposes export through the native menu
+        // instead, so hide the lens.
+        codeLens: false,
+        // Tighten the vertical air around the text so the editor reads edge-to-edge
+        // within its pane instead of floating in wide whitespace.
+        padding: { top: 6, bottom: 6 },
+        ...settingsOptions,
+      },
+    }),
+    [settingsOptions],
   );
 
   // The current tab id, via a ref. CRITICAL: the editor instance is shared
@@ -268,6 +266,14 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // Without this, edits on tab B would be pushed to the backend under tab A.
   const tabIdRef = useRef(tab.id);
   tabIdRef.current = tab.id;
+  // The PREVIOUS tab id — the outgoing view on a tab switch (§10.5). Read into
+  // `prevTabId` synchronously during render BEFORE advancing the ref, so the
+  // model-sync effect below sees the real (prevActiveId → activeId) transition
+  // on the render where the switch happens, and no-op on subsequent re-renders
+  // with the same active id.
+  const prevTabIdRef = useRef<string | null>(null);
+  const prevTabId = prevTabIdRef.current;
+  prevTabIdRef.current = tab.id;
   // Ditto for onChange — it closes over the parent's active tab; keep it live.
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -277,16 +283,20 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   const tabRef = useRef<Tab>(tab);
   tabRef.current = tab;
 
-  // Register the tab's in-memory file before bumping the reprocess counter.
-  // The new model URI must resolve (file must be registered) BEFORE
-  // `updateCodeResources` looks it up, so registration runs in an effect that
-  // fires before the reprocess bump below. The file is unregistered when the
-  // tab leaves (cleanup) so the VSCode file service never holds stale URIs.
-  useEffect(() => {
-    const unregister = registerTypstMemFile(tab.id, tab.content);
-    return unregister;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab.id]);
+  // The set of document ids the editor has already opened in the registry.
+  // Used by the model-sync effect to open each id exactly once and to close
+  // ids that disappeared from the documents map (§10.1 / §10.4). Maintained
+  // across renders as a ref so the effect can diff against the prior snapshot.
+  const seenIdsRef = useRef<Set<string>>(new Set());
+
+  // The live editor instance (set in `handleEditorStartDone`). Used by the
+  // model-sync effect to activate models and restore view state. Memoized so
+  // it's a stable reference for effect/use-hook dependencies (otherwise an
+  // inline closure would retrigger the model-sync effect every render).
+  const editorAppRef = useRef<EditorApp | null>(null);
+  const getEditor = useCallback<
+    () => Monaco.editor.IStandaloneCodeEditor | null
+  >(() => editorAppRef.current?.getEditor() ?? null, []);
 
   // Register Typst syntax highlighting (TextMate grammar + theme CSS).
   // Runs once on mount, before the editor creates its model. The actual
@@ -297,43 +307,93 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     void registerTypstHighlighting();
   }, []);
 
-  // Drive the model swap: bumping `triggerReprocessConfig` makes
-  // MonacoEditorReactComp call `updateCodeResources` (compares the URI in
-  // editorAppConfig to the live model's URI; on change → setModel). A bump on
-  // every tab.id change is what performs the swap + automatic didOpen/didClose.
-  // We skip the very first run (mount) — the editor mounts with this tab's
-  // model already; bumping then would be a redundant swap to the same URI.
-  const [reprocessTick, setReprocessTick] = useState(0);
-  const skipFirstSwap = useRef(true);
+  // Apply settings-derived options directly to the live Monaco instance. The
+  // wrapper's processConfig is no longer in the model-swap path (Phase A: no
+  // triggerReprocessConfig), so we keep options live-applied here, touching
+  // ONLY options — never content (the registry owns the model text).
   useEffect(() => {
-    if (skipFirstSwap.current) {
-      skipFirstSwap.current = false;
-      return;
-    }
-    setReprocessTick((t) => t + 1);
-  }, [tab.id]);
+    getEditor()?.updateOptions(settingsOptions);
+  }, [settingsOptions, getEditor]);
 
-  // Apply settings-derived options directly to the live Monaco instance. We
-  // deliberately bypass the wrapper's processConfig (which only runs on a
-  // reprocess bump): processConfig text-diffs the config's codeResources —
-  // pinned to the tab-switch seed — against the live model, and would call
-  // `updateCode` with that stale seed, clobbering unsaved edits. Calling
-  // `editor.updateOptions` touches ONLY options, never content.
-  const editorAppRef = useRef<EditorApp | null>(null);
+  // The model-sync effect (spec §8.3 / §10.1 / §10.4 / §10.5): on every render
+  // where the SET of open documents OR the active tab changes, compute a plan
+  // via the pure [`computeModelSyncPlan`](./editorModelSync.ts) helper and
+  // dispatch it against the registry. Keeps the component a thin dispatcher
+  // around the (untestable-under-jsdom) registry/editor.
+  //
+  // Runs AFTER the editor has started (the activate half is gated on a live
+  // editor). Open/close are registry-only and safe to run before the editor
+  // mounts (they create/dispose models, not editor attachments).
+  //
+  // PERF: subscribe to a structural key (sorted id list joined by NUL) rather
+  // than the whole `documents` map. The store rebuilds the top-level object on
+  // every keystroke (`updateContent`), so subscribing to `s.documents` would
+  // re-run this effect on every edit — wasteful, since content edits don't
+  // change which models are open. The full docs map is read via `getState()`
+  // inside the effect (an escape hatch that doesn't subscribe). `tab.id` /
+  // `prevTabId` are stable across content-only re-renders, so `toActivate`
+  // fires exactly once per switch.
+  const openDocsKey = useDocumentsStore((s) => Object.keys(s.documents).sort().join("\0"));
   useEffect(() => {
-    editorAppRef.current?.getEditor()?.updateOptions(settingsOptions);
-  }, [settingsOptions]);
+    const documents = useDocumentsStore.getState().documents;
+    const plan = computeModelSyncPlan(
+      seenIdsRef.current,
+      documents,
+      tab.id,
+      prevTabId,
+    );
+
+    // 1. Open newly-appeared docs (§10.1). openModel is idempotent per id;
+    //    the plan only lists ids absent from seenIdsRef, so each is opened once.
+    for (const entry of plan.toOpen) {
+      monacoModelRegistry.openModel(entry.id, {
+        content: entry.content,
+        origin: entry.origin,
+        revision: entry.revision,
+      });
+      seenIdsRef.current.add(entry.id);
+    }
+
+    // 2. Close gone docs (§10.4). closeModel disposes the model; the CALLER
+    //    (a future task) is responsible for the LSP didClose notification.
+    for (const id of plan.toClose) {
+      monacoModelRegistry.closeModel(id);
+      seenIdsRef.current.delete(id);
+    }
+
+    // 3. Activate the active tab's model in the editor (§10.5): swap the
+    //    editor's model + restore its view state. Gated on the editor being
+    //    live — on the very first mount the editor starts AFTER this effect's
+    //    initial run, so the first activation happens in handleEditorStartDone
+    //    (which is itself self-sufficient: see the open-if-absent guard there).
+    if (plan.toActivate !== null) {
+      const editor = getEditor();
+      if (editor !== null) {
+        const result = monacoModelRegistry.activate(
+          plan.toActivate,
+          editor,
+          prevTabId,
+        );
+        if (result.viewState !== null) {
+          editor.restoreViewState(result.viewState);
+        }
+      }
+    }
+  }, [openDocsKey, tab.id, prevTabId, getEditor]);
 
   // Rich-text paste: capture-phase listener converts pasted HTML to Typst and
   // resolves/inserts images. Wired through `getEditor` (closes over
   // `editorAppRef`) + `tabRef` (live tab) so the hook sees fresh values
   // without re-registering the listener on every keystroke.
-  const getEditor: () => Monaco.editor.IStandaloneCodeEditor | null = () =>
-    editorAppRef.current?.getEditor() ?? null;
   usePasteConvert(getEditor, tabRef);
 
   const handleTextChanged = (textChanges: TextContents): void => {
     const next = textChanges.modified ?? "";
+    // Anti-bounce-back (§8.4): when the registry itself replaces model text on
+    // behalf of a backend disk-reload (controlled replace), the resulting
+    // content-change fires here. Skip the forward to the backend in that case
+    // — the backend is the source of that change, and re-forwarding would loop.
+    if (monacoModelRegistry.isSuppressingForward(tabIdRef.current)) return;
     // Always keep the local tab content current so a manual refresh can push
     // it; only gate the backend compile push on `preview.autoRefresh`.
     onChangeRef.current(next);
@@ -345,6 +405,35 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   const handleEditorStartDone = (editorApp?: EditorApp): void => {
     editorAppRef.current = editorApp ?? null;
     editorApp?.getEditor()?.updateOptions(settingsOptions);
+    // The wrapper mounted with a throwaway default model (no codeResources);
+    // swap in the active tab's real registry model now. This is the §10.5
+    // "setModel" half for the very first tab — subsequent tab switches are
+    // handled by the model-sync effect above.
+    //
+    // SELF-SUFFICIENT OPEN: the model-sync effect normally opens the active
+    // doc's model before the editor starts, but that ordering relies on the
+    // wrapper's async init deferral — NOT a React guarantee. If the wrapper
+    // ever fired this callback synchronously (or on a wsUrl-remount where the
+    // apiWrapper was already initialized), the model might not be open yet
+    // and `activate` would throw on an unknown id. Open idempotently here so
+    // this callback is correct regardless of when it fires relative to the
+    // effect.
+    const editor = getEditor();
+    if (editor !== null) {
+      const doc = useDocumentsStore.getState().documents[tab.id];
+      if (doc && !monacoModelRegistry.getModel(tab.id)) {
+        monacoModelRegistry.openModel(tab.id, {
+          content: doc.content,
+          origin: doc.origin,
+          revision: doc.revision,
+        });
+        seenIdsRef.current.add(tab.id);
+      }
+      const result = monacoModelRegistry.activate(tab.id, editor, null);
+      if (result.viewState !== null) {
+        editor.restoreViewState(result.viewState);
+      }
+    }
   };
 
   const handleLanguageClientsStartDone = (
@@ -354,13 +443,13 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     // `publishDiagnostics` into Monaco's marker service (which renders the
     // squiggles). We do NOT subscribe to publishDiagnostics directly — that
     // would clobber the feature handler and kill the squiggles. Instead, once
-    // services are up, we read the marker service for every in-memory tab and
-    // mirror markers into the per-tab diagnosticsStore (which the panel reads).
+    // services are up, we read the marker service for every open model and
+    // mirror markers into the per-document diagnosticsStore (which the panel reads).
     ensureDiagBridge();
 
     onReady?.({
       revealLine: (line, column) => {
-        const editor = editorAppRef.current?.getEditor() ?? null;
+        const editor = getEditor();
         if (!editor) return;
         // Reveal the line (centered when far from the viewport, top-aligned
         // when nearby) and move the cursor + focus so the user can type on.
@@ -370,7 +459,7 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         editor.focus();
       },
       revealLineTopIfOutsideViewport: (line) => {
-        const editor = editorAppRef.current?.getEditor() ?? null;
+        const editor = getEditor();
         if (!editor) return;
         // Only scroll when the line has scrolled out of view, and align it to
         // the top (not center) so repeated small scrolls produce a smooth,
@@ -378,25 +467,25 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         editor.revealLineInCenterIfOutsideViewport(line, SCROLL_IMMEDIATE);
       },
       getTopVisibleLine: () => {
-        const editor = editorAppRef.current?.getEditor() ?? null;
+        const editor = getEditor();
         const ranges = editor?.getVisibleRanges() ?? [];
         // The first visible range is the topmost line in the viewport.
         return ranges.length > 0 ? ranges[0].startLineNumber : 1;
       },
       getScrollTop: () => {
-        const editor = editorAppRef.current?.getEditor() ?? null;
+        const editor = getEditor();
         return editor ? editor.getScrollTop() : 0;
       },
       setScrollTop: (top) => {
-        const editor = editorAppRef.current?.getEditor() ?? null;
+        const editor = getEditor();
         editor?.setScrollTop(top);
       },
       getLineTopOffset: (line) => {
-        const editor = editorAppRef.current?.getEditor() ?? null;
+        const editor = getEditor();
         return editor ? editor.getTopForLineNumber(line) : 0;
       },
       onDidScrollChange: (cb) => {
-        const editor = editorAppRef.current?.getEditor() ?? null;
+        const editor = getEditor();
         if (!editor) return () => {};
         // `onDidScrollChange` fires on any viewport change (scroll, layout,
         // fold). We re-derive the top visible line and forward it.
@@ -423,17 +512,29 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   return (
     <div className="editor-pane">
       <MonacoEditorReactComp
-        key={editorKey}
+        // Phase A interim (spec §17 移除 list): the `key` is wsUrl-ONLY — it
+        // does NOT include `tab.id`, so a tab switch does NOT remount the
+        // editor (the whole point of §10.5: tab switch = setModel, no remount).
+        // The wsUrl `key` is retained because the wrapper's
+        // LanguageClientManager.setConfig is a no-op when the languageId already
+        // exists, and start() is gated on !isStarted() — so a wsUrl change
+        // while MOUNTED does NOT restart the client, and a dropped WebSocket
+        // permanently kills the client (monaco-languageclient's restart path is
+        // dead code: the onClose handler stops the client before restart runs).
+        // The only recovery is a full unmount+mount, which this `key` drives.
+        // Task 4 (Phase B) lifts the LanguageClient out of this component into
+        // AppLanguageClient; once that owns the lifecycle, this `key` can go.
+        key={`lsp-${wsUrl ?? "nolsp"}`}
         vscodeApiConfig={vscodeApiConfig}
         editorAppConfig={editorAppConfig}
         languageClientConfig={languageClientConfig}
-        triggerReprocessConfig={reprocessTick}
         style={{ height: "100%" }}
         onTextChanged={handleTextChanged}
         onEditorStartDone={handleEditorStartDone}
         onLanguageClientsStartDone={handleLanguageClientsStartDone}
         onError={handleError}
-        // Keep the client alive across tab switches. The shared `lcsManager`
+        // Keep the client alive across tab switches (now even more important
+        // since we're not remounting on tab change). The shared `lcsManager`
         // singleton must NOT be disposed on every model swap; only a wsUrl-keyed
         // remount (recovery) tears it down, which this `false` allows.
         enforceLanguageClientDispose={false}
