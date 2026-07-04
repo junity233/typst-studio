@@ -102,6 +102,14 @@ export interface FormatButtonGroup {
 }
 
 /**
+ * The stable id of the table-insert button. Exported so the toolbar component
+ * can special-case it (rendering the {@link TableGridPicker} on click) without a
+ * magic string — the button's own `action.run` stays a no-op because React UI
+ * can't be rendered from a plain action handler (see TableGridPicker docs).
+ */
+export const TABLE_BUTTON_ID = "table";
+
+/**
  * The complete button table for the format toolbar — four groups, 15 buttons.
  *
  * The Typst strings here are pinned to the `src/lib/htmlToTypst/` converter
@@ -184,11 +192,15 @@ export const FORMAT_BUTTON_GROUPS: FormatButtonGroup[] = [
         action: { kind: "custom", run: () => { /* image picker — T6 */ } },
       },
       {
-        id: "table",
+        id: TABLE_BUTTON_ID,
         icon: Table,
         label: "Insert table",
-        // TODO(T5): replace with the table grid picker → #table(...) (see
-        // htmlToTypst/tables.ts).
+        // The picker (TableGridPicker) is rendered by the toolbar component, not
+        // by this `run` — React UI can't be launched from a plain action handler
+        // (it has no React context / event). The toolbar detects
+        // `id === TABLE_BUTTON_ID` in its render loop and overrides onClick to
+        // open the picker; this stub stays a no-op so dispatchAction's generic
+        // `custom` path doesn't double-fire. See FormatToolbar.tsx.
         action: { kind: "custom", run: () => { /* table grid picker — T5 */ } },
       },
     ],

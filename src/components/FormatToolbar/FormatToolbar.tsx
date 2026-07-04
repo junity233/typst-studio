@@ -1,13 +1,17 @@
+import { useState } from "react";
 import type { Tab } from "../../store/tabsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useSetting } from "../../hooks/useSetting";
 import {
   FORMAT_BUTTON_GROUPS,
+  TABLE_BUTTON_ID,
   type FormatAction,
   type FormatApi,
   type ActionContext,
 } from "./formatActions";
 import { FormatToolbarButton } from "./FormatToolbarButton";
+import { TableGridPicker } from "./TableGridPicker";
+import { buildTableSnippet } from "./buildTableSnippet";
 
 /**
  * Dispatch a single button action against a {@link FormatApi} (+ the optional
@@ -68,8 +72,10 @@ export interface FormatToolbarProps {
  *
  * Reads the button table from {@link FORMAT_BUTTON_GROUPS} (pure data) and
  * dispatches each click via {@link dispatchAction}. `wrap` / `replace` /
- * `linePrefix` buttons are fully functional today; the `custom` insert actions
- * (image / table / link) call through to no-op stubs that T5/T6 replace.
+ * `linePrefix` buttons are fully functional today; the table button opens the
+ * {@link TableGridPicker} (special-cased by {@link TABLE_BUTTON_ID} in the
+ * render loop). The image and link insert buttons still call no-op stubs that
+ * T6 will replace.
  */
 export function FormatToolbar({
   api,
@@ -78,6 +84,10 @@ export function FormatToolbar({
 }: FormatToolbarProps) {
   const workspace = useWorkspaceStore((s) => s.rootPath);
   const [insertImagePathTemplate] = useSetting<string>("editor.insertImagePath");
+  // The table grid picker's anchor when open; null = closed. Set by the table
+  // button's onClick from its own bounding rect; cleared by the picker's
+  // onCancel / onSelect.
+  const [tablePickerAnchor, setTablePickerAnchor] = useState<{ x: number; y: number } | null>(null);
 
   // All buttons disable when there's no tab or no editor API yet. The `disabled`
   // prop already covers the no-tab case; the api check is defensive (e.g. tab
@@ -102,6 +112,23 @@ export function FormatToolbar({
     dispatchAction(action, formatApi, actionCtx);
   };
 
+  // Table grid picker: open below the clicked button (4px gap), then insert the
+  // snippet on confirm. The button's own `action.run` is a no-op — React UI
+  // can't be launched from a plain action handler, so the table button is
+  // special-cased in the render loop (detected by TABLE_BUTTON_ID) and given an
+  // onClick that captures the anchor from the click's currentTarget.
+  const openTablePicker = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (api === null || tab === null) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    setTablePickerAnchor({ x: rect.left, y: rect.bottom + 4 });
+  };
+  const handleTableSelect = (rows: number, cols: number) => {
+    if (api !== null) {
+      api.replaceSelection(buildTableSnippet(rows, cols));
+    }
+    setTablePickerAnchor(null);
+  };
+
   return (
     <div className="format-toolbar" role="toolbar" aria-label="Text formatting">
       {FORMAT_BUTTON_GROUPS.map((group, groupIndex) => (
@@ -112,7 +139,11 @@ export function FormatToolbar({
               icon={button.icon}
               label={button.label}
               disabled={isDisabled}
-              onClick={() => handleAction(button.action)}
+              onClick={
+                button.id === TABLE_BUTTON_ID
+                  ? openTablePicker
+                  : () => handleAction(button.action)
+              }
             />
           ))}
           {groupIndex < FORMAT_BUTTON_GROUPS.length - 1 && (
@@ -120,6 +151,13 @@ export function FormatToolbar({
           )}
         </span>
       ))}
+      {tablePickerAnchor !== null && (
+        <TableGridPicker
+          anchor={tablePickerAnchor}
+          onSelect={handleTableSelect}
+          onCancel={() => setTablePickerAnchor(null)}
+        />
+      )}
     </div>
   );
 }

@@ -1680,3 +1680,60 @@ button {
 .path-add-btn:active {
   transform: scale(0.95);
 }
+
+/* ============================================================================
+   Format toolbar — table grid picker (insert table)
+   An 8×8 hover-grid popup, portal-rendered into document.body (like
+   .context-menu). Surface treatment mirrors .context-menu: white canvas,
+   hairline border, radius-sm, the same floating-surface shadow.
+   ========================================================================= */
+.table-grid-picker {
+  position: fixed; /* positioned via inline left/top from the anchor */
+  z-index: 1100; /* match .context-menu — above content, below dialogs */
+  background: var(--color-canvas);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  padding: var(--space-xs);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.18); /* match .context-menu */
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  animation: table-grid-picker-in 0.1s ease;
+}
+@keyframes table-grid-picker-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.table-grid-picker-label {
+  font-size: 12px; /* fine-print typography */
+  color: var(--color-ink-muted-80);
+  text-align: center;
+  /* Avoid layout shift as the row/col count changes width. */
+  font-variant-numeric: tabular-nums;
+}
+.table-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 16px);
+  grid-template-rows: repeat(8, 16px);
+  gap: 2px;
+}
+.table-grid-cell {
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--color-hairline);
+  border-radius: 2px;
+  background: var(--color-canvas);
+  cursor: pointer;
+  transition: background 0.08s ease, border-color 0.08s ease;
+}
+.table-grid-cell.table-grid-cell-highlighted {
+  background: var(--color-primary); /* Action Blue — the only interactive color */
+  border-color: var(--color-primary);
+}
+

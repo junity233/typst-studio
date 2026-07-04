@@ -18,7 +18,13 @@ export interface FormatToolbarButtonProps {
   label: string;
   disabled?: boolean;
   pressed?: boolean;
-  onClick: () => void;
+  /**
+   * Click handler. Receives the native React MouseEvent so a caller that needs
+   * the button's geometry (e.g. the table button, which anchors its picker to
+   * the button's bounding rect) can read `e.currentTarget`. Callers that don't
+   * care about the event can ignore the parameter.
+   */
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
 /**
