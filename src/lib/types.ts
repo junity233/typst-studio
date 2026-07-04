@@ -420,7 +420,7 @@ export type LspRestartReason = "workspaceChange" | "settingsChange" | "childCras
  * `workspaceFile`); `CompileStatus` uses `lowercase` only because all its
  * variants are single words.
  */
-export type LspStatusKind = "disabled" | "unavailable" | "starting" | "awaitingClient" | "running" | "restarting" | "failed";
+export type LspStatusKind = "disabled" | "unavailable" | "awaitingClient" | "running" | "restarting" | "failed";
 
 /**
  * Payload of the `lsp_status` event (§6.4), emitted when the LSP connection

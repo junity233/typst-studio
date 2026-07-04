@@ -53,7 +53,6 @@ function lspLabel(
       return message ? `LSP: ${message}` : "LSP: restart needed";
     case "restarting":
       return "LSP: reconnecting…";
-    case "starting":
     case "awaitingClient":
       return "LSP: connecting…";
     case "running":

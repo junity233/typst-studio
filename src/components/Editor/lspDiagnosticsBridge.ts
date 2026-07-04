@@ -8,6 +8,7 @@ import { Uri } from "vscode";
 import type { Severity } from "../../lib/types";
 import type { Diagnostic } from "../../lib/types";
 import { useDiagnosticsStore } from "../../store/diagnosticsStore";
+import { useLspStore } from "../../store/lspStore";
 import { monacoModelRegistry } from "./monacoModelRegistry";
 import { appLanguageClient } from "./appLanguageClient";
 // Re-export the PURE helpers (Monaco-free) so consumers have one import path
@@ -161,11 +162,35 @@ export function installLspDiagnosticsBridge(): void {
   // new client re-publishes they would show as stale squiggles / panel entries.
   // Clearing the store's tinymist mirror hides them; the next marker read
   // repopulates as the new client publishes. We do NOT touch Monaco's markers.
-  appLanguageClient.subscribe((snap) => {
-    if (snap.generation === lastSeenGeneration) return;
-    lastSeenGeneration = snap.generation;
+  //
+  // TWO generation feeds are observed so the clear fires regardless of which
+  // side drove the restart:
+  //   - appLanguageClient.subscribe — client-side reconnects (the singleton
+  //     bumping on start()/restart). Authoritative once the rewire makes the
+  //     singleton the active client.
+  //   - useLspStore.subscribe(generation) — wire-payload-driven bumps (the
+  //     backend's lsp_status event carrying the new generation, e.g. a
+  //     childCrash or workspaceChange restart). Authoritative today, when the
+  //     wrapper still drives the live session and appLanguageClient does NOT
+  //     bump. Without this second feed, a backend-only restart would leave
+  //     stale tinymist markers in the panel (§13.2 violation, masked today
+  //     but real post-rewire if the bridge only watched the client).
+  const clearOnBump = (gen: number): void => {
+    if (gen === lastSeenGeneration) return;
+    lastSeenGeneration = gen;
     for (const entry of monacoModelRegistry.snapshot()) {
       useDiagnosticsStore.getState().clear(entry.documentId, "tinymist");
     }
+  };
+  appLanguageClient.subscribe((snap) => clearOnBump(snap.generation));
+  // Also react to the WIRE-driven generation (the lsp_status payload's
+  // generation field), which is authoritative today when the wrapper still
+  // drives the live session and appLanguageClient does NOT bump on a backend
+  // restart. zustand v5's plain `subscribe` fires on every state change; we
+  // filter to generation inside the listener. (Selector-form subscribe needs
+  // the `subscribeWithSelector` middleware; the plain form is enough here.)
+  lastSeenGeneration = Math.max(lastSeenGeneration, useLspStore.getState().generation);
+  useLspStore.subscribe((s, prev) => {
+    if (s.generation !== prev.generation) clearOnBump(s.generation);
   });
 }

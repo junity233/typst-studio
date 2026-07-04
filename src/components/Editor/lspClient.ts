@@ -1,79 +1,30 @@
-import type * as Monaco from "@codingame/monaco-vscode-editor-api";
 import type { MonacoVscodeApiConfig } from "monaco-languageclient/vscodeApiWrapper";
 import type { LanguageClientConfig } from "monaco-languageclient/lcwrapper";
-import type { EditorAppConfig } from "monaco-languageclient/editorApp";
-import filesServiceOverride, {
-  RegisteredFileSystemProvider,
-  RegisteredMemoryFile,
-  registerFileSystemOverlay,
-} from "@codingame/monaco-vscode-files-service-override";
-import { Uri } from "vscode";
+import filesServiceOverride from "@codingame/monaco-vscode-files-service-override";
 import { configureDefaultWorkerFactory } from "monaco-languageclient/workerFactory";
 import { buildLanguageClientOptions } from "./appLanguageClient";
 
 /**
- * Virtual path prefix under which in-memory Typst tabs live. We use the
- * standard `file:` scheme (not a custom scheme) because the
- * `RegisteredFileSystemProvider` overlay only intercepts `file:` requests — a
- * custom scheme like `typst-mem:` has no registered provider and throws
- * `ENOPRO: No file system provider found` when Monaco resolves the model URI.
- * The LSP `documentSelector` matches by language id, not scheme, so this is
- * transparent to tinymist.
+ * Virtual path prefix under which in-memory (untitled) Typst docs live in the
+ * fallback URI scheme. This is KEPT ONLY as a string-equal anchor for the
+ * drift-tripwire test in
+ * [`documentUri.test.ts`](./__tests__/documentUri.test.ts), which parses this
+ * literal from source to assert it stays in sync with
+ * [`APP_PRIVATE_VIRTUAL_ROOT`](./documentUri.ts). The production single source
+ * of truth is `documentUri.ts`'s `APP_PRIVATE_VIRTUAL_ROOT`; once a later task
+ * collapses the two, delete this and relax the tripwire.
+ *
+ * History: in the pre-refactor design EVERY open doc — disk or untitled — lived
+ * under this prefix as a virtual `file:` URI (`file:///typst-studio-mem/<id>.typ`)
+ * resolved through a `RegisteredFileSystemProvider` overlay. Phase A replaced
+ * that with real `file:` URIs for disk docs and `untitled:` (or the fallback
+ * `file:///<APP_PRIVATE_VIRTUAL_ROOT>/<id>.typ`) for untitled docs, driven by
+ * [`monacoModelRegistry`](./monacoModelRegistry.ts) via
+ * [`originToUri`](./documentUri.ts). The overlay, the per-tab file
+ * registration, and the per-tab `editorAppConfig.codeResources` URI were all
+ * removed (spec §17 移除 list); this constant lingers only for the tripwire.
  */
 export const MEM_ROOT = "/typst-studio-mem";
-
-/** Singleton in-memory file system provider for untitled Typst tabs. */
-let memProvider: RegisteredFileSystemProvider | null = null;
-
-/** Build the `file://` URI string for a tab's in-memory document. */
-export function typstMemUri(tabId: string): string {
-  // Uri.file normalizes to `file:///typst-studio-mem/<id>.typ`. We return the
-  // string form so callers (registerTypstMemFile and buildEditorAppConfig) use
-  // the exact same canonical URI Monaco will resolve.
-  return Uri.file(`${MEM_ROOT}/${tabId}.typ`).toString();
-}
-
-/**
- * Install the in-memory file system overlay for virtual `file:` URIs.
- *
- * CRITICAL: must run BEFORE any Monaco editor mounts with a virtual model URI,
- * otherwise the editor's file-service lookup throws
- * `ENOPRO: No file system provider found` during mount and the component
- * crashes. We therefore register it eagerly at module load (see below).
- *
- * Idempotent: safe to call more than once.
- */
-function ensureMemProvider(): RegisteredFileSystemProvider {
-  if (memProvider === null) {
-    // `false` = case-sensitive, `1` = highest overlay priority (front of default).
-    memProvider = new RegisteredFileSystemProvider(false);
-    registerFileSystemOverlay(1, memProvider);
-  }
-  return memProvider;
-}
-
-// Eagerly register the overlay at module load so it is in place before the
-// Monaco editor component mounts and resolves its first virtual URI.
-ensureMemProvider();
-
-/**
- * Register a tab's content as an in-memory file so the VSCode file service
- * can resolve its URI. Returns a cleanup function that unregisters the file.
- *
- * Register ONCE per tab (keyed on `tabId`); the live Monaco model is the
- * source of truth after open, so edits are not written back here.
- */
-export function registerTypstMemFile(
-  tabId: string,
-  content: string,
-): () => void {
-  const provider = ensureMemProvider();
-  const uriStr = typstMemUri(tabId);
-  const disposable = provider.registerFile(
-    new RegisteredMemoryFile(Uri.parse(uriStr), content),
-  );
-  return () => disposable.dispose();
-}
 
 /**
  * Build the `MonacoVscodeApiConfig` for extended mode.
@@ -96,9 +47,11 @@ export function buildVscodeApiConfig(): MonacoVscodeApiConfig {
   return {
     $type: "extended",
     viewsConfig: { $type: "EditorService" },
-    // filesServiceOverride is still needed for our in-memory `file://` overlay
-    // (the virtual Typst tab URIs). TextMate/theme/languages overrides are
-    // auto-loaded by the wrapper in extended mode.
+    // filesServiceOverride is required for the VS Code file/textdocument/
+    // explorer services that the extended-mode overrides (TextMate, languages,
+    // themes) depend on. (Pre-Phase-A it also hosted our in-memory `file://`
+    // overlay for virtual tab URIs; that overlay is gone — models now come from
+    // monacoModelRegistry with URIs from originToUri.)
     serviceOverrides: filesServiceOverride(),
     // Force-on semantic highlighting regardless of any user config; tinymist's
     // grammar is wired for it, and the configurationDefaults in the manifest
@@ -183,60 +136,5 @@ export function buildLanguageClientConfig(
       workspaceRootPath,
       workspaceName,
     ),
-  };
-}
-
-/**
- * Build the `EditorAppConfig` with the Typst language definition
- * (Monarch tokenizer + theme). Pure: no side effects.
- *
- * Callers are responsible for registering the tab's in-memory file via
- * `registerTypstMemFile(tabId, content)` in a React effect.
- *
- * `editorOptions` (optional) is merged OVER the built-in defaults so callers
- * (e.g. settings-driven option overrides) can adjust the editor without losing
- * the baseline configuration. The wrapper live-applies these on change via
- * `editor.updateOptions`.
- */
-export function buildEditorAppConfig(
-  tabId: string,
-  content: string,
-  editorOptions?: Monaco.editor.IStandaloneEditorConstructionOptions,
-): EditorAppConfig {
-  const uri = typstMemUri(tabId);
-
-  return {
-    codeResources: {
-      modified: {
-        text: content,
-        uri,
-        enforceLanguageId: "typst",
-      },
-    },
-    editorOptions: {
-      fontSize: 13,
-      fontFamily:
-        '"SF Mono", Menlo, Monaco, "Cascadia Code", Consolas, monospace',
-      fontLigatures: true,
-      minimap: { enabled: false },
-      scrollBeyondLastLine: false,
-      automaticLayout: true,
-      tabSize: 2,
-      wordWrap: "on",
-      renderWhitespace: "selection",
-      // Reclaim editable width: drop the glyph margin and slim the line-number
-      // gutter. Typst needs neither breakpoints nor a wide number column.
-      glyphMargin: false,
-      lineNumbersMinChars: 3,
-      folding: false,
-      // Disable CodeLens: tinymist publishes a "1@Export PDF" clickable lens at
-      // the top of the document. The app exposes export through the native menu
-      // instead, so hide the lens.
-      codeLens: false,
-      // Tighten the vertical air around the text so the editor reads edge-to-edge
-      // within its pane instead of floating in wide whitespace.
-      padding: { top: 6, bottom: 6 },
-      ...editorOptions,
-    },
   };
 }

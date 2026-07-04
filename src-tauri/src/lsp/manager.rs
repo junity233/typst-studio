@@ -143,11 +143,11 @@ pub enum LspStatusKind {
     /// Enabled but tinymist was not found (`available=false`); LSP features
     /// can't run.
     Unavailable,
-    /// Listener bound, no tinymist client has connected yet for this
-    /// generation. The frontend may publish the URL and wait for its client.
-    Starting,
     /// Listener bound; a WebSocket client has NOT yet connected for the
-    /// current generation (waiting on the frontend to dial `wsUrl`).
+    /// current generation (waiting on the frontend to dial `wsUrl`). This also
+    /// covers the brief window after `start()` returns and before any client
+    /// connects — there's no separate "starting" kind because `AwaitingClient`
+    /// already means "listener up, no client yet".
     AwaitingClient,
     /// A tinymist client is connected and its relay is live.
     Running,
@@ -1868,17 +1868,6 @@ mod tests {
             status_kind_for(true, true, true, true, false),
             LspStatusKind::Restarting
         );
-    }
-
-    #[test]
-    fn status_kind_for_starting_is_not_produced_by_the_helper() {
-        // `Starting` is the brief pre-listener-bound window (construction only);
-        // `status_kind_for` never returns it (it has no input flag for "not yet
-        // bound"). The degraded `start()` branch announces Disabled/Unavailable
-        // directly. Documented here so a future reader doesn't expect the
-        // helper to cover it.
-        // (No assertion on the helper — just confirms the variant exists.)
-        let _ = LspStatusKind::Starting;
     }
 
     // -- LspManager state-only construction (no listener) ------------------

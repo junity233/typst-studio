@@ -202,12 +202,13 @@ export function buildLanguageClientOptions(
  *   Starting(3) → Stopped(1)           = "Failed" (never reached Ready)
  *   Running(2) → Starting(3)           = "Initializing" (reconnect/restart)
  *
- * `wasRunning` is whether the client had previously reached `Ready` in this
- * generation — used to distinguish a clean pre-Ready stop (initialize failed)
- * from a connection-lost-after-Ready stop (§9.4). Both currently map to
- * `"Failed"`; a SELF-initiated stop (via `stopImpl`) is suppressed upstream by
+ * A SELF-initiated stop (via `stopImpl`) is suppressed upstream by
  * [`selfStopGuard`](Self.selfStopGuard) before this helper is consulted, so a
- * clean `stop()` surfaces `Disabled` directly without a `Failed` flicker.
+ * clean `stop()` surfaces `Disabled` directly without a `Failed` flicker. Both
+ * the pre-Ready initialize-failed stop and the connection-lost-after-Ready stop
+ * map to `"Failed"` here — distinguishing them would require a `wasRunning`
+ * flag, but the §9.4 recovery behavior (reconnect against a fresh endpoint) is
+ * the same either way.
  *
  * NOTE on "Replaying": with the `State` enum surface alone we cannot tell the
  * auto didOpen replay window apart from generic Starting, so this helper never
@@ -222,7 +223,6 @@ export function buildLanguageClientOptions(
 export function mapStateChange(
   oldState: State,
   newState: State,
-  _wasRunning: boolean,
 ): LspClientState | null {
   // No-op transitions: same state in/out (e.g. Stopped → Stopped during a
   // clean stop of a never-started client) carry no public information.
@@ -432,7 +432,6 @@ class AppLanguageClient {
             stopped: null,
           };
 
-          let wasRunning = false;
           client.onDidChangeState(({ oldState, newState }) => {
             // §9.1 self-stop suppression: if WE initiated a stop(), a `→ Stopped`
             // transition is expected and must NOT surface as Failed — the stop
@@ -440,8 +439,7 @@ class AppLanguageClient {
             if (newState === State.Stopped && this.selfStopGuard) {
               return;
             }
-            const mapped = mapStateChange(oldState, newState, wasRunning);
-            if (newState === State.Running) wasRunning = true;
+            const mapped = mapStateChange(oldState, newState);
             if (mapped === null) return;
             if (this.snapshot.generation !== currentGen) return; // stale
             this.setSnapshot({

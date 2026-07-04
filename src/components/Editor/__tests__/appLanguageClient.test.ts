@@ -347,27 +347,27 @@ describe("mapStateChange — State enum → LspClientState (§9.1)", () => {
   const Starting = 3;
 
   it("Stopped → Starting = Initializing", () => {
-    expect(mapStateChange(Stopped, Starting, false)).toBe("Initializing");
+    expect(mapStateChange(Stopped, Starting)).toBe("Initializing");
   });
 
   it("Starting → Running = Ready", () => {
-    expect(mapStateChange(Starting, Running, false)).toBe("Ready");
+    expect(mapStateChange(Starting, Running)).toBe("Ready");
   });
 
   it("Running → Stopped (was Running) = Failed (§9.4 connection lost)", () => {
-    expect(mapStateChange(Running, Stopped, true)).toBe("Failed");
+    expect(mapStateChange(Running, Stopped)).toBe("Failed");
   });
 
   it("Running → Starting = Initializing (restart / reconnect)", () => {
-    expect(mapStateChange(Running, Starting, true)).toBe("Initializing");
+    expect(mapStateChange(Running, Starting)).toBe("Initializing");
   });
 
   it("Stopped → Stopped = null (no transition of interest)", () => {
-    expect(mapStateChange(Stopped, Stopped, false)).toBeNull();
+    expect(mapStateChange(Stopped, Stopped)).toBeNull();
   });
 
   it("Starting → Stopped (never reached Running) = Failed", () => {
-    expect(mapStateChange(Starting, Stopped, false)).toBe("Failed");
+    expect(mapStateChange(Starting, Stopped)).toBe("Failed");
   });
 });
 

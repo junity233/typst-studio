@@ -4,7 +4,7 @@ import {
   ApplyWorkspaceEditRequest,
   type ApplyWorkspaceEditParams,
 } from "vscode-languageserver-protocol";
-import type { WorkspaceEdit, TextEdit } from "vscode-languageserver-types";
+import type { TextEdit } from "vscode-languageserver-types";
 import { planWorkspaceEdit } from "./workspaceEdit";
 import {
   applyModelEdits,
@@ -178,17 +178,6 @@ export function registerWorkspaceApplyEditHandler(
     handleApplyWorkspaceEdit(params, deps),
   );
   return { dispose: () => disposable.dispose() };
-}
-
-/**
- * Helper kept for symmetry / future use: extract the [`WorkspaceEdit`] from a
- * raw `workspace/applyEdit` params payload (defensive against the wrapper's
- * normalized shape). Today the params arrive already-typed.
- */
-export function workspaceEditFromParams(
-  params: ApplyWorkspaceEditParams,
-): WorkspaceEdit {
-  return params.edit;
 }
 
 // Re-export the TextEdit type alias so callers wiring the OPTIONAL

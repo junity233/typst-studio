@@ -166,8 +166,13 @@ class MonacoModelRegistry {
   }
 
   /**
-   * Snapshot of all current entries. Used by `AppLanguageClient.replayDocuments`
-   * (Task 4) to re-`didOpen` every open model on (re)connect. Returns a fresh
+   * Snapshot of all current entries. The LSP `didOpen` replay on (re)connect
+   * does NOT consume this directly: it happens implicitly inside
+   * `vscode-languageclient`'s `DidOpenTextDocumentFeature.register()`, which
+   * iterates `monaco.editor.getModels()` (the live models this registry owns)
+   * and sends `didOpen` for each that matches the documentSelector. This
+   * snapshot is used by the diagnostics bridge to clear per-generation
+   * tinymist diagnostics for every known doc on a restart. Returns a fresh
    * array referencing the live `ModelEntry` objects.
    */
   snapshot(): ModelEntry[] {
