@@ -1,7 +1,15 @@
 import { useEffect, useTransition } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { onCompiled, onConflict, onStatus } from "../lib/tauri";
+import {
+  onCompiled,
+  onConflict,
+  onDocsRebound,
+  onSaveStateChanged,
+  onStatus,
+} from "../lib/tauri";
 import { useTabsStore } from "../store/tabsStore";
+import { useDocumentsStore } from "../store/documentsStore";
+import { useSaveStateStore } from "../store/saveStateStore";
 
 /**
  * App-level subscription to the typst compile lifecycle. Mount once near the
@@ -14,6 +22,9 @@ import { useTabsStore } from "../store/tabsStore";
  * `startTransition` so React treats them as **low priority** — keystrokes and
  * other urgent updates flush first, and the preview re-render is deferred to
  * a gap in input activity.
+ *
+ * Also subscribes to `save_state_changed` (§5.3) and mirrors each transition
+ * into `saveStateStore` so the status bar can show saving / save-failed.
  */
 export function useTypstCompile(): void {
   const [, startTransition] = useTransition();
@@ -49,16 +60,43 @@ export function useTypstCompile(): void {
       }
       unlistens.push(uStatus);
 
-      // §8.4: external-modification conflict. Surface the backend's conflict
-      // state on the tab (the resolution UI is a later task).
+      // §5.4 / §8.4: external-modification conflict. Surface the backend's
+      // conflict state on the tab and stash the disk content (present on
+      // "modified") so the ConflictDialog can show a compare view without a
+      // second IPC round-trip.
       const uConflict = await onConflict((p) => {
-        useTabsStore.getState().setConflict(p.id, p.conflict);
+        useTabsStore.getState().setConflict(p.id, p.conflict, p.diskContent);
       });
       if (cancelled) {
         uConflict();
         return;
       }
       unlistens.push(uConflict);
+
+      // §5.3: mirror save-state transitions into the store for the status bar.
+      const uSave = await onSaveStateChanged((p) => {
+        useSaveStateStore.getState().setSaveState(p.id, p.state);
+      });
+      if (cancelled) {
+        uSave();
+        return;
+      }
+      unlistens.push(uSave);
+
+      // §6.4: a rename/move rebound open docs to new paths. Mirror the new path
+      // into the documents store so tab titles / breadcrumbs / active-file
+      // highlight track the rename. (The buffer, dirty, and revision are
+      // unchanged — only the disk location moved.)
+      const uRebound = await onDocsRebound((p) => {
+        for (const d of p.docs) {
+          useDocumentsStore.getState().rebindDocPath(d.id, d.newPath);
+        }
+      });
+      if (cancelled) {
+        uRebound();
+        return;
+      }
+      unlistens.push(uRebound);
     })();
 
     return () => {

@@ -121,15 +121,39 @@ describe("restoreOpenDocuments (§13)", () => {
     expect(out.restored).toEqual([]);
     expect(out.failures).toEqual([]);
   });
+
+  it("skips a disk record whose openDisk returns null (§5.1.3 recovery wins)", async () => {
+    // Crash-recovery coordination: when a path was already recovered as a dirty
+    // in-memory doc, openDisk returns null so the session's disk-reopen is
+    // skipped. The skipped record is neither a success nor a failure.
+    const openDisk = vi.fn(async (path: string) =>
+      path === "/recovered.typ" ? null : `disk-${path}`,
+    );
+    const openUntitled = vi.fn(async (content: string) => `unt-${content}`);
+    const records: OpenDocRecord[] = [
+      { kind: "disk", path: "/recovered.typ", dirty: true },
+      { kind: "disk", path: "/plain.typ", dirty: false },
+    ];
+    const out = await restoreOpenDocuments(records, { openDisk, openUntitled });
+    expect(out.failures).toEqual([]);
+    expect(out.restored.map((r) => r.id)).toEqual(["disk-/plain.typ"]);
+    expect(openDisk.mock.calls).toEqual([["/recovered.typ"], ["/plain.typ"]]);
+  });
 });
 
 describe("emptySession", () => {
-  it("has all fields zeroed", () => {
+  it("has all fields zeroed (incl. v2 fields defaulted)", () => {
     expect(emptySession()).toEqual({
+      // schemaVersion is backend-managed (§7.3); FE sentinel = 0.
+      schemaVersion: 0,
       lastWorkspace: "",
       lastFile: "",
       openDocuments: [],
       activeDocumentId: null,
+      // v2 fields (§7.2) default to absent — the backend fills them in.
+      windowBounds: null,
+      layout: null,
+      recentWorkspaces: [],
     });
   });
 });

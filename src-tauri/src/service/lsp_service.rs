@@ -52,6 +52,7 @@ impl LspService {
                 running: false,
                 ws_url: String::new(),
                 available: false,
+                reconnecting: false,
             },
         }
     }

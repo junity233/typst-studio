@@ -31,8 +31,21 @@ export interface SettingDef {
   step?: number;
   /** Allowed values (select only). */
   options?: string[];
+  /** Optional display labels keyed by option value (select only). When present,
+   * the dropdown shows the label instead of the raw value. Falls back to the
+   * capitalized option value for any option without an explicit label.
+   */
+  optionLabels?: Record<string, string>;
   /** When true the control is display-only (e.g. window.recentWorkspaces). */
   readonly?: boolean;
+  /**
+   * An action id for button-style settings (e.g. "clearRecoveryData"). When
+   * present the row renders a button that fires the named action instead of an
+   * input. See SettingsApp's ActionControl.
+   */
+  action?: string;
+  /** Optional one-line description shown under the label. */
+  help?: string;
 }
 
 /** A group of related settings rendered under one heading. */

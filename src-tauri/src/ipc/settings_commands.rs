@@ -6,9 +6,9 @@
 //! `crate::error::Result<T>`.
 
 use serde_json::Value;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
-use crate::error::Result;
+use crate::error::{AppError, Result};
 use crate::ipc::state::AppState;
 use crate::settings::{window, Manifest};
 
@@ -52,4 +52,21 @@ pub async fn get_settings_manifest(state: State<'_, AppState>) -> Result<Manifes
 #[tauri::command]
 pub async fn open_settings(app: AppHandle) -> Result<()> {
     window::open_or_focus(&app)
+}
+
+/// Open the diagnostic log directory in the OS file manager (§7.4 "打开日志目录").
+/// Resolves `app.path().app_log_dir()` and reveals it via the opener plugin.
+/// Returns the resolved directory path as a string so the frontend can show it.
+#[tauri::command]
+pub async fn open_log_dir(app: AppHandle) -> Result<String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| AppError::Other(format!("resolve app_log_dir: {e}")))?;
+    std::fs::create_dir_all(&dir)?;
+    app.opener()
+        .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|e| AppError::Other(e.to_string()))?;
+    Ok(dir.to_string_lossy().into_owned())
 }

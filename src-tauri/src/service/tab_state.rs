@@ -16,7 +16,7 @@ use parking_lot::Mutex;
 use typst_layout::PagedDocument;
 
 use crate::domain::compile_result::CompileOutcome;
-use crate::domain::disk_version::DiskVersion;
+use crate::domain::disk_version::{DiskVersion, FileIdentity};
 use crate::domain::document::{ConflictState, DocumentId, DocumentMeta, DocumentOrigin};
 use crate::typst_engine::world::EditorWorld;
 
@@ -39,6 +39,28 @@ pub struct TabRuntime {
     /// by `handle_external_change` to distinguish an external edit from a
     /// touch-only change.
     pub disk_version: Option<DiskVersion>,
+    /// On-disk file identity (inode) captured alongside `disk_version` (§5.4).
+    /// Used to detect the `Replaced` conflict: an external tool rewrote the file
+    /// with the SAME bytes (so `disk_version` equality holds) but a NEW inode.
+    /// [`FileIdentity::UNKNOWN`] for untitled docs or platforms without a stable
+    /// inode — the `Replaced` check then degrades to "never fire" safely.
+    pub file_identity: FileIdentity,
+    /// Consecutive compiler-panic count for this document (§6.2 backoff). Reset
+    /// to 0 on any successful compile. When it reaches
+    /// [`PANIC_BACKOFF_THRESHOLD`] the supervisor enters a cooling-off period
+    /// during which recompile signals are skipped, so a pathological doc can't
+    /// spin the worker. Tracked here (per-tab) rather than on the supervisor
+    /// because it's a per-document property.
+    ///
+    /// [`PANIC_BACKOFF_THRESHOLD`]: super::compile_supervisor::PANIC_BACKOFF_THRESHOLD
+    pub consecutive_panic_count: u32,
+    /// Instant after which the worker may retry a panicking document (§6.2
+    /// backoff). `None` when not in backoff. Stored as an `Instant`-equivalent
+    /// epoch millis to avoid an `Instant` field (which isn't `Debug`-friendly in
+    /// all contexts); the supervisor compares against `Instant::now()`. Set
+    /// when `consecutive_panic_count` first hits the threshold; cleared on a
+    /// successful compile.
+    pub panic_cooldown_until: Option<std::time::Instant>,
 }
 
 /// Per-tab state: the editor world (lock-free during compile) + locked runtime.
@@ -75,6 +97,9 @@ impl TabState {
                 last_outcome: CompileOutcome::ok(0),
                 last_compiled_revision: None,
                 disk_version: None,
+                file_identity: FileIdentity::UNKNOWN,
+                consecutive_panic_count: 0,
+                panic_cooldown_until: None,
             }),
         }
     }
@@ -91,6 +116,9 @@ impl TabState {
                 last_outcome: CompileOutcome::ok(0),
                 last_compiled_revision: None,
                 disk_version: None,
+                file_identity: FileIdentity::UNKNOWN,
+                consecutive_panic_count: 0,
+                panic_cooldown_until: None,
             }),
         }
     }

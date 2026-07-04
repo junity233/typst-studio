@@ -61,7 +61,11 @@ export function DiagnosticsPanel({
   );
 
   return (
-    <section className={"diagnostics" + (collapsed ? " collapsed" : "")}>
+    <section
+      className={"diagnostics" + (collapsed ? " collapsed" : "")}
+      data-diagnostics-panel=""
+      data-diagnostics-collapsed={collapsed ? "true" : "false"}
+    >
       <div className="diagnostics-header">
         <button className="diagnostics-toggle" onClick={onToggle}>
           {collapsed ? "▸" : "▾"} Diagnostics

@@ -33,6 +33,7 @@ use crate::domain::registry::{DocumentRegistry, SharedRegistry};
 use crate::fs::watcher;
 use crate::typst_engine::MemoryVfs;
 
+use super::compile_supervisor::CompileSupervisor;
 use super::compile_worker::CompileWorker;
 use super::editor_service::Emitter;
 use super::tab_state::TabState;
@@ -88,6 +89,11 @@ pub struct TabStore {
     /// directly, so it is deliberately NOT inserted here.
     pub vfs: Arc<MemoryVfs>,
     pub emitter: Arc<dyn Emitter>,
+    /// Process-wide compile supervision (§6.2): the concurrency-limiting
+    /// semaphore + the shutdown flag. Shared into each worker's compile closure
+    /// so the cap applies across all tabs. Defaults to a fresh supervisor with
+    /// the policy-derived cap; tests can inject a custom one.
+    pub supervisor: CompileSupervisor,
 }
 
 impl TabStore {
@@ -101,6 +107,7 @@ impl TabStore {
             loose_watchers: Arc::new(RwLock::new(HashMap::new())),
             vfs: Arc::new(MemoryVfs::new()),
             emitter,
+            supervisor: CompileSupervisor::new(),
         }
     }
 
@@ -299,7 +306,7 @@ pub(crate) fn path_exists(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
-use crate::domain::disk_version::DiskVersion;
+use crate::domain::disk_version::{DiskVersion, FileIdentity};
 use crate::domain::path::canonicalize_for_identity;
 
 /// The shared core of the external-modification handler, callable from the
@@ -355,60 +362,184 @@ pub(crate) fn handle_external_change_locked(
         None => return,
     };
 
-    // Read the new on-disk version. Distinguish "file deleted" (NotFound) from
-    // other read failures (permissions, transient IO): only the former is
-    // Missing (§8.4); a transient error is logged and ignored so we don't
-    // wrongly tell the user their file was deleted. Try the canonical path
-    // first (it may still exist), then the raw event path.
-    let new_version = canon
-        .as_deref()
-        .and_then(|c| match DiskVersion::from_path(c) {
-            Ok(v) => Some(v),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => {
-                tracing::warn!("disk version read failed for {}: {e}", c.display());
-                None
-            }
-        })
-        .or_else(|| match DiskVersion::from_path(path) {
-            Ok(v) => Some(v),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => {
-                tracing::warn!("disk version read failed for {}: {e}", path.display());
-                None
-            }
-        });
-    let new_version = match new_version {
-        // NotFound on both candidate paths → the file is genuinely gone.
-        None if !path_exists(path) && canon.as_deref().is_none_or(|c| !c.exists()) => {
-            set_conflict(&tab, id, emitter, ConflictState::Missing, None);
-            return;
-        }
-        // A transient read failure (not NotFound, or NotFound on one path but
-        // the other still exists) → don't classify as Missing; skip this event.
-        None => return,
-        Some(v) => v,
+    // Read the new on-disk version. Distinguish THREE failure modes (§5.4):
+    //   - NotFound → the file was deleted → `Missing`.
+    //   - PermissionDenied → the file became read-only/inaccessible →
+    //     `PermissionChanged` (NEW in §5.4; previously lumped into the
+    //     transient-error skip, so the user was never told their file became
+    //     unreadable).
+    //   - any other IO error → transient; skip (don't wrongly classify).
+    // Try the canonical path first (it may still exist), then the raw event path.
+    let read_result = read_disk_version(canon.as_deref().unwrap_or(path));
+    // Fall back to the raw event path only if the canonical read wasn't a
+    // definitive Ok (NotFound on the canonical path may simply mean the
+    // canonicalization failed for a deleted file whose raw path still resolves).
+    let read_result = match read_result {
+        VersionRead::Ok(_) => read_result,
+        other => merge_non_ok(other, read_disk_version(path)),
     };
-    // The path that still exists on disk (canonical form preferred).
+
+    // The path that still exists on disk (canonical form preferred), for any
+    // follow-up read (disk content / file identity).
     let live_path = canon.as_deref().filter(|c| c.exists()).unwrap_or(path);
 
-    let (stored_version, dirty) = {
+    match read_result {
+        VersionRead::PermissionDenied => {
+            // §5.4: the file still exists but is now unreadable. Previously this
+            // was silently skipped; now it surfaces as PermissionChanged so the
+            // user can fix permissions or Save As.
+            set_conflict(&tab, id, emitter, ConflictState::PermissionChanged, None);
+            return;
+        }
+        VersionRead::Other(msg) => {
+            // A genuinely transient error (not NotFound, not PermissionDenied).
+            // Don't classify as anything — log and skip, as before.
+            tracing::warn!("disk version read failed for {}: {msg}", live_path.display());
+            return;
+        }
+        VersionRead::NotFound => {
+            // NotFound on both candidate paths → the file is genuinely gone.
+            if !path_exists(path) && canon.as_deref().is_none_or(|c| !c.exists()) {
+                set_conflict(&tab, id, emitter, ConflictState::Missing, None);
+                return;
+            }
+            // One path was NotFound but the other still exists → transient
+            // (e.g. canonicalization race). Skip without classifying.
+            return;
+        }
+        VersionRead::Ok(new_version) => {
+            // Fall through to the content/identity comparison below.
+            handle_version_change(&tab, id, live_path, new_version, emitter, vfs, workers);
+        }
+    }
+}
+
+/// Outcome of a single on-disk [`DiskVersion`] read, with the three §5.4
+/// failure modes distinguished. `Other` carries the message (not the io::Error)
+/// so the enum is [`Clone`] — needed when merging two candidate-path reads.
+#[derive(Clone)]
+enum VersionRead {
+    Ok(DiskVersion),
+    NotFound,
+    PermissionDenied,
+    Other(String),
+}
+
+/// Read a [`DiskVersion`] from `path`, classifying the io error per §5.4.
+fn read_disk_version(path: &Path) -> VersionRead {
+    match DiskVersion::from_path(path) {
+        Ok(v) => VersionRead::Ok(v),
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound => VersionRead::NotFound,
+            std::io::ErrorKind::PermissionDenied => VersionRead::PermissionDenied,
+            _ => VersionRead::Other(e.to_string()),
+        },
+    }
+}
+
+/// Merge two non-Ok [`VersionRead`]s from the canonical + raw candidate paths.
+/// Preference order: `PermissionDenied` (the file exists but is unreadable — the
+/// most actionable signal) beats `NotFound` beats `Other`. An `Ok` always wins
+/// (the caller passes `other` only when the first read was non-Ok, but a `Ok`
+/// fallback means the file is fine).
+fn merge_non_ok(_first: VersionRead, fallback: VersionRead) -> VersionRead {
+    match (&_first, &fallback) {
+        (VersionRead::Ok(_), _) | (_, VersionRead::Ok(_)) => {
+            // An Ok read always wins — the file is readable via at least one path.
+            if matches!(_first, VersionRead::Ok(_)) {
+                _first
+            } else {
+                fallback
+            }
+        }
+        (VersionRead::PermissionDenied, _) | (_, VersionRead::PermissionDenied) => {
+            VersionRead::PermissionDenied
+        }
+        (VersionRead::NotFound, _) | (_, VersionRead::NotFound) => VersionRead::NotFound,
+        _ => _first,
+    }
+}
+
+/// The content-and-identity comparison half of [`handle_external_change_locked`],
+/// split out so the Ok(version) arm stays readable. Implements the §8.4 + §5.4
+/// rules for a successfully-read new on-disk version:
+/// - content identical + inode identical → no-op (self-save / touch).
+/// - content identical + inode CHANGED → `Replaced` (dirty) or silent re-baseline (clean).
+/// - content differs + dirty → `Modified` (carrying the new disk_version + disk content).
+/// - content differs + clean → auto-reload.
+fn handle_version_change(
+    tab: &Arc<TabState>,
+    id: DocumentId,
+    live_path: &Path,
+    new_version: DiskVersion,
+    emitter: &Arc<dyn Emitter>,
+    vfs: &Arc<MemoryVfs>,
+    workers: &Workers,
+) {
+    // Snapshot stored version + inode + dirty under a brief lock.
+    let (stored_version, stored_identity, dirty) = {
         let rt = tab.state.lock();
-        (rt.disk_version.clone(), rt.meta.dirty)
+        (rt.disk_version, rt.file_identity, rt.meta.dirty)
     };
 
-    // Content identical to the stored version (mtime-only change, §8.4 last
-    // bullet, OR the app's own save whose version `mark_saved` just recorded):
-    // no-op — no reload, no recompile.
-    if stored_version.as_ref() == Some(&new_version) {
+    let content_same = stored_version == Some(new_version);
+    // The file's CURRENT inode — captured best-effort (UNKNOWN degrades the
+    // Replaced check to "never fire" safely).
+    let new_identity = FileIdentity::from_path(live_path);
+    let identity_changed = stored_identity != FileIdentity::UNKNOWN
+        && new_identity != FileIdentity::UNKNOWN
+        && stored_identity != new_identity;
+
+    // Case 1: content identical.
+    if content_same {
+        if identity_changed {
+            // §5.4 Replaced: same bytes, new inode (e.g. `sed -i`, an atomic
+            // write-then-rename from another tool). The buffer is byte-identical
+            // to disk so there's nothing to merge — but we must re-baseline the
+            // stored identity so the NEXT change detects correctly, and (per
+            // §5.4) surface the replacement so the user knows an external tool
+            // swapped their file. For a dirty buffer we mark it a conflict
+            // (conservative: the user has unsaved edits and the file identity
+            // changed under them). For a clean buffer we silently re-baseline
+            // (the bytes match, so there's no user-visible loss).
+            if dirty {
+                set_conflict(
+                    tab,
+                    id,
+                    emitter,
+                    ConflictState::Replaced { identity_changed: true },
+                    None,
+                );
+            } else {
+                // Clean buffer: re-baseline the inode silently (bytes match, no
+                // user-visible change) and update the stored version for parity.
+                let mut rt = tab.state.lock();
+                rt.disk_version = Some(new_version);
+                rt.file_identity = new_identity;
+            }
+            return;
+        }
+        // Content identical AND inode identical (or inode unknown): a touch-only
+        // change or the app's own save (whose version `mark_saved` just
+        // recorded). No-op — no reload, no recompile.
         return;
     }
 
+    // Case 2: content differs.
     if dirty {
-        // Buffer has unsaved edits → never clobber. Surface the conflict with
-        // the disk content so the UI can offer compare / use-disk / overwrite.
+        // Buffer has unsaved edits → never clobber. Surface Modified with the
+        // disk content (for the compare view) AND the new disk_version (carried
+        // Rust-side so re-detection / use-disk knows the target version).
         let disk_content = std::fs::read_to_string(live_path).ok();
-        set_conflict(&tab, id, emitter, ConflictState::Modified, disk_content);
+        set_conflict(
+            tab,
+            id,
+            emitter,
+            ConflictState::Modified {
+                disk_version: Some(new_version),
+            },
+            disk_content,
+        );
         return;
     }
 
@@ -416,7 +547,7 @@ pub(crate) fn handle_external_change_locked(
     // reload without marking dirty.
     let Ok(content) = std::fs::read_to_string(live_path) else {
         // File vanished between the version read and the content read.
-        set_conflict(&tab, id, emitter, ConflictState::Missing, None);
+        set_conflict(tab, id, emitter, ConflictState::Missing, None);
         return;
     };
     tab.world.set_text(content.clone());
@@ -426,6 +557,7 @@ pub(crate) fn handle_external_change_locked(
         rt.meta.dirty = false;
         rt.meta.conflict = ConflictState::None;
         rt.disk_version = Some(new_version);
+        rt.file_identity = new_identity;
         (
             rt.meta.revision,
             rt.meta.origin.canonical_path().map(|p| p.to_path_buf()),

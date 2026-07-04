@@ -37,11 +37,21 @@ export interface Document {
   /** Monotonic content revision; bumped on every edit (§7). */
   revision: number;
   /**
-   * External-modification conflict state (§8.4). "modified" when the disk
-   * changed while the buffer had unsaved edits; "missing" when the backing
-   * file was deleted. Reset to "none" on user edit (they're moving past it).
+   * External-modification conflict state (§5.4 / §8.4). One of
+   * "modified"/"missing"/"permission_changed"/"replaced" when the watcher
+   * detected a disk change that could not be auto-applied; "none" otherwise.
+   * Per §8.4, user typing does NOT auto-clear this — only explicit resolution
+   * actions (use-disk / overwrite / save-as / discard) clear it.
    */
   conflict: ConflictState;
+  /**
+   * The disk content captured at conflict-detection time (§5.4), present on
+   * "modified" so the ConflictDialog can show a side-by-side compare without a
+   * second IPC round-trip. `null` for the other variants (no readable disk
+   * version to diff against). Set by `setConflict`; cleared when conflict is
+   * resolved.
+   */
+  conflictDiskContent: string | null;
   status: CompileStatus;
   durationMs: number | null;
   svgPages: string[];
@@ -62,6 +72,7 @@ export function documentFromOpened(doc: OpenedDocument): Document {
     revision: 0,
     // No external-modification conflict on open (§8.4).
     conflict: "none",
+    conflictDiskContent: null,
     status: "idle",
     durationMs: null,
     svgPages: [],
@@ -99,14 +110,29 @@ export interface DocumentsState {
     lineMap: LineRect[],
   ) => void;
   /**
-   * Set a document's external-modification conflict state (§8.4). A simple
-   * setter — the conflict state is not revision-tagged.
+   * Set a document's external-modification conflict state (§5.4 / §8.4). A
+   * simple setter — the conflict state is not revision-tagged. The optional
+   * `diskContent` (present on "modified") is stashed on the doc so the
+   * ConflictDialog can show a compare view without a second IPC round-trip;
+   * passing `null` (or omitting) clears any previously-stashed disk content.
    */
-  setConflict: (id: string, conflict: ConflictState) => void;
+  setConflict: (
+    id: string,
+    conflict: ConflictState,
+    diskContent?: string | null,
+  ) => void;
   /** Clear dirty + (re)bind path on a successful save (also clears conflict). */
   markSaved: (id: string, path: string) => void;
   /** Re-mark a document dirty (session-restore path). */
   reMarkDirty: (id: string) => void;
+  /**
+   * Rebind a document's path after a rename/move (§6.4 联动). Updates `path` +
+   * `title` (derived from the new path's basename) WITHOUT touching dirty /
+   * content / revision (the buffer is preserved across the rename — only the
+   * disk location changed). Used by the `docs_rebound` event handler so tab
+   * titles, breadcrumbs, and the active-file highlight track the rename.
+   */
+  rebindDocPath: (id: string, newPath: string) => void;
   /** Read-only lookup. */
   getDocument: (id: string) => Document | undefined;
 }
@@ -136,8 +162,14 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
       if (!doc || content === doc.content) return s;
       // Bump the optimistic revision. The backend's next compile event will
       // carry this same revision (or higher); older events are then ignored.
-      // Reset conflict to "none" (§8.4): the user is editing, so they're moving
-      // past any prior external-change conflict.
+      //
+      // §8.4 / §5.4 FIX: do NOT reset `conflict` here. The previous version
+      // cleared conflict on every edit, which silently swallowed an
+      // unresolved external change ("用户继续输入不能自动清除 conflict"). Only
+      // explicit resolution actions (use-disk / overwrite / save-as / discard)
+      // clear the flag — see setConflict / markSaved / clearConflict. This
+      // means a conflicted doc the user keeps typing in STAYS conflicted (and
+      // the in-place save gate keeps blocking) until they resolve it.
       return {
         documents: {
           ...s.documents,
@@ -146,7 +178,6 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
             content,
             dirty: true,
             revision: doc.revision + 1,
-            conflict: "none",
           },
         },
       };
@@ -179,11 +210,22 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
       };
     }),
 
-  setConflict: (id, conflict) =>
+  setConflict: (id, conflict, diskContent = null) =>
     set((s) => {
       const doc = s.documents[id];
       if (!doc) return s;
-      return { documents: { ...s.documents, [id]: { ...doc, conflict } } };
+      return {
+        documents: {
+          ...s.documents,
+          [id]: {
+            ...doc,
+            conflict,
+            // Stash the disk content for the compare view; clear it when the
+            // conflict resolves to "none" so stale content doesn't linger.
+            conflictDiskContent: conflict === "none" ? null : diskContent,
+          },
+        },
+      };
     }),
 
   markSaved: (id, path) =>
@@ -199,8 +241,10 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
             title: path.split(/[\\/]/).pop() ?? doc.title,
             dirty: false,
             // A successful save resolves any external-change conflict (§8.4):
-            // the buffer is now in sync with disk.
+            // the buffer is now in sync with disk. Also drop the stashed disk
+            // content — there's nothing left to compare.
             conflict: "none",
+            conflictDiskContent: null,
           },
         },
       };
@@ -211,6 +255,25 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
       const doc = s.documents[id];
       if (!doc) return s;
       return { documents: { ...s.documents, [id]: { ...doc, dirty: true } } };
+    }),
+
+  rebindDocPath: (id, newPath) =>
+    set((s) => {
+      const doc = s.documents[id];
+      if (!doc) return s;
+      return {
+        documents: {
+          ...s.documents,
+          [id]: {
+            ...doc,
+            path: newPath,
+            // Title is the new path's basename (matches the backend's
+            // DocumentMeta derivation). Dirty/content/revision/conflict are all
+            // preserved — a rename moves the file, not the edits.
+            title: newPath.split(/[\\/]/).pop() ?? doc.title,
+          },
+        },
+      };
     }),
 
   getDocument: (id) => get().documents[id],

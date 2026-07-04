@@ -12,6 +12,7 @@ import {
   useDocumentsStore,
   type Document,
 } from "./documentsStore";
+import { useSaveStateStore } from "./saveStateStore";
 
 /**
  * Phase 4 (design §10): the **views store**. This holds ONLY view state — the
@@ -65,8 +66,15 @@ export interface TabsState {
     svgPages: string[],
     lineMap: LineRect[],
   ) => void;
-  /** Set a document's conflict state (§8.4). Delegates to documentsStore. */
-  setConflict: (id: string, conflict: ConflictState) => void;
+  /**
+   * Set a document's conflict state (§5.4 / §8.4). Delegates to documentsStore.
+   * The optional `diskContent` is stashed for the ConflictDialog compare view.
+   */
+  setConflict: (
+    id: string,
+    conflict: ConflictState,
+    diskContent?: string | null,
+  ) => void;
   /** Clear dirty + rebind path on save. Delegates to documentsStore. */
   markSaved: (id: string, path: string) => void;
 }
@@ -105,6 +113,7 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
     }
     useDiagnosticsStore.getState().clear(id);
     useDocumentsStore.getState().closeDocument(id);
+    useSaveStateStore.getState().clear(id);
     set((s) => {
       const tabs = s.tabs.filter((tabId) => tabId !== id);
       let activeId = s.activeId;
@@ -136,8 +145,8 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
   setPages: (id, revision, svgPages, lineMap) =>
     useDocumentsStore.getState().setPages(id, revision, svgPages, lineMap),
 
-  setConflict: (id, conflict) =>
-    useDocumentsStore.getState().setConflict(id, conflict),
+  setConflict: (id, conflict, diskContent) =>
+    useDocumentsStore.getState().setConflict(id, conflict, diskContent),
 
   markSaved: (id, path) => {
     useDocumentsStore.getState().markSaved(id, path);

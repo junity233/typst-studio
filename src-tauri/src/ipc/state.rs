@@ -23,6 +23,7 @@ use crate::net::client::HttpClient;
 use crate::service::editor_service::{EditorService, Emitter};
 use crate::service::export_service::ExportService;
 use crate::service::lsp_service::LspService;
+use crate::service::save_coordinator::SaveCoordinator;
 use crate::service::session::SessionService;
 use crate::service::workspace_service::WorkspaceService;
 use crate::settings::SettingsService;
@@ -115,4 +116,13 @@ pub struct AppState {
     pub session: Arc<SessionService>,
     /// Reusable HTTP client (paste remote-image fetch + future downloads).
     pub net: Arc<HttpClient>,
+    /// Unified save orchestration (§5.3): Save / Save As / Save All under one
+    /// coordinator with explicit `SaveState` + the §5.2 atomic-save protocol.
+    /// A top-level coordinator (like export/recovery) holding an
+    /// `Arc<DocumentService>`.
+    pub save: Arc<SaveCoordinator>,
+    /// Watcher-health polling fallback (§6.3): a background thread that
+    /// re-checks open docs' DiskVersions as a safety net for a silent/dead
+    /// native watcher, plus the watcher-failed flag the frontend warns on.
+    pub watcher_health: Arc<crate::service::watcher_health::WatcherHealth>,
 }

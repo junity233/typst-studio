@@ -25,6 +25,12 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+# Single-instance enforcement + .typ file routing (§6.1). Desktop-only — the
+# crate has no mobile build, so the `.plugin(...)` registration in lib.rs is
+# gated by `#[cfg(desktop)]`. The dep is kept unconditional because a target-cfg
+# table here would accidentally swallow the deps below it; on mobile the crate
+# compiles but is never linked into the app (the only call site is cfg-gated).
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -53,7 +59,11 @@ tokio-tungstenite = "0.26"
 futures-util = "0.3"
 which = "7"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Rolling file appender for the diagnostic log (§7.4): daily rotation, max 5
+# files. Per-file size cap is approximate (controlled by rotation frequency);
+# tracing-appender does not enforce a byte limit.
+tracing-appender = "0.2"
 
 # Concurrency
 parking_lot = "0.12"
@@ -71,6 +81,11 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Workspace filesystem watching (file-tree live updates).
 notify = "8"
+
+# Safe deletion via the system trash / recycle bin (§5.5). Cross-platform:
+# macOS NSWorkspace recycle, Windows FileOperation FO_DELETE with recycle, Linux
+# freedesktop Trash.
+trash = "5"
 
 # Rust ↔ TypeScript type generation (optional, behind feature)
 ts-rs = { version = "12", features = ["uuid-impl", "chrono-impl", "no-serde-warnings"], optional = true }

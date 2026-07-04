@@ -63,7 +63,16 @@ export interface WorkspaceState {
 
   /** File operations (each also refreshes the affected directory). */
   createEntry: (rel: string, kind: EntryKind) => Promise<void>;
+  /**
+   * Rename/move an entry. §6.4: the backend rebinds open docs and emits
+   * `docs_rebound`; the store only refreshes the file tree (the doc rebind is
+   * handled by the event subscription in useTypstCompile).
+   */
   renameEntry: (from: string, to: string) => Promise<void>;
+  /**
+   * Delete an entry via the system trash (§5.5). Rejects with `delete_blocked`
+   * when a dirty document is open under the target.
+   */
   deleteEntry: (rel: string) => Promise<void>;
 }
 

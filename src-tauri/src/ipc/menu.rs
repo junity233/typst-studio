@@ -1,4 +1,5 @@
-//! Native application menu (File / Edit / View / Export / Help).
+//! Native application menu (File / Edit / View / Help). Export is nested under
+//! File (File → Export → PDF/PNG/SVG).
 //!
 //! Built once at startup via [`build_menu`] and applied app-wide (macOS global
 //! menubar; Windows/Linux per-window). Menu items with ids emit a `menu_event`
@@ -40,6 +41,22 @@ pub mod ids {
     pub const EXPORT_PNG: &str = "export-png";
     pub const EXPORT_SVG: &str = "export-svg";
     pub const OPEN_SETTINGS: &str = "open-settings";
+
+    /// Prefix for "Open Recent > <workspace>" submenu items. The full id is
+    /// `open-recent:<index>` where `<index>` is the 0-based position into the
+    /// session's `recent_workspaces` list. (§7.2 "最近工作区".)
+    pub const OPEN_RECENT_PREFIX: &str = "open-recent:";
+
+    /// Build an "Open Recent" item id for `index`.
+    pub fn open_recent(index: usize) -> String {
+        format!("{}{}", OPEN_RECENT_PREFIX, index)
+    }
+
+    /// Parse an "Open Recent" item id back into its list index, or `None` if the
+    /// id isn't an open-recent item.
+    pub fn parse_open_recent(id: &str) -> Option<usize> {
+        id.strip_prefix(OPEN_RECENT_PREFIX)?.parse::<usize>().ok()
+    }
 }
 
 /// Build the full application menu. On macOS the first submenu is the app-name
@@ -49,7 +66,25 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     #[cfg(target_os = "macos")]
     let app_menu = build_app_name_menu(app)?;
 
-    // ---- File ----
+    // ---- Export (nested under File; built first so File can reference it) ----
+    let export = Submenu::with_items(
+        app,
+        "Export",
+        true,
+        &[
+            &MenuItem::with_id(app, ids::EXPORT_PDF, "PDF…", true, None::<&str>)?,
+            &MenuItem::with_id(app, ids::EXPORT_PNG, "PNG…", true, None::<&str>)?,
+            &MenuItem::with_id(app, ids::EXPORT_SVG, "SVG…", true, None::<&str>)?,
+        ],
+    )?;
+
+    // ---- Open Recent (nested under File; §7.2 "最近工作区") ----
+    // Populated from the session's `recent_workspaces` at menu-build time. The
+    // menu is static for the session's lifetime; reopening a workspace refreshes
+    // the list on the NEXT launch. (A live-refresh menu is a future polish.)
+    let open_recent = build_open_recent_submenu(app)?;
+
+    // ---- File (Export + Open Recent live here as nested submenus) ----
     let file = Submenu::with_items(
         app,
         "File",
@@ -64,11 +99,14 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 true,
                 Some("CmdOrCtrl+Shift+O"),
             )?,
+            &open_recent,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, ids::SAVE, "Save", true, Some("CmdOrCtrl+S"))?,
             &MenuItem::with_id(app, ids::SAVE_AS, "Save As…", true, Some("CmdOrCtrl+Shift+S"))?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, ids::CLOSE_TAB, "Close Tab", true, Some("CmdOrCtrl+W"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &export,
         ],
     )?;
 
@@ -123,18 +161,6 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         ],
     )?;
 
-    // ---- Export (submenu of items; lives inside the menubar on macOS) ----
-    let export = Submenu::with_items(
-        app,
-        "Export",
-        true,
-        &[
-            &MenuItem::with_id(app, ids::EXPORT_PDF, "PDF…", true, None::<&str>)?,
-            &MenuItem::with_id(app, ids::EXPORT_PNG, "PNG…", true, None::<&str>)?,
-            &MenuItem::with_id(app, ids::EXPORT_SVG, "SVG…", true, None::<&str>)?,
-        ],
-    )?;
-
     // ---- Help (About) ----
     let about_meta = AboutMetadataBuilder::new()
         .name(Some(app.package_info().name.clone()))
@@ -150,14 +176,86 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     // ---- Assemble top-level (macOS: only submenus) ----
     #[cfg(target_os = "macos")]
     {
-        Menu::with_items(app, &[&app_menu, &file, &edit, &view, &export, &help])
+        Menu::with_items(app, &[&app_menu, &file, &edit, &view, &help])
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Menu::with_items(app, &[&file, &edit, &view, &export, &help])
+        Menu::with_items(app, &[&file, &edit, &view, &help])
     }
 }
 
+/// Build the "Open Recent" submenu (§7.2 "最近工作区") from the session's
+/// `recent_workspaces`. Reads `session.json` directly from the app config dir
+/// (the session service isn't constructed until `.setup`, which runs AFTER
+/// menu building). On any failure (missing dir, unreadable file, empty list)
+/// the submenu holds a single disabled "No recent workspaces" item so the menu
+/// structure is stable across launches.
+fn build_open_recent_submenu<R: Runtime>(
+    app: &AppHandle<R>,
+) -> tauri::Result<Submenu<R>> {
+    let recents = read_recent_workspaces(app);
+    if recents.is_empty() {
+        // A disabled placeholder keeps the submenu structure stable.
+        let placeholder =
+            MenuItem::with_id(app, "open-recent-empty", "No recent workspaces", false, None::<&str>)?;
+        return Submenu::with_items(app, "Open Recent", true, &[&placeholder]);
+    }
+    // Build one item per recent workspace, labeled by its basename (full path is
+    // long; the basename + the index-id → the frontend resolves the full path).
+    // Collect through `Result` so a single OS-menu construction failure
+    // propagates as `?` (degrades) instead of panicking the app at startup.
+    let items: Vec<MenuItem<R>> = recents
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            let label = short_label(path);
+            MenuItem::with_id(app, ids::open_recent(i), label, true, None::<&str>)
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    // Collect as trait-object references for `with_items`.
+    let item_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> =
+        items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<R>).collect();
+    Submenu::with_items(app, "Open Recent", true, &item_refs)
+}
+
+/// Read the `recent_workspaces` list directly from `session.json` in the app
+/// config dir. Best-effort: any failure (no config dir, missing/corrupt file,
+/// no `recentWorkspaces` field) → empty vec. Used only at menu-build time to
+/// populate "Open Recent"; the authoritative read is the SessionService in
+/// `.setup`.
+fn read_recent_workspaces<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
+    use tauri::Manager as _;
+    let Ok(cfg_dir) = app.path().app_config_dir() else {
+        return Vec::new();
+    };
+    let path = cfg_dir.join("session.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Vec::new();
+    };
+    v.get("recentWorkspaces")
+        .and_then(|w| w.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A short label for a workspace path: its final path segment (folder name),
+/// falling back to the full path if empty. macOS-style: the basename alone is
+/// how recent folders appear in native app menus.
+fn short_label(path: &str) -> String {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    match trimmed.rsplit(['/', '\\']).next() {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => path.to_string(),
+    }
+}
 /// The macOS app-name submenu: About / Services / Hide / Hide Others / Quit.
 /// Quit (Cmd+Q) is a predefined item whose accelerator + behavior are baked in.
 #[cfg(target_os = "macos")]

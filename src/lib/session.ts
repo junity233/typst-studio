@@ -17,7 +17,7 @@
  * locked) is logged but never surfaces to the user, since losing one capture is
  * harmless (the next change re-captures).
  */
-import { getSession, saveSession } from "./tauri";
+import { getSession, saveSession, recordWorkspace as recordWorkspaceBE } from "./tauri";
 import type { OpenDocRecord, Session } from "./types";
 
 /**
@@ -33,9 +33,15 @@ export async function loadSession(): Promise<Session> {
   }
 }
 
-/** Record the last-opened workspace path (pass "" to clear). */
+/**
+ * Record the last-opened workspace path (§7.2 "最近工作区"). Delegates to the
+ * backend `record_workspace` command, which bumps the path to the front of the
+ * recent-workspaces list (deduped + capped) AND sets it as the current
+ * workspace. Pass "" to clear the current-workspace marker only (the recent
+ * list is untouched). Best-effort: a failure is logged, never thrown.
+ */
 export function recordWorkspace(path: string): void {
-  saveSession({ lastWorkspace: path }).catch((e) =>
+  recordWorkspaceBE(path).catch((e) =>
     console.warn("[session] recordWorkspace failed:", e),
   );
 }
@@ -150,11 +156,13 @@ export interface RestoredDoc {
  * The document-opening operations [`restoreOpenDocuments`] needs. Injected so
  * the restore logic is unit-testable without the Tauri runtime or a live store.
  *
- * - `openDisk(path)` → opens a disk file, returns its new tab id.
+ * - `openDisk(path)` → opens a disk file, returns its new tab id, or `null` to
+ *   SKIP this record (e.g. when crash-recovery already opened it as a dirty
+ *   in-memory doc — §5.1.3 recovery wins over session).
  * - `openUntitled(content)` → opens an untitled buffer, returns its new tab id.
  */
 export interface RestoreOps {
-  openDisk: (path: string) => Promise<string>;
+  openDisk: (path: string) => Promise<string | null>;
   openUntitled: (content: string) => Promise<string>;
 }
 
@@ -187,6 +195,10 @@ export async function restoreOpenDocuments(
     try {
       if (record.kind === "disk") {
         const id = await ops.openDisk(record.path);
+        // `null` means the caller deliberately skipped this record (e.g.
+        // crash-recovery already covered it — §5.1.3). Don't push it to the
+        // restored list; it's neither a success nor a failure.
+        if (id === null) continue;
         restored.push({ record, id, dirty: record.dirty });
       } else {
         const id = await ops.openUntitled(record.content);
@@ -202,9 +214,18 @@ export async function restoreOpenDocuments(
 /** A default empty session (all fields zeroed). */
 export function emptySession(): Session {
   return {
+    // schemaVersion is backend-managed (§7.3); the FE never persists it. We
+    // surface it here only because the generated Session type requires it. 0
+    // is the "unknown / pre-versioning" sentinel, matching how an absent field
+    // deserializes on the backend.
+    schemaVersion: 0,
     lastWorkspace: "",
     lastFile: "",
     openDocuments: [],
     activeDocumentId: null,
+    // v2 fields default to absent (None/empty) — the backend fills them in.
+    windowBounds: null,
+    layout: null,
+    recentWorkspaces: [],
   };
 }

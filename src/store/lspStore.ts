@@ -19,6 +19,9 @@ export interface LspStatus {
   running: boolean;
   wsUrl: string;
   available: boolean;
+  /** §6.3: true while the accept loop is in backoff after a fatal listener
+   * error (waiting to retry). The StatusBar shows a "Reconnecting…" indicator. */
+  reconnecting: boolean;
 }
 
 interface LspStoreState {
@@ -32,7 +35,7 @@ interface LspStoreState {
   setRefCount: (fn: (n: number) => number) => void;
 }
 
-const OFFLINE: LspStatus = { running: false, wsUrl: "", available: false };
+const OFFLINE: LspStatus = { running: false, wsUrl: "", available: false, reconnecting: false };
 
 export const useLspStore = create<LspStoreState>((set) => ({
   status: OFFLINE,
