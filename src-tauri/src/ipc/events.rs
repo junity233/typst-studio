@@ -152,6 +152,70 @@ pub struct ConflictPayload {
     pub disk_content: Option<String>,
 }
 
+// --- Crash recovery (§5.1) --------------------------------------------------
+
+/// One recoverable document surfaced to the UI at startup (§5.1.3). The backend
+/// computes `disk_changed` by comparing the snapshot's recorded disk version to
+/// the file's current on-disk version, so the UI can decide the default action
+/// (recover the buffer vs. must-compare).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct RecoverableInfo {
+    /// The document id from the snapshot (a uuid string).
+    pub document_id: String,
+    pub title: String,
+    /// Canonical disk path, `None` for an Untitled snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_path: Option<String>,
+    /// Unix-millis capture timestamp.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub captured_at: i64,
+    /// True iff the disk file's current content differs from the version the
+    /// snapshot was captured against (or the file is missing). Drives the
+    /// "must compare" default for disk-changed docs (§5.1.3).
+    pub disk_changed: bool,
+}
+
+/// Payload of the `recovery_available` event (§5.1.3): emitted once at startup
+/// when recoverable snapshots exist (no clean-shutdown marker, or a snapshot
+/// newer than disk). The frontend shows a `RecoveryDialog` with one row per
+/// snapshot.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct RecoveryAvailablePayload {
+    pub snapshots: Vec<RecoverableInfo>,
+}
+
+/// Response of the `recover_document` IPC: enough to rebuild an in-memory
+/// document from a snapshot WITHOUT writing disk (§5.1.3 "恢复只创建内存文档").
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct RecoveredDocument {
+    pub document_id: String,
+    /// The unsaved buffer content from the snapshot.
+    pub content: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_path: Option<String>,
+    /// Origin tag (`"untitled"` / `"workspace"` / `"loose"`).
+    pub origin: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +233,14 @@ mod tests {
         LspStatusPayload::export(&cfg).unwrap();
         FsChangedPayload::export(&cfg).unwrap();
         ConflictPayload::export(&cfg).unwrap();
+        // Crash-recovery payloads (§5.1).
+        RecoverableInfo::export(&cfg).unwrap();
+        RecoveryAvailablePayload::export(&cfg).unwrap();
+        RecoveredDocument::export(&cfg).unwrap();
+        // DiskVersion is now serialized inside recovery snapshots.
+        crate::domain::disk_version::DiskVersion::export(&cfg).unwrap();
+        // CompareRecovery lives in recovery_commands but is an IPC wire type.
+        crate::ipc::recovery_commands::CompareRecovery::export(&cfg).unwrap();
         // Workspace + tree types (defined outside `events` but exported here as
         // the single ts-rs generation entry point).
         crate::service::workspace_service::WorkspaceMeta::export(&cfg).unwrap();

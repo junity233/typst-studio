@@ -9,6 +9,7 @@ import {
   openSettings,
   saveAs as saveAsBE,
   saveFile,
+  markCleanShutdown,
 } from "../lib/tauri";
 import { useTabsStore, readOrderedDocuments } from "../store/tabsStore";
 import { useDocumentsStore } from "../store/documentsStore";
@@ -180,6 +181,12 @@ async function handleOpenFile(): Promise<void> {
  * final tab list + active view is persisted for the next launch — the
  * fire-and-forget captures from the store actions may otherwise be cut off by
  * the window going away.
+ *
+ * Crash recovery (§5.1.2): right before `destroy()`, write the clean-shutdown
+ * marker so the next launch knows this session ended cleanly (every dirty doc
+ * was saved or explicitly discarded). The "Don't Save" path also calls
+ * `discardRecovery` per doc (handled in `closeTabWithConfirm`), so the user's
+ * explicit discards aren't offered again next launch.
  */
 async function handleCloseRequested(): Promise<void> {
   // Read the live view order + domain state fresh (no React selector) so the
@@ -188,6 +195,7 @@ async function handleCloseRequested(): Promise<void> {
   const dirty = docs.filter((t) => t.dirty);
   if (dirty.length === 0) {
     await captureAndSaveSession();
+    await markCleanShutdown();
     await getCurrentWindow().destroy();
     return;
   }
@@ -201,6 +209,7 @@ async function handleCloseRequested(): Promise<void> {
   if (choice === "cancel") return;
   if (choice === "discard") {
     await captureAndSaveSession();
+    await markCleanShutdown();
     await getCurrentWindow().destroy();
     return;
   }
@@ -209,6 +218,7 @@ async function handleCloseRequested(): Promise<void> {
     if (!(await saveTab(t.id))) return;
   }
   await captureAndSaveSession();
+  await markCleanShutdown();
   await getCurrentWindow().destroy();
 }
 

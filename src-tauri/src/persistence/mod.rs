@@ -18,6 +18,8 @@
 pub mod atomic;
 pub mod backup;
 pub mod migrate;
+pub mod recovery;
 
 pub use atomic::{cleanup_stale_temps, write_bytes, write_json};
 pub use backup::{load_json_with_backup, write_with_backup, LoadOutcome};
+pub use recovery::{RecoveryManifest, RecoveryService, RecoverySnapshot, SnapshotRef};

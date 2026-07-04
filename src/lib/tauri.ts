@@ -10,6 +10,10 @@ import type {
   OpenExternalFilePayload,
   OpenedDocument,
   OpenDocRecord,
+  RecoverableInfo,
+  RecoveredDocument,
+  RecoveryAvailablePayload,
+  CompareRecovery,
   Session,
   StartupProblem,
   StartupProblemsPayload,
@@ -381,6 +385,72 @@ export async function setDirty(
   dirty: boolean,
 ): Promise<void> {
   await invoke("set_dirty", { id, dirty });
+}
+
+// --- Crash recovery (§5.1) --------------------------------------------------
+
+/**
+ * Subscribe to `recovery_available`: emitted once at startup when recoverable
+ * snapshots exist (the prior session crashed, or a snapshot is newer than
+ * disk). The frontend shows a `RecoveryDialog` with one row per snapshot.
+ * Empty payload is never emitted — no event means no recovery offered.
+ */
+export async function onRecoveryAvailable(
+  handler: (payload: RecoveryAvailablePayload) => void,
+): Promise<UnlistenFn> {
+  return listen<RecoveryAvailablePayload>("recovery_available", (e) =>
+    handler(e.payload),
+  );
+}
+
+/**
+ * Re-fetch the recoverable list (§5.1.3). The dialog already receives the list
+ * via `onRecoveryAvailable`, but this lets it refresh after a discard.
+ */
+export async function listRecovery(): Promise<RecoverableInfo[]> {
+  return invoke<RecoverableInfo[]>("list_recovery");
+}
+
+/**
+ * Load one snapshot for an in-memory document rebuild (§5.1.3). Does NOT write
+ * disk — recovery creates a dirty in-memory doc from the snapshot content.
+ */
+export async function recoverDocument(
+  id: string,
+): Promise<RecoveredDocument> {
+  return invoke<RecoveredDocument>("recover_document", { id });
+}
+
+/**
+ * Delete one recovery snapshot (§5.1.4 "Don't Save"). The content will not be
+ * recoverable on the next launch. Idempotent.
+ */
+export async function discardRecovery(id: string): Promise<void> {
+  await invoke("discard_recovery", { id });
+}
+
+/** Delete ALL recovery snapshots (the dialog's "Discard All"). Idempotent. */
+export async function discardAllRecovery(): Promise<void> {
+  await invoke("discard_all_recovery");
+}
+
+/**
+ * Load both the snapshot content and the current disk content for a doc, so the
+ * UI can show a read-only side-by-side compare (§5.1.3 "比较"). `disk` is null
+ * when the file is missing or has no canonical path (Untitled).
+ */
+export async function compareRecovery(id: string): Promise<CompareRecovery> {
+  return invoke<CompareRecovery>("compare_recovery", { id });
+}
+
+/**
+ * Write the clean-shutdown marker (§5.1.2). Called by the close guard right
+ * before `window.destroy()`, after all dirty docs are saved or discarded. The
+ * marker tells the next launch that this session ended cleanly (no recovery
+ * offered unless a newer-than-disk snapshot still exists).
+ */
+export async function markCleanShutdown(): Promise<void> {
+  await invoke("mark_clean_shutdown");
 }
 
 // --- Paste-feature: remote image download -----------------------------------

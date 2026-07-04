@@ -36,13 +36,26 @@ use std::path::Path;
 /// Two versions are equal iff their content hashes AND sizes match — i.e. the
 /// bytes are (almost certainly) identical. The mtime is intentionally excluded
 /// from equality so a `touch` (unchanged bytes, new mtime) compares equal.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` (added in the crash-recovery batch §5.1.2) lets a
+/// [`RecoverySnapshot`](crate::persistence::recovery::RecoverySnapshot) record
+/// the disk version the snapshot was captured against, so startup recovery can
+/// tell whether the disk changed between snapshot capture and the next launch
+/// (§5.1.3 "当前磁盘是否变化").
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
 pub struct DiskVersion {
     /// Hash of the file bytes (non-crypto, fast). Combined with `size` below it
     /// uniquely identifies the content for change-detection purposes.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub content_hash: u64,
     /// Byte length of the file. Carried alongside the hash so a collision plus
     /// a length mismatch still flags a change (belt-and-suspenders).
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub size: u64,
 }
 

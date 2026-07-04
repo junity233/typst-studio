@@ -64,13 +64,39 @@ pub fn run() {
         // checks for unsaved tabs and either `destroy()`s the window or shows a
         // Save-All / Don't-Save / Cancel dialog. The Settings window (a
         // separate label) is left alone so it closes freely.
+        //
+        // On blur (focus loss), flush pending recovery snapshots immediately so
+        // the user's edits are durable before they switch away (§5.1.2 "窗口
+        // 失焦...立即 flush").
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
-                    use tauri::{Emitter as _, Manager as _};
+            // Only the main window participates in close interception and
+            // recovery flushes; the Settings window (and any future secondary
+            // window) closes freely and has nothing to recover.
+            if window.label() != "main" {
+                return;
+            }
+            use tauri::Manager as _;
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    // §5.1.2: flush pending snapshots before the close decision
+                    // is handed to the frontend, so even a fast destroy leaves
+                    // the dirty buffers recovered.
+                    if let Some(state) = window.app_handle().try_state::<crate::ipc::state::AppState>() {
+                        state.editor.flush_recovery();
+                    }
+                    use tauri::Emitter as _;
                     api.prevent_close();
                     let _ = window.app_handle().emit("close_requested", ());
                 }
+                tauri::WindowEvent::Focused(false) => {
+                    // §5.1.2: flush on blur. `try_state` is fine here — on the
+                    // very first blur before setup completes, there's nothing
+                    // to flush.
+                    if let Some(state) = window.app_handle().try_state::<crate::ipc::state::AppState>() {
+                        state.editor.flush_recovery();
+                    }
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -111,6 +137,13 @@ pub fn run() {
             ipc::session_commands::get_session,
             ipc::session_commands::save_session,
             ipc::session_commands::set_dirty,
+            // Crash-recovery commands (§5.1.3 / §5.1.4).
+            ipc::recovery_commands::list_recovery,
+            ipc::recovery_commands::recover_document,
+            ipc::recovery_commands::discard_recovery,
+            ipc::recovery_commands::discard_all_recovery,
+            ipc::recovery_commands::compare_recovery,
+            ipc::recovery_commands::mark_clean_shutdown,
             // Network: remote image download (paste feature).
             ipc::net_commands::fetch_url_to_file,
         ])
@@ -259,10 +292,65 @@ pub fn run() {
                 &mut startup_problems,
             ));
 
+            // Crash-recovery subsystem (§5.1). Resolved under the same config
+            // dir as session/settings. Built AFTER the session is loaded but
+            // BEFORE the AppState is managed, so the recovery service is wired
+            // into the editor before any tab can be opened.
+            //
+            // Recovery is fault-tolerant by design: a failure to construct the
+            // service (rare — it just creates a dir) degrades to recovery
+            // disabled and surfaces a startup problem, never blocking the app.
+            let recovery_dir = cfg_dir.join("recovery");
+            let recovery = crate::startup::load_or_problem(
+                "recovery",
+                || crate::persistence::recovery::RecoveryService::new(recovery_dir.clone()),
+                || crate::persistence::recovery::RecoveryService::new(std::env::temp_dir().join("typst-studio-recovery-fallback"))
+                    .expect("temp-dir fallback recovery service must construct"),
+                &mut startup_problems,
+            );
+            let recovery: Arc<crate::persistence::recovery::RecoveryService> = Arc::new(recovery);
+            // §5.1.2: clear the clean-shutdown marker FIRST so a crash during
+            // this session is detectable on the next launch. The marker is only
+            // re-written once a clean close completes.
+            recovery.clear_clean_shutdown();
+            // Wire the recovery sink into the editor so update_text/mark_saved
+            // snapshot/discard dirty buffers.
+            editor.document().set_recovery(recovery.clone());
+
+            // Startup recovery detection (§5.1.3). Offer recovery when:
+            //   - the prior session did NOT finish a clean shutdown, OR
+            //   - a snapshot's revision is newer than what's on disk / in session.
+            // Even with a clean marker, a newer-than-disk snapshot is offered.
+            // Compute the payload here (synchronously, in setup) and emit it
+            // after the window is up so the frontend's listener is registered.
+            let recovery_payload = compute_recovery_payload(&recovery);
+
             // Reusable HTTP client shared app-wide via AppState.
             let net = Arc::new(HttpClient::new());
 
-            app.manage(AppState { editor, export, lsp, workspace, settings, session, net });
+            app.manage(AppState {
+                editor,
+                export,
+                lsp,
+                workspace,
+                settings,
+                session,
+                net,
+            });
+
+            // Emit the recovery-available event (if any) AFTER manage + after a
+            // short delay so the frontend's listener (registered on first
+            // render) is subscribed. The frontend's useStartupSession waits
+            // for this before doing its session restore so recovery wins.
+            if let Some(payload) = recovery_payload {
+                let app_for_recovery = app.handle().clone();
+                // Spawn on the async runtime so we don't block setup; a tiny
+                // delay lets the frontend mount its listener.
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    let _ = app_for_recovery.emit("recovery_available", payload);
+                });
+            }
 
             // Emit any collected startup problems once, so the frontend can show
             // a non-modal banner (§6.5). Empty vec → no event (nothing to show).
@@ -278,4 +366,40 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Compute the startup recovery payload (§5.1.3), or `None` when no recovery is
+/// offered.
+///
+/// Recovery is offered when:
+/// - the prior session did NOT finish a clean shutdown (no `clean-shutdown`
+///   marker) and at least one snapshot exists; OR
+/// - even WITH a clean marker, some snapshot's content differs from the disk
+///   file now (the snapshot captured edits that never made it to disk).
+///
+/// When offered, the payload lists every snapshot with a per-doc `disk_changed`
+/// flag so the UI can pick the right default action (§5.1.3).
+fn compute_recovery_payload(
+    recovery: &crate::persistence::recovery::RecoveryService,
+) -> Option<crate::ipc::events::RecoveryAvailablePayload> {
+    use crate::ipc::events::{RecoveryAvailablePayload};
+    use crate::ipc::recovery_commands::summarize_recoverable;
+
+    let snapshots = recovery.list_recoverable();
+    if snapshots.is_empty() {
+        return None;
+    }
+    let infos = summarize_recoverable(&snapshots);
+    if infos.is_empty() {
+        return None;
+    }
+    // §5.1.3 decision: offer if not clean, OR any snapshot is disk-changed
+    // (snapshot has edits beyond what's on disk — offer even after a clean
+    // shutdown, since the user may want that buffer back).
+    let any_disk_changed = infos.iter().any(|i| i.disk_changed);
+    if recovery.has_clean_shutdown() && !any_disk_changed {
+        // Clean shutdown and every snapshot matches disk → nothing to recover.
+        return None;
+    }
+    Some(RecoveryAvailablePayload { snapshots: infos })
 }

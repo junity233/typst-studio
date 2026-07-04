@@ -3,13 +3,20 @@ import { Workbench } from "./components/Shell/Workbench";
 import { CommandBar } from "./components/CommandBar/CommandBar";
 import { StatusBar } from "./components/StatusBar/StatusBar";
 import { ConfirmDialog } from "./components/Dialogs/ConfirmDialog";
+import { RecoveryDialog } from "./components/Dialogs/RecoveryDialog";
 import { ContextMenu } from "./components/Sidebar/ContextMenu";
 import { useTypstCompile } from "./hooks/useTypstCompile";
 import { useAppCommands } from "./hooks/useAppCommands";
 import { useExternalFileRouting } from "./hooks/useExternalFileRouting";
 import { useStartupSession } from "./hooks/useStartupSession";
-import { onSettingsWindow, onStartupProblems, openSettings } from "./lib/tauri";
+import {
+  onSettingsWindow,
+  onStartupProblems,
+  onRecoveryAvailable,
+  openSettings,
+} from "./lib/tauri";
 import { useStartupProblemsStore } from "./store/startupProblemsStore";
+import { useRecoveryStore } from "./store/recoveryStore";
 
 /**
  * The application shell. Composes three regions:
@@ -57,12 +64,28 @@ export default function App() {
     return () => unlisten?.();
   }, []);
 
+  // Crash recovery (§5.1.3): the backend emits `recovery_available` once at
+  // startup if recoverable snapshots exist. Populate the recovery store, which
+  // opens the RecoveryDialog. `useStartupSession` waits (bounded) for this
+  // event + dialog resolution before doing the normal session restore, so
+  // recovery wins over session for docs that have both.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    onRecoveryAvailable((payload) => {
+      useRecoveryStore.getState().offerRecovery(payload.snapshots);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
+
   return (
     <div className="app">
       <CommandBar />
       <Workbench />
       <StatusBar />
       <ConfirmDialog />
+      <RecoveryDialog />
       <ContextMenu />
       {settingsOpen && (
         <div

@@ -1,4 +1,4 @@
-import { saveFile, saveAs as saveAsBE } from "./tauri";
+import { saveFile, saveAs as saveAsBE, discardRecovery } from "./tauri";
 import { useTabsStore } from "../store/tabsStore";
 import { useDocumentsStore } from "../store/documentsStore";
 import { useDialogStore } from "../store/dialogStore";
@@ -34,6 +34,11 @@ export async function saveTab(id: string): Promise<boolean> {
  *   - Clean tab:          close immediately
  *
  * Returns true if the tab was closed, false if cancelled.
+ *
+ * Crash recovery (§5.1.4): on "Don't Save", the recovery snapshot for this doc
+ * is discarded so its content is NOT offered again on the next launch. The
+ * discard is best-effort (a failure is logged but does not block the close);
+ * the backend `discard_recovery` is idempotent for ids with no snapshot.
  */
 export async function closeTabWithConfirm(id: string): Promise<boolean> {
   const tab = useDocumentsStore.getState().documents[id] ?? null;
@@ -52,7 +57,15 @@ export async function closeTabWithConfirm(id: string): Promise<boolean> {
     if (choice === "confirm") {
       if (!(await saveTab(id))) return false;
     }
-    // choice === "discard" → proceed to close without saving.
+    if (choice === "discard") {
+      // §5.1.4: the user explicitly discarded this doc's unsaved changes —
+      // delete its recovery snapshot so it isn't offered next launch.
+      try {
+        await discardRecovery(id);
+      } catch (e) {
+        console.warn(`[closeTabWithConfirm] discard_recovery failed for ${id}:`, e);
+      }
+    }
   }
 
   await useTabsStore.getState().closeTab(id);

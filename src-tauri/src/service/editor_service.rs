@@ -226,6 +226,18 @@ impl EditorService {
         self.document.set_dirty(id, dirty);
     }
 
+    /// Delegates to [`DocumentService::flush_recovery`].
+    pub fn flush_recovery(&self) {
+        self.document.flush_recovery();
+    }
+
+    /// Snapshot the recovery service handle, if wired (§5.1). Exposed so the
+    /// IPC + setup layers can reach the recovery API (discard, list, clean
+    /// marker) without a separate state field.
+    pub fn recovery(&self) -> Option<Arc<crate::persistence::recovery::RecoveryService>> {
+        self.document.recovery()
+    }
+
     // --- delegation: compile --------------------------------------------------
 
     /// Delegates to [`CompileService::compile_now`].

@@ -975,6 +975,96 @@ button {
 }
 
 /* ============================================================================
+   Recovery dialog (§5.1.3) — wider than the confirm dialog; lists docs.
+   ========================================================================= */
+.recovery-dialog {
+  width: min(640px, 92vw);
+  max-height: 86vh;
+  overflow-y: auto;
+}
+.recovery-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.recovery-row {
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.recovery-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.recovery-name {
+  font: var(--text-body-strong);
+  color: var(--color-ink);
+}
+.recovery-flag {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+  background: var(--color-surface-alt, #f0f0f0);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.recovery-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+}
+.recovery-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+  margin-top: 4px;
+}
+.recovery-error {
+  font: var(--text-caption);
+  color: #c0392b;
+}
+/* Side-by-side compare (§5.1.3): two read-only <pre> panes. Minimal — no
+   inline diff highlighting yet. */
+.recovery-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+}
+.recovery-compare-pane {
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.recovery-compare-label {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+  padding: 2px var(--space-xs);
+  border-bottom: 1px solid var(--color-hairline);
+  background: var(--color-surface-alt, #fafafa);
+}
+.recovery-compare-pane pre {
+  margin: 0;
+  padding: var(--space-xs);
+  font: var(--text-mono, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
+
+/* ============================================================================
    Context menu (right-click)
    ========================================================================= */
 .context-menu {

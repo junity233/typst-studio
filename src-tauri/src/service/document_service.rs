@@ -35,6 +35,7 @@ use crate::domain::document::{ConflictState, DocumentId, DocumentMeta, DocumentO
 use crate::domain::path::canonicalize_for_identity;
 use crate::domain::registry::SharedRegistry;
 use crate::error::{AppError, Result};
+use crate::persistence::recovery::RecoveryService;
 use crate::typst_engine::world::EditorWorld;
 
 use super::compile_service::CompileService;
@@ -60,6 +61,9 @@ pub struct DocumentService {
     /// `Arc` and wired in [`with_compile`](Self::with_compile) after both
     /// services exist (breaks the construction cycle).
     compile: Mutex<Option<Arc<CompileService>>>,
+    /// Crash-recovery snapshot sink (§5.1). `None` in tests / when recovery is
+    /// disabled. Wired after construction via [`set_recovery`](Self::set_recovery).
+    recovery: Mutex<Option<Arc<RecoveryService>>>,
 }
 
 impl DocumentService {
@@ -68,6 +72,7 @@ impl DocumentService {
         Self {
             store,
             compile: Mutex::new(None),
+            recovery: Mutex::new(None),
         }
     }
 
@@ -75,6 +80,18 @@ impl DocumentService {
     /// document's origin changes. Call once after both services are built.
     pub fn with_compile(&self, compile: Arc<CompileService>) {
         *self.compile.lock() = Some(compile);
+    }
+
+    /// Wire the crash-recovery service (§5.1). `None` leaves recovery disabled
+    /// (the test paths and any "recovery off" future toggle). Call once after
+    /// the recovery service is built in `.setup`.
+    pub fn set_recovery(&self, recovery: Arc<RecoveryService>) {
+        *self.recovery.lock() = Some(recovery);
+    }
+
+    /// Snapshot the recovery handle (if wired), for the IPC/flush paths.
+    pub fn recovery(&self) -> Option<Arc<RecoveryService>> {
+        self.recovery.lock().clone()
     }
 
     /// Read-only access to the document registry (for the IPC layer to detect
@@ -380,6 +397,12 @@ impl DocumentService {
         // wrote. Reads outside the lock (no nested cross-service locks).
         if let Some(path) = path {
             self.set_disk_version_from_path(id, Some(&path));
+        }
+        // The doc is now clean on disk → its recovery snapshot (if any) is no
+        // longer needed. Discard it immediately (§5.1.2 "clean 文档删除快照" /
+        // §5.1.4). Best-effort: no recovery service wired → no-op.
+        if let Some(recovery) = self.recovery() {
+            recovery.discard_snapshot(id);
         }
     }
 
@@ -701,24 +724,34 @@ impl DocumentService {
         };
         tab.world.set_text(content.clone());
         // Atomically bump revision + set dirty under one lock.
-        let (revision, canon) = {
+        let (meta_snapshot, canon) = {
             let mut rt = tab.state.lock();
             rt.meta.revision = rt.meta.revision.saturating_add(1);
-            let revision = rt.meta.revision;
             rt.meta.dirty = true;
             let canon = rt.meta.origin.canonical_path().map(|p| p.to_path_buf());
-            (revision, canon)
+            // Snapshot the meta (post-revision-bump) for the recovery schedule.
+            (rt.meta.clone(), canon)
         };
         // Publish the edited buffer into the shared VFS (§5 end): another tab
         // that #includes / #reads this file must compile against the live edit,
         // not the stale disk copy. Only for documents with a canonical path.
         if let Some(canon) = canon {
-            self.store.vfs.upsert(canon, content, revision);
+            self.store.vfs.upsert(canon, content.clone(), meta_snapshot.revision);
         }
         // Signal the worker. If it's busy compiling, the message queues; the
         // worker picks up the latest text when it finishes.
         if let Some(worker) = self.store.workers.read().get(&id) {
             worker.recompile();
+        }
+        // Schedule a debounced recovery snapshot (§5.1.2). Best-effort: if no
+        // recovery service is wired (tests / disabled), this is a no-op. The
+        // debounce coalesces bursts; the worker thread flushes after 750ms.
+        if let Some(recovery) = self.recovery() {
+            let disk_version = meta_snapshot
+                .origin
+                .canonical_path()
+                .and_then(|p| DiskVersion::from_path(p).ok());
+            recovery.schedule_snapshot(meta_snapshot, content, disk_version);
         }
         Ok(())
     }
@@ -781,6 +814,23 @@ impl DocumentService {
             .read()
             .get(&id)
             .map(|t| t.world.text())
+    }
+
+    /// Flush all dirty buffers to recovery snapshots immediately, bypassing the
+    /// debounce (§5.1.2 blur / sleep / close paths). No-op when recovery is not
+    /// wired. The flush runs on the caller's thread via the recovery worker's
+    /// `flush_now` channel.
+    pub fn flush_recovery(&self) {
+        let Some(recovery) = self.recovery() else { return };
+        // Snapshot the dirty docs + their text under brief locks, then hand the
+        // whole batch to the synchronous snapshot API so the close/blur path
+        // sees durable snapshots on return (the debounced worker is not waited
+        // on here — flush_now coalesces with it).
+        let docs = self.list_tabs();
+        let store = self.store.clone();
+        recovery.snapshot_dirty_documents(&docs, move |id| {
+            store.tabs.read().get(&id).map(|t| t.world.text())
+        });
     }
 
     /// Number of parent directories currently cached in the loose-resolver map.

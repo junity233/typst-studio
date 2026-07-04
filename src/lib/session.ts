@@ -150,11 +150,13 @@ export interface RestoredDoc {
  * The document-opening operations [`restoreOpenDocuments`] needs. Injected so
  * the restore logic is unit-testable without the Tauri runtime or a live store.
  *
- * - `openDisk(path)` → opens a disk file, returns its new tab id.
+ * - `openDisk(path)` → opens a disk file, returns its new tab id, or `null` to
+ *   SKIP this record (e.g. when crash-recovery already opened it as a dirty
+ *   in-memory doc — §5.1.3 recovery wins over session).
  * - `openUntitled(content)` → opens an untitled buffer, returns its new tab id.
  */
 export interface RestoreOps {
-  openDisk: (path: string) => Promise<string>;
+  openDisk: (path: string) => Promise<string | null>;
   openUntitled: (content: string) => Promise<string>;
 }
 
@@ -187,6 +189,10 @@ export async function restoreOpenDocuments(
     try {
       if (record.kind === "disk") {
         const id = await ops.openDisk(record.path);
+        // `null` means the caller deliberately skipped this record (e.g.
+        // crash-recovery already covered it — §5.1.3). Don't push it to the
+        // restored list; it's neither a success nor a failure.
+        if (id === null) continue;
         restored.push({ record, id, dirty: record.dirty });
       } else {
         const id = await ops.openUntitled(record.content);
