@@ -19,6 +19,11 @@ import { buildVscodeApiConfig, buildLanguageClientConfig } from "./lspClient";
 import { monacoModelRegistry } from "./monacoModelRegistry";
 import { installLspDiagnosticsBridge } from "./lspDiagnosticsBridge";
 import { computeModelSyncPlan } from "./editorModelSync";
+import {
+  applyWrapSelection,
+  applyReplaceSelection,
+  applyToggleLinePrefix,
+} from "./editorEdit";
 import { registerTypstHighlighting } from "./typstHighlighting";
 import { usePasteConvert } from "./usePasteConvert";
 
@@ -51,6 +56,20 @@ export interface MonacoEditorApi {
    * visible line. Returns an unsubscribe function.
    */
   onDidScrollChange: (cb: (topLine: number) => void) => () => void;
+  /** Wrap the current selection (or insert placeholder if empty) with
+   *  prefix/suffix. Used for `*…*`, `_…_`, `` `…` ``, etc. Selects the
+   *  placeholder range when there was no selection so the user can type. */
+  wrapSelection: (prefix: string, suffix: string, placeholder?: string) => void;
+  /** Replace the current selection with `text`, then select the inserted
+   *  range. Used for snippets where we don't wrap (code block, HR, image,
+   *  table produce a block to drop in). */
+  replaceSelection: (text: string) => void;
+  /** Toggle a line-prefix marker (e.g. `= ` for H1, `- ` for bullet, `+ ` for
+   *  numbered). Operates on every line touched by the selection (or the
+   *  caret's line if no selection). If the prefix already exists on a line it
+   *  is removed; otherwise it is added. Also strips a *different* known prefix
+   *  before adding the new one, so toggling H1 → H2 replaces rather than stacks. */
+  toggleLinePrefix: (prefix: string) => void;
 }
 
 /**
@@ -438,6 +457,25 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         };
         const d = editor.onDidScrollChange(() => cb(topLine()));
         return () => d.dispose();
+      },
+      // Format-toolbar edit seam (Task 1): the actual edit logic lives in pure
+      // helpers (`editorEdit.ts`) that are unit-tested directly; the component
+      // is just a thin dispatcher gated on `getEditor()`, mirroring the
+      // revealLine methods above.
+      wrapSelection: (prefix, suffix, placeholder) => {
+        const editor = getEditor();
+        if (!editor) return;
+        applyWrapSelection(editor, prefix, suffix, placeholder);
+      },
+      replaceSelection: (text) => {
+        const editor = getEditor();
+        if (!editor) return;
+        applyReplaceSelection(editor, text);
+      },
+      toggleLinePrefix: (prefix) => {
+        const editor = getEditor();
+        if (!editor) return;
+        applyToggleLinePrefix(editor, prefix);
       },
     });
   };

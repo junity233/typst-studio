@@ -1,0 +1,592 @@
+import { describe, it, expect } from "vitest";
+import type * as Monaco from "@codingame/monaco-vscode-editor-api";
+import {
+  applyWrapSelection,
+  applyReplaceSelection,
+  applyToggleLinePrefix,
+} from "../editorEdit";
+import type { EditEditor, EditModel } from "../editorEdit";
+
+/**
+ * Spec (Format Toolbar Task 1) — the pure edit seam behind `MonacoEditor.tsx`'s
+ * `MonacoEditorApi.wrapSelection` / `replaceSelection` / `toggleLinePrefix`.
+ *
+ * The component cannot be integration-tested under vitest+jsdom (Monaco workers
+ * + widget CSS), so the actual edit logic lives in plain helpers
+ * (`editorEdit.ts`) that take a `Monaco.editor.IStandaloneCodeEditor` and is
+ * tested here against an in-memory fake editor. The fake maintains a buffer
+ * string + an ISelection-shaped cursor and implements exactly the surface the
+ * helpers use (`getModel`, `getSelection`, `executeEdits`, `setSelection`,
+ * `pushUndoStop`, `focus`). It is correct enough that the tests verify real
+ * behavior, not just that a function was called.
+ *
+ * Helpers under test:
+ * - `applyWrapSelection(editor, prefix, suffix, placeholder="text")`
+ * - `applyReplaceSelection(editor, text)`
+ * - `applyToggleLinePrefix(editor, prefix)`
+ */
+
+// ---------------------------------------------------------------------------
+// Fake editor
+// ---------------------------------------------------------------------------
+
+/** A 1-based (line, column) coordinate, Monaco-style. */
+interface Coord {
+  lineNumber: number;
+  column: number;
+}
+
+/**
+ * In-memory editor that mimics the slice of `IStandaloneCodeEditor` the
+ * `editorEdit` helpers use. Internally it keeps a buffer string (lines joined
+ * by `\n`) and an `ISelection`-shaped cursor. Each helper call mutates both.
+ *
+ * Columns are 1-based: column 1 is before the first char on a line, column N
+ * is after the (N-1)th char — matching Monaco's convention.
+ */
+class FakeEditor implements EditEditor {
+  /** Full document text, `\n`-separated. */
+  private buffer: string;
+  /** The current selection (collapsed = caret). */
+  private selection: Monaco.ISelection;
+
+  /** Counts `pushUndoStop()` calls so tests can assert undo-stop framing. */
+  undoStopCount = 0;
+  /** Counts `focus()` calls so tests can assert the editor was focused. */
+  focusCount = 0;
+  /** Last source string passed to `executeEdits` (for debugging assertions). */
+  lastEditSource: string | null | undefined = null;
+
+  constructor(buffer: string, selection: Monaco.ISelection) {
+    this.buffer = buffer;
+    this.selection = { ...selection };
+  }
+
+  // -- model surface --------------------------------------------------------
+
+  getModel(): EditModel {
+    return new FakeModel(this);
+  }
+
+  // -- selection / position surface ----------------------------------------
+
+  getSelection(): Monaco.ISelection {
+    return { ...this.selection };
+  }
+
+  setSelection(sel: Monaco.IRange): void {
+    // Monaco's setSelection accepts an IRange; we normalize to a forward
+    // selection (start < end). Helpers always pass normalized ranges.
+    this.selection = {
+      selectionStartLineNumber: sel.startLineNumber,
+      selectionStartColumn: sel.startColumn,
+      positionLineNumber: sel.endLineNumber,
+      positionColumn: sel.endColumn,
+    };
+  }
+
+  focus(): void {
+    this.focusCount++;
+  }
+
+  pushUndoStop(): boolean {
+    this.undoStopCount++;
+    return true;
+  }
+
+  // -- edit surface --------------------------------------------------------
+
+  /**
+   * Apply edits, matching `IStandaloneCodeEditor.executeEdits`. Each edit
+   * replaces its `range` with `text`. Edits are applied in order; because
+   * helpers pass a single edit at a time we don't need offset adjustment
+   * across multiple edits in one call.
+   */
+  executeEdits(
+    source: string | null | undefined,
+    edits: Monaco.editor.IIdentifiedSingleEditOperation[],
+  ): boolean {
+    this.lastEditSource = source;
+    for (const edit of edits) {
+      this.applyRangeReplace(edit.range, edit.text ?? "");
+    }
+    return true;
+  }
+
+  // -- internals -----------------------------------------------------------
+
+  private lines(): string[] {
+    return this.buffer.split("\n");
+  }
+
+  /** Convert a (line, column) into a 0-based buffer offset. */
+  private toOffset(c: Coord): number {
+    const lines = this.lines();
+    let offset = 0;
+    for (let i = 0; i < c.lineNumber - 1; i++) {
+      offset += lines[i].length + 1; // +1 for the `\n`
+    }
+    offset += c.column - 1;
+    return offset;
+  }
+
+  /** Replace `range` with `text`, mutating the buffer in place. */
+  private applyRangeReplace(range: Monaco.IRange, text: string): void {
+    const startOffset = this.toOffset({
+      lineNumber: range.startLineNumber,
+      column: range.startColumn,
+    });
+    const endOffset = this.toOffset({
+      lineNumber: range.endLineNumber,
+      column: range.endColumn,
+    });
+    this.buffer =
+      this.buffer.slice(0, startOffset) + text + this.buffer.slice(endOffset);
+  }
+}
+
+/**
+ * Minimal `EditModel` fake backed by the parent `FakeEditor`'s buffer. It
+ * implements exactly the model surface the helpers read; nothing else. The
+ * `implements EditModel` clause is a compile-time contract check — if a helper
+ * ever needs a new model method, this class won't satisfy the interface until
+ * that method is added here, which keeps the fake honest.
+ */
+class FakeModel implements EditModel {
+  constructor(private readonly owner: FakeEditor) {}
+
+  getLineContent(lineNumber: number): string {
+    return this.owner["lines"]()[lineNumber - 1] ?? "";
+  }
+
+  getValue(): string {
+    return this.owner["buffer"];
+  }
+
+  getValueInRange(range: Monaco.IRange): string {
+    const lines = this.owner["lines"]();
+    if (range.startLineNumber === range.endLineNumber) {
+      const line = lines[range.startLineNumber - 1] ?? "";
+      return line.slice(range.startColumn - 1, range.endColumn - 1);
+    }
+    const parts: string[] = [];
+    for (let ln = range.startLineNumber; ln <= range.endLineNumber; ln++) {
+      const line = lines[ln - 1] ?? "";
+      if (ln === range.startLineNumber) {
+        parts.push(line.slice(range.startColumn - 1));
+      } else if (ln === range.endLineNumber) {
+        parts.push(line.slice(0, range.endColumn - 1));
+      } else {
+        parts.push(line);
+      }
+    }
+    return parts.join("\n");
+  }
+
+  getLineMaxColumn(lineNumber: number): number {
+    return (this.owner["lines"]()[lineNumber - 1] ?? "").length + 1;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Test factories
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a FakeEditor with a single-line buffer and a collapsed caret at the
+ * given column on line 1. (Most fixture cases are single-line.)
+ */
+function caret(buffer: string, column: number): FakeEditor {
+  return new FakeEditor(buffer, {
+    selectionStartLineNumber: 1,
+    selectionStartColumn: column,
+    positionLineNumber: 1,
+    positionColumn: column,
+  });
+}
+
+/**
+ * Build a FakeEditor with a single-line buffer and a forward selection from
+ * `startCol`..`endCol` on line 1. Columns are 1-based; a selection
+ * `startCol..endCol` covers the chars at indices `(startCol-1)..(endCol-2)`,
+ * matching Monaco's convention (column N is after the (N-1)th char).
+ */
+function sel(startCol: number, endCol: number, buffer: string): FakeEditor {
+  return new FakeEditor(buffer, {
+    selectionStartLineNumber: 1,
+    selectionStartColumn: startCol,
+    positionLineNumber: 1,
+    positionColumn: endCol,
+  });
+}
+
+// ===========================================================================
+// applyWrapSelection
+// ===========================================================================
+
+describe("applyWrapSelection", () => {
+  describe("collapsed caret (empty selection)", () => {
+    it("inserts prefix+placeholder+suffix and selects the placeholder", () => {
+      // The spec's canonical example: buffer `Hello world`, caret between
+      // `Hello` and the space (column 6 — per Monaco's convention, column N is
+      // after the (N-1)th char, so col 6 sits right after `o`). NOTE: the spec
+      // text shows the result as `Hello *bold* world` (two spaces), but that's
+      // impossible for any single-column insertion of `*bold*` — the original
+      // has only one space. The column-convention-correct result is
+      // `Hello*bold* world` (the prefix lands flush after `o`), which is what
+      // a real Monaco editor produces for this exact input.
+      const ed = caret("Hello world", 6);
+      applyWrapSelection(ed, "*", "*", "bold");
+
+      expect(ed.getModel().getValue()).toBe("Hello*bold* world");
+      // placeholder `bold` sits at cols 7..11 → selection 7..11.
+      expect(ed.getSelection()).toEqual({
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 7,
+        positionLineNumber: 1,
+        positionColumn: 11,
+      });
+    });
+
+    it("defaults the placeholder to 'text'", () => {
+      const ed = caret("ab", 1);
+      applyWrapSelection(ed, "_", "_");
+
+      expect(ed.getModel().getValue()).toBe("_text_ab");
+      expect(ed.getModel().getLineContent(1)).toBe("_text_ab");
+      // placeholder `text` at cols 2..6.
+      expect(ed.getSelection()).toMatchObject({
+        selectionStartColumn: 2,
+        positionColumn: 6,
+      });
+    });
+
+    it("inserts at the very end of the buffer", () => {
+      const ed = caret("foo", 4);
+      applyWrapSelection(ed, "`", "`", "code");
+
+      // buffer: f o ` c o d e `  →  `code` placeholder at cols 5..9
+      // (placeholder sits AFTER the prefix backtick).
+      expect(ed.getModel().getValue()).toBe("foo`code`");
+      expect(ed.getSelection()).toMatchObject({
+        selectionStartColumn: 5,
+        positionColumn: 9,
+      });
+    });
+
+    it("inserts at the very start (column 1)", () => {
+      const ed = caret("foo", 1);
+      applyWrapSelection(ed, "*", "*", "x");
+
+      expect(ed.getModel().getValue()).toBe("*x*foo");
+      expect(ed.getSelection()).toMatchObject({
+        selectionStartColumn: 2,
+        positionColumn: 3,
+      });
+    });
+
+    it("pushes undo stops before AND after, and focuses the editor", () => {
+      const ed = caret("Hello", 3);
+      applyWrapSelection(ed, "*", "*", "p");
+
+      expect(ed.undoStopCount).toBe(2);
+      expect(ed.focusCount).toBe(1);
+    });
+  });
+
+  describe("non-empty selection", () => {
+    it("wraps the selected text and selects the whole wrapped span", () => {
+      // buffer `Hello world`, selection = `world` (cols 7..12).
+      const ed = sel(7, 12, "Hello world");
+      applyWrapSelection(ed, "*", "*");
+
+      expect(ed.getModel().getValue()).toBe("Hello *world*");
+      // selection now covers `*world*` → cols 7..14.
+      expect(ed.getSelection()).toEqual({
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 7,
+        positionLineNumber: 1,
+        positionColumn: 14,
+      });
+    });
+
+    it("ignores the placeholder argument when there is a real selection", () => {
+      // sel 1..6 selects `Hello` (cols 1..6 = the first 5 chars).
+      const ed = sel(1, 6, "Hello world");
+      applyWrapSelection(ed, "_", "_", "ignored");
+
+      expect(ed.getModel().getValue()).toBe("_Hello_ world");
+    });
+
+    it("wraps a selection at the start of the buffer", () => {
+      const ed = sel(1, 4, "abcd"); // `abc`
+      applyWrapSelection(ed, "*", "*");
+
+      expect(ed.getModel().getValue()).toBe("*abc*d");
+      expect(ed.getSelection()).toMatchObject({
+        selectionStartColumn: 1,
+        positionColumn: 6,
+      });
+    });
+
+    it("pushes undo stops before AND after for a non-empty selection", () => {
+      const ed = sel(1, 3, "abcdef");
+      applyWrapSelection(ed, "*", "*");
+
+      expect(ed.undoStopCount).toBe(2);
+    });
+
+    it("preserves the wrapped content exactly (whitespace, symbols)", () => {
+      // sel 1..7 selects the first 6 chars: `  x = `+... actually `  x = 1` is
+      // 7 chars; cols 1..8 select all of it.
+      const ed = sel(1, 8, "  x = 1");
+      applyWrapSelection(ed, "`", "`");
+
+      expect(ed.getModel().getValue()).toBe("`  x = 1`");
+    });
+  });
+
+  it("uses 'paste-convert'-style executeEdits (single edit, real range)", () => {
+    // The fake records the source; helpers should pass a stable source label.
+    const ed = sel(1, 3, "abcdef");
+    applyWrapSelection(ed, "*", "*");
+    expect(ed.lastEditSource).toBeTypeOf("string");
+    expect(ed.lastEditSource).not.toBe("");
+  });
+});
+
+// ===========================================================================
+// applyReplaceSelection
+// ===========================================================================
+
+describe("applyReplaceSelection", () => {
+  it("inserts at a collapsed caret and selects the inserted text", () => {
+    // caret at end of `foo`.
+    const ed = caret("foo", 4);
+    applyReplaceSelection(ed, "#line(length: 100%)\n");
+
+    expect(ed.getModel().getValue()).toBe("foo#line(length: 100%)\n");
+    // inserted text spans from col 4 (line 1) to col 1 (line 2) — but the
+    // simplest correct assertion: the inserted run is selected. For a
+    // multi-line insert the selection end is on line 2. We assert the start
+    // anchor and that the inserted text is fully covered.
+    const selNow = ed.getSelection();
+    expect(selNow.selectionStartLineNumber).toBe(1);
+    expect(selNow.selectionStartColumn).toBe(4);
+    expect(selNow.positionLineNumber).toBe(2);
+    // line 2 is empty after the trailing `\n`, so the caret/anchor sits at col 1.
+    expect(selNow.positionColumn).toBe(1);
+  });
+
+  it("replaces a non-empty selection with the new text and selects it", () => {
+    const ed = sel(1, 4, "abcdef"); // `abc`
+    applyReplaceSelection(ed, "XYZ");
+
+    expect(ed.getModel().getValue()).toBe("XYZdef");
+    expect(ed.getSelection()).toEqual({
+      selectionStartLineNumber: 1,
+      selectionStartColumn: 1,
+      positionLineNumber: 1,
+      positionColumn: 4,
+    });
+  });
+
+  it("inserts at column 1", () => {
+    const ed = caret("bar", 1);
+    applyReplaceSelection(ed, "#image()\n");
+
+    expect(ed.getModel().getValue()).toBe("#image()\nbar");
+    expect(ed.getSelection()).toMatchObject({
+      selectionStartLineNumber: 1,
+      selectionStartColumn: 1,
+      positionLineNumber: 2,
+      positionColumn: 1,
+    });
+  });
+
+  it("pushes undo stops before AND after, and focuses", () => {
+    const ed = caret("foo", 4);
+    applyReplaceSelection(ed, "X");
+
+    expect(ed.undoStopCount).toBe(2);
+    expect(ed.focusCount).toBe(1);
+  });
+
+  it("can replace a selection with an empty string (delete)", () => {
+    const ed = sel(1, 4, "abcdef"); // delete `abc`
+    applyReplaceSelection(ed, "");
+
+    expect(ed.getModel().getValue()).toBe("def");
+    // empty inserted text → collapsed selection at the deletion point.
+    expect(ed.getSelection()).toEqual({
+      selectionStartLineNumber: 1,
+      selectionStartColumn: 1,
+      positionLineNumber: 1,
+      positionColumn: 1,
+    });
+  });
+});
+
+// ===========================================================================
+// applyToggleLinePrefix
+// ===========================================================================
+
+describe("applyToggleLinePrefix", () => {
+  describe("single line, collapsed caret", () => {
+    it("adds the prefix when the line has none", () => {
+      const ed = caret("Hello", 6); // end of line 1
+      applyToggleLinePrefix(ed, "= ");
+
+      expect(ed.getModel().getLineContent(1)).toBe("= Hello");
+    });
+
+    it("toggles the SAME prefix off when it is already present", () => {
+      const ed = caret("= Hello", 8);
+      applyToggleLinePrefix(ed, "= ");
+
+      expect(ed.getModel().getLineContent(1)).toBe("Hello");
+    });
+
+    it("REPLACES a different known prefix instead of stacking", () => {
+      // From `= Hello`, toggle to `== `: strip `= ` then add `== ` → `== Hello`.
+      const ed = caret("= Hello", 8);
+      applyToggleLinePrefix(ed, "== ");
+
+      expect(ed.getModel().getLineContent(1)).toBe("== Hello");
+    });
+
+    it("H1 → H3 replaces, not stacks (`=== ` from `= `)", () => {
+      const ed = caret("= Hello", 8);
+      applyToggleLinePrefix(ed, "=== ");
+
+      expect(ed.getModel().getLineContent(1)).toBe("=== Hello");
+    });
+
+    it("strips a `- ` bullet before adding `= `", () => {
+      const ed = caret("- Hello", 8);
+      applyToggleLinePrefix(ed, "= ");
+
+      expect(ed.getModel().getLineContent(1)).toBe("= Hello");
+    });
+
+    it("strips a `+ ` numbered marker before adding `- `", () => {
+      const ed = caret("+ Hello", 8);
+      applyToggleLinePrefix(ed, "- ");
+
+      expect(ed.getModel().getLineContent(1)).toBe("- Hello");
+    });
+
+    it("toggles `- ` off when already a bullet", () => {
+      const ed = caret("- one", 6);
+      applyToggleLinePrefix(ed, "- ");
+
+      expect(ed.getModel().getLineContent(1)).toBe("one");
+    });
+
+    it("does not treat an equals-sign run without a space as a heading", () => {
+      // `=Hello` (no space) is NOT a Typst heading prefix; must not strip.
+      const ed = caret("=Hello", 7);
+      applyToggleLinePrefix(ed, "= ");
+
+      expect(ed.getModel().getLineContent(1)).toBe("= =Hello");
+    });
+
+    it("leaves a blank line wrapped correctly (adds prefix to empty line)", () => {
+      const ed = caret("", 1);
+      applyToggleLinePrefix(ed, "- ");
+
+      expect(ed.getModel().getLineContent(1)).toBe("- ");
+    });
+
+    it("adjusts the caret column when the prefix length changes on its line", () => {
+      // Caret at end of `Hello` (col 6). After adding `= ` (2 chars), caret
+      // should still be at the end of the (now longer) line → col 8.
+      const ed = caret("Hello", 6);
+      applyToggleLinePrefix(ed, "= ");
+
+      const s = ed.getSelection();
+      expect(s.positionLineNumber).toBe(1);
+      expect(s.positionColumn).toBe(8);
+    });
+
+    it("adjusts caret down when toggling a prefix off", () => {
+      // Caret at end of `= Hello` (col 8). After stripping `= ` → col 6.
+      const ed = caret("= Hello", 8);
+      applyToggleLinePrefix(ed, "= ");
+
+      const s = ed.getSelection();
+      expect(s.positionLineNumber).toBe(1);
+      expect(s.positionColumn).toBe(6);
+    });
+  });
+
+  describe("multi-line selection", () => {
+    it("toggles the prefix on EVERY line in the selection range", () => {
+      const ed = new FakeEditor("a\nb\nc", {
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 1,
+        positionLineNumber: 3,
+        positionColumn: 2,
+      });
+      applyToggleLinePrefix(ed, "- ");
+
+      const m = ed.getModel();
+      expect(m.getLineContent(1)).toBe("- a");
+      expect(m.getLineContent(2)).toBe("- b");
+      expect(m.getLineContent(3)).toBe("- c");
+    });
+
+    it("removes the prefix from every line when all already have it", () => {
+      const ed = new FakeEditor("- a\n- b", {
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 1,
+        positionLineNumber: 2,
+        positionColumn: 4,
+      });
+      applyToggleLinePrefix(ed, "- ");
+
+      const m = ed.getModel();
+      expect(m.getLineContent(1)).toBe("a");
+      expect(m.getLineContent(2)).toBe("b");
+    });
+
+    it("handles mixed prefixes within a multi-line selection", () => {
+      const ed = new FakeEditor("= a\n- b", {
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 1,
+        positionLineNumber: 2,
+        positionColumn: 4,
+      });
+      applyToggleLinePrefix(ed, "= ");
+
+      const m = ed.getModel();
+      // line 1 had `= ` → toggle off (same prefix).
+      expect(m.getLineContent(1)).toBe("a");
+      // line 2 had `- ` → strip then add `= `.
+      expect(m.getLineContent(2)).toBe("= b");
+    });
+
+    it("collapses the selection to the start of the first affected line after edit", () => {
+      const ed = new FakeEditor("a\nb\nc", {
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 1,
+        positionLineNumber: 3,
+        positionColumn: 2,
+      });
+      applyToggleLinePrefix(ed, "- ");
+
+      const s = ed.getSelection();
+      // Acceptable per spec: collapse to start of first line.
+      expect(s.selectionStartLineNumber).toBe(1);
+      expect(s.positionLineNumber).toBe(1);
+    });
+  });
+
+  it("pushes an undo stop before AND after, and focuses", () => {
+    const ed = caret("Hello", 6);
+    applyToggleLinePrefix(ed, "= ");
+
+    expect(ed.undoStopCount).toBe(2);
+    expect(ed.focusCount).toBe(1);
+  });
+});
