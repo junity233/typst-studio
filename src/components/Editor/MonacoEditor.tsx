@@ -383,6 +383,40 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // is read via `getState()` inside the effect (an escape hatch that doesn't
   // subscribe). `tab.id` is a dependency because the active-id decides which
   // transitioned doc gets the editor swap.
+  //
+  // §12.1 RENAME BATCH MIGRATION (Task 10 Part A): the file-tree rename flow
+  // reuses this SAME effect — no separate rename code path exists. The chain is:
+  //   backend `rename_entry` → `DocumentService::rebind_for_rename` (rebinds
+  //     every open doc under the renamed path — single FILE rename ⇒ 1 doc;
+  //     DIRECTORY rename ⇒ N open sub-docs) → emits `docs_rebound` carrying one
+  //     entry per rebound doc
+  //   → `useTypstCompile`'s `onDocsRebound` handler calls `rebindDocPath` for
+  //     each entry, which updates `origin` (NEW object: new `path`, same variant
+  //     + workspace_id/root), `path`, and `title` without touching dirty /
+  //     content / revision (the buffer survives the rename)
+  //   → the renamed doc's `originSignature` differs, so `originsKey` changes, so
+  //     this effect re-runs. The per-doc loop then migrates EACH renamed doc:
+  //     `detectOriginTransition` returns the new origin for every doc the rebind
+  //     touched (and null for untouched docs), so a DIRECTORY rename producing
+  //     N `docs_rebound` entries ⇒ N origin transitions ⇒ N `migrateModelForSaveAs`
+  //     calls ⇒ N registry URI migrations (old-URI model disposed → didClose(old)
+  //     fires implicitly; new-URI model created → didOpen(new) fires implicitly).
+  //     Zustand batches the synchronous rebinds into ONE render, so `originsKey`
+  //     re-derives once with ALL N renamed docs present, and the loop migrates
+  //     them in a single pass. Pinned by renameBatchMigration.test.ts.
+  //
+  // The §12.1 "session/recovery/breadcrumb/diagnostics sync" requirements are
+  // satisfied for FREE by the existing wiring (no extra code):
+  //   - Diagnostics: the bridge routes via `monacoModelRegistry.resolveDocumentId`,
+  //     which returns null for the OLD (post-migration removed) uri — so in-flight
+  //     tinymist diagnostics keyed on the stale uri are dropped automatically
+  //     (lspDiagnosticsBridge.ts). The new-URI model picks up fresh diagnostics.
+  //   - Breadcrumb: `Breadcrumb.tsx` reads `useActiveDocument()` →
+  //     `documentsStore.documents[id].path`, which `rebindDocPath` updated, so the
+  //     breadcrumb + dirty indicator follow the rename with no extra plumbing.
+  //   - Session/recovery: the backend already rebound the doc's canonical path
+  //     in `rebind_for_rename` (registry/world/VFS/watcher all moved), so the
+  //     next recovery snapshot / session capture writes the NEW path.
   useEffect(() => {
     const documents = useDocumentsStore.getState().documents;
     const activeId = tab.id;
