@@ -110,7 +110,9 @@ pub fn collect_status(root: &Path) -> Result<Option<Vec<GitFileStatus>>> {
         }
     }
 
-    Ok(Some(by_path.into_values().collect()))
+    let mut list: Vec<_> = by_path.into_values().collect();
+    list.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(Some(list))
 }
 
 /// Map an index↔worktree `EntryStatus` to our wire enum.

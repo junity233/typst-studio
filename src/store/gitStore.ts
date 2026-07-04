@@ -61,18 +61,30 @@ export const useGitStore = create<GitState>((set, get) => ({
   },
 
   stage: async (path) => {
-    await gitStage(path);
-    await get().refresh();
+    try {
+      await gitStage(path);
+      await get().refresh();
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
   },
 
   unstage: async (path) => {
-    await gitUnstage(path);
-    await get().refresh();
+    try {
+      await gitUnstage(path);
+      await get().refresh();
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
   },
 
   commit: async (message) => {
-    await gitCommit(message);
-    await get().refresh();
+    try {
+      await gitCommit(message);
+      await get().refresh();
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
   },
 }));
 

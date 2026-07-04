@@ -27,6 +27,10 @@ export interface SearchState {
   hide: () => void;
 }
 
+// Monotonic sequence counter for run() request ordering. A late-arriving older
+// response (seq !== runSeq) is discarded so it can't overwrite newer results.
+let runSeq = 0;
+
 export const useSearchStore = create<SearchState>((set, get) => ({
   query: "",
   isRegex: false,
@@ -46,6 +50,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       set({ results: [], error: null });
       return;
     }
+    const seq = ++runSeq;
     set({ searching: true, error: null });
     try {
       const req: SearchQuery = {
@@ -58,8 +63,10 @@ export const useSearchStore = create<SearchState>((set, get) => ({
         maxTotal: 2000,
       };
       const hits = await searchWorkspace(req);
+      if (seq !== runSeq) return; // a newer run superseded this one — discard
       set({ results: hits, searching: false });
     } catch (e) {
+      if (seq !== runSeq) return;
       set({
         results: [],
         searching: false,
@@ -68,7 +75,10 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     }
   },
 
-  clear: () => set({ query: "", results: [], error: null }),
+  clear: () => {
+    ++runSeq;
+    set({ query: "", results: [], error: null });
+  },
   toggle: () => set((s) => ({ visible: !s.visible })),
   show: () => set({ visible: true }),
   hide: () => set({ visible: false }),

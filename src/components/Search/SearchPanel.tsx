@@ -24,15 +24,19 @@ export function SearchPanel() {
   const setQuery = useSearchStore((s) => s.setQuery);
   const setOption = useSearchStore((s) => s.setOption);
   const run = useSearchStore((s) => s.run);
+  const clear = useSearchStore((s) => s.clear);
   const hide = useSearchStore((s) => s.hide);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
 
   // Debounced search: re-runs 300ms after the last query/option change.
   useEffect(() => {
-    if (!query.trim()) return;
+    if (!query.trim()) {
+      clear(); // empty query → clear results + error
+      return;
+    }
     const t = setTimeout(() => void run(), 300);
     return () => clearTimeout(t);
-  }, [query, isRegex, caseSensitive, wholeWord, run]);
+  }, [query, isRegex, caseSensitive, wholeWord, run, clear]);
 
   const grouped = useMemo(() => {
     const m = new Map<string, SearchHit[]>();

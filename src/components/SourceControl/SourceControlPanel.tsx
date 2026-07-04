@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useGitStore } from "../../store/gitStore";
+import { useGitStore, initGitAutoRefresh } from "../../store/gitStore";
 import type { GitStatusKind } from "../../lib/types";
 
 /**
@@ -25,6 +25,7 @@ export function SourceControlPanel() {
   const [message, setMessage] = useState("");
 
   useEffect(() => {
+    initGitAutoRefresh(); // subscribe to fs_changed (idempotent — guard in store)
     void refresh();
   }, [refresh]);
 
