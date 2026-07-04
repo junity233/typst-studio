@@ -102,6 +102,9 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
         path: null,
         dirty: true,
         content: recovered.content,
+        // §17: recovered docs open as untitled-style in-memory docs (we do NOT
+        // write disk), so the authoritative origin is `untitled`.
+        origin: { kind: "untitled" },
         revision: 0,
         conflict: "none",
         conflictDiskContent: null,

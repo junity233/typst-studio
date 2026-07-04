@@ -34,6 +34,9 @@ function freshDocument(overrides: Partial<Document> = {}): Document {
     path: "/x/main.typ",
     dirty: false,
     content: "old",
+    // §17 origin mirror: default to untitled (the helper is generic; callers
+    // that need a specific origin pass it via `overrides`).
+    origin: { kind: "untitled" },
     revision: 0,
     conflict: "none",
     conflictDiskContent: null,

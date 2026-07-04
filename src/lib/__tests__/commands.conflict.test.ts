@@ -45,6 +45,9 @@ function seedTitledDoc(id: string, path: string, conflict: "none" | "modified"):
     path,
     dirty: true,
     content: "buffer edits",
+    // §17 origin mirror: these are disk-backed test docs → looseFile rooted at
+    // the parent dir (matches what documentUri.ts would convert to a file: URI).
+    origin: { kind: "looseFile", path, root: parentDir(path) },
     revision: 1,
     conflict,
     conflictDiskContent: conflict === "modified" ? "disk content" : null,
@@ -54,6 +57,12 @@ function seedTitledDoc(id: string, path: string, conflict: "none" | "modified"):
     lineMap: [],
   });
   useTabsStore.setState({ tabs: [id], activeId: id });
+}
+
+/** Parent directory of a POSIX-style test path (no Windows separators here). */
+function parentDir(p: string): string {
+  const idx = p.lastIndexOf("/");
+  return idx > 0 ? p.slice(0, idx) : p;
 }
 
 describe("saveTab opens the conflict dialog on ExternalConflict (§5.4)", () => {

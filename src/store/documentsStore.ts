@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import type { CompileStatus } from "../lib/ui-types";
-import type { ConflictState, LineRect, OpenedDocument } from "../lib/types";
+import type {
+  ConflictState,
+  DocumentOrigin,
+  LineRect,
+  OpenedDocument,
+} from "../lib/types";
 
 /**
  * Phase 4 (design §10): domain state for open documents, kept SEPARATE from
@@ -34,6 +39,17 @@ export interface Document {
   path: string | null;
   dirty: boolean;
   content: string;
+  /**
+   * Authoritative disk classification (§4.2 / §17). The LSP refactor needs
+   * `DocumentOrigin` on the frontend domain object so
+   * [`documentUri.ts`](../components/Editor/documentUri.ts) can convert it to
+   * the URI Monaco + Tinymist both see, without an IPC round-trip. The backend
+   * remains the source of truth; this field is a coherent mirror kept in sync
+   * by [`documentFromOpened`](Self.documentFromOpened) /
+   * [`markSaved`](Self.markSaved) / [`rebindDocPath`](Self.rebindDocPath) so
+   * the model registry can derive the new URI after a Save As / rename.
+   */
+  origin: DocumentOrigin;
   /** Monotonic content revision; bumped on every edit (§7). */
   revision: number;
   /**
@@ -67,6 +83,10 @@ export function documentFromOpened(doc: OpenedDocument): Document {
     path: doc.path,
     dirty: doc.dirty,
     content: doc.content,
+    // Authoritative origin mirrored from the backend payload (§17). The backend
+    // is the source of truth; this mirror lets documentUri.ts derive the URI
+    // without a round-trip.
+    origin: doc.origin,
     // The backend seeds revision 0 on open; the first compile carries revision
     // 0 and matches this. Each subsequent edit bumps it.
     revision: 0,
@@ -78,6 +98,68 @@ export function documentFromOpened(doc: OpenedDocument): Document {
     svgPages: [],
     lineMap: [],
   };
+}
+
+/**
+ * Derive the post-save `origin` for [`markSaved`](Self.markSaved) (§17). The
+ * backend is authoritative, but the frontend mirror must stay coherent so the
+ * model registry can derive the new URI without a round-trip.
+ *
+ * - Path unchanged: keep the variant, but sync the inner path (defensive — the
+ *   canonical path may have re-cased on case-insensitive FSes).
+ * - Path changed (Save As): the doc lands at a new disk location. An untitled
+ *   doc becomes a `looseFile` rooted at the new file's parent directory (a Save
+ *   As target is by definition outside any open workspace's tracking, so
+ *   `looseFile` is the correct classification until the backend reclassifies).
+ *   A `workspaceFile`/`looseFile` whose path changed also re-roots to the new
+ *   parent and drops to `looseFile` (the backend re-classifies to workspaceFile
+ *   on its next meta push if the new path is inside a workspace).
+ */
+function nextOriginAfterSave(
+  origin: DocumentOrigin,
+  oldPath: string | null,
+  newPath: string,
+): DocumentOrigin {
+  if (oldPath !== null && oldPath === newPath) {
+    // Plain save (no path change): keep variant, keep inner path in sync.
+    return origin.kind === "untitled" ? origin : { ...origin, path: newPath };
+  }
+  // Save As: re-root to the new parent dir as a looseFile.
+  return {
+    kind: "looseFile",
+    path: newPath,
+    root: parentDir(newPath),
+  };
+}
+
+/**
+ * Derive the post-rename `origin` for [`rebindDocPath`](Self.rebindDocPath)
+ * (§6.4 / §17): update the inner `path` to the new location, preserving the
+ * variant and its `workspace_id` / `root`. Not called for untitled docs.
+ */
+function rebindOriginPath(
+  origin: DocumentOrigin,
+  newPath: string,
+): DocumentOrigin {
+  switch (origin.kind) {
+    case "workspaceFile":
+      return { ...origin, path: newPath };
+    case "looseFile":
+      return { ...origin, path: newPath };
+    case "untitled":
+      // rebindDocPath is not invoked for untitled docs (they have no path).
+      return origin;
+  }
+}
+
+/**
+ * Canonical parent directory of an absolute path. Cross-platform: splits on
+ * either separator. Used to root a Save-As looseFile at its new parent dir.
+ */
+function parentDir(p: string): string {
+  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  if (idx <= 0) return p; // no separator, or root — keep as-is.
+  return p.slice(0, idx);
 }
 
 /**
@@ -240,6 +322,13 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
             path,
             title: path.split(/[\\/]/).pop() ?? doc.title,
             dirty: false,
+            // §17 origin coherence: the backend is authoritative, but the
+            // frontend mirror must stay coherent so the model registry can
+            // derive the new URI without a round-trip. On a Save As (path
+            // changed) an untitled doc becomes a looseFile rooted at the new
+            // file's parent directory (canonical absolute). A workspaceFile /
+            // looseFile changing location also re-roots to the new parent.
+            origin: nextOriginAfterSave(doc.origin, doc.path, path),
             // A successful save resolves any external-change conflict (§8.4):
             // the buffer is now in sync with disk. Also drop the stashed disk
             // content — there's nothing left to compare.
@@ -261,12 +350,20 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
     set((s) => {
       const doc = s.documents[id];
       if (!doc) return s;
+      // Untitled docs have no disk path to rebind; calling this on one would
+      // create an incoherent mirror (path set, origin still untitled). The
+      // backend never sends docs_rebound for untitled docs, but guard anyway.
+      if (doc.origin.kind === "untitled") return s;
       return {
         documents: {
           ...s.documents,
           [id]: {
             ...doc,
             path: newPath,
+            // §17 origin coherence: keep the inner path in sync with the new
+            // location, preserving the variant + (workspace_id | root). Not
+            // called for untitled docs (they have no path to rebind).
+            origin: rebindOriginPath(doc.origin, newPath),
             // Title is the new path's basename (matches the backend's
             // DocumentMeta derivation). Dirty/content/revision/conflict are all
             // preserved — a rename moves the file, not the edits.
