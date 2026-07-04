@@ -13,6 +13,7 @@ import { useExternalFileRouting } from "./hooks/useExternalFileRouting";
 import { useStartupSession } from "./hooks/useStartupSession";
 import { useWindowRestore } from "./hooks/useWindowRestore";
 import { useAutosave } from "./hooks/useAutosave";
+import { activateAll } from "./extensions";
 import {
   onSettingsWindow,
   onStartupProblems,
@@ -48,6 +49,12 @@ export default function App() {
   useWindowRestore();
   useAutosave();
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Activate all in-tree extensions (registers their views/commands). Runs once;
+  // extensions are idempotent-safe via the registry's duplicate-id guard.
+  useEffect(() => {
+    void activateAll();
+  }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;

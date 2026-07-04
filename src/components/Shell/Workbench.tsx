@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Allotment } from "allotment";
 import "allotment/dist/style.css";
 import { Sidebar } from "../Sidebar/Sidebar";
+import { ActivityBar } from "./ActivityBar";
 import { EditorArea } from "./EditorArea";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
@@ -90,6 +91,7 @@ export function Workbench() {
 
   return (
     <div className="workbench">
+      <ActivityBar />
       <Allotment proportionalLayout={false}>
         {/*
           Sidebar pane. CRITICAL: min/max/preferredSize stay CONSTANT regardless

@@ -840,6 +840,92 @@ button {
   min-width: 0;
   overflow: hidden;
 }
+
+/* ---- Activity Bar (far-left icon strip) ---------------------------------- */
+.activity-bar {
+  flex: 0 0 auto;
+  width: 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-xs) 0;
+  background: var(--color-canvas-parchment);
+  border-right: 1px solid var(--color-hairline);
+  gap: var(--space-xxs);
+}
+
+.activity-item {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-ink-muted-48);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  position: relative;
+  transition: background-color 80ms ease, color 80ms ease;
+}
+
+.activity-item:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--color-ink);
+}
+
+.activity-item.active {
+  color: var(--color-ink);
+}
+
+.activity-item.active::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--color-primary);
+  border-radius: 1px;
+}
+
+.activity-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---- Sidebar host shell (header + body) ---------------------------------- */
+.sidebar-header {
+  flex: 0 0 auto;
+  height: 35px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-sm);
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.sidebar-title {
+  font: var(--text-caption-strong);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-ink-muted-48);
+}
+
+.sidebar-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-loading {
+  padding: var(--space-sm);
+  color: var(--color-ink-muted-48);
+  font: var(--text-caption);
+}
+
 .explorer {
   display: flex;
   flex-direction: column;
