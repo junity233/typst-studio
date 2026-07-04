@@ -1,7 +1,14 @@
 import { useEffect, useTransition } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { onCompiled, onConflict, onSaveStateChanged, onStatus } from "../lib/tauri";
+import {
+  onCompiled,
+  onConflict,
+  onDocsRebound,
+  onSaveStateChanged,
+  onStatus,
+} from "../lib/tauri";
 import { useTabsStore } from "../store/tabsStore";
+import { useDocumentsStore } from "../store/documentsStore";
 import { useSaveStateStore } from "../store/saveStateStore";
 
 /**
@@ -75,6 +82,21 @@ export function useTypstCompile(): void {
         return;
       }
       unlistens.push(uSave);
+
+      // §6.4: a rename/move rebound open docs to new paths. Mirror the new path
+      // into the documents store so tab titles / breadcrumbs / active-file
+      // highlight track the rename. (The buffer, dirty, and revision are
+      // unchanged — only the disk location moved.)
+      const uRebound = await onDocsRebound((p) => {
+        for (const d of p.docs) {
+          useDocumentsStore.getState().rebindDocPath(d.id, d.newPath);
+        }
+      });
+      if (cancelled) {
+        uRebound();
+        return;
+      }
+      unlistens.push(uRebound);
     })();
 
     return () => {

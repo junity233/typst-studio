@@ -22,4 +22,5 @@ pub mod save_coordinator;
 pub mod session;
 pub mod tab_state;
 pub mod tab_store;
+pub mod trash;
 pub mod workspace_service;

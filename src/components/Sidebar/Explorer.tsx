@@ -320,7 +320,7 @@ function buildRowMenu(
   entry: DirEntry,
   setRenaming: (v: boolean) => void,
   setPendingNew: (v: { dir: string; kind: EntryKind } | null) => void,
-  deleteEntry: (rel: string) => Promise<void>,
+  deleteEntry: (rel: string) => Promise<unknown>,
 ) {
   const isDir = entry.kind === "dir";
   const parentDir = entry.relative.includes("/")
@@ -391,15 +391,49 @@ function buildRowMenu(
 
 async function handleDeleteWithConfirm(
   entry: DirEntry,
-  deleteEntry: (rel: string) => Promise<void>,
+  deleteEntry: (rel: string) => Promise<unknown>,
 ) {
-  const ok = window.confirm(`Delete "${entry.name}"? This cannot be undone.`);
+  // §5.5: the default delete routes through the system trash (recoverable from
+  // Finder / Recycle Bin / freedesktop Trash), so the prompt says "Move to
+  // Trash" rather than "This cannot be undone".
+  const isDir = entry.kind === "dir";
+  const ok = window.confirm(
+    `Move "${entry.name}" to the Trash?${isDir ? " This folder and everything in it will be moved to the Trash." : ""}`,
+  );
   if (!ok) return;
   try {
     await deleteEntry(entry.relative);
   } catch (e) {
-    window.alert(`Delete failed: ${toIpcError(e).message}`);
+    const err = toIpcError(e);
+    if (err.code === "delete_blocked") {
+      // §5.5: a dirty document is open under the target. Name the affected
+      // docs (carried in details.affectedDocs) so the user knows which to save
+      // or close before retrying.
+      const affected = extractAffectedDocs(err.details);
+      const names = affected.length > 0 ? affected.join("\n") : "";
+      window.alert(
+        `Cannot delete "${entry.name}": ${affected.length} unsaved document(s) open under this path. Save or close them first.${
+          names ? "\n\n" + names : ""
+        }`,
+      );
+      return;
+    }
+    window.alert(`Delete failed: ${err.message}`);
   }
+}
+
+/**
+ * Pull the affected-doc paths out of a `delete_blocked` error's `details`
+ * (§5.5). The backend carries `{ affectedDocs: [{ id, path }, ...] }`; we only
+ * need the paths for the user-facing message.
+ */
+function extractAffectedDocs(details: unknown): string[] {
+  if (typeof details !== "object" || details === null) return [];
+  const affected = (details as { affectedDocs?: unknown }).affectedDocs;
+  if (!Array.isArray(affected)) return [];
+  return affected
+    .map((d) => (typeof d === "object" && d !== null ? (d as { path?: unknown }).path : null))
+    .filter((p): p is string => typeof p === "string");
 }
 
 /** An inline text input for creating a new entry or renaming one. */

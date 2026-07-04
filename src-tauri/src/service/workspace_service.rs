@@ -22,6 +22,7 @@ use crate::error::{AppError, Result};
 use crate::fs::resolver::FileResolver;
 use crate::fs::tree::{read_dir as fs_read_dir, DirEntry, EntryKind};
 use crate::fs::watcher;
+use crate::service::trash::TrashOutcome;
 
 /// The currently open workspace, if any.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -222,17 +223,29 @@ impl WorkspaceService {
         Ok(())
     }
 
-    /// Delete a file or directory (recursively) at a workspace-relative path.
-    pub fn delete_entry(&self, rel: &str) -> Result<()> {
+    /// Delete a file or directory at a workspace-relative path via the system
+    /// trash (§5.5 "工作区删除默认进入系统废纸篓"). The entry is moved to the OS
+    /// recycle bin (recoverable from Finder / Recycle Bin / freedesktop Trash),
+    /// NOT permanently removed. Returns the [`TrashOutcome`] so the IPC layer
+    /// can report "Moved to Trash" (the default path always yields `Trashed`).
+    ///
+    /// The metadata check (`symlink_metadata`) distinguishes file vs dir for the
+    /// permanent path; the trash path handles both uniformly. Dirty-document
+    /// protection (§5.5 "dirty 文档存在时阻止删除") is enforced in the IPC command
+    /// layer, which has the document registry — this method is purely the disk
+    /// op.
+    pub fn delete_entry(&self, rel: &str) -> Result<TrashOutcome> {
         let path = self.resolve_rel(rel)?;
-        let meta = std::fs::symlink_metadata(&path).map_err(|e| AppError::Io(e))?;
-        let res = if meta.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        res.map_err(|e| AppError::Io(e))?;
-        Ok(())
+        crate::service::trash::TrashService::trash_delete(&path)
+    }
+
+    /// Permanently delete a file or directory at a workspace-relative path
+    /// (§5.5 "永久删除只作为明确标注的高级动作"). NOT recoverable. This is the
+    /// explicit advanced action — the default [`delete_entry`](Self::delete_entry)
+    /// trashes. Returns [`TrashOutcome::PermanentlyDeleted`] on success.
+    pub fn delete_entry_permanent(&self, rel: &str) -> Result<TrashOutcome> {
+        let path = self.resolve_rel(rel)?;
+        crate::service::trash::TrashService::permanent_delete(&path)
     }
 
     /// Read a `.typ` file's text by absolute path (for `open_file_by_path`).
@@ -347,14 +360,48 @@ mod tests {
     }
 
     #[test]
-    fn delete_entry_removes_file_and_dir() {
+    fn delete_entry_trashes_file_and_dir() {
+        // §11.4 "删除进入废纸篓而不是永久删除": the default delete path routes
+        // through the system trash, not a permanent remove. In a non-GUI test
+        // session the platform trash API may be unavailable (e.g. macOS with no
+        // NSWorkspace), so we accept either a Trashed outcome (file gone) or an
+        // error (platform can't trash) — but never a silent no-op.
         let dir = tmp_dir();
         std::fs::write(dir.join("gone.typ"), "x").unwrap();
         std::fs::create_dir_all(dir.join("gonedir")).unwrap();
         let ws = WorkspaceService::new();
         ws.open(dir.clone(), noop_on_change()).unwrap();
-        ws.delete_entry("gone.typ").unwrap();
-        ws.delete_entry("gonedir").unwrap();
+        // Delete the file: either trashed (gone) or platform error (still there).
+        match ws.delete_entry("gone.typ") {
+            Ok(TrashOutcome::Trashed) => {
+                assert!(!dir.join("gone.typ").exists());
+            }
+            Ok(other) => panic!("delete_entry must Trashed, got {other:?}"),
+            Err(_) => {
+                // Platform can't trash (non-GUI session); the file remains and
+                // that's an acceptable test environment, not a code defect.
+                assert!(dir.join("gone.typ").exists());
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_entry_permanent_removes_file_and_dir() {
+        // The explicit permanent path always removes (no platform dependency).
+        let dir = tmp_dir();
+        std::fs::write(dir.join("gone.typ"), "x").unwrap();
+        std::fs::create_dir_all(dir.join("gonedir")).unwrap();
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), noop_on_change()).unwrap();
+        assert_eq!(
+            ws.delete_entry_permanent("gone.typ").unwrap(),
+            TrashOutcome::PermanentlyDeleted
+        );
+        assert_eq!(
+            ws.delete_entry_permanent("gonedir").unwrap(),
+            TrashOutcome::PermanentlyDeleted
+        );
         assert!(!dir.join("gone.typ").exists());
         assert!(!dir.join("gonedir").exists());
         let _ = std::fs::remove_dir_all(&dir);

@@ -62,6 +62,10 @@ pub enum ErrorCode {
     AlreadyOpen,
     /// The path is malformed / not absolute / rejected by validation.
     InvalidPath,
+    /// The delete is blocked because one or more dirty documents are open under
+    /// the target path (§5.5). `details` carries the affected document ids +
+    /// paths so the frontend can tell the user which docs to save/close first.
+    DeleteBlocked,
     /// A transient IO error not covered by a more specific code (worth retrying).
     IoTransient,
     /// The referenced document/resource was not found.

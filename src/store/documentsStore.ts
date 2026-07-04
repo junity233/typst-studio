@@ -125,6 +125,14 @@ export interface DocumentsState {
   markSaved: (id: string, path: string) => void;
   /** Re-mark a document dirty (session-restore path). */
   reMarkDirty: (id: string) => void;
+  /**
+   * Rebind a document's path after a rename/move (§6.4 联动). Updates `path` +
+   * `title` (derived from the new path's basename) WITHOUT touching dirty /
+   * content / revision (the buffer is preserved across the rename — only the
+   * disk location changed). Used by the `docs_rebound` event handler so tab
+   * titles, breadcrumbs, and the active-file highlight track the rename.
+   */
+  rebindDocPath: (id: string, newPath: string) => void;
   /** Read-only lookup. */
   getDocument: (id: string) => Document | undefined;
 }
@@ -247,6 +255,25 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
       const doc = s.documents[id];
       if (!doc) return s;
       return { documents: { ...s.documents, [id]: { ...doc, dirty: true } } };
+    }),
+
+  rebindDocPath: (id, newPath) =>
+    set((s) => {
+      const doc = s.documents[id];
+      if (!doc) return s;
+      return {
+        documents: {
+          ...s.documents,
+          [id]: {
+            ...doc,
+            path: newPath,
+            // Title is the new path's basename (matches the backend's
+            // DocumentMeta derivation). Dirty/content/revision/conflict are all
+            // preserved — a rename moves the file, not the edits.
+            title: newPath.split(/[\\/]/).pop() ?? doc.title,
+          },
+        },
+      };
     }),
 
   getDocument: (id) => get().documents[id],

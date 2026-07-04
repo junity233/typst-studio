@@ -49,6 +49,33 @@ use super::workspace_service::WorkspaceService;
 /// Default content for a fresh untitled tab.
 const DEFAULT_TEMPLATE: &str = "#set page(width: 21cm, height: 29.7cm)\n\nHello, Typst!\n";
 
+/// One successfully rebound document from a rename/move (§6.4). Returned by
+/// [`DocumentService::rebind_for_rename`] so the IPC layer can emit per-doc
+/// path-change events for the frontend (tab title, breadcrumb, active-file
+/// highlight all derive from the new path).
+#[derive(Debug, Clone)]
+pub struct ReboundDoc {
+    /// The (stable) document id.
+    pub id: DocumentId,
+    /// The pre-rename canonical path.
+    pub old_path: PathBuf,
+    /// The post-rename canonical path.
+    pub new_path: PathBuf,
+}
+
+/// One open document at/under a path of interest (§5.5). Returned by
+/// [`DocumentService::docs_under_path`]; the IPC delete command inspects
+/// `dirty` to decide whether to block (§5.5 "dirty 文档存在时阻止删除").
+#[derive(Debug, Clone)]
+pub struct AffectedDoc {
+    /// The document id.
+    pub id: DocumentId,
+    /// The document's canonical path (== prefix or under it).
+    pub path: PathBuf,
+    /// Whether the document has unsaved edits.
+    pub dirty: bool,
+}
+
 /// The document-identity half of the editor (§6.1).
 ///
 /// Owns (via the shared [`TabStore`]) the document map, registry, loose-file
@@ -582,6 +609,162 @@ impl DocumentService {
     #[deprecated(note = "use rebind_path — it rebuilds the world and recompiles")]
     pub fn assign_path(&self, id: DocumentId, path: PathBuf) -> Result<()> {
         self.rebind_path(id, path)
+    }
+
+    /// Collect every open document whose canonical path equals or sits under
+    /// `prefix` (§5.5 dirty-delete check + §6.4 rename 联动 share this scan).
+    /// Returns `(id, canonical_path, dirty)` for each, so the caller can decide
+    /// what to do — the IPC delete command blocks when any is dirty; the rename
+    /// command rebinds all of them.
+    ///
+    /// `prefix` is canonicalized via [`canonicalize_for_identity`] so the
+    /// comparison is against the same canonical form the docs store (on macOS,
+    /// `/var/...` resolves to `/private/var/...` — without canonicalizing the
+    /// prefix, a `/var`-rooted path would never match a `/private/var`-rooted
+    /// doc). Best-effort: a non-canonicalizable prefix yields an empty result.
+    ///
+    /// Untitled documents carry no canonical path and are never affected.
+    pub fn docs_under_path(&self, prefix: &Path) -> Vec<AffectedDoc> {
+        // Canonicalize the prefix once so the per-doc comparison is in the same
+        // form as the docs' stored canonical paths.
+        let canon_prefix = match canonicalize_for_identity(prefix) {
+            Ok(p) => p,
+            Err(_) => return Vec::new(),
+        };
+        let tabs = self.store.tabs.read();
+        tabs.values()
+            .filter_map(|t| {
+                let rt = t.state.lock();
+                let canon = rt.meta.origin.canonical_path()?.to_path_buf();
+                if canon == canon_prefix || canon.starts_with(&canon_prefix) {
+                    Some(AffectedDoc {
+                        id: rt.meta.id,
+                        path: canon,
+                        dirty: rt.meta.dirty,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Rebind every open document whose canonical path equals or sits under
+    /// `from_prefix` to the matching path under `to_prefix` (§6.4 file-op
+    /// 联动). Called by the IPC [`rename_entry`](crate::ipc::fs_commands::rename_entry)
+    /// command AFTER the disk rename has succeeded, so each affected open doc is
+    /// moved to its new canonical location in lockstep with the file on disk.
+    ///
+    /// A rename/move affects:
+    /// - the renamed file itself, when `from` is a file (its single open doc);
+    /// - every open doc inside a renamed directory, when `from` is a dir
+    ///   (`from_prefix`/`to_prefix` substitution rewrites each child path).
+    ///
+    /// Each affected doc is rebound via [`rebind_path`](Self::rebind_path) (the
+    /// same path Save As uses): registry rebind, world rebuild anchored at the
+    /// new parent, VFS re-key, worker rotate, disk-version reseed. The doc keeps
+    /// its [`DocumentId`], buffer, and revision.
+    ///
+    /// # Transactionality (§6.4)
+    ///
+    /// The disk rename happens first (in [`WorkspaceService::rename_entry`]); if
+    /// it succeeds, the rebinds follow. A rebind can only fail on a registry
+    /// conflict at the new path (another open doc already bound there) — rare,
+    /// but possible if the user has the destination open. On such a failure we
+    /// do NOT abort the whole rename (the disk already moved); instead the
+    /// offending doc is left pointing at its old (now-vanished) path and the
+    /// watcher will mark it [`ConflictState::Missing`] on the next flush,
+    /// giving the user a recoverable state. Other affected docs are still
+    /// rebound. A full 2-phase commit is out of scope (§6.4 allows "进入明确的
+    /// recoverable 状态").
+    ///
+    /// # Watcher race during rebind
+    ///
+    /// The disk rename fires watcher events for the old-path deletion and
+    /// new-path creation. During this window `handle_external_change` may run
+    /// concurrently with the rebind loop. This is safe: the old-path deletion
+    /// event on a not-yet-rebound doc marks it `Missing` (the intended end
+    /// state if rebind were to fail); the new-path creation event finds no doc
+    /// (registry still keyed at the old path until rebind) — a no-op. After
+    /// rebind completes the doc is keyed at the new path and self-save events
+    /// there resolve correctly. No correctness bug; the ordering is subtle.
+    ///
+    /// Returns the list of docs that were successfully rebound (`(id,
+    /// old_path, new_path)`), so the IPC layer can emit per-doc path-change
+    /// events for the frontend.
+    pub fn rebind_for_rename(
+        &self,
+        from_prefix: &Path,
+        to_prefix: &Path,
+    ) -> Vec<ReboundDoc> {
+        // Canonicalize `from_prefix` so the comparison matches the docs' stored
+        // canonical paths. After the disk rename the source no longer exists, so
+        // `canonicalize_for_identity` falls back to lexical normalization (which
+        // is correct for a workspace-rooted path — the workspace root is already
+        // canonical, so `<root>/<rel>` matches the doc's canonical path even when
+        // the leaf doesn't exist). Best-effort: a non-canonicalizable prefix
+        // yields an empty result (no docs rebound).
+        let canon_from = match canonicalize_for_identity(from_prefix) {
+            Ok(p) => p,
+            Err(_) => return Vec::new(),
+        };
+        // Snapshot the affected docs (id + canonical path) under a brief read
+        // lock, then rebind each OUTSIDE the lock (rebind_path takes its own
+        // locks + spawns a worker). Filtering by canonical-path prefix catches
+        // both the file itself and (for a dir) every open child.
+        let affected: Vec<(DocumentId, PathBuf)> = {
+            let tabs = self.store.tabs.read();
+            tabs.values()
+                .filter_map(|t| {
+                    let rt = t.state.lock();
+                    let canon = rt.meta.origin.canonical_path()?.to_path_buf();
+                    if canon == canon_from || canon.starts_with(&canon_from) {
+                        Some((rt.meta.id, canon))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        let mut rebound = Vec::new();
+        // Canonicalize `to_prefix` once so prefix substitution is consistent with
+        // the canonicalized `from` side. After the disk rename the target exists,
+        // so `canonicalize_for_identity` resolves symlinks; on failure fall back
+        // to the raw `to_prefix` (lexical) — still correct when the workspace
+        // root is already canonical (the common case).
+        let canon_to = canonicalize_for_identity(to_prefix).unwrap_or_else(|_| to_prefix.to_path_buf());
+        for (id, old_canon) in affected {
+            // Compute the new canonical path by substituting the prefix.
+            // Strip the CANONICAL `from` prefix (not the raw `from_prefix`) so the
+            // strip matches the `starts_with(canon_from)` filter above even if a
+            // caller passed a non-normalized `from_prefix`. Re-attach under the
+            // canonical `to_prefix`.
+            let tail = old_canon.strip_prefix(&canon_from).ok();
+            let new_canon = match tail {
+                Some(tail) if !tail.as_os_str().is_empty() => canon_to.join(tail),
+                _ => canon_to.clone(),
+            };
+            // rebind_path rebuilds the world anchored at the new parent + reseeds
+            // the disk version. It only errors on a registry conflict at the new
+            // path; on that rare conflict, log + leave the doc pointing at the
+            // (now-vanished) old path so the watcher surfaces Missing (§6.4).
+            match self.rebind_path(id, new_canon.clone()) {
+                Ok(()) => rebound.push(ReboundDoc {
+                    id,
+                    old_path: old_canon,
+                    new_path: new_canon,
+                }),
+                Err(e) => {
+                    tracing::warn!(
+                        "rebind_for_rename: could not rebind doc {id} from \
+                         {old_canon:?} to {new_canon:?}: {e}; leaving it at the \
+                         old path (watcher will mark Missing)"
+                    );
+                }
+            }
+        }
+        rebound
     }
 
     /// Reclassify every open document's [`DocumentOrigin`] against the current
@@ -1218,5 +1401,236 @@ mod tests {
 
         // Idempotent for an unknown id (no error).
         document.clear_conflict(DocumentId::new()).unwrap();
+    }
+
+    // --- §5.5 / §6.4: dirty-delete detection + rename 联动 -------------------
+
+    /// `docs_under_path` (§5.5) finds open docs AT or UNDER the prefix and
+    /// reports each one's dirty flag, so the IPC delete command can block when
+    /// any is dirty. Untitled docs (no canonical path) are never affected.
+    #[test]
+    fn docs_under_path_reports_dirty_for_docs_at_and_under_prefix() {
+        let (document, _compile) = make_services();
+        // Canonicalize the temp dir so the prefix matches the docs' canonical
+        // paths (`temp_dir()` may live under a symlink, e.g. /var → /private/var
+        // on macOS). The production IPC layer gets this for free because the
+        // workspace root is canonicalized at open.
+        let dir = std::env::temp_dir().join(format!("ts-ren-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let a = dir.join("a.typ"); // at the dir root
+        let b = dir.join("sub/b.typ"); // under a subdir
+        std::fs::write(&a, "x").unwrap();
+        std::fs::write(&b, "y").unwrap();
+
+        let meta_a = document.open_from_content(a.clone(), "x".into(), None).unwrap();
+        let meta_b = document.open_from_content(b.clone(), "y".into(), None).unwrap();
+        // Dirty a; leave b clean.
+        document.update_text(meta_a.id, "edited".into()).unwrap();
+
+        // Deleting the whole dir → both docs affected, one dirty.
+        let affected = document.docs_under_path(&dir);
+        assert_eq!(affected.len(), 2, "both open docs are under the dir");
+        let dirty_count = affected.iter().filter(|d| d.dirty).count();
+        assert_eq!(dirty_count, 1, "exactly one doc (a) is dirty");
+
+        // Deleting just the subdir → only b.
+        let under_sub = document.docs_under_path(&dir.join("sub"));
+        assert_eq!(under_sub.len(), 1);
+        assert_eq!(under_sub[0].id, meta_b.id);
+        assert!(!under_sub[0].dirty, "b is clean");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §11.4 "重命名目录后所有打开子文档路径同步更新": renaming a directory
+    /// rebinds EVERY open doc under it to the matching path under the new dir.
+    /// The doc's canonical path, registry key, and origin all move; the buffer +
+    /// id + revision are preserved; the rebuilt world still compiles.
+    #[test]
+    fn rebind_for_rename_moves_all_open_docs_under_a_directory() {
+        let (document, compile) = make_services();
+        // Canonicalize so the prefix matches the docs' canonical paths (macOS
+        // /var → /private/var symlink; the workspace IPC gets canonicalization
+        // for free via the canonicalized workspace root).
+        let dir = std::env::temp_dir().join(format!("ts-rename-dir-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let a = src.join("a.typ");
+        let nested = src.join("nested/b.typ");
+        std::fs::create_dir_all(src.join("nested")).unwrap();
+        std::fs::write(&a, "#set page(width: 10cm)\n\nA").unwrap();
+        std::fs::write(&nested, "#set page(width: 10cm)\n\nB").unwrap();
+
+        let meta_a = document.open_from_content(a.clone(), "#set page(width: 10cm)\n\nA".into(), None).unwrap();
+        let meta_b = document
+            .open_from_content(nested.clone(), "#set page(width: 10cm)\n\nB".into(), None)
+            .unwrap();
+
+        // Simulate the disk rename: src → src2 (the IPC command does this first).
+        std::fs::rename(&src, dir.join("src2")).unwrap();
+
+        // Rebind every open doc under the old src/ prefix to src2/.
+        let rebound = document.rebind_for_rename(&src, &dir.join("src2"));
+        assert_eq!(rebound.len(), 2, "both docs under src/ must rebind");
+
+        // Each doc's canonical path + origin moved to src2/.
+        let after_a = document.tab_meta(meta_a.id).unwrap();
+        let after_b = document.tab_meta(meta_b.id).unwrap();
+        assert_eq!(
+            after_a.origin.canonical_path(),
+            Some(dir.join("src2/a.typ").as_path()),
+            "a.typ must be rebound under src2/"
+        );
+        assert_eq!(
+            after_b.origin.canonical_path(),
+            Some(dir.join("src2/nested/b.typ").as_path()),
+            "nested/b.typ must be rebound under src2/nested/"
+        );
+
+        // The registry keys the docs at their NEW canonical paths.
+        let reg = document.registry();
+        let reg = reg.read();
+        assert_eq!(
+            reg.find_by_canonical(&dir.join("src2/a.typ")),
+            Some(meta_a.id),
+            "registry must key a.typ at src2/"
+        );
+        assert_eq!(
+            reg.find_by_canonical(&dir.join("src2/nested/b.typ")),
+            Some(meta_b.id),
+            "registry must key b.typ at src2/nested/"
+        );
+        // The old paths are free.
+        assert!(reg.find_by_canonical(&a).is_none());
+        assert!(reg.find_by_canonical(&nested).is_none());
+
+        // The id + buffer + revision are preserved across the rename.
+        assert_eq!(after_a.id, meta_a.id, "id is stable across rename");
+        assert_eq!(
+            document.tab_text(meta_a.id).as_deref(),
+            Some("#set page(width: 10cm)\n\nA"),
+            "buffer preserved"
+        );
+
+        // The rebuilt world still compiles (worker rotated → recompile).
+        wait_for_compiled(&compile, meta_a.id);
+        assert!(
+            compile.last_doc(meta_a.id).is_some(),
+            "rebound doc must still compile after the rename"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `rebind_for_rename` for a single FILE rename (not a dir) rebinds just
+    /// that file's open doc, preserving the buffer + id.
+    #[test]
+    fn rebind_for_rename_for_a_single_file_rebinds_its_doc() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir().join(format!("ts-rename-file-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let from = dir.join("old.typ");
+        let to = dir.join("new.typ");
+        std::fs::write(&from, "content").unwrap();
+
+        let meta = document.open_from_content(from.clone(), "content".into(), None).unwrap();
+        std::fs::rename(&from, &to).unwrap();
+
+        let rebound = document.rebind_for_rename(&from, &to);
+        assert_eq!(rebound.len(), 1);
+        assert_eq!(rebound[0].id, meta.id);
+
+        let after = document.tab_meta(meta.id).unwrap();
+        assert_eq!(after.origin.canonical_path(), Some(to.as_path()));
+        assert_eq!(document.tab_text(meta.id).as_deref(), Some("content"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §6.4 / §11.4 "文件操作失败时 registry、UI 和磁盘保持一致": a rename whose
+    /// target is ALREADY an open doc leaves everything unchanged. `rebind_path`
+    /// rejects the conflicting target (AlreadyOpen); the offending doc is left
+    /// at its old path (NOT half-rebound), and other docs in the same batch are
+    /// still rebound.
+    #[test]
+    fn rebind_for_rename_to_already_open_target_leaves_doc_unchanged() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir().join(format!("ts-rename-open-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let from = dir.join("from.typ");
+        let target = dir.join("target.typ");
+        std::fs::write(&from, "src").unwrap();
+        std::fs::write(&target, "dst").unwrap();
+
+        let meta_from = document.open_from_content(from.clone(), "src".into(), None).unwrap();
+        let _meta_target = document.open_from_content(target.clone(), "dst".into(), None).unwrap();
+
+        std::fs::rename(&from, &target).unwrap();
+        // Rebind `from`'s doc onto `target` — but target is already open → the
+        // rebind is rejected, and `from`'s doc is left at its old path.
+        let rebound = document.rebind_for_rename(&from, &target);
+        assert!(
+            rebound.is_empty(),
+            "the conflicting rebind must not be reported as rebound, got {rebound:?}"
+        );
+        // The from doc is unchanged (its canonical path is still `from`, buffer
+        // intact). The disk moved (simulating the recoverable state), but the
+        // doc identity is preserved — the watcher would mark it Missing next.
+        let after = document.tab_meta(meta_from.id).unwrap();
+        assert_eq!(
+            after.origin.canonical_path(),
+            Some(from.as_path()),
+            "from doc must stay at its old path on a conflicting rebind"
+        );
+        assert_eq!(document.tab_text(meta_from.id).as_deref(), Some("src"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §6.4 "include 依赖的重新编译": after a rename, a doc that #includes the
+    /// renamed file must resolve against its NEW path. The mechanism is the
+    /// shared VFS re-key (`rebind_path` drops the old canonical entry and
+    /// publishes the buffer under the new one). This test verifies the re-key:
+    /// the renamed doc's buffer is served under the NEW canonical path (and no
+    /// longer under the OLD one) after `rebind_for_rename`, so an includer's
+    /// next compile picks up the renamed location.
+    #[test]
+    fn rebind_for_rename_rekeys_shared_vfs_to_new_path() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir().join(format!("ts-rename-vfs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let from = dir.join("old.typ");
+        let to = dir.join("new.typ");
+        std::fs::write(&from, "content").unwrap();
+
+        let meta = document.open_from_content(from.clone(), "content".into(), None).unwrap();
+        // Before the rename, the VFS serves the buffer under the OLD path.
+        assert!(
+            document.store.vfs.get(&from).is_some(),
+            "VFS must serve the buffer under the old canonical path before rename"
+        );
+
+        std::fs::rename(&from, &to).unwrap();
+        document.rebind_for_rename(&from, &to);
+
+        // After the rename, the VFS serves the buffer under the NEW path, and
+        // the OLD path entry is gone — so an includer's next compile resolves
+        // the renamed file at its new location.
+        assert!(
+            document.store.vfs.get(&to).is_some(),
+            "VFS must serve the buffer under the new canonical path after rename"
+        );
+        assert!(
+            document.store.vfs.get(&from).is_none(),
+            "VFS must drop the old canonical path entry after rename"
+        );
+        let _ = meta; // keep the doc alive
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -252,6 +252,11 @@ mod tests {
         // Startup-problem payloads (§6.5).
         crate::startup::StartupProblem::export(&cfg).unwrap();
         crate::startup::StartupProblemsPayload::export(&cfg).unwrap();
+        // §5.5 / §6.4 file-op wire types (defined in fs_commands).
+        crate::ipc::fs_commands::ReboundDoc::export(&cfg).unwrap();
+        crate::ipc::fs_commands::DocsReboundPayload::export(&cfg).unwrap();
+        crate::ipc::fs_commands::AffectedDoc::export(&cfg).unwrap();
+        crate::ipc::fs_commands::DeleteResult::export(&cfg).unwrap();
     }
 
     #[test]

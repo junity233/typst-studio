@@ -82,6 +82,11 @@ chrono = { version = "0.4", features = ["serde"] }
 # Workspace filesystem watching (file-tree live updates).
 notify = "8"
 
+# Safe deletion via the system trash / recycle bin (§5.5). Cross-platform:
+# macOS NSWorkspace recycle, Windows FileOperation FO_DELETE with recycle, Linux
+# freedesktop Trash.
+trash = "5"
+
 # Rust ↔ TypeScript type generation (optional, behind feature)
 ts-rs = { version = "12", features = ["uuid-impl", "chrono-impl", "no-serde-warnings"], optional = true }
 

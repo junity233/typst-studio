@@ -2,7 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ConflictPayload,
+  DeleteResult,
   DirEntry,
+  DocsReboundPayload,
   DocumentId,
   EntryKind,
   FocusViewPayload,
@@ -14,6 +16,7 @@ import type {
   RecoveredDocument,
   RecoveryAvailablePayload,
   CompareRecovery,
+  ReboundDoc,
   SaveAllResult,
   SaveState,
   SaveStateChangedPayload,
@@ -170,14 +173,28 @@ export async function createEntry(rel: string, kind: EntryKind): Promise<void> {
   await invoke("create_entry", { rel, kind });
 }
 
-/** Rename/move a workspace-relative entry to another workspace-relative path. */
-export async function renameEntry(from: string, to: string): Promise<void> {
-  await invoke("rename_entry", { from, to });
+/**
+ * Rename/move a workspace-relative entry to another workspace-relative path.
+ * §6.4 联动: the backend rebinds every open doc under `from` to the matching
+ * path under `to` (registry/world/VFS/watcher). Returns the rebound docs so a
+ * caller can mirror the path change into frontend stores (the `docs_rebound`
+ * event also carries them — either source is authoritative).
+ */
+export async function renameEntry(
+  from: string,
+  to: string,
+): Promise<ReboundDoc[]> {
+  return invoke<ReboundDoc[]>("rename_entry", { from, to });
 }
 
-/** Delete a workspace-relative file or directory. */
-export async function deleteEntry(rel: string): Promise<void> {
-  await invoke("delete_entry", { rel });
+/**
+ * Delete a workspace-relative file or directory via the system trash (§5.5).
+ * Rejects with `delete_blocked` when a dirty document is open under the target
+ * (the user must save/close/discard it first); resolves with the outcome
+ * (`"trashed"` / `"permanently_deleted"`) otherwise.
+ */
+export async function deleteEntry(rel: string): Promise<DeleteResult> {
+  return invoke<DeleteResult>("delete_entry", { rel });
 }
 
 /** Reveal a workspace-relative file or directory in the OS file manager. */
@@ -229,6 +246,17 @@ export async function onFsChanged(
   handler: (payload: FsChangedPayload) => void,
 ): Promise<UnlistenFn> {
   return listen<FsChangedPayload>("fs_changed", (e) => handler(e.payload));
+}
+
+/**
+ * Subscribe to docs-rebound events (§6.4). Emitted after a rename/move rebinds
+ * open documents to their new paths; the handler mirrors the new path into the
+ * frontend document store (tab title, breadcrumb, active-file highlight).
+ */
+export async function onDocsRebound(
+  handler: (payload: DocsReboundPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<DocsReboundPayload>("docs_rebound", (e) => handler(e.payload));
 }
 
 /**
