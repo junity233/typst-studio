@@ -11,6 +11,8 @@ import { useTypstCompile } from "./hooks/useTypstCompile";
 import { useAppCommands } from "./hooks/useAppCommands";
 import { useExternalFileRouting } from "./hooks/useExternalFileRouting";
 import { useStartupSession } from "./hooks/useStartupSession";
+import { useWindowRestore } from "./hooks/useWindowRestore";
+import { useAutosave } from "./hooks/useAutosave";
 import {
   onSettingsWindow,
   onStartupProblems,
@@ -43,6 +45,8 @@ export default function App() {
   useAppCommands();
   useExternalFileRouting();
   useStartupSession();
+  useWindowRestore();
+  useAutosave();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {

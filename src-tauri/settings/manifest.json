@@ -27,6 +27,17 @@
         { "key": "window.previewVisible",   "type": "boolean", "label": "Show preview on startup", "default": true },
         { "key": "window.recentWorkspaces", "type": "paths",   "label": "Recent workspaces",       "default": [], "readonly": true }
     ]},
+    { "id": "saving", "label": "Saving", "settings": [
+        { "key": "autosave.mode",       "type": "select",  "label": "Autosave",   "default": "off", "options": ["off", "afterDelay", "onFocusChange"],
+          "optionLabels": { "off": "Off", "afterDelay": "After delay", "onFocusChange": "On focus change" } },
+        { "key": "autosave.delayMs",    "type": "integer", "label": "Autosave delay (ms)", "default": 3000, "min": 500, "max": 30000 }
+    ]},
+    { "id": "data", "label": "Data & Privacy", "settings": [
+        { "key": "action.clearRecentWorkspaces", "type": "string", "label": "Clear recent workspaces", "default": "", "readonly": true, "action": "clearRecentWorkspaces",
+          "help": "Remove the list of recently-opened workspace folders." },
+        { "key": "action.clearRecoveryData",     "type": "string", "label": "Clear recovery data",     "default": "", "readonly": true, "action": "clearRecoveryData",
+          "help": "Delete all crash-recovery snapshots from <app-data>/recovery/." }
+    ]},
     { "id": "diagnostics", "label": "Diagnostics", "settings": [
         { "key": "action.openLogDir",       "type": "string", "label": "Open log directory", "default": "", "readonly": true, "action": "openLogDir" },
         { "key": "action.exportDiagnostics","type": "string", "label": "Export diagnostics bundle", "default": "", "readonly": true, "action": "exportDiagnostics" }

@@ -17,7 +17,7 @@
  * locked) is logged but never surfaces to the user, since losing one capture is
  * harmless (the next change re-captures).
  */
-import { getSession, saveSession } from "./tauri";
+import { getSession, saveSession, recordWorkspace as recordWorkspaceBE } from "./tauri";
 import type { OpenDocRecord, Session } from "./types";
 
 /**
@@ -33,9 +33,15 @@ export async function loadSession(): Promise<Session> {
   }
 }
 
-/** Record the last-opened workspace path (pass "" to clear). */
+/**
+ * Record the last-opened workspace path (§7.2 "最近工作区"). Delegates to the
+ * backend `record_workspace` command, which bumps the path to the front of the
+ * recent-workspaces list (deduped + capped) AND sets it as the current
+ * workspace. Pass "" to clear the current-workspace marker only (the recent
+ * list is untouched). Best-effort: a failure is logged, never thrown.
+ */
 export function recordWorkspace(path: string): void {
-  saveSession({ lastWorkspace: path }).catch((e) =>
+  recordWorkspaceBE(path).catch((e) =>
     console.warn("[session] recordWorkspace failed:", e),
   );
 }
@@ -217,5 +223,9 @@ export function emptySession(): Session {
     lastFile: "",
     openDocuments: [],
     activeDocumentId: null,
+    // v2 fields default to absent (None/empty) — the backend fills them in.
+    windowBounds: null,
+    layout: null,
+    recentWorkspaces: [],
   };
 }

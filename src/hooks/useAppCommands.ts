@@ -10,6 +10,7 @@ import {
   saveAs as saveAsBE,
   saveFile,
   markCleanShutdown,
+  saveSession,
 } from "../lib/tauri";
 import { useTabsStore, readOrderedDocuments } from "../store/tabsStore";
 import { useDocumentsStore } from "../store/documentsStore";
@@ -18,6 +19,8 @@ import { useUiStore } from "../store/uiStore";
 import { useDialogStore } from "../store/dialogStore";
 import { closeTabWithConfirm, saveTab } from "../lib/commands";
 import { captureAndSaveSession } from "../lib/session";
+import { captureWindowBounds } from "../lib/windowState";
+import { captureLayout } from "../lib/layoutState";
 import { toIpcError } from "../lib/ipc-error";
 
 /**
@@ -101,6 +104,12 @@ export async function dispatch(menuId: string): Promise<void> {
   const ui = useUiStore.getState();
 
   try {
+    // "Open Recent > <workspace>" submenu (§7.2): the id is `open-recent:<i>`,
+    // where <i> indexes into the session's recent_workspaces. Resolve + open.
+    if (menuId.startsWith("open-recent:")) {
+      await handleOpenRecent(menuId);
+      return;
+    }
     switch (menuId) {
       case "new-tab":
         await tabs.openTab();
@@ -179,13 +188,51 @@ async function handleOpenFile(): Promise<void> {
 }
 
 /**
+ * Handle an "Open Recent > <workspace>" menu pick (§7.2 "最近工作区"). The id
+ * is `open-recent:<i>`; resolve `<i>` against the session's recent list and
+ * open that workspace by path. Best-effort: a stale/missing entry is logged
+ * (the menu is static for the session, so a removed folder can still be listed).
+ */
+async function handleOpenRecent(menuId: string): Promise<void> {
+  const idxStr = menuId.slice("open-recent:".length);
+  const idx = Number(idxStr);
+  if (!Number.isInteger(idx) || idx < 0) return;
+  const { loadSession } = await import("../lib/session");
+  const { openWorkspaceByPath } = await import("../lib/tauri");
+  const session = await loadSession();
+  const path = session.recentWorkspaces[idx];
+  if (!path) return;
+  try {
+    const meta = await openWorkspaceByPath(path);
+    if (meta) {
+      useWorkspaceStore.setState({
+        rootPath: meta.root,
+        name: meta.name,
+        tree: {},
+        expanded: new Set(),
+      });
+      await useWorkspaceStore.getState().refresh("");
+    }
+  } catch (e) {
+    console.warn(`[menu:open-recent] could not open "${path}":`, e);
+  }
+}
+
+/**
  * Close the app, guarding unsaved tabs. Reads the tab list fresh (no React
  * selector) so the check reflects current edits at the moment of close.
  *
- * Before destroying the window the session is re-captured (awaited) so the
- * final tab list + active view is persisted for the next launch — the
- * fire-and-forget captures from the store actions may otherwise be cut off by
- * the window going away.
+ * Before destroying the window three things are awaited so the final state is
+ * persisted for the next launch:
+ *   1. the session tab list + active view ([`captureAndSaveSession`]),
+ *   2. the window bounds + UI-panel layout (§7.2 — captured here, alongside
+ *      the session, so the next launch reopens at the same size/position/layout),
+ *   3. the clean-shutdown marker (§5.1.2 — tells the next launch this session
+ *      ended cleanly).
+ *
+ * The fire-and-forget captures from the store actions may otherwise be cut off
+ * by the window going away, so these final awaits are what make the persisted
+ * state authoritative.
  *
  * Crash recovery (§5.1.2): right before `destroy()`, write the clean-shutdown
  * marker so the next launch knows this session ended cleanly (every dirty doc
@@ -200,6 +247,7 @@ async function handleCloseRequested(): Promise<void> {
   const dirty = docs.filter((t) => t.dirty);
   if (dirty.length === 0) {
     await captureAndSaveSession();
+    await captureAndSaveWindowState();
     await markCleanShutdown();
     await getCurrentWindow().destroy();
     return;
@@ -214,6 +262,7 @@ async function handleCloseRequested(): Promise<void> {
   if (choice === "cancel") return;
   if (choice === "discard") {
     await captureAndSaveSession();
+    await captureAndSaveWindowState();
     await markCleanShutdown();
     await getCurrentWindow().destroy();
     return;
@@ -223,8 +272,73 @@ async function handleCloseRequested(): Promise<void> {
     if (!(await saveTab(t.id))) return;
   }
   await captureAndSaveSession();
+  await captureAndSaveWindowState();
   await markCleanShutdown();
   await getCurrentWindow().destroy();
+}
+
+/**
+ * Capture the current window geometry + UI-panel layout into the persisted
+ * session (§7.2), so the next launch reopens at the same size/position/layout.
+ *
+ * Window bounds come from the live window API ([`captureWindowBounds`]); the
+ * layout (sidebar/preview/diagnostics visibility + pane widths) comes from the
+ * uiStore + a localStorage-backed preview width. Both are merged into one
+ * `save_session` patch. Best-effort: a failure is logged but never throws —
+ * losing one capture is harmless (the prior values stand, and the next close
+ * re-captures).
+ */
+export async function captureAndSaveWindowState(): Promise<void> {
+  try {
+    const windowBounds = await captureWindowBounds();
+    const ui = useUiStore.getState();
+    const layout = captureLayout({
+      sidebarVisible: ui.sidebarVisible,
+      previewVisible: ui.previewVisible,
+      diagnosticsVisible: readDiagnosticsVisible(),
+      previewWidth: readPreviewWidth(),
+    });
+    await saveSession({ windowBounds, layout });
+  } catch (e) {
+    console.warn("[windowState] captureAndSaveWindowState failed:", e);
+  }
+}
+
+/**
+ * Read the persisted preview-pane width from localStorage (the EditorArea
+ * manages it there as `ts-preview-width`). Returns null when unset/invalid so
+ * the session layout omits it (the component default applies on restore).
+ */
+function readPreviewWidth(): number | null {
+  try {
+    const raw = localStorage.getItem("ts-preview-width");
+    if (raw) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 240) return n;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+/**
+ * Read the diagnostics-panel visibility. The panel's collapsed state is local
+ * to `EditorArea` (not in a store), so we read the DOM: the panel exposes a
+ * `[data-diagnostics-collapsed]` attribute. Returns false (visible-default) on
+ * any failure — non-fatal, the session layout just won't capture it precisely.
+ */
+function readDiagnosticsVisible(): boolean {
+  try {
+    const el = document.querySelector("[data-diagnostics-panel]");
+    if (el) {
+      const collapsed = el.getAttribute("data-diagnostics-collapsed") === "true";
+      return !collapsed;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
 }
 
 /** Save the active tab in place, or Save As if it's untitled. */

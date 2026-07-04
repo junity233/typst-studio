@@ -178,13 +178,33 @@ typst-studio/
 
 ## Security
 
-For MVP convenience, `src-tauri/capabilities/default.json` grants the filesystem commands
-(`fs:allow-read-text-file`, `fs:allow-write-text-file`, `fs:allow-write-file`, `fs:allow-mkdir`,
-`fs:allow-exists`) a permissive recursive scope of `**`, so users can open and save files anywhere on
-disk. Tauri's built-in `deny-default` protections (e.g. the webview data folder on Windows/Linux)
-still take precedence. **Tighten these scopes** (e.g. to `$HOME/**` or user-selected paths) before a
-production release. `app.security.csp` is left `null` during development and should be locked down
-before shipping.
+`src-tauri/capabilities/default.json` scopes the filesystem plugin commands
+(`fs:allow-read-text-file`, `fs:allow-write-text-file`, `fs:allow-write-file`,
+`fs:allow-mkdir`, `fs:allow-exists`) to `$HOME/**`, so the frontend-exposed fs
+plugin can read/write within the user's home directory (Tauri's `deny-default`
+protections, e.g. the webview data folder on Windows/Linux, still take
+precedence). Note: the app's core file I/O (open/save/save-as) goes through
+**Rust IPC commands using `std::fs` directly**, which bypass the plugin's
+permission scope — so the capability glob is cosmetic for those paths but still
+correct practice for any frontend-exposed fs API. Tightening to user-chosen
+paths only requires deeper integration (a per-action grant model) and is tracked
+as a future production gate. `app.security.csp` is set to a production policy
+(see `tauri.conf.json`): `default-src 'self'`, with `img-src` allowing the
+`blob:`/`data:` preview SVGs and `worker-src 'self'` for Monaco's workers.
+
+### Recovery data & uninstall
+
+Crash-recovery snapshots of unsaved edits are written to the app's private data
+directory under `<app-data>/recovery/`:
+
+- **macOS**: `~/Library/Application Support/com.typststudio.app/recovery/`
+- **Linux**: `~/.local/share/com.typststudio.app/recovery/`
+- **Windows**: `%APPDATA%\com.typststudio.app\recovery\`
+
+These are NOT deleted on uninstall — uninstalling the app leaves recovery data
+in place so a reinstall can still offer to restore unsaved work. To remove them,
+use **Settings → Data & Privacy → Clear recovery data**, or delete the
+`recovery/` folder above manually.
 
 ## Roadmap
 

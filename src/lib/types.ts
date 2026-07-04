@@ -311,6 +311,21 @@ details: unknown | null,
 recoverable: boolean, };
 
 /**
+ * Persisted UI-panel layout (§7.2 "侧栏、诊断面板与预览可见性；分栏尺寸").
+ * These migrate the per-first-run defaults out of `window.*` settings into
+ * the session (settings remain as a fallback default for a brand-new install).
+ */
+export type LayoutState = { sidebarVisible: boolean, previewVisible: boolean, diagnosticsVisible: boolean, 
+/**
+ * Sidebar pane width (px), if a custom size was captured.
+ */
+sidebarWidth?: number | null, 
+/**
+ * Preview pane width (px), if a custom size was captured.
+ */
+previewWidth?: number | null, };
+
+/**
  * A source line's bounding rectangle on a preview page.
  *
  * `page` is 0-indexed; `line` is 1-indexed (matching Monaco). Geometry is in
@@ -555,7 +570,24 @@ openDocuments: Array<OpenDocRecord>,
  * fails to restore; the caller falls back to the last successfully opened
  * view in that case.
  */
-activeDocumentId: string | null, };
+activeDocumentId: string | null, 
+/**
+ * Window geometry + chrome (§7.2). `None` until the frontend captures it
+ * on the first close; restored (clamped to the monitor) on the next start.
+ */
+windowBounds?: WindowBounds | null, 
+/**
+ * UI-panel layout (§7.2). `None` for a v1 file; the frontend falls back to
+ * the `window.*` settings defaults (or [`LayoutState::default`]).
+ */
+layout?: LayoutState | null, 
+/**
+ * Recently-opened workspace paths (§7.2 "最近工作区"), most-recent-first.
+ * Mirrored from the legacy `window.recentWorkspaces` setting so the
+ * welcome/switch-workspace UI can read it from the session. Deduplicated +
+ * capped at [`MAX_RECENT_WORKSPACES`] on update.
+ */
+recentWorkspaces: Array<string>, };
 
 /**
  * Severity of a diagnostic message.
@@ -596,6 +628,30 @@ export type WatcherHealthPayload = {
  * is active as compensation).
  */
 watcherFailed: boolean, };
+
+/**
+ * Persisted window geometry + chrome state (§7.2 "窗口大小、位置、最大化和全屏
+ * 状态"). Restored on startup and clamped to the current monitor's work area
+ * (a saved position from a now-removed external monitor must not reopen the
+ * window off-screen). All fields are tolerated on load via `#[serde(default)]`.
+ */
+export type WindowBounds = { 
+/**
+ * Inner (client-area) width in px.
+ */
+width: number, 
+/**
+ * Inner (client-area) height in px.
+ */
+height: number, 
+/**
+ * Outer x (px from the monitor's left). `None` ⇒ center on restore.
+ */
+x?: number | null, 
+/**
+ * Outer y (px from the monitor's top). `None` ⇒ center on restore.
+ */
+y?: number | null, maximized: boolean, fullscreen: boolean, };
 
 /**
  * Identifier for the currently active workspace (§4.2 / §4.3).

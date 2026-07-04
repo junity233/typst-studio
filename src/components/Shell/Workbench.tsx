@@ -7,6 +7,8 @@ import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
 import { useSettingsStore } from "../../store/settingsStore";
 import { getByPath } from "../../hooks/useSetting";
+import { loadSession } from "../../lib/session";
+import { effectiveLayout } from "../../lib/layoutState";
 
 /**
  * One-shot guard for the window-settings seed. Module-scoped (not a ref) so it
@@ -37,19 +39,23 @@ export function Workbench() {
     void hydrate();
   }, [hydrate]);
 
-  // Seed the ephemeral pane-visibility state from the persisted `window.*`
-  // settings exactly once. This is a STARTUP-ONLY read (non-reactive): the
-  // user's in-session toggles keep mutating uiStore and are NOT written back
-  // to settings. We `await hydrate()` first because main.tsx kicks off
-  // hydration fire-and-forget and Workbench can mount before the store's data
-  // is populated; `hydrate` is idempotent, so re-awaiting it here is safe and
-  // guarantees a populated read. The module flag makes it idempotent across
-  // StrictMode double-invocation.
+  // Seed the ephemeral pane-visibility state from the persisted layout,
+  // exactly once. Session v2 `layout` (§7.2) wins when present — it reflects
+  // the user's most recent in-session choice. The legacy `window.*` settings
+  // remain as the first-run fallback (a fresh install, or a v1 session with no
+  // layout field). This is a STARTUP-ONLY read (non-reactive): the user's
+  // in-session toggles keep mutating uiStore and are captured back into the
+  // session layout on close (see useAppCommands). We `await hydrate()` first
+  // because main.tsx kicks off hydration fire-and-forget and Workbench can
+  // mount before the store's data is populated; `hydrate` is idempotent, so
+  // re-awaiting it here is safe and guarantees a populated read. The module
+  // flag makes it idempotent across StrictMode double-invocation.
   useEffect(() => {
     if (windowSettingsSeeded) return;
     windowSettingsSeeded = true;
     void (async () => {
       await useSettingsStore.getState().hydrate();
+      // Settings fallback (first-run / v1-session defaults).
       const sidebar = getByPath(
         useSettingsStore.getState().data,
         "window.sidebarVisible",
@@ -58,8 +64,27 @@ export function Workbench() {
         useSettingsStore.getState().data,
         "window.previewVisible",
       ) as boolean | undefined;
-      setSidebar(sidebar ?? true);
-      setPreview(preview ?? true);
+      // Session v2 layout wins when present (§7.2).
+      let sessionSidebar: boolean | undefined;
+      let sessionPreview: boolean | undefined;
+      try {
+        const session = await loadSession();
+        if (session.layout) {
+          sessionSidebar = session.layout.sidebarVisible;
+          sessionPreview = session.layout.previewVisible;
+        }
+      } catch {
+        // loadSession already degrades to empty; ignore.
+      }
+      const eff = effectiveLayout(
+        undefined,
+        {
+          sidebarVisible: sidebar ?? true,
+          previewVisible: preview ?? true,
+        },
+      );
+      setSidebar(sessionSidebar ?? eff.sidebarVisible);
+      setPreview(sessionPreview ?? eff.previewVisible);
     })();
   }, [setSidebar, setPreview]);
 

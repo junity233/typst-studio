@@ -1,8 +1,12 @@
 import { useState } from "react";
-import { Plus, X, Hammer, Type, Eye, Monitor, type LucideIcon } from "lucide-react";
+import { Plus, X, Hammer, Type, Eye, Monitor, Save, Database, type LucideIcon } from "lucide-react";
 import type { ManifestCategory, SettingDef } from "../../lib/settings-types";
 import { useSetting } from "../../hooks/useSetting";
 import { useSettingsStore } from "../../store/settingsStore";
+import {
+  clearRecentWorkspaces,
+  openLogDir,
+} from "../../lib/tauri";
 import { Toggle } from "./Toggle";
 
 /** Icon + accent hue per category id. Falls back to a gear. */
@@ -11,6 +15,8 @@ const CATEGORY_ICON: Record<string, LucideIcon> = {
   editor: Type,
   preview: Eye,
   window: Monitor,
+  saving: Save,
+  data: Database,
 };
 
 /**
@@ -82,14 +88,24 @@ function CategoryPane({ category }: { category: ManifestCategory }) {
 }
 
 function SettingRow({ def, last }: { def: SettingDef; last: boolean }) {
-  const isInput = def.type !== "boolean" && def.type !== "paths";
+  const isAction = def.action !== undefined;
+  const isInput =
+    def.type !== "boolean" &&
+    def.type !== "paths" &&
+    !isAction;
+  // For action settings the button itself carries the label, so we hide the
+  // row label (the key + help still show for context).
+  const showLabel = !isAction;
   return (
     <div className={"setting-row" + (last ? " setting-row-last" : "")}>
       <div className="setting-row-text">
-        <label className="setting-label" htmlFor={isInput ? `setting-${def.key}` : undefined}>
-          {def.label}
-        </label>
+        {showLabel && (
+          <label className="setting-label" htmlFor={isInput ? `setting-${def.key}` : undefined}>
+            {def.label}
+          </label>
+        )}
         <span className="setting-key">{def.key}</span>
+        {def.help && <span className="setting-help">{def.help}</span>}
       </div>
       <div className="setting-control">
         <SettingControl def={def} />
@@ -99,6 +115,8 @@ function SettingRow({ def, last }: { def: SettingDef; last: boolean }) {
 }
 
 function SettingControl({ def }: { def: SettingDef }) {
+  // Action settings render as buttons, not inputs.
+  if (def.action !== undefined) return <ActionControl def={def} />;
   switch (def.type) {
     case "number":
       return <NumberControl def={def} integer={false} />;
@@ -113,6 +131,66 @@ function SettingControl({ def }: { def: SettingDef }) {
     case "paths":
       return <PathsControl def={def} />;
   }
+}
+
+/**
+ * An action setting renders as a button that fires the named backend action
+ * (§9 "清除最近记录时可选择同时清除恢复数据", §7.4 "打开日志目录"). The action
+ * id maps to an IPC call; a confirm dialog guards destructive actions.
+ */
+function ActionControl({ def }: { def: SettingDef }) {
+  const [busy, setBusy] = useState(false);
+
+  const run = async () => {
+    if (busy) return;
+    // Destructive clear actions: confirm first (§2 "明确确认优先").
+    if (def.action === "clearRecentWorkspaces" || def.action === "clearRecoveryData") {
+      const alsoRecovery = def.action === "clearRecoveryData";
+      const ok = window.confirm(
+        alsoRecovery
+          ? "Delete ALL crash-recovery snapshots? This cannot be undone."
+          : "Clear the recent-workspaces list? This cannot be undone.",
+      );
+      if (!ok) return;
+    }
+    setBusy(true);
+    try {
+      switch (def.action) {
+        case "clearRecentWorkspaces":
+          // Clear recent only (recovery untouched).
+          await clearRecentWorkspaces(false);
+          break;
+        case "clearRecoveryData":
+          // Clear recovery + the recent list together (§9 option).
+          // `clearRecentWorkspaces(true)` clears recovery server-side
+          // (session_commands bridges into RecoveryStore::clear_all), so no
+          // separate discardAllRecovery round-trip is needed.
+          await clearRecentWorkspaces(true);
+          break;
+        case "openLogDir":
+          await openLogDir();
+          break;
+        default:
+          console.warn(`[settings] unknown action: ${def.action}`);
+      }
+    } catch (e) {
+      console.warn(`[settings] action ${def.action} failed:`, e);
+      window.alert(`Action failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className={"setting-action-btn" + (busy ? " setting-action-busy" : "")}
+      onClick={() => void run()}
+      disabled={busy}
+    >
+      {busy ? "Working…" : def.label}
+    </button>
+  );
 }
 
 const SETTING_ID = (key: string) => `setting-${key}`;
@@ -170,6 +248,10 @@ function SelectControl({ def }: { def: SettingDef }) {
   const options = def.options ?? [];
   const fallback = typeof def.default === "string" ? def.default : (options[0] ?? "");
   const current = typeof value === "string" ? value : fallback;
+  /** Display label for an option: explicit `optionLabels` entry, else the
+   * capitalized option value (the long-standing default). */
+  const labelFor = (opt: string) =>
+    def.optionLabels?.[opt] ?? (opt.charAt(0).toUpperCase() + opt.slice(1));
   return (
     <select
       id={SETTING_ID(def.key)}
@@ -179,7 +261,7 @@ function SelectControl({ def }: { def: SettingDef }) {
     >
       {options.map((opt) => (
         <option key={opt} value={opt}>
-          {opt.charAt(0).toUpperCase() + opt.slice(1)}
+          {labelFor(opt)}
         </option>
       ))}
     </select>

@@ -9,6 +9,7 @@ import type {
   EntryKind,
   FocusViewPayload,
   FsChangedPayload,
+  LayoutState,
   OpenExternalFilePayload,
   OpenedDocument,
   OpenDocRecord,
@@ -23,6 +24,7 @@ import type {
   Session,
   StartupProblem,
   StartupProblemsPayload,
+  WindowBounds,
   WorkspaceMeta,
 } from "./types";
 import type {
@@ -423,18 +425,45 @@ export async function getSession(): Promise<Session> {
 
 /**
  * Merge a partial update into the session. Only present fields are applied by
- * the backend (`lastWorkspace`, `lastFile`, `openDocuments`,
- * `activeDocumentId`); a wrong-type field is skipped, not fatal. The capture
- * path always sends a full `openDocuments` array + `activeDocumentId`,
- * replacing the prior values wholesale.
+ * the backend (`lastWorkspace`, `lastFile`, `openDocuments`, `activeDocumentId`,
+ * `windowBounds`, `layout`, `recentWorkspaces`); a wrong-type field is skipped,
+ * not fatal. The capture path always sends a full `openDocuments` array +
+ * `activeDocumentId`, replacing the prior values wholesale. v2 fields
+ * (`windowBounds`/`layout`) are set with `null` to clear them.
  */
 export async function saveSession(patch: {
   lastWorkspace?: string;
   lastFile?: string;
   openDocuments?: OpenDocRecord[];
   activeDocumentId?: string | null;
+  windowBounds?: Partial<WindowBounds> | null;
+  layout?: Partial<LayoutState> | null;
+  recentWorkspaces?: string[];
 }): Promise<Session> {
   return invoke<Session>("save_session", { patch });
+}
+
+/**
+ * Record that the user opened `workspace` (§7.2 "最近工作区"): bumps it to the
+ * front of the recent list (deduped + capped at 10) and sets it as the current
+ * workspace. Pass "" to clear the current-workspace marker only. Returns the
+ * new session snapshot. Best-effort callers can ignore the result.
+ */
+export async function recordWorkspace(workspace: string): Promise<Session> {
+  return invoke<Session>("record_workspace", { workspace });
+}
+
+/**
+ * Clear the recent-workspaces list (§9 "清除最近记录"). When
+ * `alsoClearRecovery` is true, ALL recovery snapshots are wiped first (§9
+ * "清除最近记录时可选择同时清除恢复数据"). Returns the new session snapshot.
+ */
+export async function clearRecentWorkspaces(
+  alsoClearRecovery: boolean,
+): Promise<Session> {
+  return invoke<Session>("clear_recent_workspaces", {
+    alsoClearRecovery,
+  });
 }
 
 /**

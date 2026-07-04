@@ -139,6 +139,8 @@ pub fn run() {
             // Session memory commands (open documents + active view).
             ipc::session_commands::get_session,
             ipc::session_commands::save_session,
+            ipc::session_commands::record_workspace,
+            ipc::session_commands::clear_recent_workspaces,
             ipc::session_commands::set_dirty,
             // Crash-recovery commands (§5.1.3 / §5.1.4).
             ipc::recovery_commands::list_recovery,

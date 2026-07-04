@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main + settings windows. Grants core APIs, the opener plugin, native file dialogs (open/save), and filesystem read/write. MVP NOTE: the fs command permissions below use a broad glob scope ('**') so users can open and save files anywhere on disk. This should be tightened (e.g. to $HOME/** or user-chosen paths) before a production release. See README 'Security' section.",
+  "description": "Capability for the main + settings windows. Grants core APIs, the opener plugin, native file dialogs (open/save), and the filesystem plugin's frontend-exposed APIs (used by paste-image write/mkdir). Scoped to $HOME/** so the frontend fs plugin can't write outside the user's home directory. NOTE: the app's core open/save/save-as file I/O goes through Rust IPC commands that use std::fs DIRECTLY (not the fs plugin), so they bypass this scope — tightening to user-chosen paths only requires a deeper per-action grant model and is tracked as a future production gate. Tauri's deny-default protections (e.g. the webview data folder on Windows/Linux) still take precedence. See README 'Security' section.",
   "windows": ["main", "settings"],
   "permissions": [
     "core:default",
@@ -13,23 +13,23 @@
     "fs:default",
     {
       "identifier": "fs:allow-read-text-file",
-      "allow": [{ "path": "**" }]
+      "allow": [{ "path": "$HOME/**" }]
     },
     {
       "identifier": "fs:allow-write-text-file",
-      "allow": [{ "path": "**" }]
+      "allow": [{ "path": "$HOME/**" }]
     },
     {
       "identifier": "fs:allow-write-file",
-      "allow": [{ "path": "**" }]
+      "allow": [{ "path": "$HOME/**" }]
     },
     {
       "identifier": "fs:allow-mkdir",
-      "allow": [{ "path": "**" }]
+      "allow": [{ "path": "$HOME/**" }]
     },
     {
       "identifier": "fs:allow-exists",
-      "allow": [{ "path": "**" }]
+      "allow": [{ "path": "$HOME/**" }]
     }
   ]
 }

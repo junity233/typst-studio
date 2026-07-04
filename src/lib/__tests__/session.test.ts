@@ -142,7 +142,7 @@ describe("restoreOpenDocuments (§13)", () => {
 });
 
 describe("emptySession", () => {
-  it("has all fields zeroed", () => {
+  it("has all fields zeroed (incl. v2 fields defaulted)", () => {
     expect(emptySession()).toEqual({
       // schemaVersion is backend-managed (§7.3); FE sentinel = 0.
       schemaVersion: 0,
@@ -150,6 +150,10 @@ describe("emptySession", () => {
       lastFile: "",
       openDocuments: [],
       activeDocumentId: null,
+      // v2 fields (§7.2) default to absent — the backend fills them in.
+      windowBounds: null,
+      layout: null,
+      recentWorkspaces: [],
     });
   });
 });
