@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect } from "react";
+import { Suspense, lazy, useEffect, useMemo } from "react";
 import { viewRegistry } from "../../extensions/registry";
 import { useUiStore } from "../../store/uiStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
@@ -20,14 +20,22 @@ export function Sidebar() {
   // Live-refresh the tree on external filesystem changes.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let cancelled = false;
     onFsChanged(() => {
       void refreshAll();
     }).then((fn) => {
-      unlisten = fn;
+      if (cancelled) {
+        // Already cleaned up — release immediately so the listener never fires.
+        fn();
+      } else {
+        unlisten = fn;
+      }
     });
     return () => {
+      cancelled = true;
       unlisten?.();
     };
+    // TODO(phase2): extract useTauriListener helper; App.tsx has the same race.
   }, [refreshAll]);
 
   if (rootPath === null) {
@@ -39,19 +47,28 @@ export function Sidebar() {
   }
 
   const view = activeViewId ? viewRegistry.get(activeViewId) : undefined;
-  if (!view) {
+
+  // Unconditional hook: the lazy wrapper is recreated only when the view id
+  // changes, so a stable active view does not remount on every re-render
+  // (preserves the child view's local state, e.g. Explorer's pendingNew input).
+  const ViewComponent = useMemo(
+    () => (view ? lazy(view.component) : null),
+    [view?.id],
+  );
+
+  if (ViewComponent === null) {
     return <aside className="sidebar" />;
   }
 
-  const ViewComponent = lazy(view.component);
+  // After this point both view and ViewComponent are guaranteed non-null.
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
-        <span className="sidebar-title">{view.title}</span>
+        <span className="sidebar-title">{view!.title}</span>
       </div>
       <div className="sidebar-body">
         <Suspense fallback={<div className="sidebar-loading">Loading…</div>}>
-          <ViewComponent viewId={view.id} />
+          <ViewComponent viewId={view!.id} />
         </Suspense>
       </div>
     </aside>

@@ -52,6 +52,9 @@ class Registry<T> {
   private items = new Map<string, T>();
   private listeners = new Set<Listener>();
   private readonly keyOf: (item: T) => string;
+  /** Cached sorted snapshot — invalidated on register/unregister so
+   * useSyncExternalStore (which uses Object.is) sees a stable reference. */
+  private snapshot: T[] | null = null;
 
   constructor(keyOf: (item: T) => string = (item) => (item as { id: string }).id) {
     this.keyOf = keyOf;
@@ -64,11 +67,15 @@ class Registry<T> {
       return;
     }
     this.items.set(key, item);
+    this.snapshot = null;
     this.emit();
   }
 
   unregister(id: string): void {
-    if (this.items.delete(id)) this.emit();
+    if (this.items.delete(id)) {
+      this.snapshot = null;
+      this.emit();
+    }
   }
 
   get(id: string): T | undefined {
@@ -79,19 +86,23 @@ class Registry<T> {
     return this.items.has(id);
   }
 
-  /** Returns all items sorted by `order` ascending (missing order = 100). */
+  /** Returns all items sorted by `order` ascending (missing order = 100).
+   * The result is cached and reused across calls until the next mutation. */
   all(): T[] {
-    return [...this.items.values()].sort((a, b) => {
-      const ao =
-        (a != null && typeof a === "object" && "order" in a
-          ? (a as { order?: number }).order
-          : undefined) ?? 100;
-      const bo =
-        (b != null && typeof b === "object" && "order" in b
-          ? (b as { order?: number }).order
-          : undefined) ?? 100;
-      return ao - bo;
-    });
+    if (this.snapshot === null) {
+      this.snapshot = [...this.items.values()].sort((a, b) => {
+        const ao =
+          (a != null && typeof a === "object" && "order" in a
+            ? (a as { order?: number }).order
+            : undefined) ?? 100;
+        const bo =
+          (b != null && typeof b === "object" && "order" in b
+            ? (b as { order?: number }).order
+            : undefined) ?? 100;
+        return ao - bo;
+      });
+    }
+    return this.snapshot;
   }
 
   subscribe(fn: Listener): () => void {
