@@ -66,11 +66,19 @@ export function Workbench() {
   return (
     <div className="workbench">
       <Allotment proportionalLayout={false}>
-        {/* Sidebar: hidden when no workspace or toggled off; else 220–520px. */}
+        {/*
+          Sidebar pane. CRITICAL: min/max/preferredSize stay CONSTANT regardless
+          of `visible`. Allotment restores a re-shown pane by clamping its
+          stashed _cachedVisibleSize against the view's CURRENT min/max — but
+          its React effect reconciles `visible` (which restores the size) BEFORE
+          it reconciles min/max, so zeroing maxSize on hide makes the restore
+          clamp to [0,0]=0 and the pane stays invisible after reopening. Toggling
+          only `visible` (with `snap` for drag-to-collapse) is the supported API.
+        */}
         <Allotment.Pane
           minSize={0}
-          preferredSize={showSidebar ? 220 : 0}
-          maxSize={showSidebar ? 520 : 0}
+          preferredSize={220}
+          maxSize={520}
           visible={showSidebar}
           snap
         >
