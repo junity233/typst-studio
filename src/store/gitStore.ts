@@ -38,15 +38,19 @@ export const useGitStore = create<GitState>((set, get) => ({
   refresh: async () => {
     set({ loading: true, error: null });
     try {
-      const statusResult = await gitStatus();
+      // gitStatus and gitLog are independent spawn_blocking calls — run them
+      // concurrently to halve latency on large repos. The recent log is
+      // best-effort: a repo with an unborn HEAD (no commits yet) returns an
+      // empty list, and any backend error just hides the log.
+      const [statusResult, recentLog] = await Promise.all([
+        gitStatus(),
+        gitLog(5).catch(() => [] as CommitLog[]),
+      ]);
       if (statusResult === null) {
         // Not a git repository — clear out and show the empty state.
         set({ changes: [], recentLog: [], isRepo: false, loading: false });
         return;
       }
-      // The recent log is best-effort: a repo with an unborn HEAD (no commits
-      // yet) returns an empty list, and any backend error just hides the log.
-      const recentLog = await gitLog(5).catch(() => [] as CommitLog[]);
       set({ changes: statusResult, recentLog, isRepo: true, loading: false });
     } catch (e) {
       set({

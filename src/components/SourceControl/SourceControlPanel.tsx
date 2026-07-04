@@ -48,7 +48,7 @@ export function SourceControlPanel() {
   );
 
   const doCommit = (): void => {
-    if (!message.trim()) return;
+    if (!message.trim() || staged.length === 0) return;
     void commit(message).then(() => setMessage(""));
   };
 
@@ -71,7 +71,7 @@ export function SourceControlPanel() {
         <div className="scm-commit-row">
           <button
             className="scm-commit-btn"
-            disabled={!message.trim()}
+            disabled={!message.trim() || staged.length === 0}
             onClick={doCommit}
           >
             Commit

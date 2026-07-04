@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useMemo } from "react";
-import { viewRegistry } from "../../extensions/registry";
+import { useViews } from "../../extensions/hooks";
 import { useUiStore } from "../../store/uiStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { onFsChanged } from "../../lib/tauri";
@@ -16,6 +16,7 @@ export function Sidebar() {
   const activeViewId = useUiStore((s) => s.activeViewId);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const refreshAll = useWorkspaceStore((s) => s.refreshAll);
+  const views = useViews();
 
   // Live-refresh the tree on external filesystem changes.
   useEffect(() => {
@@ -38,15 +39,9 @@ export function Sidebar() {
     // TODO(phase2): extract useTauriListener helper; App.tsx has the same race.
   }, [refreshAll]);
 
-  if (rootPath === null) {
-    return (
-      <aside className="sidebar">
-        <EmptyWorkspace />
-      </aside>
-    );
-  }
-
-  const view = activeViewId ? viewRegistry.get(activeViewId) : undefined;
+  // Derive the active view from the subscribed list (not a direct registry
+  // read) so registry mutations trigger re-renders.
+  const view = views.find((v) => v.id === activeViewId);
 
   // Unconditional hook: the lazy wrapper is recreated only when the view id
   // changes, so a stable active view does not remount on every re-render
@@ -55,6 +50,15 @@ export function Sidebar() {
     () => (view ? lazy(view.component) : null),
     [view?.id],
   );
+
+  // All hooks above this line. Early returns below.
+  if (rootPath === null) {
+    return (
+      <aside className="sidebar">
+        <EmptyWorkspace />
+      </aside>
+    );
+  }
 
   if (ViewComponent === null) {
     return <aside className="sidebar" />;
