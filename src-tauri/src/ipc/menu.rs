@@ -1,4 +1,5 @@
-//! Native application menu (File / Edit / View / Export / Help).
+//! Native application menu (File / Edit / View / Help). Export is nested under
+//! File (File → Export → PDF/PNG/SVG).
 //!
 //! Built once at startup via [`build_menu`] and applied app-wide (macOS global
 //! menubar; Windows/Linux per-window). Menu items with ids emit a `menu_event`
@@ -49,7 +50,19 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     #[cfg(target_os = "macos")]
     let app_menu = build_app_name_menu(app)?;
 
-    // ---- File ----
+    // ---- Export (nested under File; built first so File can reference it) ----
+    let export = Submenu::with_items(
+        app,
+        "Export",
+        true,
+        &[
+            &MenuItem::with_id(app, ids::EXPORT_PDF, "PDF…", true, None::<&str>)?,
+            &MenuItem::with_id(app, ids::EXPORT_PNG, "PNG…", true, None::<&str>)?,
+            &MenuItem::with_id(app, ids::EXPORT_SVG, "SVG…", true, None::<&str>)?,
+        ],
+    )?;
+
+    // ---- File (Export lives here as a nested submenu: File → Export → …) ----
     let file = Submenu::with_items(
         app,
         "File",
@@ -69,6 +82,8 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &MenuItem::with_id(app, ids::SAVE_AS, "Save As…", true, Some("CmdOrCtrl+Shift+S"))?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, ids::CLOSE_TAB, "Close Tab", true, Some("CmdOrCtrl+W"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &export,
         ],
     )?;
 
@@ -123,18 +138,6 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         ],
     )?;
 
-    // ---- Export (submenu of items; lives inside the menubar on macOS) ----
-    let export = Submenu::with_items(
-        app,
-        "Export",
-        true,
-        &[
-            &MenuItem::with_id(app, ids::EXPORT_PDF, "PDF…", true, None::<&str>)?,
-            &MenuItem::with_id(app, ids::EXPORT_PNG, "PNG…", true, None::<&str>)?,
-            &MenuItem::with_id(app, ids::EXPORT_SVG, "SVG…", true, None::<&str>)?,
-        ],
-    )?;
-
     // ---- Help (About) ----
     let about_meta = AboutMetadataBuilder::new()
         .name(Some(app.package_info().name.clone()))
@@ -150,11 +153,11 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     // ---- Assemble top-level (macOS: only submenus) ----
     #[cfg(target_os = "macos")]
     {
-        Menu::with_items(app, &[&app_menu, &file, &edit, &view, &export, &help])
+        Menu::with_items(app, &[&app_menu, &file, &edit, &view, &help])
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Menu::with_items(app, &[&file, &edit, &view, &export, &help])
+        Menu::with_items(app, &[&file, &edit, &view, &help])
     }
 }
 
