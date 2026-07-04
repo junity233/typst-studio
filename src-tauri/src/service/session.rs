@@ -38,6 +38,27 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
+use crate::persistence::migrate::Migrator;
+use crate::persistence::{load_json_with_backup, write_with_backup, LoadOutcome};
+
+/// The current Session schema version (§7.3). Bump when the on-disk shape
+/// changes, and add a step to [`session_migrator`]. v1 is the present shape
+/// (the fields below); a v0 file (no `schemaVersion` field, written by prior
+/// batches) is migrated to v1 via a no-op step — the shape is already v1.
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+/// Build the Session [`Migrator`] (§7.3).
+///
+/// v0 → v1 is a **no-op**: the current struct shape IS v1, and files written
+/// by prior batches (which omitted `schemaVersion` and so deserialize as v0)
+/// already match it. The migrator therefore exists as the wiring point for
+/// future bumps — register `v(n) → v(n+1)` steps here as the schema evolves.
+/// Migrations run on a clone (clone-then-commit), so a failing step can never
+/// corrupt the loaded session; the caller logs and keeps the value as-is.
+pub fn session_migrator() -> Migrator<Session> {
+    Migrator::new(CURRENT_SCHEMA_VERSION)
+    // No v0→v1 step: the current shape is v1. Add `.step(...)` for v1→v2 etc.
+}
 
 /// A single open-document entry in the persisted session. The frontend
 /// assembles this in display order from its tab list.
@@ -71,7 +92,7 @@ pub enum OpenDocRecord {
 /// sends in a `save_session` patch (`openDocuments`, `activeDocumentId`, …) and
 /// what older builds wrote (`lastWorkspace`/`lastFile`). Without it serde would
 /// look for snake_case keys and silently drop every camelCase field.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
     feature = "export-types",
@@ -79,6 +100,13 @@ pub enum OpenDocRecord {
     ts(export_to = "../../src/lib/types.ts")
 )]
 pub struct Session {
+    /// Session schema version (§7.3). Defaults to the current version on
+    /// fresh writes; on load, an absent field deserializes to `0` (treated as
+    /// "version unknown / pre-versioning") and is migrated up to
+    /// [`CURRENT_SCHEMA_VERSION`] by [`session_migrator`] before use. The
+    /// frontend never needs to send this — it's a backend-managed tag.
+    #[serde(default)]
+    pub schema_version: u32,
     /// Absolute path of the last workspace folder, or "".
     ///
     /// The `alias` lets us read **real legacy `session.json` files** written
@@ -100,6 +128,22 @@ pub struct Session {
     /// view in that case.
     #[serde(default)]
     pub active_document_id: Option<String>,
+}
+
+impl Default for Session {
+    /// A freshly-constructed Session starts at the **current** schema version
+    /// (so a new install persists `schemaVersion: <current>`). This is distinct
+    /// from deserialization, where an *absent* `schemaVersion` field (an old
+    /// file) yields `0` via `#[serde(default)]` and is migrated up on load.
+    fn default() -> Self {
+        Self {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            last_workspace: String::new(),
+            last_file: String::new(),
+            open_documents: Vec::new(),
+            active_document_id: None,
+        }
+    }
 }
 
 impl OpenDocRecord {
@@ -182,15 +226,32 @@ pub struct SessionService {
 }
 
 impl SessionService {
-    /// Load the session from `path` (missing/malformed → empty session).
+    /// Load the session from `path` with `.bak` fallback + schema migration
+    /// (§5.2, §7.3). A missing file, a corrupt main WITH a usable `.bak`, or a
+    /// corrupt main WITHOUT a `.bak` all degrade gracefully — the app always
+    /// boots. See [`crate::persistence::load_json_with_backup`] for the
+    /// recovery semantics and [`session_migrator`] for the version model.
     pub fn load(path: PathBuf) -> Result<Self> {
-        let session = if path.exists() {
-            let raw = std::fs::read_to_string(&path).unwrap_or_default();
-            serde_json::from_str::<Session>(&raw).unwrap_or_default()
-        } else {
-            Session::default()
-        };
-        Ok(Self { inner: Mutex::new(session), path })
+        let mut session = load_session_with_backup(&path)?;
+        // Run any pending migrations (§7.3). v0 → v1 is a no-op today; the
+        // hook is here for future bumps. On failure we keep the loaded value
+        // as-is and log (§7.3: don't corrupt; degrade compatibly). The
+        // migrated form is persisted on the next successful save.
+        let migrator = session_migrator();
+        if let Err(e) = migrator.migrate(
+            &mut session,
+            |s| s.schema_version,
+            |s, v| s.schema_version = v,
+        ) {
+            tracing::warn!(
+                ?path, error = %e,
+                "session: migration failed; using loaded value as-is (file left untouched)",
+            );
+        }
+        Ok(Self {
+            inner: Mutex::new(session),
+            path,
+        })
     }
 
     /// An in-memory empty session rooted at `path` — the startup fallback when
@@ -255,10 +316,42 @@ impl SessionService {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        // Atomic write (§5.2): session.json is overwritten in place, so use the
-        // temp-file-then-rename protocol to avoid corruption on crash.
-        crate::persistence::atomic::write_json(&self.path, session)?;
+        // Serialize once; both the atomic main write and the `.bak` rotation
+        // reuse these bytes (§5.2: write_with_backup rotates the previous
+        // known-good into session.json.bak).
+        let bytes = serde_json::to_vec_pretty(session)?;
+        write_with_backup(&self.path, &bytes)?;
         Ok(())
+    }
+}
+
+/// Load a [`Session`] from `path` using the `.bak`-fallback helper (§5.2).
+///
+/// - Primary load → the parsed session.
+/// - Restored from `.bak` → the backup's parsed session (the corrupt main was
+///   quarantined to `*.corrupt-<ts>.json` by the helper; we log the path).
+/// - Missing/unrecoverable → [`Session::default`] (a fresh, empty, current-
+///   version session).
+fn load_session_with_backup(path: &std::path::Path) -> Result<Session> {
+    let outcome =
+        load_json_with_backup(path, |s: &str| serde_json::from_str::<Session>(s))?;
+    match outcome {
+        LoadOutcome::Primary(s) => Ok(s),
+        LoadOutcome::RestoredFromBackup { value, corrupt_path } => {
+            tracing::warn!(
+                ?path, ?corrupt_path,
+                "session: main file was corrupt; restored from .bak (corrupt copy preserved)",
+            );
+            Ok(value)
+        }
+        LoadOutcome::MissingOrUnrecoverable => {
+            // Brand-new install, or both files gone/corrupt. Start fresh.
+            tracing::debug!(
+                ?path,
+                "session: no loadable session (missing or unrecoverable); starting empty",
+            );
+            Ok(Session::default())
+        }
     }
 }
 
@@ -294,6 +387,9 @@ mod tests {
     #[test]
     fn empty_json_loads_with_defaults() {
         let s: Session = serde_json::from_str("{}").expect("empty object must load");
+        // An absent schemaVersion field deserializes to 0 (pre-versioning);
+        // the load path migrates it up to current.
+        assert_eq!(s.schema_version, 0, "absent schemaVersion must deserialize as 0");
         assert_eq!(s.last_workspace, "");
         assert_eq!(s.last_file, "");
         assert!(s.open_documents.is_empty());
@@ -301,8 +397,18 @@ mod tests {
     }
 
     #[test]
+    fn default_session_is_at_current_schema_version() {
+        // A freshly-defaulted in-memory session (new install / fallback) is at
+        // the current version, NOT 0 — so its first persist writes the right
+        // tag. (Deserialization is the only path that yields 0.)
+        let s = Session::default();
+        assert_eq!(s.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
     fn round_trip_full_session() {
         let session = Session {
+            schema_version: CURRENT_SCHEMA_VERSION,
             last_workspace: "/work".into(),
             last_file: "/work/main.typ".into(),
             open_documents: vec![
@@ -314,6 +420,7 @@ mod tests {
         };
         let json = serde_json::to_string(&session).expect("serialize");
         let back: Session = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(back.last_workspace, "/work");
         assert_eq!(back.last_file, "/work/main.typ");
         assert_eq!(back.active_document_id.as_deref(), Some("11111111-1111-1111-1111-111111111111"));
@@ -421,6 +528,99 @@ mod tests {
         assert_eq!(snap.open_documents.len(), 2);
 
         let _ = std::fs::remove_file(&svc.path);
+    }
+
+    /// Canonicalized temp dir for load/persist integration tests (macOS
+    /// `/var` → `/private/var`).
+    fn tmp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("typst-session-it-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::domain::path::canonicalize_for_identity(&dir)
+            .unwrap_or_else(|_| dir.canonicalize().unwrap_or(dir))
+    }
+
+    #[test]
+    fn load_migrates_v0_session_to_current() {
+        // A session.json written by a prior batch (no schemaVersion) must
+        // load, migrate v0 → v1 (no-op), and report the current version — all
+        // without losing the persisted workspace/docs.
+        let dir = tmp_dir();
+        let path = dir.join("session.json");
+        std::fs::write(
+            &path,
+            r#"{"lastWorkspace":"/w","openDocuments":[{"kind":"disk","path":"/w/a.typ","dirty":true}]}"#,
+        )
+        .unwrap();
+
+        let svc = SessionService::load(path).expect("v0 session must load");
+        let s = svc.get();
+        assert_eq!(s.schema_version, CURRENT_SCHEMA_VERSION, "v0 must migrate to current");
+        assert_eq!(s.last_workspace, "/w", "data must survive migration");
+        assert_eq!(s.open_documents.len(), 1);
+    }
+
+    #[test]
+    fn load_missing_file_starts_empty_at_current_version() {
+        let dir = tmp_dir();
+        let path = dir.join("nope-session.json");
+        let svc = SessionService::load(path).expect("missing session must not error");
+        let s = svc.get();
+        assert_eq!(s.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(s.open_documents.is_empty());
+    }
+
+    #[test]
+    fn load_corrupt_main_falls_back_to_bak() {
+        // Write a good .bak, garbage main; load must restore from .bak and
+        // quarantine the corrupt main.
+        let dir = tmp_dir();
+        let path = dir.join("session.json");
+        let bak = path.with_extension("json.bak");
+        std::fs::write(&bak, r#"{"lastWorkspace":"/from-bak"}"#).unwrap();
+        std::fs::write(&path, "{ totally broken").unwrap();
+
+        let svc = SessionService::load(path.clone()).expect("corrupt main must fall back to .bak");
+        let s = svc.get();
+        assert_eq!(s.last_workspace, "/from-bak", "should have restored the .bak content");
+        assert_eq!(s.schema_version, CURRENT_SCHEMA_VERSION, "restored session migrates to current");
+
+        // The corrupt main should have been renamed aside (.corrupt-*).
+        assert!(!path.exists(), "corrupt main must have been moved away");
+        let quarantined = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("session.corrupt-")
+            });
+        assert!(quarantined.is_some(), "corrupt main should have been quarantined");
+    }
+
+    #[test]
+    fn persist_rotates_previous_into_bak() {
+        // load → update (persist) → update (persist) leaves a .bak with the
+        // first persisted shape.
+        let dir = tmp_dir();
+        let path = dir.join("session.json");
+        let bak = path.with_extension("json.bak");
+
+        let svc = SessionService::load(path.clone()).unwrap();
+        // First persist: main only, no .bak yet.
+        svc.update(serde_json::json!({ "lastFile": "/first.typ" })).unwrap();
+        assert!(path.exists());
+        assert!(!bak.exists(), "first persist should not yet produce a .bak");
+
+        // Second persist: main = second, .bak = first.
+        svc.update(serde_json::json!({ "lastFile": "/second.typ" })).unwrap();
+        let main = std::fs::read_to_string(&path).unwrap();
+        let bak_content = std::fs::read_to_string(&bak).unwrap();
+        assert!(main.contains("/second.typ"), "main must hold the latest write");
+        assert!(bak_content.contains("/first.typ"), ".bak must hold the previous write");
+
+        // Reload from the main and confirm the value survived.
+        let svc2 = SessionService::load(path).unwrap();
+        assert_eq!(svc2.get().last_file, "/second.typ");
     }
 
     #[test]

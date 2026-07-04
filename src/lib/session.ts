@@ -202,6 +202,11 @@ export async function restoreOpenDocuments(
 /** A default empty session (all fields zeroed). */
 export function emptySession(): Session {
   return {
+    // schemaVersion is backend-managed (§7.3); the FE never persists it. We
+    // surface it here only because the generated Session type requires it. 0
+    // is the "unknown / pre-versioning" sentinel, matching how an absent field
+    // deserializes on the backend.
+    schemaVersion: 0,
     lastWorkspace: "",
     lastFile: "",
     openDocuments: [],

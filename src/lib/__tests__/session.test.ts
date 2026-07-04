@@ -126,6 +126,8 @@ describe("restoreOpenDocuments (§13)", () => {
 describe("emptySession", () => {
   it("has all fields zeroed", () => {
     expect(emptySession()).toEqual({
+      // schemaVersion is backend-managed (§7.3); FE sentinel = 0.
+      schemaVersion: 0,
       lastWorkspace: "",
       lastFile: "",
       openDocuments: [],

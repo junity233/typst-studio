@@ -311,6 +311,14 @@ export type Range = { start_line: number, start_column: number, end_line: number
  */
 export type Session = { 
 /**
+ * Session schema version (§7.3). Defaults to the current version on
+ * fresh writes; on load, an absent field deserializes to `0` (treated as
+ * "version unknown / pre-versioning") and is migrated up to
+ * [`CURRENT_SCHEMA_VERSION`] by [`session_migrator`] before use. The
+ * frontend never needs to send this — it's a backend-managed tag.
+ */
+schemaVersion: number, 
+/**
  * Absolute path of the last workspace folder, or "".
  *
  * The `alias` lets us read **real legacy `session.json` files** written

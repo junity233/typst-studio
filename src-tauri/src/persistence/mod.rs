@@ -16,5 +16,8 @@
 //! scope here but are likewise never logged anywhere in the app.
 
 pub mod atomic;
+pub mod backup;
+pub mod migrate;
 
 pub use atomic::{cleanup_stale_temps, write_bytes, write_json};
+pub use backup::{load_json_with_backup, write_with_backup, LoadOutcome};
