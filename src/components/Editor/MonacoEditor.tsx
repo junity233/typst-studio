@@ -23,6 +23,7 @@ import {
   applyWrapSelection,
   applyReplaceSelection,
   applyToggleLinePrefix,
+  getSelectionText,
 } from "./editorEdit";
 import { registerTypstHighlighting } from "./typstHighlighting";
 import { usePasteConvert } from "./usePasteConvert";
@@ -70,6 +71,10 @@ export interface MonacoEditorApi {
    *  is removed; otherwise it is added. Also strips a *different* known prefix
    *  before adding the new one, so toggling H1 → H2 replaces rather than stacks. */
   toggleLinePrefix: (prefix: string) => void;
+  /** Return the currently-selected text (empty string for a collapsed caret or
+   *  no selection). Used by the toolbar's link flow (spec §5.3) to use the
+   *  selection as the link label / fall back to a bare link. */
+  getSelectionText: () => string;
 }
 
 /**
@@ -476,6 +481,11 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         const editor = getEditor();
         if (!editor) return;
         applyToggleLinePrefix(editor, prefix);
+      },
+      getSelectionText: () => {
+        const editor = getEditor();
+        if (!editor) return "";
+        return getSelectionText(editor);
       },
     });
   };

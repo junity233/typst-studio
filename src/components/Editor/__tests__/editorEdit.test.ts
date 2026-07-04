@@ -4,6 +4,7 @@ import {
   applyWrapSelection,
   applyReplaceSelection,
   applyToggleLinePrefix,
+  getSelectionText,
 } from "../editorEdit";
 import type { EditEditor, EditModel } from "../editorEdit";
 
@@ -444,6 +445,41 @@ describe("applyReplaceSelection", () => {
     const ed = caret("foo", 4);
     applyReplaceSelection(ed, "X");
     expect(ed.lastEditSource).toBe("format-replace");
+  });
+});
+
+// ===========================================================================
+// getSelectionText
+// ===========================================================================
+
+describe("getSelectionText", () => {
+  it("returns the selected text for a non-empty selection", () => {
+    // sel 7..12 selects `world` in `Hello world` (cols 7..12 = chars at idx 6..10).
+    const ed = sel(7, 12, "Hello world");
+    expect(getSelectionText(ed)).toBe("world");
+  });
+
+  it("returns '' for a collapsed caret (empty selection)", () => {
+    const ed = caret("Hello world", 6);
+    expect(getSelectionText(ed)).toBe("");
+  });
+
+  it("returns the full buffer when the whole line is selected", () => {
+    const ed = sel(1, 12, "Hello world");
+    expect(getSelectionText(ed)).toBe("Hello world");
+  });
+
+  it("does not mutate the buffer or selection (pure read)", () => {
+    const ed = sel(1, 5, "Hello world");
+    const before = ed.getModel().getValue();
+    const selBefore = ed.getSelection();
+    getSelectionText(ed);
+    expect(ed.getModel().getValue()).toBe(before);
+    expect(ed.getSelection()).toEqual(selBefore);
+    // A read must not frame edits or focus.
+    expect(ed.undoStopCount).toBe(0);
+    expect(ed.executeEditsCallCount).toBe(0);
+    expect(ed.focusCount).toBe(0);
   });
 });
 

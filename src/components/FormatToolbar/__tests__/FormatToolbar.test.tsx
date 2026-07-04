@@ -43,16 +43,23 @@ const ALL_BUTTONS: FormatButton[] = FORMAT_BUTTON_GROUPS.flatMap(
 
 // Build a mock FormatApi with vitest spies so each test can assert call args.
 const makeMockApi = (): FormatApi & {
-  spies: { wrap: ReturnType<typeof vi.fn>; replace: ReturnType<typeof vi.fn>; line: ReturnType<typeof vi.fn> };
+  spies: {
+    wrap: ReturnType<typeof vi.fn>;
+    replace: ReturnType<typeof vi.fn>;
+    line: ReturnType<typeof vi.fn>;
+    getSelectionText: ReturnType<typeof vi.fn>;
+  };
 } => {
   const wrap = vi.fn();
   const replace = vi.fn();
   const line = vi.fn();
+  const getSelectionText = vi.fn(() => ""); // empty selection by default
   return {
     wrapSelection: wrap,
     replaceSelection: replace,
     toggleLinePrefix: line,
-    spies: { wrap, replace, line },
+    getSelectionText,
+    spies: { wrap, replace, line, getSelectionText },
   };
 };
 
@@ -397,5 +404,168 @@ describe("FormatToolbar — click wires to the right FormatApi method", () => {
     );
     clickByTitle(c, "Bold");
     expect(api.spies.wrap).not.toHaveBeenCalled();
+  });
+});
+
+// ----------------------------------------------------------------------------
+// Link flow (spec §5.3: wrap the selection as the label, or bare #link("url"))
+// ----------------------------------------------------------------------------
+
+describe("FormatToolbar — link flow", () => {
+  beforeEach(cleanup);
+
+  // Find a button by its title attribute and click it (portal modal renders
+  // into document.body, but the toolbar buttons live in the container).
+  const clickLink = (container: HTMLElement) => {
+    const btn = container.querySelector<HTMLButtonElement>(
+      'button.format-toolbar-button[title="Link"]',
+    );
+    expect(btn, "Link button should exist").not.toBeNull();
+    act(() => {
+      btn!.click();
+    });
+  };
+
+  // Helper: open the link modal by clicking the Link button, then submit it
+  // with the given URL + label. Setting a React controlled input's value
+  // directly in jsdom doesn't trigger React's onChange (it tracks value via a
+  // descriptor on the prototype), so we use the native value setter + an input
+  // event — the standard workaround. Then we click the submit button.
+  const setInputValue = (input: HTMLInputElement, value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!;
+    act(() => {
+      setter.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+
+  const openAndConfirm = (c: HTMLElement, url: string, label: string) => {
+    clickLink(c);
+    // The modal renders into document.body via a portal, not the container.
+    const form = document.body.querySelector<HTMLFormElement>(
+      ".link-modal-form",
+    );
+    expect(form, "link modal should be open").not.toBeNull();
+    const inputs = form!.querySelectorAll<HTMLInputElement>(
+      "input.link-modal-input",
+    );
+    setInputValue(inputs[0]!, url); // URL field
+    setInputValue(inputs[1]!, label); // label field
+    // Submit by clicking the type=submit button (jsdom synthesizes form submit
+    // from a submit-button click, and the modal's onSubmit/preventDefault
+    // handles it).
+    const submitBtn = form!.querySelector<HTMLButtonElement>(
+      'button[type="submit"]',
+    );
+    act(() => {
+      submitBtn!.click();
+    });
+  };
+
+  it("clicking Link captures the selection as the modal's initial label", () => {
+    const api = makeMockApi();
+    api.spies.getSelectionText.mockReturnValue("click here");
+    const c = render(
+      <FormatToolbar
+        api={api}
+        tab={FAKE_TAB}
+        disabled={false}
+      />,
+    );
+    clickLink(c);
+    // The label field (second input) should be pre-filled with the selection.
+    const inputs = document.body.querySelectorAll<HTMLInputElement>(
+      "input.link-modal-input",
+    );
+    expect(inputs[1]!.value).toBe("click here");
+  });
+
+  it("typed label + selection present → replaceSelection with full #link(\"url\")[label]", () => {
+    const api = makeMockApi();
+    api.spies.getSelectionText.mockReturnValue("click here");
+    const c = render(
+      <FormatToolbar
+        api={api}
+        tab={FAKE_TAB}
+        disabled={false}
+      />,
+    );
+    openAndConfirm(c, "https://example.com", "my label");
+    // Typed label wins → full replace, not wrap.
+    expect(api.spies.replace).toHaveBeenCalledTimes(1);
+    expect(api.spies.replace).toHaveBeenCalledWith(
+      '#link("https://example.com")[my label]',
+    );
+    expect(api.spies.wrap).not.toHaveBeenCalled();
+  });
+
+  it("no typed label + selection present → wrapSelection around the selection", () => {
+    const api = makeMockApi();
+    api.spies.getSelectionText.mockReturnValue("click here");
+    const c = render(
+      <FormatToolbar
+        api={api}
+        tab={FAKE_TAB}
+        disabled={false}
+      />,
+    );
+    openAndConfirm(c, "https://example.com", "");
+    // No typed label + selection → wrap the selection. No placeholder is
+    // passed, so applyWrapSelection uses the real selection text as the label.
+    expect(api.spies.wrap).toHaveBeenCalledTimes(1);
+    expect(api.spies.wrap).toHaveBeenCalledWith(
+      '#link("https://example.com")[',
+      "]",
+    );
+    expect(api.spies.replace).not.toHaveBeenCalled();
+  });
+
+  it("no typed label + no selection → bare #link(\"url\") via replaceSelection", () => {
+    const api = makeMockApi();
+    api.spies.getSelectionText.mockReturnValue(""); // no selection
+    const c = render(
+      <FormatToolbar
+        api={api}
+        tab={FAKE_TAB}
+        disabled={false}
+      />,
+    );
+    openAndConfirm(c, "https://example.com", "");
+    // No label + no selection → bare link (avoid invalid #link("url")[]).
+    expect(api.spies.replace).toHaveBeenCalledTimes(1);
+    expect(api.spies.replace).toHaveBeenCalledWith(
+      '#link("https://example.com")',
+    );
+    expect(api.spies.wrap).not.toHaveBeenCalled();
+  });
+
+  it("escapes the URL via escapeTypstStr", () => {
+    const api = makeMockApi();
+    const c = render(
+      <FormatToolbar
+        api={api}
+        tab={FAKE_TAB}
+        disabled={false}
+      />,
+    );
+    // A URL with a double-quote → escaped to \". No selection → bare link.
+    openAndConfirm(c, 'a"b', "");
+    expect(api.spies.replace).toHaveBeenCalledWith('#link("a\\"b")');
+  });
+
+  it("confirming the modal closes it", () => {
+    const api = makeMockApi();
+    const c = render(
+      <FormatToolbar
+        api={api}
+        tab={FAKE_TAB}
+        disabled={false}
+      />,
+    );
+    openAndConfirm(c, "https://example.com", "");
+    expect(document.body.querySelector(".link-modal")).toBeNull();
   });
 });

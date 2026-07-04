@@ -96,6 +96,10 @@ export function FormatToolbar({
   // The link modal's open flag. No anchor needed — it's centered like the
   // other dialogs (reuses .dialog-overlay / .dialog).
   const [linkModalOpen, setLinkModalOpen] = useState(false);
+  // The label field's initial value when the link modal opens. Pre-filled with
+  // the current selection so the user sees what they're linking (spec §5.3) and
+  // can confirm as-is or type a different label.
+  const [linkInitialLabel, setLinkInitialLabel] = useState("");
 
   // The insert-image flow (picker → copy → insert). The hook tolerates a null
   // tab (bails internally) so we can always call it at the top level and pass
@@ -111,7 +115,12 @@ export function FormatToolbar({
   // only "link" exists; the switch leaves room to add more without touching the
   // action table.
   const openModal = (kind: "link") => {
-    if (kind === "link") setLinkModalOpen(true);
+    if (kind === "link") {
+      // Pre-fill the label with the current selection (spec §5.3) so the user
+      // can confirm the existing text as the link label or type a new one.
+      setLinkInitialLabel(api?.getSelectionText() ?? "");
+      setLinkModalOpen(true);
+    }
   };
 
   // Build the FormatApi lazily per click rather than memoizing on `api` — the
@@ -123,6 +132,7 @@ export function FormatToolbar({
       wrapSelection: api.wrapSelection,
       replaceSelection: api.replaceSelection,
       toggleLinePrefix: api.toggleLinePrefix,
+      getSelectionText: api.getSelectionText,
     };
     const actionCtx: ActionContext = {
       tab,
@@ -134,20 +144,36 @@ export function FormatToolbar({
     dispatchAction(action, formatApi, actionCtx);
   };
 
-  // Link confirm: insert `#link("url")[label]` (or `#link("url")` bare when
-  // the label is empty). Uses replaceSelection with the full string since we
-  // already have both parts from the modal — simpler than wrapSelection here.
-  // Note: the URL is escaped via escapeTypstStr (matches inline.ts `<a>`); the
-  // label is inserted verbatim into the `[…]` content (Typst content markup,
-  // not a string literal, so backslash/quote escaping is intentionally not
-  // applied — escaping it would show literal backslashes in the rendered link).
-  // The label is NOT pre-filled from the editor selection in v1: the toolbar
-  // only holds the FormatApi edit methods, not a selection-read surface.
-  // Reading the selection for pre-fill is a documented follow-up.
+  // Link confirm: per spec §5.3, wrap the current selection as the link label
+  // (or use a typed label, or fall back to a bare `#link("url")`). Three cases:
+  //  1. User typed a label in the modal → replace the selection with the full
+  //     `#link("url")[typedLabel]` (the typed label wins over any selection).
+  //  2. No typed label but there IS a selection → wrap the selection:
+  //     `#link("url")[` … `]` around the selected text.
+  //  3. No typed label and no selection → bare `#link("url")` (URL is the only
+  //     content). wrapSelection with an empty placeholder would instead emit
+  //     `#link("url")[]`, which is invalid Typst, so we replaceSelection here.
+  // The URL is escaped via escapeTypstStr (matches inline.ts `<a>`); the label
+  // is inserted verbatim into the `[…]` content (Typst content markup, not a
+  // string literal, so backslash/quote escaping is intentionally not applied —
+  // escaping it would show literal backslashes in the rendered link).
   const handleLinkConfirm = (url: string, label: string) => {
-    if (api !== null) {
-      const head = '#link("' + escapeTypstStr(url) + '")';
-      api.replaceSelection(label === "" ? head : head + "[" + label + "]");
+    if (api === null) {
+      setLinkModalOpen(false);
+      return;
+    }
+    const escapedUrl = escapeTypstStr(url);
+    const head = '#link("' + escapedUrl + '")';
+    const trimmedLabel = label.trim();
+    if (trimmedLabel) {
+      api.replaceSelection(head + "[" + trimmedLabel + "]");
+    } else {
+      const selectionText = api.getSelectionText();
+      if (selectionText) {
+        api.wrapSelection(head + "[", "]");
+      } else {
+        api.replaceSelection(head);
+      }
     }
     setLinkModalOpen(false);
   };
@@ -200,7 +226,7 @@ export function FormatToolbar({
       )}
       {linkModalOpen && (
         <LinkModal
-          // v1: no selection pre-fill (see handleLinkConfirm comment).
+          initialLabel={linkInitialLabel}
           onConfirm={handleLinkConfirm}
           onCancel={() => setLinkModalOpen(false)}
         />

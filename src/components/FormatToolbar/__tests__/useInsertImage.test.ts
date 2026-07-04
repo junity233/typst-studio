@@ -49,6 +49,7 @@ const makeMockApi = (): FormatApi & {
     wrapSelection: vi.fn(),
     replaceSelection: replace,
     toggleLinePrefix: vi.fn(),
+    getSelectionText: vi.fn(() => ""),
     replace,
   };
 };
@@ -192,5 +193,30 @@ describe("useInsertImage", () => {
         `${order[i].name} should be called after ${order[i - 1].name}`,
       ).toBeGreaterThan(order[i - 1].mock.invocationCallOrder[0]);
     }
+  });
+
+  it("catches a writeImage rejection (no throw, no editor insert) and logs", async () => {
+    // The flow must not let a writeImage failure (disk full, permissions)
+    // bubble as an unhandled rejection. The catch logs clearly and aborts
+    // before the editor insert.
+    pickImageFile.mockResolvedValue("/x/a.png");
+    readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+    inferExt.mockReturnValue("png");
+    resolveImageDir.mockResolvedValue("/x");
+    expandTemplate.mockReturnValue("/x/assets/a.png");
+    ensureAbsolute.mockResolvedValue("/x/assets/a.png");
+    writeImage.mockRejectedValue(new Error("disk full"));
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Should NOT throw — the callback swallows the rejection.
+    const api = await runFlow();
+
+    expect(writeImage).toHaveBeenCalledTimes(1); // the failing call happened
+    expect(api.replace).not.toHaveBeenCalled(); // flow aborted before insert
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(errSpy.mock.calls[0]![0]).toBe(
+      "[FormatToolbar] insert image failed:",
+    );
+    errSpy.mockRestore();
   });
 });

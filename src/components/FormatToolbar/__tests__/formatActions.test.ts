@@ -289,6 +289,7 @@ describe("exported types are usable", () => {
       wrapSelection: () => {},
       replaceSelection: () => {},
       toggleLinePrefix: () => {},
+      getSelectionText: () => "",
     };
     expect(typeof api.wrapSelection).toBe("function");
   });

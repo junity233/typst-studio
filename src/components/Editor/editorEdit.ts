@@ -193,6 +193,29 @@ export function applyReplaceSelection(
 }
 
 /**
+ * Read the currently-selected text. Returns `""` for a collapsed caret or when
+ * there's no model/selection. Used by the format toolbar's link flow (spec
+ * §5.3) to pre-fill the link label with the selection and to decide whether to
+ * wrap or replace. Pure: takes the editor, reads once, no edits.
+ *
+ * @param editor The live Monaco editor.
+ * @returns The selected text, or `""` when nothing is selected.
+ */
+export function getSelectionText(editor: EditEditor): string {
+  const model = editor.getModel();
+  const sel = editor.getSelection();
+  if (!model || !sel) return "";
+
+  const range: Monaco.IRange = {
+    startLineNumber: sel.selectionStartLineNumber,
+    startColumn: sel.selectionStartColumn,
+    endLineNumber: sel.positionLineNumber,
+    endColumn: sel.positionColumn,
+  };
+  return model.getValueInRange(range);
+}
+
+/**
  * Toggle a line-prefix marker (e.g. `= ` H1, `== ` H2, `- ` bullet, `+ `
  * numbered) on every line touched by the selection (or just the caret's line
  * if collapsed).

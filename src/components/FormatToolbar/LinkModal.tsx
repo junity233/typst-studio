@@ -3,10 +3,10 @@ import { createPortal } from "react-dom";
 
 export interface LinkModalProps {
   /**
-   * Pre-fill the label field with the current selection text (if any). For v1
-   * the toolbar passes an empty string — reading the editor selection from the
-   * toolbar is a follow-up (the toolbar only holds the {@link FormatApi} edit
-   * methods, not a selection-read surface).
+   * Pre-fill the label field with the current selection text (if any), so the
+   * user sees what they're linking and can confirm as-is or type a new label
+   * (spec §5.3). The toolbar captures this from the editor's selection when it
+   * opens the modal.
    */
   initialLabel?: string;
   /** Called with the trimmed URL + label when the user confirms. */

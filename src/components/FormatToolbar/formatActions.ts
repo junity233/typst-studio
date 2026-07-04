@@ -34,6 +34,7 @@ export interface FormatApi {
   wrapSelection: MonacoEditorApi["wrapSelection"];
   replaceSelection: MonacoEditorApi["replaceSelection"];
   toggleLinePrefix: MonacoEditorApi["toggleLinePrefix"];
+  getSelectionText: MonacoEditorApi["getSelectionText"];
 }
 
 /**
@@ -126,13 +127,14 @@ export interface FormatButtonGroup {
 export const TABLE_BUTTON_ID = "table";
 
 /**
- * The stable id of the link-insert button. Parallel to {@link TABLE_BUTTON_ID}:
- * exported for any id-based checks. Unlike the table button, the link flow does
- * NOT use a render-loop ternary — it goes through `ActionContext.openModal`
- * (`action.run` calls `ctx.openModal("link")`) so the action table stays the
- * single dispatch source and the toolbar component owns the React modal state.
+ * The stable id of the link-insert button. Parallel to {@link TABLE_BUTTON_ID},
+ * but NOT exported: unlike the table button (which the toolbar special-cases by
+ * id in its render loop), the link flow goes entirely through
+ * `ActionContext.openModal` (`action.run` calls `ctx.openModal("link")`), so no
+ * consumer needs the id. Kept as a local const for symmetry with
+ * {@link TABLE_BUTTON_ID}'s pattern and as a stable React key.
  */
-export const LINK_BUTTON_ID = "link";
+const LINK_BUTTON_ID = "link";
 
 /**
  * The complete button table for the format toolbar — four groups, 15 buttons.
