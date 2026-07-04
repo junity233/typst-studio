@@ -19,8 +19,14 @@ import { buildVscodeApiConfig, buildLanguageClientConfig } from "./lspClient";
 import { monacoModelRegistry } from "./monacoModelRegistry";
 import { installLspDiagnosticsBridge } from "./lspDiagnosticsBridge";
 import { computeModelSyncPlan } from "./editorModelSync";
+import {
+  detectOriginTransition,
+  migrateModelForSaveAs,
+  originSignature,
+} from "./saveAsMigration";
 import { registerTypstHighlighting } from "./typstHighlighting";
 import { usePasteConvert } from "./usePasteConvert";
+import type { DocumentOrigin } from "../../lib/types";
 
 /**
  * Imperative surface exposed to the parent for navigation (diagnostics goto,
@@ -232,6 +238,15 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // across renders as a ref so the effect can diff against the prior snapshot.
   const seenIdsRef = useRef<Set<string>>(new Set());
 
+  // The previous origin for each open document id, used by the Save-As
+  // origin-transition effect (§11) to detect which docs' origins changed since
+  // the last render and drive a model migration for exactly those. Comparison
+  // goes through `originSignature` (via `detectOriginTransition`) so a re-
+  // render that produces a structurally-equal origin (e.g. a content edit that
+  // rebuilds the documents map) does NOT look like a transition. Populated
+  // lazily as docs are first observed; cleared on close.
+  const prevOriginsRef = useRef<Map<string, DocumentOrigin>>(new Map());
+
   // The live editor instance (set in `handleEditorStartDone`). Used by the
   // model-sync effect to activate models and restore view state. Memoized so
   // it's a stable reference for effect/use-hook dependencies (otherwise an
@@ -277,6 +292,19 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // `prevTabId` are stable across content-only re-renders, so `toActivate`
   // fires exactly once per switch.
   const openDocsKey = useDocumentsStore((s) => Object.keys(s.documents).sort().join("\0"));
+  // Structural key of EVERY open doc's origin signature, joined by NUL in id
+  // order. This is what the Save-As origin-transition effect (§11) subscribes
+  // to: a Save As changes exactly one doc's `origin` (path), which changes its
+  // signature, which changes this key, which re-runs the effect. Content-only
+  // edits do NOT change origins, so the key is stable across keystrokes (the
+  // store rebuilds `documents` on every edit, but every signature is unchanged,
+  // so the joined key is byte-identical — no spurious re-runs).
+  const originsKey = useDocumentsStore((s) =>
+    Object.entries(s.documents)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([id, d]) => `${id}\u0000${originSignature(d.origin)}`)
+      .join("\u0000"),
+  );
   useEffect(() => {
     const documents = useDocumentsStore.getState().documents;
     const plan = computeModelSyncPlan(
@@ -323,6 +351,72 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
       }
     }
   }, [openDocsKey, tab.id, prevTabId, getEditor]);
+
+  // Save-As origin-transition effect (spec §11, Task 9). When a Save As (or a
+  // rename) succeeds, `documentsStore.markSaved` / `rebindDocPath` transitions
+  // the doc's `origin` to the new disk location. Monaco model URIs are
+  // immutable, so a transition requires a model REPLACEMENT (the registry's
+  // `migrateUri`: atomic URI-map swap + new model at the new URI + dispose old).
+  // This effect is the SINGLE place that drives that migration: it diffs each
+  // open doc's previous origin signature against its current one and, for each
+  // doc that actually transitioned, calls `migrateModelForSaveAs`.
+  //
+  // Active vs non-active: the editor swap + selection/viewState restore is only
+  // correct for the ACTIVE doc (only it is attached to the editor). For a
+  // non-active doc — e.g. Save All on a background tab, or a programmatic save
+  // — we pass NO editor, so the orchestration does a REGISTRY-ONLY migration
+  // (the model is replaced; the editor swap happens later, via the normal
+  // `activate` path, if/when the doc becomes active). This is also why there
+  // is exactly ONE migration call site: passing the editor only for the active
+  // id means the registry migration runs once per transitioned doc regardless
+  // of active-ness, and the editor swap runs at most once (for the active id).
+  // No double-migration.
+  //
+  // Failure path: a Save As that fails does NOT call `markSaved`, so the doc's
+  // origin does NOT change, so `originsKey` does NOT change, so this effect
+  // does NOT re-run — the old model is left untouched (§11: "Save As 失败时不
+  // 触碰旧 model").
+  //
+  // PERF / re-run discipline: subscribe to `originsKey` (a structural string),
+  // NOT to `s.documents` — the store rebuilds the top-level object on every
+  // keystroke, which would re-run this effect on every edit. The full docs map
+  // is read via `getState()` inside the effect (an escape hatch that doesn't
+  // subscribe). `tab.id` is a dependency because the active-id decides which
+  // transitioned doc gets the editor swap.
+  useEffect(() => {
+    const documents = useDocumentsStore.getState().documents;
+    const activeId = tab.id;
+    const editor = getEditor();
+    const prev = prevOriginsRef.current;
+    const next = new Map<string, DocumentOrigin>();
+
+    for (const [id, doc] of Object.entries(documents)) {
+      next.set(id, doc.origin);
+      const prevOrigin = prev.get(id);
+      if (prevOrigin === undefined) {
+        // First time we observe this id: no transition to migrate. (The
+        // model-sync effect opened it; we just record its baseline origin.)
+        continue;
+      }
+      // `detectOriginTransition` is the named contract for "did the origin
+      // actually change" — it compares via `originSignature`, so a structurally-
+      // equal origin (e.g. a content edit that rebuilt the documents map) is
+      // NOT a transition. Returns the new origin when it changed, null else.
+      const transition = detectOriginTransition(prevOrigin, doc.origin);
+      if (transition === null) continue;
+      // Origin transitioned. Drive the Save-As model replacement. Pass the
+      // editor ONLY for the active doc (only it is attached to the editor);
+      // non-active docs get a registry-only migration whose editor swap runs
+      // later, via the normal `activate` path, if/when the doc becomes active.
+      migrateModelForSaveAs(
+        id,
+        transition,
+        id === activeId ? editor : null,
+      );
+    }
+
+    prevOriginsRef.current = next;
+  }, [originsKey, tab.id, getEditor]);
 
   // Rich-text paste: capture-phase listener converts pasted HTML to Typst and
   // resolves/inserts images. Wired through `getEditor` (closes over
