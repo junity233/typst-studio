@@ -4,6 +4,7 @@ import type { CompileStatus } from "../../lib/ui-types";
 import { useLspStatus } from "../../store/lspStore";
 import { useStartupProblemsStore } from "../../store/startupProblemsStore";
 import { useSaveStateStore } from "../../store/saveStateStore";
+import { useConflictDialogStore } from "../../store/conflictDialogStore";
 
 /** Stable empty array so the selector returns the same reference when unset. */
 const EMPTY_DIAGNOSTICS: readonly never[] = Object.freeze([]) as never[];
@@ -74,11 +75,26 @@ export function StatusBar() {
   const problemCount = useStartupProblemsStore((s) => s.problems.length);
   const dismissProblems = useStartupProblemsStore((s) => s.dismiss);
 
+  // §5.4 / §8 conflict indicator: orange "Conflict" entry when the active doc
+  // is in an unresolved conflict. Clicking opens the resolution dialog.
+  const openConflict = useConflictDialogStore((s) => s.open);
+  const isConflicted = tab !== null && tab.conflict !== "none";
+
   return (
     <footer className="statusbar">
       <span className={"statusbar-section" + (statusClass ? " " + statusClass : "")}>
         {tab !== null ? statusLabel(tab.status, tab.durationMs) : "No document"}
       </span>
+      {isConflicted && tab !== null && (
+        <span
+          className="statusbar-section statusbar-status--conflict"
+          role="button"
+          title="This file changed on disk and is in conflict — click to resolve"
+          onClick={() => openConflict(tab.id)}
+        >
+          Conflict
+        </span>
+      )}
       {saveLabel !== "" && (
         <span
           className={

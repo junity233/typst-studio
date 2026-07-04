@@ -294,16 +294,22 @@ impl DocumentService {
 
     // --- external-modification support (§8.4) --------------------------------
 
-    /// Seed (or refresh) a tab's [`DiskVersion`] from its on-disk file (§8.4).
-    /// Best-effort: if the file can't be read (untitled / deleted mid-open), the
-    /// version is left as-is. Called on open and after Save As rebind.
+    /// Seed (or refresh) a tab's [`DiskVersion`] AND [`FileIdentity`] from its
+    /// on-disk file (§8.4 / §5.4). Best-effort: if the file can't be read
+    /// (untitled / deleted mid-open), the version is left as-is. Called on open
+    /// and after Save As rebind. The inode (`FileIdentity`) is always captured
+    /// best-effort (UNKNOWN when unavailable) so the `Replaced` conflict check
+    /// has a baseline to compare against on the next external change.
     fn set_disk_version_from_path(&self, id: DocumentId, path: Option<&Path>) {
         let Some(path) = path else { return };
         let Ok(version) = DiskVersion::from_path(path) else {
             return;
         };
+        let identity = crate::domain::disk_version::FileIdentity::from_path(path);
         if let Some(t) = self.store.tabs.read().get(&id) {
-            t.state.lock().disk_version = Some(version);
+            let mut rt = t.state.lock();
+            rt.disk_version = Some(version);
+            rt.file_identity = identity;
         }
     }
 
@@ -612,13 +618,18 @@ impl DocumentService {
         // brief lock. disk_version is preserved across reclassification (the
         // file didn't change — only its resolution scope did), so it must be
         // carried over the world rebuild (which resets it to None).
-        let (meta, text, disk_version) = {
+        let (meta, text, disk_version, file_identity) = {
             let tabs = self.store.tabs.read();
             let Some(tab) = tabs.get(&id).cloned() else {
                 return;
             };
             let rt = tab.state.lock();
-            (rt.meta.clone(), tab.world.text(), rt.disk_version.clone())
+            (
+                rt.meta.clone(),
+                tab.world.text(),
+                rt.disk_version,
+                rt.file_identity,
+            )
         };
 
         // Untitled docs are never reclassified.
@@ -662,11 +673,14 @@ impl DocumentService {
         let new_tab = self.build_tab(&new_meta, &text, resolver, &canon);
         self.swap_world(id, new_tab);
 
-        // Restore the disk_version (the rebuild reset it to None). The file is
-        // unchanged, so the pre-transition snapshot is still accurate.
+        // Restore the disk_version AND file_identity (the rebuild reset both to
+        // None / UNKNOWN). The file is unchanged, so the pre-transition snapshot
+        // is still accurate.
         if let Some(dv) = disk_version {
             if let Some(t) = self.store.tabs.read().get(&id) {
-                t.state.lock().disk_version = Some(dv);
+                let mut rt = t.state.lock();
+                rt.disk_version = Some(dv);
+                rt.file_identity = file_identity;
             }
         }
 
@@ -774,6 +788,82 @@ impl DocumentService {
             .clone()
             .ok_or_else(|| AppError::InvalidInput("tab has no on-disk path".into()))?;
         Ok((path, tab.world.text()))
+    }
+
+    // --- conflict resolution (§5.4) ------------------------------------------
+
+    /// Resolve a conflict by adopting the DISK version: replace the buffer with
+    /// the current on-disk content, bump the revision, clear `dirty`, clear the
+    /// conflict, and re-baseline the stored [`DiskVersion`] + [`FileIdentity`].
+    /// (§5.4 使用磁盘版本). Available only when the backing file is readable
+    /// (the `Modified` case) — returns a `NotFound` error for `Missing` and an
+    /// `InvalidInput` for untitled / `PermissionChanged`.
+    ///
+    /// Returns the disk content that was loaded into the buffer (so the IPC
+    /// layer can hydrate the frontend's copy without a second read).
+    pub fn resolve_conflict_use_disk(&self, id: DocumentId) -> Result<String> {
+        let tab = {
+            let tabs = self.store.tabs.read();
+            tabs.get(&id)
+                .cloned()
+                .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
+        };
+        let path = tab
+            .state
+            .lock()
+            .meta
+            .path
+            .clone()
+            .ok_or_else(|| AppError::InvalidInput("tab has no on-disk path".into()))?;
+        // Read the current disk content. A `Missing` conflict's file may be
+        // gone — surface that as NotFound so the caller can tell the user to
+        // recreate / Save As instead.
+        let content = std::fs::read_to_string(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                AppError::NotFound(format!("file gone: {path:?}"))
+            } else {
+                AppError::Io(e)
+            }
+        })?;
+        // Re-baseline the disk version + identity from the bytes we just read.
+        let new_version = DiskVersion::from_bytes(content.as_bytes());
+        let new_identity = crate::domain::disk_version::FileIdentity::from_path(&path);
+        tab.world.set_text(content.clone());
+        let (revision, canon) = {
+            let mut rt = tab.state.lock();
+            rt.meta.revision = rt.meta.revision.saturating_add(1);
+            rt.meta.dirty = false;
+            rt.meta.conflict = ConflictState::None;
+            rt.disk_version = Some(new_version);
+            rt.file_identity = new_identity;
+            (
+                rt.meta.revision,
+                rt.meta.origin.canonical_path().map(|p| p.to_path_buf()),
+            )
+        };
+        // Keep the shared VFS in step with the adopted buffer (§5 end).
+        if let Some(canon) = canon {
+            self.store.vfs.upsert(canon, content.clone(), revision);
+        }
+        // Recompile against the new buffer.
+        if let Some(worker) = self.store.workers.read().get(&id) {
+            worker.recompile();
+        }
+        // The doc is now clean on disk → discard its recovery snapshot (§5.1.2).
+        if let Some(recovery) = self.recovery() {
+            recovery.discard_snapshot(id);
+        }
+        Ok(content)
+    }
+
+    /// Clear the conflict flag WITHOUT touching the buffer or dirty state
+    /// (§5.4). Used by the "Later" / discard resolution paths and by the
+    /// `clear_conflict` IPC command. No-op (returns Ok) for an unknown id.
+    pub fn clear_conflict(&self, id: DocumentId) -> Result<()> {
+        if let Some(t) = self.store.tabs.read().get(&id) {
+            t.state.lock().meta.conflict = ConflictState::None;
+        }
+        Ok(())
     }
 
     // --- accessors -----------------------------------------------------------
@@ -1027,5 +1117,106 @@ mod tests {
         assert!(!diags.is_empty(), "failing source must surface diagnostics via CompileService");
         let state = compile.last_compile_state(meta.id).expect("state present");
         assert!(!state.success, "compile state must report failure");
+    }
+
+    /// Test helper: set the conflict state on a tab (mirrors what the watcher's
+    /// `set_conflict` does) by reaching through the cfg(test) store accessor.
+    fn force_conflict(document: &DocumentService, id: DocumentId, conflict: ConflictState) {
+        let tab = document
+            .store()
+            .tabs
+            .read()
+            .get(&id)
+            .cloned()
+            .expect("tab exists");
+        tab.state.lock().meta.conflict = conflict;
+    }
+
+    /// §11.3 / §5.4 acceptance: `resolve_conflict_use_disk` replaces the buffer
+    /// with the current disk content, bumps the revision, and clears BOTH dirty
+    /// and the conflict flag. The disk version is re-baselined so the imminent
+    /// self-save watcher event compares equal.
+    #[test]
+    fn resolve_conflict_use_disk_clears_conflict_and_dirty() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir().join(format!("ts-docsvc-ud-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.typ");
+        std::fs::write(&path, "#set page(width: 10cm)\n\nDisk wins").unwrap();
+
+        let meta = document
+            .open_from_content(path.clone(), "#set page(width: 10cm)\n\nDisk wins".into(), None)
+            .unwrap();
+        // Dirty the buffer (unsaved local edits) and mark it conflicted.
+        document.update_text(meta.id, "#set page(width: 10cm)\n\nMy local edit".into()).unwrap();
+        force_conflict(&document, meta.id, ConflictState::Modified { disk_version: None });
+        let rev_before = document.tab_revision(meta.id).unwrap();
+        assert!(document.tab_meta(meta.id).unwrap().dirty);
+
+        // Externally change the disk to a third version — use_disk should adopt
+        // whatever is on disk NOW, not the version at detection time.
+        std::fs::write(&path, "#set page(width: 10cm)\n\nFresh disk version").unwrap();
+
+        let adopted = document.resolve_conflict_use_disk(meta.id).expect("use_disk succeeds");
+        assert_eq!(adopted, "#set page(width: 10cm)\n\nFresh disk version");
+
+        // Buffer now matches disk; revision bumped; dirty + conflict cleared.
+        assert_eq!(
+            document.tab_text(meta.id).as_deref(),
+            Some("#set page(width: 10cm)\n\nFresh disk version")
+        );
+        let after = document.tab_meta(meta.id).unwrap();
+        assert!(!after.dirty, "dirty must clear on use_disk");
+        assert!(!after.conflict.is_active(), "conflict must clear on use_disk");
+        assert!(
+            document.tab_revision(meta.id).unwrap() > rev_before,
+            "revision must bump on use_disk"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §5.4: `resolve_conflict_use_disk` on a Missing conflict (file gone)
+    /// surfaces NotFound so the dialog can offer recreate / Save As instead of
+    /// silently failing.
+    #[test]
+    fn resolve_conflict_use_disk_missing_file_errors() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir().join(format!("ts-docsvc-miss-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gone.typ");
+        std::fs::write(&path, "x").unwrap();
+
+        let meta = document.open_from_content(path.clone(), "x".into(), None).unwrap();
+        force_conflict(&document, meta.id, ConflictState::Missing);
+        std::fs::remove_file(&path).unwrap();
+
+        let err = document.resolve_conflict_use_disk(meta.id).unwrap_err();
+        assert!(
+            matches!(err, crate::error::AppError::NotFound(_)),
+            "missing file must surface NotFound, got {err:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §5.4: `clear_conflict` drops the flag without touching the buffer or
+    /// dirty state (the "Later" / discard path). Idempotent for an unknown id.
+    #[test]
+    fn clear_conflict_drops_flag_without_touching_buffer() {
+        let (document, _compile) = make_services();
+        let meta = document.new_tab(Some("hello".into()));
+        document.update_text(meta.id, "hello edited".into()).unwrap();
+        force_conflict(&document, meta.id, ConflictState::Missing);
+        assert!(document.tab_meta(meta.id).unwrap().dirty);
+        assert!(document.tab_meta(meta.id).unwrap().conflict.is_active());
+
+        document.clear_conflict(meta.id).unwrap();
+        let after = document.tab_meta(meta.id).unwrap();
+        // Conflict cleared, but dirty + buffer preserved.
+        assert!(!after.conflict.is_active());
+        assert!(after.dirty, "dirty must be preserved by clear_conflict");
+        assert_eq!(document.tab_text(meta.id).as_deref(), Some("hello edited"));
+
+        // Idempotent for an unknown id (no error).
+        document.clear_conflict(DocumentId::new()).unwrap();
     }
 }

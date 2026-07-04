@@ -45,6 +45,7 @@ function seedActiveTab(revision: number): void {
         content: "",
         revision,
         conflict: "none",
+        conflictDiskContent: null,
         status: "idle",
         durationMs: null,
         svgPages: [],

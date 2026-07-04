@@ -216,6 +216,16 @@ impl EditorService {
         self.document.prepare_save(id)
     }
 
+    /// Delegates to [`DocumentService::resolve_conflict_use_disk`] (§5.4).
+    pub fn resolve_conflict_use_disk(&self, id: DocumentId) -> Result<String> {
+        self.document.resolve_conflict_use_disk(id)
+    }
+
+    /// Delegates to [`DocumentService::clear_conflict`] (§5.4).
+    pub fn clear_conflict(&self, id: DocumentId) -> Result<()> {
+        self.document.clear_conflict(id)
+    }
+
     /// Delegates to [`DocumentService::clear_dirty`].
     pub fn clear_dirty(&self, id: DocumentId) {
         self.document.clear_dirty(id);
@@ -1408,13 +1418,16 @@ mod tests {
         );
         assert_eq!(svc.tab_revision(id), Some(rev_before), "no reload → no revision bump");
         assert_eq!(
-            svc.tab_meta(id).unwrap().conflict,
-            ConflictState::Modified,
+            svc.tab_meta(id).unwrap().conflict.tag(),
+            ConflictState::Modified { disk_version: None }.tag(),
             "must enter Modified conflict"
         );
         // A conflict event was emitted.
         assert!(
-            emitter.conflicts_for(id).contains(&ConflictState::Modified),
+            emitter
+                .conflicts_for(id)
+                .iter()
+                .any(|c| c.tag() == ConflictState::Modified { disk_version: None }.tag()),
             "expected a Modified conflict event"
         );
         let _ = std::fs::remove_file(&tmp);
@@ -1593,6 +1606,103 @@ mod tests {
                 CapturedEvent::Conflict { id, .. } if *id == svc.tab_meta(svc.list_tabs()[0].id).unwrap().id
             )),
             "unrelated path must not raise a conflict: {snaps:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §5.4: when the backing file becomes unreadable (permission revoked) the
+    /// watcher now surfaces `PermissionChanged` instead of silently skipping
+    /// (the pre-§5.4 behavior lumped PermissionDenied into the transient-error
+    /// skip path). The buffer is preserved.
+    #[cfg(unix)]
+    #[test]
+    fn handle_external_change_permission_revoked_marks_permission_changed() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = make_tmp_file("#set page(width: 10cm)\n\nSecret");
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &tmp);
+        let text_before = svc.tab_text(id).unwrap();
+
+        // Revoke ALL permissions (0o000) so the next read fails with
+        // PermissionDenied (the file still EXISTS — it's just unreadable now).
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Deliver the watcher event.
+        svc.handle_external_change(&tmp);
+
+        // Restore perms so cleanup works regardless of the assertion outcome.
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644));
+
+        // §5.4: the conflict is PermissionChanged (NOT Missing, NOT skipped).
+        let conflict = svc.tab_meta(id).unwrap().conflict;
+        assert_eq!(
+            conflict.tag(),
+            "permission_changed",
+            "unreadable file must mark PermissionChanged, got {:?}",
+            conflict
+        );
+        // Buffer preserved.
+        assert_eq!(svc.tab_text(id).as_deref(), Some(text_before.as_str()));
+        // A conflict event was emitted.
+        assert!(
+            emitter
+                .conflicts_for(id)
+                .iter()
+                .any(|c| c.tag() == "permission_changed"),
+            "expected a PermissionChanged conflict event"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// §5.4: an external tool rewrites the file with the SAME bytes but a NEW
+    /// inode (e.g. `sed -i`, an atomic write-then-rename). Content equality
+    /// holds, but the inode differs → for a DIRTY buffer this is `Replaced`
+    /// (conservative: the user has unsaved edits and the file identity changed
+    /// under them). The buffer is preserved.
+    ///
+    /// We synthesize the "same bytes, new inode" case by writing the identical
+    /// content to a fresh temp file and then ATOMICALLY MOVING it over the
+    /// original (rename-over is the canonical inode-changing rewrite on Unix).
+    #[cfg(unix)]
+    #[test]
+    fn handle_external_change_replaced_same_bytes_new_inode_marks_replaced() {
+        let dir = std::env::temp_dir().join(format!("ts-replaced-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.typ");
+        std::fs::write(&path, "#set page(width: 10cm)\n\nSame content").unwrap();
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &path);
+
+        // Dirty the buffer (unsaved edits) — the Replaced conflict only fires
+        // for a dirty buffer; a clean buffer silently re-baselines (bytes match).
+        svc.update_text(id, "#set page(width: 10cm)\n\nSame content + my edit".into()).unwrap();
+        wait_for_compiled(&emitter, id);
+        let text_before = svc.tab_text(id).unwrap();
+
+        // Rewrite the file with the SAME bytes via an atomic rename-over, which
+        // mints a new inode. (A plain re-write of identical bytes may keep the
+        // same inode depending on the FS, so we use the rename trick that
+        // `sed -i` / atomic-save tools use.)
+        let staging = dir.join(".doc.typ.staging");
+        std::fs::write(&staging, "#set page(width: 10cm)\n\nSame content").unwrap();
+        std::fs::rename(&staging, &path).unwrap();
+
+        // Deliver the watcher event.
+        svc.handle_external_change(&path);
+
+        // §5.4: same bytes + new inode + dirty → Replaced (NOT a silent no-op,
+        // even though the content is identical — the identity changed).
+        let conflict = svc.tab_meta(id).unwrap().conflict;
+        assert_eq!(
+            conflict.tag(),
+            "replaced",
+            "same bytes + new inode + dirty must mark Replaced, got {:?}",
+            conflict
+        );
+        // Buffer preserved (never clobbered).
+        assert_eq!(svc.tab_text(id).as_deref(), Some(text_before.as_str()));
+        assert!(
+            emitter.conflicts_for(id).iter().any(|c| c.tag() == "replaced"),
+            "expected a Replaced conflict event"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

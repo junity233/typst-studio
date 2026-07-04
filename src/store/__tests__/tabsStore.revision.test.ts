@@ -36,6 +36,7 @@ function freshDocument(overrides: Partial<Document> = {}): Document {
     content: "old",
     revision: 0,
     conflict: "none",
+    conflictDiskContent: null,
     status: "idle",
     durationMs: null,
     svgPages: [],
@@ -152,21 +153,45 @@ describe("documentsStore conflict state (§8.4)", () => {
     expect(useDocumentsStore.getState().documents["tab-1"].conflict).toBe("missing");
   });
 
+  it("setConflict stashes disk content for the compare view and clears it on resolve", () => {
+    useDocumentsStore.setState({
+      documents: { "tab-1": freshDocument({ conflict: "none" }) },
+    });
+    useDocumentsStore.getState().setConflict("tab-1", "modified", "disk bytes");
+    const doc = useDocumentsStore.getState().documents["tab-1"];
+    expect(doc.conflict).toBe("modified");
+    expect(doc.conflictDiskContent).toBe("disk bytes");
+    // Resolving to "none" drops the stashed content.
+    useDocumentsStore.getState().setConflict("tab-1", "none");
+    expect(useDocumentsStore.getState().documents["tab-1"].conflictDiskContent).toBeNull();
+  });
+
   it("setConflict is a no-op for unknown documents", () => {
     expect(() =>
       useDocumentsStore.getState().setConflict("nope", "modified"),
     ).not.toThrow();
   });
 
-  it("updateContent resets conflict to none (user is editing past it)", () => {
+  // §8.4 / §5.4 FIX: user typing must NOT auto-clear an unresolved conflict.
+  // The previous behavior reset conflict to "none" on every edit, which
+  // silently swallowed an external change. Now only explicit resolution
+  // actions clear it.
+  it("updateContent does NOT clear conflict (user typing must not auto-resolve)", () => {
     useDocumentsStore.setState({
       documents: {
-        "tab-1": freshDocument({ conflict: "modified", content: "a" }),
+        "tab-1": freshDocument({
+          conflict: "modified",
+          conflictDiskContent: "disk",
+          content: "a",
+        }),
       },
     });
     useDocumentsStore.getState().updateContent("tab-1", "b");
     const doc = useDocumentsStore.getState().documents["tab-1"];
-    expect(doc.conflict).toBe("none");
+    // §8.4 fix: the conflict (and its stashed disk content) MUST survive an
+    // edit — typing must not auto-resolve an unresolved conflict.
+    expect(doc.conflict).toBe("modified");
+    expect(doc.conflictDiskContent).toBe("disk");
     expect(doc.content).toBe("b");
   });
 

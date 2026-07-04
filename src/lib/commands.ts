@@ -2,6 +2,7 @@ import { saveFile, saveAs as saveAsBE, discardRecovery } from "./tauri";
 import { useTabsStore } from "../store/tabsStore";
 import { useDocumentsStore } from "../store/documentsStore";
 import { useDialogStore } from "../store/dialogStore";
+import { useConflictDialogStore } from "../store/conflictDialogStore";
 import {
   formatSaveErrorMessage,
   isCancelled,
@@ -37,6 +38,16 @@ export async function saveTab(id: string): Promise<boolean> {
       return false;
     }
     const err = toIpcError(e);
+    // §5.4 conflict gate: the in-place save was blocked because the doc is in
+    // conflict. Open the conflict-resolution UI instead of alerting (the user
+    // must choose use-disk / overwrite / save-as / later — Save As is one of
+    // those actions, surfaced inside the dialog). The conflict state itself
+    // stays set (the doc is still conflicted); the gate keeps blocking until a
+    // resolution action clears it.
+    if (err.code === "external_conflict") {
+      useConflictDialogStore.getState().open(id);
+      return false;
+    }
     // For permission/readonly/path-occupied codes, offer Save As first.
     if (SAVE_AS_RECOVERY_CODES.has(err.code) && tab.path !== null) {
       const choice = await useDialogStore.getState().confirm({

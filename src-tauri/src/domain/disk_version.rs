@@ -42,7 +42,11 @@ use std::path::Path;
 /// the disk version the snapshot was captured against, so startup recovery can
 /// tell whether the disk changed between snapshot capture and the next launch
 /// (§5.1.3 "当前磁盘是否变化").
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+// `Copy` (added in the conflict-close-loop batch §5.4): the struct is just two
+// u64s, and `ConflictState::Modified { disk_version: Option<DiskVersion> }`
+// needs the enum to stay `Copy` so the `set_conflict` helper continues to take
+// it by value without churn across every call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(
     feature = "export-types",
     derive(ts_rs::TS),
@@ -78,6 +82,68 @@ impl DiskVersion {
         let bytes = std::fs::read(path)?;
         Ok(Self::from_bytes(&bytes))
     }
+}
+
+/// A platform file identity used to detect the `Replaced` conflict (§5.4).
+///
+/// Two `FileIdentity`s are equal iff their underlying inode/file-index match.
+/// This is intentionally SEPARATE from [`DiskVersion`]: an external tool can
+/// rewrite a file with the SAME bytes but a NEW inode (e.g. `sed -i`, an atomic
+/// replace, a save-from-another-editor that writes-then-renames). The bytes are
+/// identical so [`DiskVersion`] equality holds, but the file's identity changed
+/// — §5.4 calls this `Replaced { identity_changed: true }` ("文件被替换为不同
+/// identity 时按外部替换处理，不能只比较时间戳").
+///
+/// We capture this as a 64-bit hash of the `std::fs::Metadata`'s stable file-id
+/// fields. On Unix that's `(dev, ino)`; on Windows `(volume_serial_number,
+/// file_index)`. Both are read best-effort — if the platform won't surface a
+/// stable id, [`FileIdentity::unknown`] compares equal only to itself, so the
+/// `Replaced` detection degrades to "never fire" rather than false-positiving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileIdentity(u64);
+
+impl FileIdentity {
+    /// A sentinel for "no stable identity available". Equal only to itself, so
+    /// when the platform can't surface an inode the `Replaced` check never fires
+    /// (degrades safely to no detection).
+    pub const UNKNOWN: Self = Self(0);
+
+    /// Read a file's identity from its metadata. Returns [`FileIdentity::UNKNOWN`]
+    /// on any failure (missing file, unsupported platform) — never panics.
+    pub fn from_path(path: &Path) -> Self {
+        std::fs::symlink_metadata(path)
+            .ok()
+            .and_then(|m| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    // (dev, ino) uniquely identifies a file on a Unix volume.
+                    Some(Self(hash_pair(m.dev(), m.ino())))
+                }
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    // volume_serial_number + file_index are the Windows analogue.
+                    let vol = m.volume_serial_number()?;
+                    let idx = m.file_index()?;
+                    Some(Self(hash_pair(vol, idx)))
+                }
+                #[cfg(not(any(unix, windows)))]
+                {
+                    None
+                }
+            })
+            .unwrap_or(Self::UNKNOWN)
+    }
+}
+
+/// Best-effort fixed-key hash of a u64 pair, mirroring the `DiskVersion` hasher
+/// choice (no new dependency; stable across runs).
+fn hash_pair(a: u64, b: u64) -> u64 {
+    let mut h = DefaultHasher::new();
+    h.write_u64(a);
+    h.write_u64(b);
+    h.finish()
 }
 
 #[cfg(test)]

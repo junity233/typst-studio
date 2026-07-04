@@ -488,6 +488,45 @@ export async function markCleanShutdown(): Promise<void> {
   await invoke("mark_clean_shutdown");
 }
 
+// --- Conflict resolution (§5.4) ---------------------------------------------
+
+/**
+ * Resolve a conflict by adopting the DISK version (§5.4 使用磁盘版本): replace
+ * the buffer with the current on-disk content, bump revision, clear dirty +
+ * conflict. Returns the disk content that was loaded so the caller can hydrate
+ * its local copy. Rejects with NotFound/InvalidInput for Missing /
+ * PermissionChanged (no readable disk version) — the dialog then offers
+ * recreate / Save As.
+ */
+export async function resolveConflictUseDisk(
+  id: DocumentId,
+): Promise<string> {
+  return invoke<string>("resolve_conflict_use_disk", { id });
+}
+
+/**
+ * Resolve a conflict by OVERWRITING the disk with the current buffer (§5.4 覆盖
+ * 磁盘): the explicit "I know the disk changed; overwrite it" action. Runs the
+ * full §5.2 atomic-save protocol, BYPASSING the conflict gate that blocks the
+ * normal `saveFile`. On success the conflict + dirty are cleared. Rejects with a
+ * structured IpcError on write failure (dirty stays true — §11.2).
+ */
+export async function resolveConflictOverwrite(
+  id: DocumentId,
+): Promise<void> {
+  await invoke("resolve_conflict_overwrite", { id });
+}
+
+/**
+ * Clear the conflict flag WITHOUT touching the buffer or dirty state (§5.4 稍后
+ * 处理 / discard). The in-place save STAYS blocked (the doc is still
+ * "conflicted" from the gate's perspective once re-detected), but the dialog
+ * closes and the user keeps editing. Idempotent.
+ */
+export async function clearConflict(id: DocumentId): Promise<void> {
+  await invoke("clear_conflict", { id });
+}
+
 // --- Paste-feature: remote image download -----------------------------------
 
 /** Download a remote URL to a local file via the backend net module. */

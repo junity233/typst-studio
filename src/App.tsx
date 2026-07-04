@@ -4,6 +4,7 @@ import { CommandBar } from "./components/CommandBar/CommandBar";
 import { StatusBar } from "./components/StatusBar/StatusBar";
 import { ConfirmDialog } from "./components/Dialogs/ConfirmDialog";
 import { RecoveryDialog } from "./components/Dialogs/RecoveryDialog";
+import { ConflictDialog } from "./components/Dialogs/ConflictDialog";
 import { ContextMenu } from "./components/Sidebar/ContextMenu";
 import { useTypstCompile } from "./hooks/useTypstCompile";
 import { useAppCommands } from "./hooks/useAppCommands";
@@ -86,6 +87,7 @@ export default function App() {
       <StatusBar />
       <ConfirmDialog />
       <RecoveryDialog />
+      <ConflictDialog />
       <ContextMenu />
       {settingsOpen && (
         <div

@@ -53,10 +53,12 @@ export function useTypstCompile(): void {
       }
       unlistens.push(uStatus);
 
-      // §8.4: external-modification conflict. Surface the backend's conflict
-      // state on the tab (the resolution UI is a later task).
+      // §5.4 / §8.4: external-modification conflict. Surface the backend's
+      // conflict state on the tab and stash the disk content (present on
+      // "modified") so the ConflictDialog can show a compare view without a
+      // second IPC round-trip.
       const uConflict = await onConflict((p) => {
-        useTabsStore.getState().setConflict(p.id, p.conflict);
+        useTabsStore.getState().setConflict(p.id, p.conflict, p.diskContent);
       });
       if (cancelled) {
         uConflict();

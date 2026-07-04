@@ -64,15 +64,34 @@ export type ConflictPayload = { id: DocumentId, revision: number, conflict: Conf
 diskContent: string | null, };
 
 /**
- * External-modification conflict state for a document (§8.4).
+ * External-modification conflict state for a document (§5.4 / §8.4).
  *
  * Set by [`EditorService::handle_external_change`](crate::service::editor_service::EditorService::handle_external_change)
  * when a filesystem watcher reports a change to a document's backing file.
- * The user resolves a `Modified` / `Missing` state via explicit actions (use
- * disk, overwrite disk, Save As); the resolution UI is out of scope for the
- * state-tracking layer — this enum is just the data.
+ * The user resolves a non-`None` state via explicit actions (use disk /
+ * overwrite disk / Save As / discard); the resolution UI is out of scope for
+ * the state-tracking layer — this enum is just the data.
+ *
+ * ## Wire format (§5.4 — string-tag only)
+ *
+ * On the wire this serializes as a **bare lowercase string** —
+ * `"none" / "modified" / "missing" / "permission_changed" / "replaced"` — so
+ * the frontend can keep treating `ConflictState` as a string-literal union.
+ * The carried `disk_version` ([`Modified`]) and `identity_changed`
+ * ([`Replaced`]) are Rust-side ONLY (kept in-memory for re-detection; not
+ * serialized) — they are populated from disk reads, not from IPC. This keeps
+ * the wire form backward-compatible with the pre-§5.4 frontend (which was a
+ * 3-variant string union) and avoids a struct-per-variant churn.
+ *
+ * The serialization is hand-written (rather than `#[serde(rename_all=…)]`)
+ * because serde's derive can't express "drop the variant's data and emit only
+ * the tag" for a struct variant enum — `rename_all` would emit the tag for a
+ * unit enum, but the moment `Modified` gains a field it becomes an internally
+ * tagged struct on the wire. The custom [`serde::Serialize`] / [`serde::Deserialize`]
+ * impls below give exactly the desired string-only shape, and [`tag`] / [`from_tag`]
+ * are the single source of truth for the mapping.
  */
-export type ConflictState = "none" | "modified" | "missing";
+export type ConflictState = "none" | "modified" | "missing" | "permission_changed" | "replaced";
 
 /**
  * A single diagnostic, IPC/serialization-friendly.

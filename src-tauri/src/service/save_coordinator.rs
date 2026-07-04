@@ -160,19 +160,67 @@ impl SaveCoordinator {
     /// Save a single document in place (§5.2 / §5.3).
     ///
     /// Protocol:
-    /// 1. Read the tab revision (for tagging the [`SaveState`]).
-    /// 2. `prepare_save(id)` → `(path, text)`. Maps "untitled / no path" to an
+    /// 1. **Conflict gate (§5.4)**: if `meta.conflict != None`, refuse with an
+    ///    `ExternalConflict` IpcError (`recoverable: true`). The in-place save
+    ///    is BLOCKED until the user resolves the conflict (use-disk / overwrite
+    ///    / save-as / discard) — this is the "conflict 未解决时，普通 Save 被阻止"
+    ///    rule. The frontend's `saveTab` catches this code and opens the
+    ///    conflict-resolution UI instead of alerting. Save As is NOT gated
+    ///    (the user can always write elsewhere — see [`save_as`]).
+    /// 2. Read the tab revision (for tagging the [`SaveState`]).
+    /// 3. `prepare_save(id)` → `(path, text)`. Maps "untitled / no path" to an
     ///    `InvalidPath` IpcError (the IPC layer's caller — e.g. `saveTab` —
     ///    should fall back to Save As).
-    /// 3. Set `SaveState::Saving{revision}`.
-    /// 4. `spawn_blocking(write_bytes)` — atomic write (§5.2).
-    /// 5. On success: `mark_saved(id)` (clears dirty + recomputes disk_version);
+    /// 4. Set `SaveState::Saving{revision}`.
+    /// 5. `spawn_blocking(write_bytes)` — atomic write (§5.2).
+    /// 6. On success: `mark_saved(id)` (clears dirty + recomputes disk_version);
     ///    set `SaveState::Saved{revision}`.
-    /// 6. On failure: classify the io error → IpcError code (DiskFull /
+    /// 7. On failure: classify the io error → IpcError code (DiskFull /
     ///    PermissionDenied / IoTransient); **keep dirty TRUE** (§11.2 — dirty
     ///    only clears after the atomic replace succeeds); set
     ///    `SaveState::Failed{revision, code, message}`; return `Err`.
     pub async fn save(&self, id: DocumentId) -> Result<(), IpcError> {
+        // §5.4 conflict gate (before any state mutation): a conflicted doc's
+        // in-place save is blocked. `dirty` stays true; the frontend opens the
+        // conflict UI on the ExternalConflict code. Only an EXPLICIT overwrite
+        // ([`save_overwrite`]) or Save As ([`save_as`]) may proceed.
+        if let Some(meta) = self.document.tab_meta(id) {
+            if meta.conflict.is_active() {
+                return Err(IpcError::new(
+                    ErrorCode::ExternalConflict,
+                    format!(
+                        "document is in conflict ({}); resolve before saving in place",
+                        meta.conflict.tag()
+                    ),
+                    true,
+                ));
+            }
+        }
+
+        // Delegate the actual write to the shared (ungated) core, which both
+        // `save` and the explicit overwrite path reach.
+        self.save_core(id).await
+    }
+
+    /// Explicit conflict-resolution "overwrite disk" action (§5.4 覆盖磁盘).
+    ///
+    /// Atomically writes the current buffer to disk via the SAME §5.2 protocol
+    /// as [`save`], but **bypasses the conflict gate** — this is the user's
+    /// explicit "I know the disk changed; overwrite it with my buffer" action
+    /// from the conflict-resolution UI. On success the conflict is cleared
+    /// (via `mark_saved`) and `dirty` becomes false. Returns the written path.
+    pub async fn save_overwrite(&self, id: DocumentId) -> Result<(), IpcError> {
+        // Same §5.2 write as `save`, but NO conflict gate (this IS the
+        // resolution). The post-write `mark_saved` clears conflict + dirty +
+        // recomputes the disk version so the imminent self-save watcher event
+        // compares equal.
+        self.save_core(id).await
+    }
+
+    /// The shared, ungated §5.2 write core used by both [`save`] (gated) and
+    /// [`save_overwrite`] (the explicit bypass). Holds the SaveState transitions
+    /// and the blocking atomic write + mark_saved.
+    async fn save_core(&self, id: DocumentId) -> Result<(), IpcError> {
         // 1. Read the revision (best-effort tag — if the tab vanished, surface
         //    NotFound).
         let revision = self
@@ -348,6 +396,7 @@ impl SaveCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::document::ConflictState;
     use crate::service::compile_service::CompileService;
     use crate::service::editor_service::Emitter;
     use crate::service::tab_store::TabStore;
@@ -689,6 +738,125 @@ mod tests {
         let (_document, coord) = make_coordinator();
         let err = coord.save(DocumentId::new()).await.unwrap_err();
         assert_eq!(err.code, ErrorCode::NotFound);
+    }
+
+    /// Test helper: set the conflict state on a tab by reaching through the
+    /// document service's (cfg(test)) store accessor. Mirrors what the watcher's
+    /// `set_conflict` would do, but without needing a real external change.
+    fn force_conflict(document: &DocumentService, id: DocumentId, conflict: ConflictState) {
+        let tab = document
+            .store()
+            .tabs
+            .read()
+            .get(&id)
+            .cloned()
+            .expect("tab exists");
+        tab.state.lock().meta.conflict = conflict;
+    }
+
+    /// §11.3 / §5.4 acceptance: a conflicted doc's in-place `save` is BLOCKED
+    /// — returns `ExternalConflict` (recoverable) and dirty STAYS true.
+    #[tokio::test]
+    async fn conflict_blocks_in_place_save() {
+        let dir = std::env::temp_dir().join(format!("ts-svc-conf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.typ");
+        std::fs::write(&path, "#set page(width: 10cm)\n\nOriginal").unwrap();
+
+        let (document, coord) = make_coordinator();
+        let meta = document
+            .open_from_content(path.clone(), "#set page(width: 10cm)\n\nOriginal".into(), None)
+            .unwrap();
+        wait_compiled(&document, meta.id);
+        // Dirty the buffer, then mark it conflicted (as the watcher would).
+        document
+            .update_text(meta.id, "#set page(width: 10cm)\n\nLocal edit".into())
+            .unwrap();
+        force_conflict(&document, meta.id, ConflictState::Modified { disk_version: None });
+        assert!(document.tab_meta(meta.id).unwrap().dirty);
+
+        // The gated save rejects with ExternalConflict — recoverable, so the
+        // frontend can open the conflict UI.
+        let err = coord.save(meta.id).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::ExternalConflict, "conflict must block save");
+        assert!(err.recoverable, "ExternalConflict is recoverable");
+        // §11.3: dirty STAYS TRUE (the save never ran).
+        assert!(
+            document.tab_meta(meta.id).unwrap().dirty,
+            "dirty must stay TRUE when the gate blocks"
+        );
+        // The disk file is untouched (the write never happened).
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "#set page(width: 10cm)\n\nOriginal"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §5.4: the gate blocks EVERY active conflict variant, not just Modified.
+    /// A Missing / PermissionChanged / Replaced doc is equally blocked.
+    #[tokio::test]
+    async fn conflict_gate_blocks_all_active_variants() {
+        let dir = std::env::temp_dir().join(format!("ts-svc-conf-all-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.typ");
+        std::fs::write(&path, "x").unwrap();
+
+        for variant in [
+            ConflictState::Missing,
+            ConflictState::PermissionChanged,
+            ConflictState::Replaced { identity_changed: true },
+        ] {
+            let (document, coord) = make_coordinator();
+            let meta = document
+                .open_from_content(path.clone(), "x".into(), None)
+                .unwrap();
+            wait_compiled(&document, meta.id);
+            document.update_text(meta.id, "edited".into()).unwrap();
+            force_conflict(&document, meta.id, variant);
+            let err = coord.save(meta.id).await.unwrap_err();
+            assert_eq!(
+                err.code, ErrorCode::ExternalConflict,
+                "gate must block {:?}",
+                variant
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §11.3 / §5.4 acceptance: `save_overwrite` BYPASSES the conflict gate and
+    /// atomically writes the buffer, clearing the conflict + dirty. This is the
+    /// explicit "I know, overwrite" resolution action.
+    #[tokio::test]
+    async fn overwrite_disk_clears_conflict_bypassing_gate() {
+        let dir = std::env::temp_dir().join(format!("ts-svc-ow-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.typ");
+        std::fs::write(&path, "#set page(width: 10cm)\n\nDisk version").unwrap();
+
+        let (document, coord) = make_coordinator();
+        let meta = document
+            .open_from_content(path.clone(), "#set page(width: 10cm)\n\nDisk version".into(), None)
+            .unwrap();
+        wait_compiled(&document, meta.id);
+        document
+            .update_text(meta.id, "#set page(width: 10cm)\n\nMy buffer wins".into())
+            .unwrap();
+        force_conflict(&document, meta.id, ConflictState::Modified { disk_version: None });
+        assert!(document.tab_meta(meta.id).unwrap().conflict.is_active());
+
+        // Overwrite bypasses the gate and writes the buffer.
+        coord.save_overwrite(meta.id).await.expect("overwrite should succeed");
+
+        // Conflict + dirty cleared; disk now holds the buffer.
+        let after = document.tab_meta(meta.id).unwrap();
+        assert!(!after.conflict.is_active(), "conflict must clear on overwrite");
+        assert!(!after.dirty, "dirty must clear on overwrite");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "#set page(width: 10cm)\n\nMy buffer wins"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

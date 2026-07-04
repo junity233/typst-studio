@@ -82,31 +82,136 @@ impl Default for WorkspaceId {
     }
 }
 
-/// External-modification conflict state for a document (§8.4).
+/// External-modification conflict state for a document (§5.4 / §8.4).
 ///
 /// Set by [`EditorService::handle_external_change`](crate::service::editor_service::EditorService::handle_external_change)
 /// when a filesystem watcher reports a change to a document's backing file.
-/// The user resolves a `Modified` / `Missing` state via explicit actions (use
-/// disk, overwrite disk, Save As); the resolution UI is out of scope for the
-/// state-tracking layer — this enum is just the data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+/// The user resolves a non-`None` state via explicit actions (use disk /
+/// overwrite disk / Save As / discard); the resolution UI is out of scope for
+/// the state-tracking layer — this enum is just the data.
+///
+/// ## Wire format (§5.4 — string-tag only)
+///
+/// On the wire this serializes as a **bare lowercase string** —
+/// `"none" / "modified" / "missing" / "permission_changed" / "replaced"` — so
+/// the frontend can keep treating `ConflictState` as a string-literal union.
+/// The carried `disk_version` ([`Modified`]) and `identity_changed`
+/// ([`Replaced`]) are Rust-side ONLY (kept in-memory for re-detection; not
+/// serialized) — they are populated from disk reads, not from IPC. This keeps
+/// the wire form backward-compatible with the pre-§5.4 frontend (which was a
+/// 3-variant string union) and avoids a struct-per-variant churn.
+///
+/// The serialization is hand-written (rather than `#[serde(rename_all=…)]`)
+/// because serde's derive can't express "drop the variant's data and emit only
+/// the tag" for a struct variant enum — `rename_all` would emit the tag for a
+/// unit enum, but the moment `Modified` gains a field it becomes an internally
+/// tagged struct on the wire. The custom [`serde::Serialize`] / [`serde::Deserialize`]
+/// impls below give exactly the desired string-only shape, and [`tag`] / [`from_tag`]
+/// are the single source of truth for the mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(
     feature = "export-types",
     derive(ts_rs::TS),
-    ts(export_to = "../../src/lib/types.ts")
+    // The frontend type is a string-literal union — the wire form is a bare
+    // string tag, NOT an internally-tagged struct (see the custom serde impls).
+    ts(type = "\"none\" | \"modified\" | \"missing\" | \"permission_changed\" | \"replaced\"", export_to = "../../src/lib/types.ts")
 )]
-#[serde(rename_all = "lowercase")]
 pub enum ConflictState {
     /// No conflict; in sync with disk (or untitled / no disk backing).
     #[default]
     None,
     /// Disk content differs from the buffer AND the buffer has unsaved edits.
     /// The user must decide: compare / use disk / overwrite disk. The buffer is
-    /// left untouched (never silently clobbered).
-    Modified,
-    /// The backing file was deleted on disk. The buffer is preserved; Save
-    /// rebuilds it, Save As writes elsewhere.
+    /// left untouched (never silently clobbered). `disk_version` records the
+    /// on-disk identity captured at detection time, so a re-detection that
+    /// re-reads the same bytes knows the conflict is still current (and so
+    /// `resolve_conflict_use_disk` can clear the flag once the buffer matches
+    /// it). Rust-side only — not serialized.
+    Modified {
+        /// The on-disk content identity at detection time. Rust-side only.
+        disk_version: Option<crate::domain::disk_version::DiskVersion>,
+    },
+    /// The backing file was deleted on disk. The buffer is preserved; the user
+    /// can recreate it (write to the same path) or Save As elsewhere.
     Missing,
+    /// The backing file became unreadable (permission revoked / read-only) but
+    /// still exists on disk. The buffer is preserved; in-place save is blocked
+    /// until the user fixes permissions or Save-As elsewhere.
+    PermissionChanged,
+    /// The backing file was *replaced* — an external tool rewrote it with the
+    /// SAME bytes but a NEW inode (e.g. `sed -i`, an atomic write-then-rename).
+    /// `identity_changed` is `true` when the inode genuinely differs from the
+    /// stored one; `false` is reserved for a future "content + inode both
+    /// unchanged, mtime-only" refinement (currently this case is a no-op
+    /// upstream). §5.4 "文件被替换为不同 identity 时按外部替换处理，不能只比较
+    /// 时间戳".
+    Replaced { identity_changed: bool },
+}
+
+impl ConflictState {
+    /// The bare lowercase string tag this variant serializes to on the wire
+    /// (the single source of truth for the [`Serialize`] / [`Deserialize`] impls).
+    pub fn tag(&self) -> &'static str {
+        match self {
+            ConflictState::None => "none",
+            ConflictState::Modified { .. } => "modified",
+            ConflictState::Missing => "missing",
+            ConflictState::PermissionChanged => "permission_changed",
+            ConflictState::Replaced { .. } => "replaced",
+        }
+    }
+
+    /// Parse a wire tag back into the variant, with any carried data defaulted
+    /// (the data is Rust-side only and re-populated by detection). `None` for an
+    /// unknown tag (callers treat that as a recoverable error).
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        Some(match tag {
+            "none" => ConflictState::None,
+            "modified" => ConflictState::Modified { disk_version: None },
+            "missing" => ConflictState::Missing,
+            "permission_changed" => ConflictState::PermissionChanged,
+            "replaced" => ConflictState::Replaced { identity_changed: false },
+            _ => return None,
+        })
+    }
+
+    /// `true` for any non-`None` variant (i.e. an active conflict that blocks
+    /// the in-place save gate, §5.4).
+    pub fn is_active(&self) -> bool {
+        !matches!(self, ConflictState::None)
+    }
+}
+
+impl serde::Serialize for ConflictState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // Emit ONLY the bare string tag — the carried data stays Rust-side.
+        serializer.serialize_str(self.tag())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ConflictState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ConflictStateVisitor;
+        impl<'de> serde::de::Visitor<'de> for ConflictStateVisitor {
+            type Value = ConflictState;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a conflict-state string tag")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                ConflictState::from_tag(v)
+                    .ok_or_else(|| E::custom(format!("unknown conflict state `{v}`")))
+            }
+        }
+        deserializer.deserialize_str(ConflictStateVisitor)
+    }
 }
 
 /// How a document is anchored on disk (§4.2).
@@ -330,6 +435,82 @@ mod tests {
         // Round-trip through the newtype.
         let u: Uuid = id1.into();
         assert_eq!(DocumentId::from(u), id1);
+    }
+
+    /// §5.4 wire contract: every `ConflictState` serializes as a BARE STRING
+    /// tag (not an internally-tagged struct), even `Modified` / `Replaced`
+    /// which carry Rust-side data. This is the whole point of the custom
+    /// serde impl — the carried data is dropped on the wire so the frontend
+    /// keeps a simple string-literal union.
+    #[test]
+    fn conflict_state_serializes_as_bare_string_tag() {
+        // None → "none".
+        assert_eq!(
+            serde_json::to_value(ConflictState::None).unwrap(),
+            serde_json::Value::String("none".into())
+        );
+        // Modified (even with carried data) → just "modified" — NO struct.
+        let modified = ConflictState::Modified {
+            disk_version: Some(crate::domain::disk_version::DiskVersion::from_bytes(b"x")),
+        };
+        let v = serde_json::to_value(modified).unwrap();
+        assert_eq!(v, serde_json::Value::String("modified".into()), "Modified must serialize as the bare tag, dropping disk_version");
+        assert!(
+            !v.to_string().contains("disk_version"),
+            "the carried disk_version must NOT appear on the wire: {v}"
+        );
+        assert_eq!(
+            serde_json::to_value(ConflictState::Missing).unwrap(),
+            serde_json::Value::String("missing".into())
+        );
+        assert_eq!(
+            serde_json::to_value(ConflictState::PermissionChanged).unwrap(),
+            serde_json::Value::String("permission_changed".into())
+        );
+        // Replaced drops identity_changed too.
+        let replaced = ConflictState::Replaced { identity_changed: true };
+        let v = serde_json::to_value(replaced).unwrap();
+        assert_eq!(v, serde_json::Value::String("replaced".into()));
+        assert!(
+            !v.to_string().contains("identity_changed"),
+            "the carried identity_changed must NOT appear on the wire: {v}"
+        );
+    }
+
+    /// Deserializing a tag round-trips to the variant (carried data defaulted).
+    #[test]
+    fn conflict_state_round_trips_through_the_string_tag() {
+        for original in [
+            ConflictState::None,
+            ConflictState::Modified { disk_version: None },
+            ConflictState::Missing,
+            ConflictState::PermissionChanged,
+            ConflictState::Replaced { identity_changed: false },
+        ] {
+            let json = serde_json::to_string(&original).unwrap();
+            let back: ConflictState = serde_json::from_str(&json).unwrap();
+            // The carried data is dropped on the wire, so compare by tag only
+            // (None == None, Modified{None} == Modified{None}, etc.).
+            assert_eq!(back.tag(), original.tag(), "round-trip via {json:?}");
+        }
+        // An unknown tag is a deserialization error (not a silent default).
+        let bad = serde_json::from_str::<ConflictState>("\"bogus\"");
+        assert!(bad.is_err(), "unknown tag must error, not default");
+    }
+
+    #[test]
+    fn conflict_state_is_active_and_tag_helpers() {
+        assert!(!ConflictState::None.is_active());
+        assert!(ConflictState::Missing.is_active());
+        assert!(ConflictState::PermissionChanged.is_active());
+        assert!(ConflictState::Modified { disk_version: None }.is_active());
+        assert!(ConflictState::Replaced { identity_changed: true }.is_active());
+        // tag() / from_tag() are inverses over the 5 known tags.
+        for tag in ["none", "modified", "missing", "permission_changed", "replaced"] {
+            let parsed = ConflictState::from_tag(tag).expect("known tag parses");
+            assert_eq!(parsed.tag(), tag);
+        }
+        assert!(ConflictState::from_tag("nope").is_none());
     }
 
     #[test]

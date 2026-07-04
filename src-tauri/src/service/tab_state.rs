@@ -16,7 +16,7 @@ use parking_lot::Mutex;
 use typst_layout::PagedDocument;
 
 use crate::domain::compile_result::CompileOutcome;
-use crate::domain::disk_version::DiskVersion;
+use crate::domain::disk_version::{DiskVersion, FileIdentity};
 use crate::domain::document::{ConflictState, DocumentId, DocumentMeta, DocumentOrigin};
 use crate::typst_engine::world::EditorWorld;
 
@@ -39,6 +39,12 @@ pub struct TabRuntime {
     /// by `handle_external_change` to distinguish an external edit from a
     /// touch-only change.
     pub disk_version: Option<DiskVersion>,
+    /// On-disk file identity (inode) captured alongside `disk_version` (§5.4).
+    /// Used to detect the `Replaced` conflict: an external tool rewrote the file
+    /// with the SAME bytes (so `disk_version` equality holds) but a NEW inode.
+    /// [`FileIdentity::UNKNOWN`] for untitled docs or platforms without a stable
+    /// inode — the `Replaced` check then degrades to "never fire" safely.
+    pub file_identity: FileIdentity,
 }
 
 /// Per-tab state: the editor world (lock-free during compile) + locked runtime.
@@ -75,6 +81,7 @@ impl TabState {
                 last_outcome: CompileOutcome::ok(0),
                 last_compiled_revision: None,
                 disk_version: None,
+                file_identity: FileIdentity::UNKNOWN,
             }),
         }
     }
@@ -91,6 +98,7 @@ impl TabState {
                 last_outcome: CompileOutcome::ok(0),
                 last_compiled_revision: None,
                 disk_version: None,
+                file_identity: FileIdentity::UNKNOWN,
             }),
         }
     }

@@ -471,6 +471,11 @@ button {
 .statusbar-status--error {
   color: var(--color-error);
 }
+/* §5.4: orange conflict indicator (clickable → opens ConflictDialog). */
+.statusbar-status--conflict {
+  color: var(--color-warning, #c47b00);
+  cursor: pointer;
+}
 .statusbar-badge {
   color: var(--color-ink-muted-48);
 }
@@ -1054,6 +1059,59 @@ button {
   background: var(--color-surface-alt, #fafafa);
 }
 .recovery-compare-pane pre {
+  margin: 0;
+  padding: var(--space-xs);
+  font: var(--text-mono, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
+
+/* ============================================================================
+   Conflict-resolution dialog (§5.4)
+   ========================================================================= */
+/* Reuses the dialog / btn-* shell; only the action row + compare panes differ.
+   The compare panes mirror .recovery-compare exactly (same read-only <pre>
+   side-by-side). */
+.conflict-dialog {
+  max-width: 720px;
+}
+.conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+  justify-content: flex-end;
+}
+.conflict-error {
+  color: #c0392b;
+  font: var(--text-caption);
+  margin-top: var(--space-xs);
+}
+/* Side-by-side compare for the editor buffer vs the disk content. */
+.conflict-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+}
+.conflict-compare-pane {
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.conflict-compare-label {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+  padding: 2px var(--space-xs);
+  border-bottom: 1px solid var(--color-hairline);
+  background: var(--color-surface-alt, #fafafa);
+}
+.conflict-compare-pane pre {
   margin: 0;
   padding: var(--space-xs);
   font: var(--text-mono, monospace);

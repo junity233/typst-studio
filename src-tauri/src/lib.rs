@@ -146,6 +146,10 @@ pub fn run() {
             ipc::recovery_commands::discard_all_recovery,
             ipc::recovery_commands::compare_recovery,
             ipc::recovery_commands::mark_clean_shutdown,
+            // Conflict-resolution commands (§5.4).
+            ipc::conflict_commands::resolve_conflict_use_disk,
+            ipc::conflict_commands::resolve_conflict_overwrite,
+            ipc::conflict_commands::clear_conflict,
             // Network: remote image download (paste feature).
             ipc::net_commands::fetch_url_to_file,
         ])

@@ -104,6 +104,7 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
         content: recovered.content,
         revision: 0,
         conflict: "none",
+        conflictDiskContent: null,
         status: "idle",
         durationMs: null,
         svgPages: [],
