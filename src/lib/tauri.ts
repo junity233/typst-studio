@@ -14,6 +14,9 @@ import type {
   RecoveredDocument,
   RecoveryAvailablePayload,
   CompareRecovery,
+  SaveAllResult,
+  SaveState,
+  SaveStateChangedPayload,
   Session,
   StartupProblem,
   StartupProblemsPayload,
@@ -69,6 +72,24 @@ export async function saveFile(id: DocumentId): Promise<void> {
  */
 export async function saveAs(id: DocumentId): Promise<string> {
   return invoke<string>("save_as", { id });
+}
+
+/**
+ * Query the current save state (§5.3) for a document. The frontend mirrors
+ * transitions via `onSaveStateChanged`; this is the poll/fetch fallback (e.g.
+ * on initial load). Absent docs read as `{ kind: "idle" }`.
+ */
+export async function getSaveState(id: DocumentId): Promise<SaveState> {
+  return invoke<SaveState>("save_state", { id });
+}
+
+/**
+ * Save All (§5.3): save each document in `ids` in order. Stops on the first
+ * failure or cancel; already-saved docs stay saved, the rest untouched. Returns
+ * the per-doc split so the UI can report which need attention.
+ */
+export async function saveAll(ids: DocumentId[]): Promise<SaveAllResult> {
+  return invoke<SaveAllResult>("save_all", { ids });
 }
 
 /**
@@ -220,6 +241,20 @@ export async function onConflict(
   handler: (payload: ConflictPayload) => void,
 ): Promise<UnlistenFn> {
   return listen<ConflictPayload>("conflict", (e) => handler(e.payload));
+}
+
+/**
+ * Subscribe to per-document save-state transitions (§5.3). The backend
+ * `SaveCoordinator` emits `save_state_changed` on every `Idle`/`Saving`/`Saved`
+ * /`Failed` transition so the frontend can drive a saving indicator + red
+ * save-failed status. The frontend mirrors these into `saveStateStore`.
+ */
+export async function onSaveStateChanged(
+  handler: (payload: SaveStateChangedPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<SaveStateChangedPayload>("save_state_changed", (e) =>
+    handler(e.payload),
+  );
 }
 
 /** Subscribe to native menu activation events. */

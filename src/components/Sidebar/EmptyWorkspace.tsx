@@ -1,4 +1,5 @@
 import { useWorkspaceStore } from "../../store/workspaceStore";
+import { toIpcError } from "../../lib/ipc-error";
 
 /**
  * Shown in the sidebar when no workspace folder is open. Offers to open a
@@ -11,7 +12,7 @@ export function EmptyWorkspace() {
   const handleOpen = () => {
     void openWorkspace().catch((e) => {
       console.error("[EmptyWorkspace] open failed:", e);
-      window.alert(`Could not open folder: ${e}`);
+      window.alert(`Could not open folder: ${toIpcError(e).message}`);
     });
   };
 

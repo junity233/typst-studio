@@ -233,6 +233,12 @@ pub async fn open_file_by_path(
 /// Save As: write a tab's text to a new file chosen via a save dialog, then
 /// make the tab file-backed at that path. Used for untitled tabs (and to save a
 /// file elsewhere). Returns the new path.
+///
+/// §5.3: the dialog stays in the IPC layer (it needs the AppHandle), but the
+/// atomic write + rebind go through the [`SaveCoordinator`](crate::service::save_coordinator::SaveCoordinator)
+/// so the §5.2 protocol — including "don't rebind path/registry/resolver/watcher
+/// before the replace succeeds" (§11.2) — is centralized. A user-cancelled
+/// dialog surfaces as `ErrorCode::Cancelled` (§5.3: not a failure).
 #[tauri::command]
 pub async fn save_as(
     app: AppHandle,
@@ -265,17 +271,32 @@ pub async fn save_as(
     .await
     .map_err(|e| AppError::Other(format!("join error: {e}")))?;
     let Some(picked) = picked else {
-        return Err(AppError::Other("save cancelled".into()));
+        // §5.3: a cancelled dialog is surfaced as the Cancelled code (not a
+        // generic Other). The frontend no-ops on this.
+        return Err(AppError::Code {
+            code: crate::ipc::error::ErrorCode::Cancelled,
+            message: "save cancelled".into(),
+            recoverable: false,
+            details: None,
+        });
     };
     let path = picked
         .into_path()
         .map_err(|e| AppError::InvalidInput(format!("invalid file path: {e}")))?;
-    let path_for_write = path.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::persistence::atomic::write_bytes(&path_for_write, text.as_bytes())
-    })
-    .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
-    editor.rebind_path(id, path.clone())?;
+    // Delegate the atomic write + rebind to the SaveCoordinator (§5.2 / §11.2:
+    // rebind only after the replace succeeds).
+    state
+        .save
+        .save_as(id, path.clone(), text)
+        .await
+        .map_err(|ipc| match ipc.code {
+            crate::ipc::error::ErrorCode::NotFound => AppError::NotFound(ipc.message),
+            _ => AppError::Code {
+                code: ipc.code,
+                message: ipc.message,
+                recoverable: ipc.recoverable,
+                details: ipc.details,
+            },
+        })?;
     Ok(path.to_string_lossy().into_owned())
 }

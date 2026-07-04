@@ -18,6 +18,7 @@ import { useUiStore } from "../store/uiStore";
 import { useDialogStore } from "../store/dialogStore";
 import { closeTabWithConfirm, saveTab } from "../lib/commands";
 import { captureAndSaveSession } from "../lib/session";
+import { toIpcError } from "../lib/ipc-error";
 
 /**
  * Centralized command dispatch for the native app menu. Subscribes to the
@@ -160,9 +161,13 @@ export async function dispatch(menuId: string): Promise<void> {
         break;
     }
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.warn(`[menu:${menuId}] failed:`, msg);
-    window.alert(`${labelFor(menuId)}: ${msg}`);
+    // §5.3: a Cancelled code (dismissed dialog) is not a failure — silent.
+    const ipc = toIpcError(e);
+    if (ipc.code === "cancelled") {
+      return;
+    }
+    console.warn(`[menu:${menuId}] failed:`, ipc.code, ipc.message);
+    window.alert(`${labelFor(menuId)}: ${ipc.message}`);
   }
 }
 

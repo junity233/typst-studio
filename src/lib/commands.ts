@@ -2,11 +2,22 @@ import { saveFile, saveAs as saveAsBE, discardRecovery } from "./tauri";
 import { useTabsStore } from "../store/tabsStore";
 import { useDocumentsStore } from "../store/documentsStore";
 import { useDialogStore } from "../store/dialogStore";
+import {
+  formatSaveErrorMessage,
+  isCancelled,
+  SAVE_AS_RECOVERY_CODES,
+  toIpcError,
+} from "./ipc-error";
 
 /**
  * Save a single tab: Save As if untitled, save in place if titled. Returns
  * true on success, false on failure or user cancel (and alerts the user on
  * error). Shared by the per-tab close guard and the app-wide Save-All guard.
+ *
+ * §5.3 structured errors: the backend rejects with an `IpcError` carrying a
+ * stable `code`. We branch on it: `Cancelled` is silent (not a failure); for
+ * permission/readonly/path-occupied codes we offer Save As; for the rest we
+ * show a code-specific message instead of the old generic "Save failed: …".
  */
 export async function saveTab(id: string): Promise<boolean> {
   const tab = useDocumentsStore.getState().documents[id] ?? null;
@@ -21,7 +32,38 @@ export async function saveTab(id: string): Promise<boolean> {
     }
     return true;
   } catch (e) {
-    window.alert(`Save failed: ${e instanceof Error ? e.message : e}`);
+    // §5.3: Cancelled is not a failure — silent no-op.
+    if (isCancelled(e)) {
+      return false;
+    }
+    const err = toIpcError(e);
+    // For permission/readonly/path-occupied codes, offer Save As first.
+    if (SAVE_AS_RECOVERY_CODES.has(err.code) && tab.path !== null) {
+      const choice = await useDialogStore.getState().confirm({
+        title: "Save failed",
+        message: `${formatSaveErrorMessage(e)}\n\nSave as a new file instead?`,
+        confirmLabel: "Save As…",
+        cancelLabel: "Cancel",
+      });
+      if (choice === "confirm") {
+        try {
+          const path = await saveAsBE(id);
+          useTabsStore.getState().markSaved(id, path);
+          return true;
+        } catch (e2) {
+          if (!isCancelled(e2)) {
+            window.alert(formatSaveErrorMessage(e2));
+          }
+          return false;
+        }
+      }
+      return false;
+    }
+    // Disk-full / transient / other: show the code-specific message.
+    const msg = formatSaveErrorMessage(e);
+    if (msg) {
+      window.alert(msg);
+    }
     return false;
   }
 }

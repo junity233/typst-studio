@@ -3,6 +3,7 @@
 //! Commands intentionally only do parameter conversion and delegate to services.
 
 pub mod commands;
+pub mod error;
 pub mod events;
 pub mod fs_commands;
 pub mod menu;

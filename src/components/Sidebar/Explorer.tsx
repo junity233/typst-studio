@@ -18,6 +18,7 @@ import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useTabsStore, readOrderedDocuments } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { openFileByPath, revealInFinder } from "../../lib/tauri";
+import { toIpcError } from "../../lib/ipc-error";
 import { useContextMenuStore } from "./contextMenuStore";
 
 const ICON_SIZE = 14;
@@ -210,7 +211,7 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
       openPath(doc);
     } catch (e) {
       console.error("[Explorer] open failed:", e);
-      window.alert(`Could not open ${entry.name}: ${e}`);
+      window.alert(`Could not open ${entry.name}: ${toIpcError(e).message}`);
     } finally {
       setLoading(false);
     }
@@ -233,7 +234,7 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
     try {
       await renameEntry(entry.relative, to);
     } catch (e) {
-      window.alert(`Rename failed: ${e instanceof Error ? e.message : e}`);
+      window.alert(`Rename failed: ${toIpcError(e).message}`);
     }
   };
 
@@ -373,7 +374,7 @@ function buildRowMenu(
       label: "Reveal in Finder",
       icon: <SquareArrowOutUpRight size={ICON_SIZE} />,
       onSelect: () => void revealInFinder(entry.relative).catch((e) => {
-        window.alert(`Reveal failed: ${e instanceof Error ? e.message : e}`);
+        window.alert(`Reveal failed: ${toIpcError(e).message}`);
       }),
     },
     { type: "separator" as const },
@@ -397,7 +398,7 @@ async function handleDeleteWithConfirm(
   try {
     await deleteEntry(entry.relative);
   } catch (e) {
-    window.alert(`Delete failed: ${e instanceof Error ? e.message : e}`);
+    window.alert(`Delete failed: ${toIpcError(e).message}`);
   }
 }
 

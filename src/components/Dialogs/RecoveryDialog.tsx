@@ -8,6 +8,7 @@ import {
 import type { RecoverableInfo, CompareRecovery } from "../../lib/types";
 import { useTabsStore } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
+import { toIpcError } from "../../lib/ipc-error";
 
 /**
  * Crash-recovery dialog (§5.1.3).
@@ -110,7 +111,7 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
       });
       markDecided(snap.documentId);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(toIpcError(e).message);
     } finally {
       setBusy(false);
     }
@@ -127,7 +128,7 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
       // succeeds so a failed compare doesn't unlock Recover.
       markCompared(snap.documentId);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(toIpcError(e).message);
     } finally {
       setBusy(false);
     }
@@ -140,7 +141,7 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
       await discardRecovery(snap.documentId);
       markDecided(snap.documentId);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(toIpcError(e).message);
     } finally {
       setBusy(false);
     }

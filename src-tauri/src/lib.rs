@@ -106,6 +106,8 @@ pub fn run() {
             ipc::commands::close_tab,
             ipc::commands::update_text,
             ipc::commands::save_file,
+            ipc::commands::save_state,
+            ipc::commands::save_all,
             ipc::fs_commands::save_as,
             ipc::commands::export_pdf,
             ipc::commands::export_png,
@@ -317,6 +319,15 @@ pub fn run() {
             // snapshot/discard dirty buffers.
             editor.document().set_recovery(recovery.clone());
 
+            // SaveCoordinator (§5.3): unified Save / Save As / Save All with
+            // explicit SaveState + the §5.2 atomic protocol. Constructed AFTER
+            // the editor (it holds an Arc<DocumentService>) and given the
+            // AppHandle so it can emit `save_state_changed` events.
+            let save = Arc::new(crate::service::save_coordinator::SaveCoordinator::new(
+                editor.document().clone(),
+                Some(app.handle().clone()),
+            ));
+
             // Startup recovery detection (§5.1.3). Offer recovery when:
             //   - the prior session did NOT finish a clean shutdown, OR
             //   - a snapshot's revision is newer than what's on disk / in session.
@@ -336,6 +347,7 @@ pub fn run() {
                 settings,
                 session,
                 net,
+                save,
             });
 
             // Emit the recovery-available event (if any) AFTER manage + after a

@@ -12,6 +12,7 @@ import {
   useDocumentsStore,
   type Document,
 } from "./documentsStore";
+import { useSaveStateStore } from "./saveStateStore";
 
 /**
  * Phase 4 (design §10): the **views store**. This holds ONLY view state — the
@@ -105,6 +106,7 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
     }
     useDiagnosticsStore.getState().clear(id);
     useDocumentsStore.getState().closeDocument(id);
+    useSaveStateStore.getState().clear(id);
     set((s) => {
       const tabs = s.tabs.filter((tabId) => tabId !== id);
       let activeId = s.activeId;

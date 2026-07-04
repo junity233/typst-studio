@@ -211,6 +211,15 @@ root: string, };
 export type EntryKind = "file" | "dir";
 
 /**
+ * A stable, machine-readable error code (§5.3).
+ *
+ * The frontend branches on this instead of parsing a message string. Serialized
+ * as `snake_case` so the wire value (`"permission_denied"`) matches the
+ * generated TypeScript literal union.
+ */
+export type ErrorCode = "permission_denied" | "read_only" | "disk_full" | "target_missing" | "parent_missing" | "path_occupied" | "external_conflict" | "already_open" | "invalid_path" | "io_transient" | "not_found" | "invalid_input" | "compile" | "export" | "cancelled" | "other";
+
+/**
  * Payload of the `focus_view` event (§6.1): the frontend activates the tab
  * for `id`. Reuses the existing DocumentId type so it is already on the wire.
  */
@@ -227,6 +236,34 @@ export type FsChangedPayload = {
  * Absolute paths that changed (created/modified/removed).
  */
 paths: Array<string>, };
+
+/**
+ * Structured IPC error (§5.3: `{ code, message, details?, recoverable }`).
+ *
+ * Serialized as a JSON **object** (not a string) so the frontend can branch on
+ * `code`. Field names are `camelCase` to match the generated TypeScript.
+ */
+export type IpcError = { 
+/**
+ * Stable machine-readable code — branch on this in the frontend.
+ */
+code: ErrorCode, 
+/**
+ * Human-readable message (locale-independent, English). Safe to surface.
+ */
+message: string, 
+/**
+ * Optional structured details (e.g. `AlreadyOpen` carries the existing id
+ * and path so the caller can focus that view). Omitted when `None`. Typed
+ * as a permissive `unknown` on the wire (shape varies by code).
+ */
+details: unknown | null, 
+/**
+ * Whether the caller can reasonably retry / recover. `false` for hard
+ * failures (permission, not-found); `true` for transient ones (the
+ * frontend may offer a Retry button).
+ */
+recoverable: boolean, };
 
 /**
  * A source line's bounding rectangle on a preview page.
@@ -378,6 +415,38 @@ origin: string, };
  * snapshot.
  */
 export type RecoveryAvailablePayload = { snapshots: Array<RecoverableInfo>, };
+
+/**
+ * One entry in a [`SaveAllResult`]'s `failed` list.
+ */
+export type SaveAllFailure = { id: DocumentId, error: IpcError | null, };
+
+/**
+ * Per-document result of a [`SaveCoordinator::save_all`] batch.
+ */
+export type SaveAllResult = { 
+/**
+ * Ids saved successfully in this batch.
+ */
+saved: Array<DocumentId>, 
+/**
+ * Ids that failed or were skipped (because an earlier id failed/cancelled).
+ * Each carries the structured error for the first failure; the rest are
+ * `unreached` (no attempt made).
+ */
+failed: Array<SaveAllFailure>, };
+
+/**
+ * Per-document save state machine (§5.3). Emitted on every transition via the
+ * `save_state_changed` Tauri event; the frontend mirrors it for the status bar
+ * (saving indicator / red save-failed state).
+ */
+export type SaveState = "idle" | { "saving": { revision: number, } } | { "saved": { revision: number, } } | { "failed": { revision: number, code: ErrorCode, message: string, } };
+
+/**
+ * Payload of the `save_state_changed` event: the new save state for `id`.
+ */
+export type SaveStateChangedPayload = { id: DocumentId, state: SaveState, };
 
 /**
  * What we remember between launches. All fields default so an OLD session.json

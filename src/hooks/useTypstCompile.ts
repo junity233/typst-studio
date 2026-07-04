@@ -1,7 +1,8 @@
 import { useEffect, useTransition } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { onCompiled, onConflict, onStatus } from "../lib/tauri";
+import { onCompiled, onConflict, onSaveStateChanged, onStatus } from "../lib/tauri";
 import { useTabsStore } from "../store/tabsStore";
+import { useSaveStateStore } from "../store/saveStateStore";
 
 /**
  * App-level subscription to the typst compile lifecycle. Mount once near the
@@ -14,6 +15,9 @@ import { useTabsStore } from "../store/tabsStore";
  * `startTransition` so React treats them as **low priority** — keystrokes and
  * other urgent updates flush first, and the preview re-render is deferred to
  * a gap in input activity.
+ *
+ * Also subscribes to `save_state_changed` (§5.3) and mirrors each transition
+ * into `saveStateStore` so the status bar can show saving / save-failed.
  */
 export function useTypstCompile(): void {
   const [, startTransition] = useTransition();
@@ -59,6 +63,16 @@ export function useTypstCompile(): void {
         return;
       }
       unlistens.push(uConflict);
+
+      // §5.3: mirror save-state transitions into the store for the status bar.
+      const uSave = await onSaveStateChanged((p) => {
+        useSaveStateStore.getState().setSaveState(p.id, p.state);
+      });
+      if (cancelled) {
+        uSave();
+        return;
+      }
+      unlistens.push(uSave);
     })();
 
     return () => {

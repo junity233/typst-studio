@@ -88,23 +88,55 @@ pub async fn update_text(
 }
 
 /// Write a tab's source back to its on-disk path (errors for untitled tabs).
-/// The disk write runs on a blocking thread. After the write, `mark_saved`
-/// clears the dirty flag AND records the on-disk content version, so the
-/// imminent watcher event for our own write is recognized as self-induced and
-/// does NOT trigger a conflict/reload (§8.2 / §8.4).
+///
+/// §5.3: delegates to the [`SaveCoordinator`](crate::service::save_coordinator::SaveCoordinator),
+/// which runs the full §5.2 atomic-save protocol (prepare → atomic write →
+/// mark_saved) and tracks `SaveState`. On a write failure the coordinator keeps
+/// `dirty` TRUE (§11.2) and classifies the error into a structured
+/// [`IpcError`](crate::ipc::error::IpcError) code. Tauri serializes the
+/// returned `AppError` as that object so the frontend can branch on `code`.
 #[tauri::command]
 pub async fn save_file(state: State<'_, AppState>, id: DocumentId) -> Result<()> {
-    let editor = state.editor.clone();
-    let (path, text) = editor.prepare_save(id)?;
-    // Atomic write (§5.2): write to a sibling temp file then rename, so a
-    // crash mid-save leaves the prior file intact rather than truncated.
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::persistence::atomic::write_bytes(&path, text.as_bytes())
+    state.save.save(id).await.map_err(|ipc| {
+        // Re-wrap the classified IpcError back through AppError so the existing
+        // `Result<T, AppError>` contract + AppError::serialize (which emits the
+        // IpcError object) is preserved.
+        match ipc.code {
+            crate::ipc::error::ErrorCode::NotFound => {
+                AppError::NotFound(ipc.message)
+            }
+            _ => AppError::Code {
+                code: ipc.code,
+                message: ipc.message,
+                recoverable: ipc.recoverable,
+                details: ipc.details,
+            },
+        }
     })
-    .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
-    editor.mark_saved(id);
-    Ok(())
+}
+
+/// Query the current [`SaveState`](crate::service::save_coordinator::SaveState)
+/// for a document (§5.3). The frontend uses this to drive the saving /
+/// save-failed status indicator (it also subscribes to the `save_state_changed`
+/// event for live transitions).
+#[tauri::command]
+pub async fn save_state(
+    state: State<'_, AppState>,
+    id: DocumentId,
+) -> Result<crate::service::save_coordinator::SaveState> {
+    Ok(state.save.save_state(id))
+}
+
+/// Save All: save each document in `ids` in order (§5.3). Stops on the first
+/// failure or cancel; already-saved documents stay Saved, the rest are left
+/// untouched. Returns a per-doc split so the frontend can report which were
+/// saved and which need attention.
+#[tauri::command]
+pub async fn save_all(
+    state: State<'_, AppState>,
+    ids: Vec<DocumentId>,
+) -> Result<crate::service::save_coordinator::SaveAllResult> {
+    Ok(state.save.save_all(ids).await)
 }
 
 /// Export the tab's compiled document for `revision` to PDF via a save dialog.
