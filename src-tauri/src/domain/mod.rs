@@ -7,4 +7,5 @@ pub mod disk_version;
 pub mod document;
 pub mod path;
 pub mod registry;
+pub mod search;
 pub mod source_map;

@@ -37,6 +37,10 @@ pub mod ids {
     pub const CLOSE_TAB: &str = "close-tab";
     pub const TOGGLE_SIDEBAR: &str = "toggle-sidebar";
     pub const TOGGLE_PREVIEW: &str = "toggle-preview";
+    /// Cross-file Find in Files (§Search view). The frontend dispatch routes
+    /// this to the registered `workbench.action.findInFiles` command, which
+    /// opens the bottom Search panel.
+    pub const FIND_IN_FILES: &str = "workbench.action.findInFiles";
     pub const EXPORT_PDF: &str = "export-pdf";
     pub const EXPORT_PNG: &str = "export-png";
     pub const EXPORT_SVG: &str = "export-svg";
@@ -136,12 +140,20 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 
     let edit = Submenu::with_items(app, "Edit", true, &edit_items)?;
 
-    // ---- View (toggle items) ----
+    // ---- View (Find in Files + toggle items) ----
     let view = Submenu::with_items(
         app,
         "View",
         true,
         &[
+            &MenuItem::with_id(
+                app,
+                ids::FIND_IN_FILES,
+                "Find in Files",
+                true,
+                Some("CmdOrCtrl+Shift+F"),
+            )?,
+            &PredefinedMenuItem::separator(app)?,
             &CheckMenuItem::with_id(
                 app,
                 ids::TOGGLE_SIDEBAR,

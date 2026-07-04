@@ -66,6 +66,14 @@ export function useAppCommands(): void {
         e.stopPropagation();
         void dispatch("save-as");
       }
+      // Cmd/Ctrl+Shift+F → Find in Files (§Search view). Same capture-phase
+      // rationale as Cmd+S: Monaco can swallow the keystroke before the OS menu
+      // accelerator fires, so intercept it directly and dispatch.
+      if (mod && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        e.stopPropagation();
+        void dispatch("workbench.action.findInFiles");
+      }
     };
     document.addEventListener("keydown", onKeyDown, true);
 

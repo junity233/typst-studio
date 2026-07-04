@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { TabStrip } from "../TitleBar/TabStrip";
-import { MonacoEditor, type MonacoEditorApi } from "../Editor/MonacoEditor";
+import { MonacoEditor } from "../Editor/MonacoEditor";
+import { editorApiRef } from "../Editor/editorApiRef";
 import { PreviewPane } from "../Preview/PreviewPane";
 import { DiagnosticsPanel } from "../Diagnostics/DiagnosticsPanel";
 import { useTabsStore, useActiveDocument } from "../../store/tabsStore";
@@ -47,7 +48,10 @@ export function EditorArea() {
   const setPreview = useUiStore((s) => s.setPreview);
 
   const [diagsCollapsed, setDiagsCollapsed] = useState(false);
-  const editorApiRef = useRef<MonacoEditorApi | null>(null);
+  // NOTE: `editorApiRef` is the module-scoped ref from ../Editor/editorApiRef,
+  // lifted out of a local useRef so the Search panel (and other cross-cutting
+  // callers) can invoke `revealLine` to jump to a location. It is mutated in
+  // place (no re-render), matching the old local-ref behavior.
   // Bumped when the editor API becomes available, so the scroll-sync effect can
   // (re)subscribe reactively (refs don't trigger re-renders).
   const [editorReadyTick, setEditorReadyTick] = useState(0);

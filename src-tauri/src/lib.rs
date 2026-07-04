@@ -123,6 +123,7 @@ pub fn run() {
             ipc::fs_commands::get_workspace,
             ipc::fs_commands::get_watcher_health,
             ipc::fs_commands::read_dir,
+            ipc::fs_commands::search_workspace,
             ipc::fs_commands::create_entry,
             ipc::fs_commands::rename_entry,
             ipc::fs_commands::delete_entry,

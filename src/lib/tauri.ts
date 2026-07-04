@@ -19,6 +19,8 @@ import type {
   CompareRecovery,
   ReboundDoc,
   SaveAllResult,
+  SearchHit,
+  SearchQuery,
   SaveState,
   SaveStateChangedPayload,
   Session,
@@ -170,6 +172,15 @@ export async function getWorkspace(): Promise<WorkspaceMeta | null> {
  */
 export async function readDir(rel?: string): Promise<DirEntry[]> {
   return invoke<DirEntry[]>("read_dir", { rel: rel ?? "" });
+}
+
+/**
+ * Cross-file search across the workspace (§Search view). Returns one hit per
+ * matched line, capped per-file and in total by the query. Empty list on no
+ * matches.
+ */
+export async function searchWorkspace(query: SearchQuery): Promise<SearchHit[]> {
+  return invoke<SearchHit[]>("search_workspace", { query });
 }
 
 /** Create a file or directory at a workspace-relative path. */

@@ -529,6 +529,57 @@ export type SaveState = "idle" | { "saving": { revision: number, } } | { "saved"
 export type SaveStateChangedPayload = { id: DocumentId, state: SaveState, };
 
 /**
+ * One search hit (§Search view). Returned by the `search_workspace` command.
+ *
+ * NOTE: hand-written here because `cargo test --features export-types` cannot
+ * run on Windows (pre-existing Tauri test-binary loader crash). Field names
+ * match the Rust struct's `#[serde(rename_all = "camelCase")]` wire format.
+ */
+export type SearchHit = {
+/**
+ * Path relative to workspace root (forward-slash separators).
+ */
+relative: string,
+/**
+ * 1-indexed source line.
+ */
+line: number,
+/**
+ * 1-indexed column (Unicode scalar values).
+ */
+column: number,
+/**
+ * The full line text (truncated for display if very long).
+ */
+lineText: string,
+/**
+ * Byte offset of the match start within lineText.
+ */
+matchStart: number,
+/**
+ * Byte offset of the match end within lineText.
+ */
+matchEnd: number,
+};
+
+/**
+ * Cross-file search request (§Search view). Sent to `search_workspace`.
+ *
+ * NOTE: hand-written here because `cargo test --features export-types` cannot
+ * run on Windows (pre-existing Tauri test-binary loader crash). Field names
+ * match the Rust struct's `#[serde(rename_all = "camelCase")]` wire format.
+ */
+export type SearchQuery = {
+pattern: string,
+isRegex: boolean,
+caseSensitive: boolean,
+wholeWord: boolean,
+includeGlob: string | null,
+maxPerFile: number,
+maxTotal: number,
+};
+
+/**
  * What we remember between launches. All fields default so an OLD session.json
  * (with only `lastWorkspace`/`lastFile`) still loads cleanly.
  *

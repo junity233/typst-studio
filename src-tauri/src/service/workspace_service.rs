@@ -202,6 +202,21 @@ impl WorkspaceService {
         fs_read_dir(&root, &dir)
     }
 
+    /// Cross-file search across the workspace root (§Search view). Walks the
+    /// tree once, matches each line of each non-ignored file. Returns hits
+    /// capped per-file and in total.
+    pub fn search(
+        &self,
+        query: &crate::domain::search::SearchQuery,
+    ) -> anyhow::Result<Vec<crate::domain::search::SearchHit>> {
+        let root = self
+            .root
+            .read()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no workspace open"))?;
+        crate::fs::search::search(&root, query)
+    }
+
     /// Create a file or directory at a workspace-relative path.
     pub fn create_entry(&self, rel: &str, kind: EntryKind) -> Result<()> {
         let path = self.resolve_rel(rel)?;

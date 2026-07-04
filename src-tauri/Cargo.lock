@@ -6205,6 +6205,7 @@ dependencies = [
  "mockito",
  "notify",
  "parking_lot",
+ "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -6214,6 +6215,7 @@ dependencies = [
  "tauri-plugin-fs",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tempfile",
  "thiserror 2.0.18",
  "time",
  "tokio",
@@ -6230,6 +6232,7 @@ dependencies = [
  "typst-render",
  "typst-svg",
  "uuid",
+ "walkdir",
  "which",
  "windows-sys 0.59.0",
 ]

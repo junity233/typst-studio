@@ -254,6 +254,22 @@ pub async fn read_dir(
     ws.read_dir(rel.as_deref().unwrap_or(""))
 }
 
+/// Cross-file search across the workspace (§Search view). The blocking
+/// file-walk runs on a `spawn_blocking` thread so the async runtime isn't
+/// held during disk IO.
+#[tauri::command]
+pub async fn search_workspace(
+    state: State<'_, AppState>,
+    query: crate::domain::search::SearchQuery,
+) -> Result<Vec<crate::domain::search::SearchHit>> {
+    let ws = state.workspace.clone();
+    let hits = tauri::async_runtime::spawn_blocking(move || ws.search(&query))
+        .await
+        .map_err(|e| AppError::Other(format!("join error: {e}")))?
+        .map_err(|e| AppError::Other(e.to_string()))?;
+    Ok(hits)
+}
+
 /// Create a file or directory at a workspace-relative path.
 #[tauri::command]
 pub async fn create_entry(

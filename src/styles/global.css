@@ -445,6 +445,154 @@ button {
 
 
 /* ============================================================================
+   Search panel (bottom, §Search view)
+   ========================================================================= */
+.search-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--color-canvas);
+  border-top: 1px solid var(--color-hairline);
+}
+
+.search-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.search-input {
+  flex: 1 1 auto;
+  font: var(--text-body);
+  padding: 4px 8px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.search-options {
+  display: flex;
+  gap: 2px;
+}
+
+.search-options button {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+}
+
+.search-options button:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.search-options button.active {
+  background: var(--color-canvas-parchment);
+  border-color: var(--color-primary);
+  color: var(--color-ink);
+}
+
+.search-close {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-ink-muted-48);
+  font-size: 18px;
+  line-height: 1;
+  border-radius: var(--radius-sm);
+}
+
+.search-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--color-ink);
+}
+
+.search-results {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-xs) 0;
+}
+
+.search-file-group {
+  margin-bottom: var(--space-xs);
+}
+
+.search-file-name {
+  font: var(--text-caption-strong);
+  padding: 4px var(--space-sm);
+  color: var(--color-ink);
+}
+
+.search-hit-count {
+  color: var(--color-ink-muted-48);
+  font-weight: normal;
+}
+
+.search-hit-row {
+  display: flex;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 2px var(--space-sm) 2px 24px;
+  cursor: pointer;
+  gap: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-ink);
+}
+
+.search-hit-row:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.search-hit-line {
+  flex: 0 0 auto;
+  color: var(--color-ink-muted-48);
+}
+
+.search-hit-text {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-hit-text mark {
+  background: rgba(255, 213, 0, 0.4);
+  color: inherit;
+}
+
+.search-status,
+.search-error {
+  padding: var(--space-xs) var(--space-sm);
+  color: var(--color-ink-muted-48);
+  font: var(--text-caption);
+}
+
+.search-error {
+  color: var(--color-error);
+}
+
+
+/* ============================================================================
    Status bar (footer / fine-print)
    ========================================================================= */
 .statusbar {
