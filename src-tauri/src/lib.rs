@@ -103,6 +103,7 @@ pub fn run() {
             // Document / editor commands.
             ipc::commands::new_tab,
             ipc::commands::open_file,
+            ipc::commands::pick_image_file,
             ipc::commands::close_tab,
             ipc::commands::update_text,
             ipc::commands::save_file,

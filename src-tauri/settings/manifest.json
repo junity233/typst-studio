@@ -14,7 +14,10 @@
         { "key": "editor.minimap",    "type": "boolean", "label": "Minimap",      "default": false },
         { "key": "editor.pasteConvertRichText",  "type": "boolean", "label": "Paste rich text as Typst", "default": true },
         { "key": "editor.pasteImagePath",        "type": "string",  "label": "Pasted image path", "default": "${fileDir}/assets/pasted-${hash}.${ext}" },
-        { "key": "editor.pasteImageFetchRemote", "type": "boolean", "label": "Download remote images on paste", "default": true }
+        { "key": "editor.pasteImageFetchRemote", "type": "boolean", "label": "Download remote images on paste", "default": true },
+        { "key": "editor.insertImagePath",       "type": "string",  "label": "Inserted image path",
+          "default": "${fileDir}/assets/${fileName}",
+          "help": "Where toolbar-inserted images are copied. Macros: ${fileDir}, ${fileName}, ${workspace}, ${ext}, ${timestamp}." }
     ]},
     { "id": "preview", "label": "Preview", "settings": [
         { "key": "preview.autoRefresh", "type": "boolean", "label": "Auto refresh", "default": true },

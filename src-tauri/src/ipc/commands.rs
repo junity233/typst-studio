@@ -71,6 +71,33 @@ pub async fn open_file(
     Ok(Some(OpenedDocument { meta, content }))
 }
 
+/// Open a native image-picker dialog and return the chosen file's absolute
+/// path as a string. Returns `None` if the user cancels. Bytes are read by
+/// the frontend via the `@tauri-apps/plugin-fs` plugin — this command only
+/// resolves the path, mirroring how `open_file` resolves a `.typ` path while
+/// leaving content IO to the caller.
+#[tauri::command]
+pub async fn pick_image_file(app: AppHandle) -> Result<Option<String>> {
+    let app_for_dialog = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app_for_dialog
+            .dialog()
+            .file()
+            .add_filter(
+                "Images",
+                &["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"],
+            )
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let path = path_buf_from(picked)?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
 /// Close a tab, releasing its world and caches.
 #[tauri::command]
 pub async fn close_tab(state: State<'_, AppState>, id: DocumentId) -> Result<()> {
