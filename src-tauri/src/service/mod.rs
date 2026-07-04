@@ -16,6 +16,7 @@ pub mod compile_worker;
 pub mod document_service;
 pub mod editor_service;
 pub mod export_service;
+pub mod file_routing;
 pub mod lsp_service;
 pub mod session;
 pub mod tab_state;

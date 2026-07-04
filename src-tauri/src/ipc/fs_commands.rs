@@ -271,9 +271,11 @@ pub async fn save_as(
         .into_path()
         .map_err(|e| AppError::InvalidInput(format!("invalid file path: {e}")))?;
     let path_for_write = path.clone();
-    tauri::async_runtime::spawn_blocking(move || std::fs::write(&path_for_write, &text))
-        .await
-        .map_err(|e| AppError::Other(format!("join error: {e}")))??;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::persistence::atomic::write_bytes(&path_for_write, text.as_bytes())
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
     editor.rebind_path(id, path.clone())?;
     Ok(path.to_string_lossy().into_owned())
 }

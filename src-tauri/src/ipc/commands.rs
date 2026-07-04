@@ -96,9 +96,13 @@ pub async fn update_text(
 pub async fn save_file(state: State<'_, AppState>, id: DocumentId) -> Result<()> {
     let editor = state.editor.clone();
     let (path, text) = editor.prepare_save(id)?;
-    tauri::async_runtime::spawn_blocking(move || std::fs::write(&path, text))
-        .await
-        .map_err(|e| AppError::Other(format!("join error: {e}")))??;
+    // Atomic write (§5.2): write to a sibling temp file then rename, so a
+    // crash mid-save leaves the prior file intact rather than truncated.
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::persistence::atomic::write_bytes(&path, text.as_bytes())
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
     editor.mark_saved(id);
     Ok(())
 }

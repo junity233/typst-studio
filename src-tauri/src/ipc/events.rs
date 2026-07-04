@@ -174,6 +174,12 @@ mod tests {
         crate::service::workspace_service::WorkspaceMeta::export(&cfg).unwrap();
         crate::fs::tree::DirEntry::export(&cfg).unwrap();
         crate::fs::tree::EntryKind::export(&cfg).unwrap();
+        // Single-instance routing payloads (§6.1).
+        crate::service::file_routing::FocusViewPayload::export(&cfg).unwrap();
+        crate::service::file_routing::OpenExternalFilePayload::export(&cfg).unwrap();
+        // Startup-problem payloads (§6.5).
+        crate::startup::StartupProblem::export(&cfg).unwrap();
+        crate::startup::StartupProblemsPayload::export(&cfg).unwrap();
     }
 
     #[test]

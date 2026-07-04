@@ -2,6 +2,7 @@ import { useDiagnosticsStore } from "../../store/diagnosticsStore";
 import { useActiveDocument } from "../../store/tabsStore";
 import type { CompileStatus } from "../../lib/ui-types";
 import { useLspStatus } from "../../store/lspStore";
+import { useStartupProblemsStore } from "../../store/startupProblemsStore";
 
 /** Stable empty array so the selector returns the same reference when unset. */
 const EMPTY_DIAGNOSTICS: readonly never[] = Object.freeze([]) as never[];
@@ -45,6 +46,12 @@ export function StatusBar() {
 
   const { status: lspStatus } = useLspStatus();
 
+  // Non-fatal startup problems (§6.5): show a count badge when present. The
+  // full problem-panel UI is a later batch (S19); for now this is a minimal
+  // non-modal indicator. Clicking dismisses (acknowledges) the problems.
+  const problemCount = useStartupProblemsStore((s) => s.problems.length);
+  const dismissProblems = useStartupProblemsStore((s) => s.dismiss);
+
   return (
     <footer className="statusbar">
       <span className={"statusbar-section" + (statusClass ? " " + statusClass : "")}>
@@ -62,6 +69,16 @@ export function StatusBar() {
       <span className="statusbar-section statusbar-lsp">
         {lspLabel(lspStatus.running, lspStatus.available)}
       </span>
+      {problemCount > 0 && (
+        <span
+          className="statusbar-section statusbar-badge-error"
+          role="button"
+          title="Startup had non-fatal issues — click to dismiss"
+          onClick={dismissProblems}
+        >
+          {problemCount} startup {problemCount === 1 ? "issue" : "issues"}
+        </span>
+      )}
     </footer>
   );
 }

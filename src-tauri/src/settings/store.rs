@@ -38,8 +38,9 @@ impl JsonFileStore {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let raw = serde_json::to_string_pretty(value)?;
-        std::fs::write(&self.path, raw)?;
+        // Atomic write (§5.2): settings.json is overwritten in place, so use
+        // the temp-file-then-rename protocol to avoid corruption on crash.
+        crate::persistence::atomic::write_json(&self.path, value)?;
         Ok(())
     }
 }

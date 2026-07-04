@@ -12,26 +12,47 @@
 //! - `error`           Unified AppError + Result alias
 
 pub mod domain;
+pub mod diagnostics;
 pub mod error;
 pub mod fs;
 pub mod ipc;
 pub mod lsp;
 pub mod net;
+pub mod persistence;
 pub mod project;
 pub mod render;
 pub mod service;
 pub mod settings;
+pub mod startup;
 pub mod typst_engine;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize tracing for structured logging.
-    tracing_subscriber::fmt::init();
+    // Phase-1 logging (§7.4): a minimal stderr subscriber installed as a
+    // thread-local dispatch so errors before `.setup` (font scan, build-context
+    // failures) are visible on the console. The guard is held for the whole
+    // process; phase-2 (in `.setup`) installs the full rolling-file + stderr
+    // layered subscriber as the global default, superseding this one.
+    let _early_log_guard = crate::diagnostics::init_early_stderr();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_fs::init());
+
+    // Single-instance enforcement + .typ file routing (§6.1). Desktop-only —
+    // `tauri-plugin-single-instance` has no mobile build, so the registration
+    // (and the dependency in Cargo.toml) is gated by the `desktop` cfg. On a
+    // second launch the callback forwards the file request to this (existing)
+    // instance, which either focuses the already-open view or opens a new tab.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(
+        |app, argv, _cwd| {
+            crate::service::file_routing::handle_single_instance(app, argv);
+        },
+    ));
+
+    builder
         // Native application menu (File/Edit/View/Export/Help). Built once and
         // applied app-wide (macOS menubar; Win/Linux per-window).
         .menu(|app| crate::ipc::menu::build_menu(app))
@@ -84,6 +105,8 @@ pub fn run() {
             ipc::settings_commands::set_setting,
             ipc::settings_commands::get_settings_manifest,
             ipc::settings_commands::open_settings,
+            // Diagnostics (§7.4): open the rolling-log directory.
+            ipc::settings_commands::open_log_dir,
             // Session memory commands (open documents + active view).
             ipc::session_commands::get_session,
             ipc::session_commands::save_session,
@@ -94,6 +117,19 @@ pub fn run() {
         .setup(|app| {
             use std::sync::Arc;
             use tauri::{Emitter as _, Manager};
+
+            // Phase-2 logging (§7.4): now that an app handle exists, install
+            // the full rolling-file + stderr layered subscriber. If it can't
+            // initialize (e.g. a test already set a global default), log and
+            // continue — logging must never block startup.
+            match crate::diagnostics::resolve_log_dir() {
+                Ok(log_dir) => {
+                    if let Err(errs) = crate::diagnostics::init_full(log_dir) {
+                        eprintln!("diagnostics: file subscriber not installed: {errs:?}");
+                    }
+                }
+                Err(e) => eprintln!("diagnostics: log dir unavailable: {e}"),
+            }
 
             // Pre-build the process-wide font store (embedded + system scan).
             // The scan is the dominant cost of opening the first tab (~hundreds
@@ -110,6 +146,12 @@ pub fn run() {
             use crate::service::session::SessionService;
             use crate::service::workspace_service::WorkspaceService;
             use crate::settings::{JsonFileStore, Manifest, SettingsService};
+            use crate::startup::{StartupProblem, StartupProblemsPayload};
+
+            // Non-fatal startup problems (§6.5): collected here, emitted once at
+            // the end of setup so the frontend can show a non-modal banner. A
+            // single component failure must never prevent the main window.
+            let mut startup_problems: Vec<StartupProblem> = Vec::new();
 
             // The AppHandle is only available inside `.setup`. We wrap it in a
             // TauriEmitter so the service layer can emit events without a direct
@@ -164,27 +206,73 @@ pub fn run() {
 
             // Settings: persist a free-form JSON document in the platform config
             // dir; broadcast every change to all windows via `settings_changed`.
-            // `app_config_dir()?` + `SettingsService::new(...)?` both convert
-            // into the setup closure's `Box<dyn std::error::Error>` return.
-            let cfg_dir = app.path().app_config_dir()?;
+            // Fault-tolerance (§6.5): if the config dir can't be resolved, fall
+            // back to a process-local temp dir; if the settings store fails,
+            // fall back to an in-memory default store. Either way the app boots
+            // and the failure is collected into `startup_problems` for a banner.
+            let cfg_dir = crate::startup::config_dir_or_problem(
+                app.path().app_config_dir().map_err(|e| e.to_string()),
+                &mut startup_problems,
+            );
+            // Best-effort: clean up stale atomic-write temp files older than 24h
+            // (§5.2). Errors here are not user-visible.
+            if let Err(e) = crate::persistence::cleanup_stale_temps(&cfg_dir) {
+                tracing::warn!(error = %e, "startup: stale-temp cleanup failed");
+            }
             let store = JsonFileStore::new(cfg_dir.join("settings.json"));
             let manifest = Manifest::embedded();
             let app_for_settings = app.handle().clone();
-            let settings = Arc::new(SettingsService::new(
-                store,
-                manifest,
-                move |data| {
-                    let _ = app_for_settings.emit("settings_changed", data.clone());
+            let settings = Arc::new(crate::startup::load_or_problem(
+                "settings",
+                || {
+                    SettingsService::new(
+                        store,
+                        manifest,
+                        move |data| {
+                            let _ = app_for_settings.emit("settings_changed", data.clone());
+                        },
+                    )
                 },
-            )?);
+                || {
+                    // Fallback: an in-memory default store that never persists.
+                    // Uses the same embedded manifest so validation still works.
+                    SettingsService::new(
+                        JsonFileStore::new(cfg_dir.join("settings.json")),
+                        Manifest::embedded(),
+                        |_: &serde_json::Value| {},
+                    )
+                    .expect("in-memory default settings must construct")
+                },
+                &mut startup_problems,
+            ));
 
             // Session memory (open documents + active view, §13) in the same config dir.
-            let session = Arc::new(SessionService::load(cfg_dir.join("session.json"))?);
+            // `SessionService::load` is already load-tolerant (corrupt/missing →
+            // empty), but guard the `?` so any future regression degrades
+            // instead of aborting. The fallback builds an in-memory empty
+            // session at the same path (so a later successful persist works).
+            let session_path = cfg_dir.join("session.json");
+            let session = Arc::new(crate::startup::load_or_problem(
+                "session",
+                || SessionService::load(session_path.clone()),
+                || SessionService::empty(session_path.clone()),
+                &mut startup_problems,
+            ));
 
             // Reusable HTTP client shared app-wide via AppState.
             let net = Arc::new(HttpClient::new());
 
             app.manage(AppState { editor, export, lsp, workspace, settings, session, net });
+
+            // Emit any collected startup problems once, so the frontend can show
+            // a non-modal banner (§6.5). Empty vec → no event (nothing to show).
+            if !startup_problems.is_empty() {
+                tracing::warn!(count = startup_problems.len(), "startup problems collected");
+                let _ = app.emit(
+                    "startup_problems",
+                    StartupProblemsPayload { problems: startup_problems },
+                );
+            }
 
             Ok(())
         })

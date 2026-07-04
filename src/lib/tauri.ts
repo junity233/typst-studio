@@ -5,10 +5,14 @@ import type {
   DirEntry,
   DocumentId,
   EntryKind,
+  FocusViewPayload,
   FsChangedPayload,
+  OpenExternalFilePayload,
   OpenedDocument,
   OpenDocRecord,
   Session,
+  StartupProblem,
+  StartupProblemsPayload,
   WorkspaceMeta,
 } from "./types";
 import type {
@@ -247,6 +251,14 @@ export async function openSettings(): Promise<void> {
 }
 
 /**
+ * Open the diagnostic log directory in the OS file manager (§7.4). Returns the
+ * resolved directory path. Used by the Settings "Open log directory" action.
+ */
+export async function openLogDir(): Promise<string> {
+  return invoke<string>("open_log_dir");
+}
+
+/**
  * Subscribe to whole-config broadcasts. Emitted to ALL windows on every
  * successful `set_setting`, carrying the full runtime config object. Returns
  * an unlisten function (same shape as the other `on*` wrappers).
@@ -283,6 +295,48 @@ export async function onCloseRequested(
   handler: () => void,
 ): Promise<UnlistenFn> {
   return listen("close_requested", () => handler());
+}
+
+// --- Single-instance file routing (§6.1) ------------------------------------
+
+/**
+ * Subscribe to `focus_view`: a second app instance requested a file that is
+ * already open — activate its tab. Emitted by the single-instance plugin
+ * callback when the canonical path matches an existing document.
+ */
+export async function onFocusView(
+  handler: (payload: FocusViewPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<FocusViewPayload>("focus_view", (e) => handler(e.payload));
+}
+
+/**
+ * Subscribe to `open_external_file`: a second app instance requested a file
+ * that is not yet open — open a new tab at the absolute `path` via the existing
+ * `openFileByPath` flow. Emitted by the single-instance plugin callback.
+ */
+export async function onOpenExternalFile(
+  handler: (payload: OpenExternalFilePayload) => void,
+): Promise<UnlistenFn> {
+  return listen<OpenExternalFilePayload>("open_external_file", (e) =>
+    handler(e.payload),
+  );
+}
+
+// --- Startup problems (§6.5) ------------------------------------------------
+
+/**
+ * Subscribe to `startup_problems`: emitted once at end of setup when one or
+ * more startup components degraded (config dir, settings, session). The payload
+ * carries a list of non-fatal problems for a non-modal banner. Empty list → no
+ * event is emitted.
+ */
+export async function onStartupProblems(
+  handler: (payload: StartupProblem[]) => void,
+): Promise<UnlistenFn> {
+  return listen<StartupProblemsPayload>("startup_problems", (e) =>
+    handler(e.payload.problems),
+  );
 }
 
 // --- Session memory ----------------------------------------------------------

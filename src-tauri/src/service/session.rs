@@ -193,6 +193,16 @@ impl SessionService {
         Ok(Self { inner: Mutex::new(session), path })
     }
 
+    /// An in-memory empty session rooted at `path` — the startup fallback when
+    /// `load` itself fails (§6.5). Never reads from disk; a later successful
+    /// `persist` will write to `path`.
+    pub fn empty(path: PathBuf) -> Self {
+        Self {
+            inner: Mutex::new(Session::default()),
+            path,
+        }
+    }
+
     /// Current snapshot.
     pub fn get(&self) -> Session {
         self.inner.lock().map(|s| s.clone()).unwrap_or_default()
@@ -245,8 +255,9 @@ impl SessionService {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let raw = serde_json::to_string_pretty(session)?;
-        std::fs::write(&self.path, raw)?;
+        // Atomic write (§5.2): session.json is overwritten in place, so use the
+        // temp-file-then-rename protocol to avoid corruption on crash.
+        crate::persistence::atomic::write_json(&self.path, session)?;
         Ok(())
     }
 }

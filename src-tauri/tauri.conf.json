@@ -29,6 +29,9 @@
     "targets": "all",
     "publisher": "Typst Studio",
     "category": "DeveloperTool",
+    "fileAssociations": [
+      { "ext": ["typ"], "name": "Typst", "role": "Editor" }
+    ],
     "shortDescription": "A Typst visual editor with live SVG preview.",
     "longDescription": "Typst Studio is a native desktop Typst editor: a Monaco code editor on the left and a real-time SVG preview on the right. It embeds the official typst compiler (typst, typst-svg, typst-pdf, typst-render, typst-kit) directly in a Tauri 2 + Rust backend for millisecond-level incremental compilation, with full PDF and PNG export.",
     "copyright": "MIT OR Apache-2.0",

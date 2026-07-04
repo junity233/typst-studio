@@ -180,6 +180,12 @@ root: string, };
 export type EntryKind = "file" | "dir";
 
 /**
+ * Payload of the `focus_view` event (§6.1): the frontend activates the tab
+ * for `id`. Reuses the existing DocumentId type so it is already on the wire.
+ */
+export type FocusViewPayload = { id: DocumentId, };
+
+/**
  * Payload of the `fs_changed` event: paths (absolute) that changed on disk in
  * the workspace, detected by the filesystem watcher. The frontend refreshes
  * the affected parts of its file tree. Empty `paths` is a generic "something
@@ -241,6 +247,12 @@ export type LspStatusPayload = { running: boolean, wsUrl: string, available: boo
  * had unsaved edits at shutdown that are now lost" — see the restore path).
  */
 export type OpenDocRecord = { "kind": "disk", path: string, dirty: boolean, } | { "kind": "untitled", content: string, dirty: boolean, };
+
+/**
+ * Payload of the `open_external_file` event (§6.1): the frontend opens a new
+ * tab at the absolute `path` via the existing `openFileByPath` flow.
+ */
+export type OpenExternalFilePayload = { path: string, };
 
 /**
  * Response of `new_tab` / `open_file`: the tab's metadata paired with its
@@ -328,6 +340,25 @@ activeDocumentId: string | null, };
  * Severity of a diagnostic message.
  */
 export type Severity = "Error" | "Warning" | "Info";
+
+/**
+ * A single non-fatal failure observed during startup.
+ */
+export type StartupProblem = { 
+/**
+ * The component that failed (e.g. `"config_dir"`, `"settings"`, `"session"`).
+ */
+component: string, 
+/**
+ * A short human-readable message (no document text — §7.4).
+ */
+message: string, };
+
+/**
+ * Payload of the `startup_problems` event (§6.5). Emitted once at end of
+ * setup only when `problems` is non-empty.
+ */
+export type StartupProblemsPayload = { problems: Array<StartupProblem>, };
 
 /**
  * Payload of the `status` event. `duration_ms` is present only on

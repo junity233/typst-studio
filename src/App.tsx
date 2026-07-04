@@ -6,8 +6,10 @@ import { ConfirmDialog } from "./components/Dialogs/ConfirmDialog";
 import { ContextMenu } from "./components/Sidebar/ContextMenu";
 import { useTypstCompile } from "./hooks/useTypstCompile";
 import { useAppCommands } from "./hooks/useAppCommands";
+import { useExternalFileRouting } from "./hooks/useExternalFileRouting";
 import { useStartupSession } from "./hooks/useStartupSession";
-import { onSettingsWindow, openSettings } from "./lib/tauri";
+import { onSettingsWindow, onStartupProblems, openSettings } from "./lib/tauri";
+import { useStartupProblemsStore } from "./store/startupProblemsStore";
 
 /**
  * The application shell. Composes three regions:
@@ -30,12 +32,26 @@ import { onSettingsWindow, openSettings } from "./lib/tauri";
 export default function App() {
   useTypstCompile();
   useAppCommands();
+  useExternalFileRouting();
   useStartupSession();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     onSettingsWindow((open) => setSettingsOpen(open)).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
+
+  // Collect non-fatal startup problems (§6.5) into the store for a non-modal
+  // banner. The full problem-panel UI is a later batch (S19); for now the
+  // StatusBar reads the store count.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    onStartupProblems((problems) => {
+      useStartupProblemsStore.getState().setProblems(problems);
+    }).then((fn) => {
       unlisten = fn;
     });
     return () => unlisten?.();
