@@ -107,7 +107,7 @@ describe("TableGridPicker", () => {
     );
     // Hover cell (r=1, c=1) → index 9 → size 2×2.
     act(() => {
-      cell(9).dispatchEvent(new MouseEvent("mouseEnter", { bubbles: true }));
+      cell(9).dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
     });
     act(() => {
       cell(9).click();
@@ -140,6 +140,28 @@ describe("TableGridPicker", () => {
       document.body.dispatchEvent(
         new MouseEvent("pointerdown", { bubbles: true }),
       );
+    });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("window scroll → onCancel", () => {
+    const onCancel = vi.fn();
+    render(
+      <TableGridPicker anchor={ANCHOR} onSelect={() => {}} onCancel={onCancel} />,
+    );
+    act(() => {
+      window.dispatchEvent(new Event("scroll"));
+    });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("window resize → onCancel", () => {
+    const onCancel = vi.fn();
+    render(
+      <TableGridPicker anchor={ANCHOR} onSelect={() => {}} onCancel={onCancel} />,
+    );
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
     });
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
