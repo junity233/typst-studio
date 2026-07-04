@@ -123,10 +123,24 @@ impl FileIdentity {
                 #[cfg(windows)]
                 {
                     use std::os::windows::fs::MetadataExt;
-                    // volume_serial_number + file_index are the Windows analogue.
-                    let vol = m.volume_serial_number()?;
-                    let idx = m.file_index()?;
-                    Some(Self(hash_pair(vol, idx)))
+                    // NOTE: the ideal Windows identity is
+                    // (volume_serial_number, file_index) from
+                    // `GetFileInformationByHandle`, but those require the
+                    // unstable `windows_by_handle` feature and so are not
+                    // available on stable Rust. Fall back to the stable
+                    // `MetadataExt` surface: creation_time (FILETIME, u64) +
+                    // file_size. This is strictly weaker than an inode pair — a
+                    // same-size rewrite that preserves creation time would not
+                    // be detected as `Replaced` — but `FileIdentity` is
+                    // documented best-effort and degrades safely to
+                    // [`FileIdentity::UNKNOWN`] (the `Replaced` check simply
+                    // never fires) when it cannot distinguish two files.
+                    // TODO: restore (volume_serial_number, file_index) via the
+                    // `windows-sys` crate's `GetFileInformationByHandle` for a
+                    // true inode-style identity.
+                    let created = m.creation_time();
+                    let size = m.file_size();
+                    Some(Self(hash_pair(created, size)))
                 }
                 #[cfg(not(any(unix, windows)))]
                 {
