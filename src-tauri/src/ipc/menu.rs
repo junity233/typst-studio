@@ -103,13 +103,7 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         &[
             &MenuItem::with_id(app, ids::NEW_TAB, "New Tab", true, Some("CmdOrCtrl+T"))?,
             &MenuItem::with_id(app, ids::OPEN_FILE, "Open File…", true, Some("CmdOrCtrl+O"))?,
-            &MenuItem::with_id(
-                app,
-                ids::OPEN_FOLDER,
-                "Open Folder…",
-                true,
-                Some("CmdOrCtrl+Shift+O"),
-            )?,
+            &MenuItem::with_id(app, ids::OPEN_FOLDER, "Open Folder…", true, None::<&str>)?,
             &open_recent,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, ids::SAVE, "Save", true, Some("CmdOrCtrl+S"))?,

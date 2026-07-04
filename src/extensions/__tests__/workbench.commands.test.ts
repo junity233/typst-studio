@@ -37,7 +37,6 @@ describe("workbench commands registered", () => {
     const withKb = [
       "new-tab",
       "open-file",
-      "open-folder",
       "save",
       "save-as",
       "close-tab",
@@ -48,5 +47,13 @@ describe("workbench commands registered", () => {
       const cmd = commandRegistry.get(id);
       expect(cmd?.keybinding, `command ${id}`).toBeTruthy();
     }
+  });
+
+  // open-folder deliberately has NO keybinding: its old Shift+O collided with
+  // Show Outline, and muda (Tauri's menu lib) can't express the VS Code-style
+  // Ctrl+K Ctrl+O chord. Reachable via the File menu + welcome screen instead.
+  it("open-folder has no keybinding (collision-avoidance)", () => {
+    const cmd = commandRegistry.get("open-folder");
+    expect(cmd?.keybinding).toBeUndefined();
   });
 });

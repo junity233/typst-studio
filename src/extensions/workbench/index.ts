@@ -77,7 +77,10 @@ export default function activate(ctx: HostApi): void {
     id: "open-folder",
     title: labelFor("open-folder"),
     category: "File",
-    keybinding: "CmdOrCtrl+Shift+O",
+    // No keybinding: Shift+O collides with Show Outline, and muda (Tauri's
+    // menu lib) doesn't support the chord accelerator we'd prefer
+    // (Ctrl+K Ctrl+O, VS Code's Open Folder). Reachable via the File menu +
+    // welcome screen.
     handler: async () => {
       await useWorkspaceStore.getState().openWorkspace();
     },

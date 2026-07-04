@@ -78,14 +78,32 @@ pub fn search(root: &Path, query: &SearchQuery) -> Result<Vec<SearchHit>> {
             for range in matcher.find(line) {
                 let col = line[..range.start].chars().count() as u32 + 1;
                 let line_text = truncate_line(line, 500);
-                let end = (range.end).min(line_text.len()) as u32;
+                // Char offsets (for JS String.slice compatibility — JS indexes
+                // by UTF-16 code units; for BMP characters char count == UTF-16
+                // unit count, which covers the vast majority of Typst content.
+                // Astral plane chars (emoji etc.) would still mis-highlight by
+                // surrogates, but that's a rare edge case acceptable for the
+                // informational search panel.)
+                let char_start = line[..range.start].chars().count() as u32;
+                // Compute match_end from the *original* line (not the possibly-
+                // truncated line_text), then clamp to line_text's char length so
+                // we never index past the displayed string.
+                let char_end_full = line[..range.end].chars().count() as u32;
+                let line_text_char_len = line_text.chars().count() as u32;
+                // Clamp both to the displayed (possibly truncated) length. If the
+                // match starts beyond the truncation point (rare, only for
+                // >500-byte lines), start == end == line_text_char_len and
+                // `slice` returns empty (no highlight, no crash) rather than
+                // indexing past the string.
+                let match_start = char_start.min(line_text_char_len);
+                let match_end = char_end_full.min(line_text_char_len);
                 hits.push(SearchHit {
                     relative: rel.clone(),
                     line: line_idx as u32 + 1,
                     column: col,
                     line_text,
-                    match_start: range.start as u32,
-                    match_end: end,
+                    match_start,
+                    match_end,
                 });
                 file_hits += 1;
                 if file_hits >= query.max_per_file || hits.len() >= query.max_total {

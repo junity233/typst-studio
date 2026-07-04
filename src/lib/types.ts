@@ -590,14 +590,14 @@ column: number,
  * The full line text (truncated for display if very long).
  */
 lineText: string,
-/**
- * Byte offset of the match start within lineText.
- */
-matchStart: number,
-/**
- * Byte offset of the match end within lineText.
- */
-matchEnd: number,
+	/**
+	 * Char offset of the match start within lineText.
+	 */
+	matchStart: number,
+	/**
+	 * Char offset of the match end within lineText.
+	 */
+	matchEnd: number,
 };
 
 /**

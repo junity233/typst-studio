@@ -57,8 +57,8 @@ pub struct SearchHit {
     pub column: u32,
     /// The full line text (truncated for display if very long).
     pub line_text: String,
-    /// Byte offset of the match start within line_text.
+    /// Char offset of the match start within line_text.
     pub match_start: u32,
-    /// Byte offset of the match end within line_text.
+    /// Char offset of the match end within line_text.
     pub match_end: u32,
 }
