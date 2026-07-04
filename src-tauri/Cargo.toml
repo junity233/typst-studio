@@ -87,6 +87,12 @@ walkdir = "2"
 # Regex matching for the Search view (literal mode is hand-rolled; regex mode uses this).
 regex = "1"
 
+# Pure-Rust Git implementation for the Source Control view (Phase 4).
+# Repository is Send but NOT Sync — re-discovered per command, all gix I/O on
+# spawn_blocking. `status` gates Repository::status(); `index` exposes the
+# in-memory index for stage/unstage.
+gix = { version = "0.85", features = ["status", "index"] }
+
 # Safe deletion via the system trash / recycle bin (§5.5). Cross-platform:
 # macOS NSWorkspace recycle, Windows FileOperation FO_DELETE with recycle, Linux
 # freedesktop Trash.

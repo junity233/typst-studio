@@ -41,6 +41,10 @@ pub mod ids {
     /// this to the registered `workbench.action.findInFiles` command, which
     /// opens the bottom Search panel.
     pub const FIND_IN_FILES: &str = "workbench.action.findInFiles";
+    /// Show the Source Control view (§Source Control). The frontend dispatch
+    /// routes this to the registered `workbench.view.scm` command, which
+    /// activates the SCM sidebar view.
+    pub const SOURCE_CONTROL: &str = "workbench.view.scm";
     pub const EXPORT_PDF: &str = "export-pdf";
     pub const EXPORT_PNG: &str = "export-png";
     pub const EXPORT_SVG: &str = "export-svg";
@@ -152,6 +156,13 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 "Find in Files",
                 true,
                 Some("CmdOrCtrl+Shift+F"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                ids::SOURCE_CONTROL,
+                "Source Control",
+                true,
+                Some("CmdOrCtrl+Shift+G"),
             )?,
             &PredefinedMenuItem::separator(app)?,
             &CheckMenuItem::with_id(

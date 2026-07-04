@@ -5,6 +5,7 @@ pub mod compile_status;
 pub mod diagnostics;
 pub mod disk_version;
 pub mod document;
+pub mod git_status;
 pub mod path;
 pub mod registry;
 pub mod search;

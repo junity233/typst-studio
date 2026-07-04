@@ -74,6 +74,13 @@ export function useAppCommands(): void {
         e.stopPropagation();
         void dispatch("workbench.action.findInFiles");
       }
+      // Cmd/Ctrl+Shift+G → Show Source Control (§Source Control). Same
+      // capture-phase rationale as the other Shift shortcuts.
+      if (mod && e.shiftKey && e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        e.stopPropagation();
+        void dispatch("workbench.view.scm");
+      }
     };
     document.addEventListener("keydown", onKeyDown, true);
 
