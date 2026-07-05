@@ -220,7 +220,11 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
       const doc = await openFileByPath(abs);
       openPath(doc);
     } catch (e) {
-      console.error("[Explorer] open failed:", e);
+      console.error("[Explorer] open failed:", e, {
+        rootPath,
+        relative: entry.relative,
+        abs: `${rootPath}/${entry.relative}`,
+      });
       window.alert(
         i18n.t("couldNotOpenFile", {
           ns: "errors",
@@ -263,7 +267,7 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
     <li role="treeitem" aria-expanded={isDir ? isOpen : undefined}>
       <div
         className={`tree-row${isActiveFile ? " tree-row-active" : ""}`}
-        style={{ paddingLeft: 8 + depth * 14 }}
+        style={{ "--tree-depth": depth } as React.CSSProperties}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
@@ -525,7 +529,7 @@ function NewEntryRow({
 }) {
   return (
     <li>
-      <div className="tree-row" style={{ paddingLeft: 8 + depth * 14 }}>
+      <div className="tree-row" style={{ "--tree-depth": depth } as React.CSSProperties}>
         <span className="tree-twisty" />
         <span className="tree-icon">
           {kind === "dir" ? <Folder size={ICON_SIZE} /> : <File size={ICON_SIZE} />}

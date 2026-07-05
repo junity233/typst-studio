@@ -1812,20 +1812,41 @@ button {
   display: flex;
   align-items: center;
   gap: 4px;
-  height: 24px;
+  height: 26px; /* matches .outline-row — DESIGN.md body pace */
+  /* Depth indent via the inline `--tree-depth` custom property (parity with
+     .outline-row's --outline-depth). 14px per level keeps deep trees legible
+     in the 220px sidebar. */
+  padding-left: calc(var(--space-xs) + var(--tree-depth, 0) * 14px);
   padding-right: var(--space-xs);
-  font: var(--text-fine-print);
+  font: var(--text-caption); /* 14/400 — DESIGN.md body pace, not 12px fine-print */
+  letter-spacing: -0.224px;
   color: var(--color-ink);
   cursor: default;
   user-select: none;
   white-space: nowrap;
+  position: relative; /* anchor for the active ::before stripe */
+  transition: background-color 100ms ease, color 100ms ease;
 }
 .tree-row:hover {
-  background: rgba(0, 0, 0, 0.04);
+  /* Surface-change hover (DESIGN.md: parchment lift, not a darkening stain). */
+  background: var(--color-canvas-parchment);
 }
+/* Active file = Action-Blue ink + a 2px left stripe in the depth gutter, no
+   background fill (parity with .outline-row.active; DESIGN.md: surface change
+   divides, don't add chrome). The stripe aligns to the row's left edge after
+   the depth indent. */
 .tree-row-active {
-  background: rgba(0, 102, 204, 0.08);
   color: var(--color-primary);
+}
+.tree-row-active::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--tree-depth, 0) * 14px);
+  top: 5px;
+  bottom: 5px;
+  width: 2px;
+  background: var(--color-primary);
+  border-radius: var(--radius-pill);
 }
 .tree-twisty {
   width: 14px;
@@ -1874,6 +1895,7 @@ button {
   display: grid;
   grid-template-rows: 0fr;
   transition: grid-template-rows 0.18s ease;
+  position: relative; /* anchor for the nesting guide line */
 }
 .tree-children.open {
   grid-template-rows: 1fr;
@@ -1882,52 +1904,88 @@ button {
   min-height: 0;
   overflow: hidden;
 }
+/* Nesting guide line — a faint vertical rule in the parent's depth gutter so
+   the eye traces parent → child without heavy borders (parity with
+   .outline-children::before; DESIGN.md: --color-divider-soft hairline). Only
+   drawn once the directory is open, so a collapsed folder doesn't dangle a
+   line to nowhere. */
+.tree-children.open::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--tree-depth, 0) * 14px + var(--space-xs) + 6px);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-divider-soft);
+  pointer-events: none;
+}
 .tree-input {
   flex: 1 1 auto;
   min-width: 0;
-  font: var(--text-fine-print);
+  font: var(--text-caption); /* match the row's new 14px pace */
+  letter-spacing: -0.224px;
   border: 1px solid var(--color-primary);
   border-radius: var(--radius-xs);
-  padding: 1px 4px;
+  padding: 1px 6px;
   outline: none;
   background: var(--color-canvas);
   color: var(--color-ink);
 }
 
-/* ---- Empty workspace prompt ---------------------------------------------- */
+/* ---- Empty workspace prompt ----------------------------------------------
+   The sidebar's hero tile: a centered "museum gallery" moment (DESIGN.md
+   product-tile grammar). The workspace glyph is the artifact; the headline
+   + body + pill CTA stack reads as one quiet composition, not a stack of
+   left-aligned form fields. */
 .sidebar-empty {
   /* Fill the keep-alive sidebar body so the prompt reads as a full panel
      rather than a collapsed strip (the views underneath are hidden when
      this shows). */
   position: absolute;
   inset: 0;
-  padding: var(--space-xl) var(--space-lg);
+  padding: var(--space-xxl) var(--space-lg);
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
-  align-items: flex-start;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.sidebar-empty-glyph {
+  /* DESIGN.md lead-airy weight 300 — the rare light-atmosphere cue, reserved
+     for the hero moment. Echoes .outline-empty-glyph's mono weight-300 mark. */
+  font-family: var(--font-mono);
+  font-size: 40px;
+  font-weight: 300;
+  line-height: 1;
+  color: var(--color-ink-muted-48);
+  margin-bottom: var(--space-xs);
 }
 .sidebar-empty-title {
-  font: var(--text-body-strong);
+  font: var(--text-tagline); /* 21/600 — the sidebar's hero headline */
+  letter-spacing: 0.231px;
   color: var(--color-ink);
   margin: 0;
 }
 .sidebar-empty-body {
   font: var(--text-caption);
+  letter-spacing: -0.224px;
   color: var(--color-ink-muted-80);
   margin: 0 0 var(--space-sm);
   line-height: 1.5;
+  max-width: 240px;
 }
 .sidebar-empty-body code {
   font-family: var(--font-mono);
   font-size: 12px;
-  background: rgba(0, 0, 0, 0.05);
-  padding: 1px 4px;
-  border-radius: 3px;
+  background: var(--color-canvas-parchment);
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  color: var(--color-ink-muted-80);
 }
 .sidebar-empty-action {
-  align-self: stretch;
-  text-align: center;
+  /* A self-contained pill CTA, centered under the headline. */
+  align-self: center;
 }
 
 /* ============================================================================

@@ -26,6 +26,11 @@ export function EmptyWorkspace() {
 
   return (
     <div className="sidebar-empty">
+      <span className="sidebar-empty-glyph" aria-hidden>
+        {/* A folder-mark glyph rendered in mono weight 300 — the sidebar's
+            hero artifact (DESIGN.md product-tile grammar). */}
+        □
+      </span>
       <p className="sidebar-empty-title">{t("emptyWorkspace.title")}</p>
       <p className="sidebar-empty-body">
         <Trans
