@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useViews } from "../../extensions/hooks";
 import { useUiStore } from "../../store/uiStore";
@@ -20,11 +20,21 @@ const VIEW_TITLE_KEYS: Record<string, string> = {
 };
 
 /**
- * The left sidebar: a host for the currently active view from the ViewRegistry.
- * With no workspace open it renders the EmptyWorkspace prompt; otherwise it
- * resolves the active view's lazy component and mounts it inside a header +
- * body shell. Owns the `fs_changed` listener that live-refreshes the tree when
- * files change on disk (consumed by the Explorer view via the workspace store).
+ * The left sidebar: a host for every registered view, kept alive
+ * simultaneously and toggled by CSS so switching tabs never unmounts a view.
+ *
+ * Why keep-alive: each view owns ephemeral state (Explorer's inline-rename
+ * buffer, Search's results + per-file collapse set, Source Control's commit
+ * message + refreshed status, Outline's collapse set + active-row scroll
+ * sync). Mounting only the active view — the previous design — wiped all of
+ * that on every tab switch and forced a re-load (re-search, re-fetch, lost
+ * cursor in the commit box). Rendering every view once and showing/hiding
+ * via `hidden` preserves each view's component tree across switches (the
+ * VSCode sidebar model).
+ *
+ * With no workspace open, the EmptyWorkspace prompt shows as a stacked layer
+ * on top of the (idle) views, so re-opening a workspace restores whatever
+ * state the views already had.
  */
 export function Sidebar() {
   const { t } = useTranslation("sidebar");
@@ -54,44 +64,59 @@ export function Sidebar() {
     // TODO(phase2): extract useTauriListener helper; App.tsx has the same race.
   }, [refreshAll]);
 
-  // Derive the active view from the subscribed list (not a direct registry
-  // read) so registry mutations trigger re-renders.
-  const view = views.find((v) => v.id === activeViewId);
+  // The active view drives the header title.
+  const activeView = views.find((v) => v.id === activeViewId);
+  const titleKey = activeView ? VIEW_TITLE_KEYS[activeView.id] : undefined;
 
-  // Unconditional hook: the lazy wrapper is recreated only when the view id
-  // changes, so a stable active view does not remount on every re-render
-  // (preserves the child view's local state, e.g. Explorer's pendingNew input).
-  const ViewComponent = useMemo(
-    () => (view ? lazy(view.component) : null),
-    [view?.id],
-  );
-
-  // All hooks above this line. Early returns below.
-  if (rootPath === null) {
-    return (
-      <aside className="sidebar">
-        <EmptyWorkspace />
-      </aside>
-    );
-  }
-
-  if (ViewComponent === null) {
-    return <aside className="sidebar" />;
-  }
-
-  // After this point both view and ViewComponent are guaranteed non-null.
-  const titleKey = view ? VIEW_TITLE_KEYS[view.id] : undefined;
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
         <span className="sidebar-title">
-          {titleKey ? t(titleKey) : view!.title}
+          {activeView
+            ? titleKey
+              ? t(titleKey)
+              : activeView.title
+            : ""}
         </span>
       </div>
       <div className="sidebar-body">
-        <Suspense fallback={<div className="sidebar-loading">{t("loading")}</div>}>
-          <ViewComponent viewId={view!.id} />
-        </Suspense>
+        {/* EmptyWorkspace sits as a sibling layer; visible only when no
+            workspace is open. The views below stay mounted underneath it,
+            idle, so reopening a workspace restores their state instantly. */}
+        {rootPath === null && <EmptyWorkspace />}
+
+        {/* Every registered view is mounted once and kept alive. Visibility
+            is CSS-driven (`hidden` attribute) so React never unmounts a view
+            when the user switches tabs — its internal state, scroll position,
+            and lazy-loaded chunk all survive. */}
+        {views.map((v) => {
+          const ViewComponent = lazy(v.component);
+          const isActive = v.id === activeViewId;
+          // When no workspace is open, hide ALL views (EmptyWorkspace covers
+          // the body). When a workspace is open, show only the active one.
+          const visible = rootPath !== null && isActive;
+          return (
+            <div
+              key={v.id}
+              className="sidebar-view"
+              // `hidden` is the correct keep-alive toggle: the browser removes
+              // the element from the layout (display:none) without telling
+              // React to unmount it. Toggling it back restores the exact DOM
+              // subtree, preserving component state, scroll, focus, and the
+              // already-resolved lazy chunk.
+              hidden={!visible}
+              role="tabpanel"
+              aria-hidden={!visible}
+              aria-labelledby={`activity-item-${v.id}`}
+            >
+              <Suspense
+                fallback={<div className="sidebar-loading">{t("loading")}</div>}
+              >
+                <ViewComponent viewId={v.id} />
+              </Suspense>
+            </div>
+          );
+        })}
       </div>
     </aside>
   );

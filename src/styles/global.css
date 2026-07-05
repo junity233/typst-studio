@@ -1662,7 +1662,11 @@ button {
 }
 
 .activity-item.active {
-  color: var(--color-ink); /* full ink, no background — quiet active */
+  /* Pearl capsule chip on the parchment strip — DESIGN.md's surface-change
+     convention (pearl on parchment reads as "selected" before any chrome).
+     Paired with the Action-Blue left-edge stripe below. */
+  background: var(--color-surface-pearl);
+  color: var(--color-ink);
 }
 
 .activity-item.active::before {
@@ -1681,28 +1685,54 @@ button {
   cursor: not-allowed;
 }
 
-/* ---- Sidebar host shell (header + body) ---------------------------------- */
+/* ---- Sidebar host shell (header + body) ----------------------------------
+   The header mirrors DESIGN.md's `sub-nav-frosted`: parchment at 80% with a
+   backdrop blur, so the active view's content softly shows through as the
+   user scrolls — the sidebar reads as a floating layer over the workbench,
+   not a hard column. */
 .sidebar-header {
   flex: 0 0 auto;
-  height: 44px; /* DESIGN.md touch-target height */
+  height: 52px; /* DESIGN.md sub-nav-frosted height */
   display: flex;
   align-items: center;
-  padding: 0 var(--space-sm);
+  padding: 0 var(--space-lg);
+  background: rgba(245, 245, 247, 0.8);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 1px solid var(--color-hairline);
 }
 
 .sidebar-title {
-  font: var(--text-caption-strong); /* 14/600 — weight, NOT uppercase */
+  font: var(--text-tagline); /* 21/600 — the sub-nav category-name voice */
+  letter-spacing: 0.231px; /* DESIGN.md tagline tracking */
   color: var(--color-ink);
-  letter-spacing: -0.224px; /* SF Pro tight tracking at caption size */
 }
 
 .sidebar-body {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: hidden;
+  /* Relative so keep-alive view layers can absolute-fill it and stack. */
+  position: relative;
+}
+
+/* Each registered view fills the sidebar body. All views are mounted
+   simultaneously; the inactive ones are hidden via the `hidden` attribute,
+   which sets display:none and removes them from layout WITHOUT unmounting
+   their React subtree (state, scroll, focus, lazy chunks all survive).
+   The `[hidden]` selector beats the inner display rules so the toggle is
+   authoritative. */
+.sidebar-view {
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sidebar-view[hidden] {
+  /* Reinforce: `hidden` must win over the flex display above. */
+  display: none !important;
 }
 
 .sidebar-loading {
@@ -1719,11 +1749,13 @@ button {
 }
 .explorer-header {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
   padding: var(--space-xs) var(--space-md);
-  font: var(--text-caption-strong);
-  color: var(--color-ink-muted-48);
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
+  font: var(--text-caption-strong); /* 14/600 — DESIGN.md: weight, not case */
+  letter-spacing: -0.224px; /* SF Pro tight tracking at caption size */
+  color: var(--color-ink);
   border-bottom: 1px solid var(--color-hairline);
 }
 .explorer-title {
@@ -1736,7 +1768,6 @@ button {
   margin-left: auto;
   display: flex;
   gap: 2px;
-  opacity: 0.6;
 }
 .explorer-action {
   background: none;
@@ -1752,7 +1783,7 @@ button {
   transition: transform 0.1s ease, background 0.1s ease, color 0.1s ease;
 }
 .explorer-action:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--color-canvas-parchment); /* surface change, not a stain */
   color: var(--color-ink);
 }
 .explorer-action:active {
@@ -1865,6 +1896,11 @@ button {
 
 /* ---- Empty workspace prompt ---------------------------------------------- */
 .sidebar-empty {
+  /* Fill the keep-alive sidebar body so the prompt reads as a full panel
+     rather than a collapsed strip (the views underneath are hidden when
+     this shows). */
+  position: absolute;
+  inset: 0;
   padding: var(--space-xl) var(--space-lg);
   display: flex;
   flex-direction: column;
