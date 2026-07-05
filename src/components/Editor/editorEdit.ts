@@ -632,7 +632,7 @@ function clampColumn(model: EditModel, line: number, col: number): number {
 }
 
 /**
- * Find the nearest `prefix…suffix` pair on `line` that encloses column
+ * Find the innermost `prefix…suffix` pair on `line` that encloses column
  * `caretCol1Based`. Used by {@link applyToggleWrap} and {@link isInsideWrap} to
  * decide whether the caret sits inside a wrap region (bold `*…*`, italic
  * `_…_`, code `` `…` ``, strikethrough `#strike[…]`, quote `#quote[…]`).
@@ -648,25 +648,42 @@ function clampColumn(model: EditModel, line: number, col: number): number {
  * Column N means the caret sits AFTER the (N−1)th char (Monaco convention), so
  * the char immediately to the caret's LEFT is at 0-based index `N − 2`, and the
  * char to the RIGHT is at index `N − 1`. A pair `prefix…suffix` encloses the
- * caret when the prefix sits at-or-left of the caret's left char and the suffix
- * sits at-or-right of the caret's right char.
+ * caret when the opener sits at-or-left of the caret's left char AND the closer
+ * sits at-or-right of the caret's right char: `openerStart <= leftIdx` and
+ * `closerStart >= rightIdx`.
  *
- * ## Algorithm (greedy, single-line — NO marker balancing)
+ * ## Algorithm (BALANCED, single-line — opener/closer are matched pairs)
  *
- * 1. Scan leftward from the caret's left char for the rightmost `prefix`
- *    occurrence whose last char is at-or-left of the caret's left char. For
- *    symmetric markers (`prefix === suffix`) the prefix char itself must be
- *    ≤ the left index; for bracket-pair openers the whole opener must sit left
- *    of the caret.
- * 2. From that prefix's end, scan rightward for the nearest `suffix` whose
- *    first char is at-or-right of the caret's right char.
- * 3. If both exist, the pair encloses the caret → return it.
+ * The earlier greedy "nearest prefix left + nearest suffix right" scan produced
+ * two correctness bugs because it never verified the candidate markers were a
+ * matched opener→content→closer pair:
+ *  - Adjacent same-type wraps (`*a* *b*`) with the caret in the gap matched the
+ *    CLOSING `*` of `*a*` as "prefix" and the OPENING `*` of `*b*` as "suffix",
+ *    corrupting the buffer on toggle (`*a b*`).
+ *  - Bracket-suffix sharing (`#strike[x] #quote[y]`) matched a `#strike[` opener
+ *    with a `]` belonging to `#quote[`, mis-reporting `isInsideWrap`.
  *
- * For nested markers like `*_x_*` with the caret in `x`, this greedy approach
- * finds the INNERMOST layer for each marker type (`*` → the inner `*…*`,
- * `_` → the inner `_…_`), which is the desired toggle behavior (toggling bold
- * unwraps one layer at a time). Typst markup is simple enough that this greedy
- * scan is correct for the markers in play; this is intentionally NOT a parser.
+ * Both are fixed by ensuring the opener and closer are a balanced pair:
+ *
+ * **Symmetric markers (`prefix === suffix`, e.g. `*`, `_`, `` ` ``):** collect
+ * every marker occurrence in order; pair them by alternation (the 1st, 3rd, …
+ * are openers; the 2nd, 4th, … are their closers). The innermost pair whose
+ * opener is at-or-left of the caret AND whose closer is at-or-right of the
+ * caret encloses it. Two adjacent wraps `*a* *b*` therefore pair as
+ * `(*a*)(*b*)`, never `(*a* *b*)`, so a caret in the gap has no enclosing pair.
+ *
+ * **Bracket-pair markers (`prefix !== suffix`, e.g. `#strike[` + `]`):** find
+ * candidate openers (the specific `prefix` string) to the left of the caret,
+ * rightmost-first; for each, depth-count-scan right for its MATCHING closer
+ * (the `]` that brings the open-bracket depth back to where it was right after
+ * this opener, accounting for intervening `#xxx[` openers and their `]`
+ * closers). Return the first (innermost) candidate whose pair spans the caret.
+ * `#strike[x] #quote[y]` thus pairs `#strike[` with the `]` after `x` (not the
+ * one after `y`), so a caret in `y` is NOT inside `#strike[…]`.
+ *
+ * This is intentionally NOT a full Typst parser — it balances only the marker
+ * family in play on a single line, which is enough for the toolbar's
+ * wrap-awareness.
  *
  * @param line            The single line of text to scan.
  * @param caretCol1Based  The 1-based caret column on that line.
@@ -685,35 +702,108 @@ function findEnclosingWrap(
   const leftIdx = caretCol1Based - 2;
   const rightIdx = caretCol1Based - 1;
 
-  // Step 1: rightmost prefix occurrence whose last char sits at-or-left of the
-  // caret's left char. lastIndexOf scans right-to-left, so its first hit (when
-  // we cap the fromIndex at leftIdx - prefix.length + 1) is the nearest one.
-  // For symmetric single-char markers, the prefix char can be the caret's left
-  // char itself; for multi-char bracket openers (`#strike[`, `#quote[`) the
-  // whole opener must sit at-or-left of the left char — the fromIndex cap below
-  // handles both cases uniformly.
-  const prefixFrom = leftIdx - prefix.length + 1;
-  let prefixStart = line.lastIndexOf(prefix, Math.max(-1, prefixFrom));
-  if (prefixStart === -1 || prefixStart + prefix.length - 1 > leftIdx) {
-    return null;
-  }
-  // Edge: when prefix and suffix share text (e.g. symmetric `*`), the prefix
-  // we found could itself be the suffix of a degenerate empty region; that's
-  // fine — step 2 will still find a suffix to the right.
+  // A pair encloses the caret when the opener sits at-or-left of the left char
+  // AND the closer sits at-or-right of the right char. (Closer START index ≥
+  // rightIdx means the whole suffix is at-or-right of the caret.)
+  const encloses = (openerStart: number, closerStart: number): boolean =>
+    openerStart <= leftIdx && closerStart >= rightIdx;
 
-  // Step 2: nearest suffix occurrence whose first char sits at-or-right of the
-  // caret's right char, AND at-or-after the prefix's end. Scan rightward.
-  const suffixSearchFrom = Math.max(rightIdx, prefixStart + prefix.length);
-  let suffixStart = line.indexOf(suffix, suffixSearchFrom);
-  if (suffixStart === -1) {
-    return null;
+  if (prefix === suffix) {
+    // --- Symmetric markers: alternation pairing ----------------------------
+    // Collect every occurrence index of the marker in order. Even-indexed
+    // occurrences are openers, the following odd-indexed occurrence is its
+    // closer (e.g. `*a* *b*` → [0,2,4,6] → pairs (0,2),(4,6)). This guarantees
+    // the opener/closer are a matched pair, so two adjacent wraps never get
+    // spliced together. Walk left-to-right and keep the LAST pair that
+    // encloses the caret = the innermost.
+    const occ: number[] = [];
+    for (let i = line.indexOf(prefix); i !== -1; i = line.indexOf(prefix, i + 1)) {
+      occ.push(i);
+    }
+    let result: { startCol: number; endCol: number } | null = null;
+    for (let k = 0; k + 1 < occ.length; k += 2) {
+      const opener = occ[k];
+      const closer = occ[k + 1];
+      if (encloses(opener, closer)) {
+        // Later (deeper-right) wins = innermost. Because occurrences are in
+        // order and pairs don't overlap under alternation, the last enclosing
+        // pair is the innermost one around the caret.
+        result = { startCol: opener + 1, endCol: closer + suffix.length + 1 };
+      }
+    }
+    return result;
   }
-  // Degenerate guard: for symmetric markers, the suffix we found could equal
-  // the prefix position (empty content `**` with caret inside). Allow it — an
-  // empty wrap is still a wrap.
 
-  return {
-    startCol: prefixStart + 1,
-    endCol: suffixStart + suffix.length + 1,
-  };
+  // --- Bracket-pair markers: depth-counting closer match -------------------
+  // Find candidate openers (the exact `prefix` string) sitting at-or-left of
+  // the caret, scanning right-to-left so the first enclosing match is the
+  // innermost. For each candidate, find its MATCHING closer by depth-counting
+  // open brackets (`#xxx[`) and close brackets (`]`) starting right after the
+  // opener — this skips `]`s that belong to intervening openers, so
+  // `#strike[x] #quote[y]` pairs `#strike[` with the `]` after `x`, not `y`.
+  const openerEndContent = (openerStart: number) => openerStart + prefix.length;
+  // Scan candidate openers right-to-left. NOTE: `lastIndexOf(prefix, -1)`
+  // returns 0 in JS (negative fromIndex normalizes to 0), so when the current
+  // candidate is at index 0 we must stop after processing it — decrementing to
+  // -1 and re-calling would re-find index 0 forever (infinite loop).
+  let openerStart = line.lastIndexOf(prefix, Math.max(-1, leftIdx - prefix.length + 1));
+  while (openerStart !== -1) {
+    if (openerStart + prefix.length - 1 <= leftIdx) {
+      const closerStart = findMatchingCloser(line, openerEndContent(openerStart), suffix);
+      if (closerStart !== -1 && encloses(openerStart, closerStart)) {
+        return { startCol: openerStart + 1, endCol: closerStart + suffix.length + 1 };
+      }
+    }
+    if (openerStart === 0) break; // avoid lastIndexOf(prefix,-1) re-finding 0
+    openerStart = line.lastIndexOf(prefix, openerStart - 1);
+  }
+  return null;
+}
+
+/**
+ * Scan right from `fromIdx` on `line` for the `suffix` closer that matches the
+ * opener already consumed before `fromIdx`, depth-counting any intervening
+ * bracket openers of the same family. Used by {@link findEnclosingWrap} for the
+ * bracket-pair case (`prefix !== suffix`, e.g. `#strike[` + `]`).
+ *
+ * "Same family" = any `#xxx[` opener (a `#`, an identifier run, then `[`)
+ * shares the `]` closer namespace with our suffix `]`. We start at depth 1
+ * (one opener already open) and look for the `]` that brings depth back to 0,
+ * decrementing on each `]` and incrementing on each `#xxx[` encountered. This
+ * is what disambiguates `#strike[x] #quote[y]` (the `]` after `x` closes
+ * `#strike[`) and handles nesting like `#strike[#quote[x]]`.
+ *
+ * @param line     The line being scanned.
+ * @param fromIdx  The 0-based index just AFTER the opener's last char.
+ * @param suffix   The closer markup (e.g. `"]"`).
+ * @returns The 0-based start index of the matching closer, or `-1` if none.
+ */
+function findMatchingCloser(line: string, fromIdx: number, suffix: string): number {
+  // Matches same-family bracket openers `#name[` to depth-count. The identifier
+  // is a run of letters/digits; this covers Typst's `#strike[`, `#quote[`,
+  // `#emph[`, `#strong[`, etc.
+  const OPENER_RE = /\#[A-Za-z0-9_]+\[/g;
+  let depth = 1; // one opener (our prefix) already open
+  let i = fromIdx;
+  while (i < line.length) {
+    // Try a same-family opener at position i.
+    if (line[i] === "#") {
+      OPENER_RE.lastIndex = i;
+      const m = OPENER_RE.exec(line);
+      if (m && m.index === i) {
+        depth++;
+        i = OPENER_RE.lastIndex; // just past the `[`
+        continue;
+      }
+    }
+    // Try the closer at position i.
+    if (suffix.length > 0 && line.startsWith(suffix, i)) {
+      depth--;
+      if (depth === 0) return i;
+      i += suffix.length;
+      continue;
+    }
+    i++;
+  }
+  return -1;
 }

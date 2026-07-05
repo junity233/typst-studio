@@ -1043,6 +1043,121 @@ describe("applyToggleWrap", () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // Regression (T1 review): adjacent same-type wraps must not corrupt.
+  //
+  // The greedy "nearest prefix-left + nearest suffix-right" scan treated the
+  // gap between two adjacent wraps as if it were "inside" a wrap (it paired the
+  // CLOSING `*` of `*a*` with the OPENING `*` of `*b*`), so toggling in the gap
+  // silently merged the two wraps (`*a* *b*` → `*a b*`, losing two markers).
+  // With marker balancing the caret in the gap has no enclosing pair, so a
+  // placeholder is inserted instead — no corruption.
+  // -------------------------------------------------------------------------
+  describe("adjacent same-type wraps (marker balancing)", () => {
+    it("inserts a placeholder (no corruption) when the caret is in the GAP between `*a*` and `*b*`", () => {
+      // `*a* *b*` indices: *(0) a(1) *(2) (space,3) *(4) b(5) *(6). Caret col 4
+      // sits at the left edge of the gap (right after `*a*`'s closing `*`,
+      // before the space) → no enclosing pair → a placeholder wrap is inserted.
+      const ed = caret("*a* *b*", 4);
+      applyToggleWrap(ed, "*", "*");
+
+      // Must NOT collapse to `*a b*` (the corruption the greedy scan produced).
+      // Both `*a*` and `*b*` survive intact, with `*text*` inserted at col 4.
+      const value = ed.getModel().getValue();
+      expect(value).not.toBe("*a b*");
+      expect(value).toBe("*a**text* *b*");
+    });
+
+    it("still unwraps `*a*` when the caret is inside `a` (col 2)", () => {
+      const ed = caret("*a* *b*", 2);
+      applyToggleWrap(ed, "*", "*");
+
+      expect(ed.getModel().getValue()).toBe("a *b*");
+    });
+
+    it("still unwraps `*b*` when the caret is inside `b` (col 6)", () => {
+      const ed = caret("*a* *b*", 6);
+      applyToggleWrap(ed, "*", "*");
+
+      expect(ed.getModel().getValue()).toBe("*a* b");
+    });
+
+    it("inserts a placeholder (no corruption) when the caret is in the GAP between `_a_` and `_b_` (italic)", () => {
+      const ed = caret("_a_ _b_", 4);
+      applyToggleWrap(ed, "_", "_");
+
+      expect(ed.getModel().getValue()).not.toBe("_a b_");
+      expect(ed.getModel().getValue()).toBe("_a__text_ _b_");
+    });
+
+    it("still unwraps `_b_` when the caret is inside `b` (italic, col 6)", () => {
+      const ed = caret("_a_ _b_", 6);
+      applyToggleWrap(ed, "_", "_");
+
+      expect(ed.getModel().getValue()).toBe("_a_ b");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression (T1 review): bracket-suffix sharing across distinct openers.
+  //
+  // `#strike[x] #quote[y]` — the greedy scan paired a `#strike[` opener with
+  // the nearest `]` regardless of which opener owned it, so a caret in `y`
+  // was reported as inside `#strike[…]`. With depth-counting closer matching,
+  // `#strike[` pairs only with its own `]` (the one after `x`).
+  // -------------------------------------------------------------------------
+  describe("bracket-suffix sharing across distinct openers", () => {
+    it("does NOT report `#strike[…]` active when the caret is inside `#quote[y]`", () => {
+      // `#strike[x] #quote[y]`: #strike[ at 0, x at 8, ] at 9, space 10,
+      // #quote[ at 11, y at 18, ] at 19. Caret col 19 = inside `y`.
+      const ed = caret("#strike[x] #quote[y]", 19);
+      expect(isInsideWrap(ed, "#strike[", "]")).toBe(false);
+    });
+
+    it("DOES report `#quote[…]` active when the caret is inside `#quote[y]`", () => {
+      const ed = caret("#strike[x] #quote[y]", 19);
+      expect(isInsideWrap(ed, "#quote[", "]")).toBe(true);
+    });
+
+    it("reports `#strike[…]` (not `#quote[…]`) active when the caret is inside `#strike[x]`", () => {
+      // caret col 9 = inside `x` (after the x).
+      const ed = caret("#strike[x] #quote[y]", 9);
+      expect(isInsideWrap(ed, "#strike[", "]")).toBe(true);
+      expect(isInsideWrap(ed, "#quote[", "]")).toBe(false);
+    });
+
+    it("does NOT corrupt the buffer when toggling `#strike[…]` from inside `#quote[y]`", () => {
+      const ed = caret("#strike[x] #quote[y]", 19);
+      applyToggleWrap(ed, "#strike[", "]");
+
+      // No enclosing `#strike[…]` pair → a placeholder wrap is inserted at the
+      // caret. The line must NOT be corrupted by pairing `#strike[` with the
+      // wrong `]` (which would yield e.g. `#strike[x] #quotetext]`).
+      const value = ed.getModel().getValue();
+      expect(value).not.toBe("#strike[x] #quotetext]");
+      // The original `#strike[x]` survives intact; a `#strike[text]` placeholder
+      // was inserted (here landing inside `#quote[…]`).
+      expect(value).toContain("#strike[x]");
+      expect(value).toContain("#strike[text]");
+    });
+
+    it("handles NESTED brackets `#strike[#quote[x]]` — both active in `x`", () => {
+      // #strike[ at 0, #quote[ at 8, x at 15, ] at 16, ] at 17. Caret col 16
+      // (inside `x`). Depth-counting must attribute the inner `]` to `#quote[`
+      // and the outer `]` to `#strike[`.
+      const ed = caret("#strike[#quote[x]]", 16);
+      expect(isInsideWrap(ed, "#strike[", "]")).toBe(true);
+      expect(isInsideWrap(ed, "#quote[", "]")).toBe(true);
+    });
+
+    it("unwraps the OUTER strike layer of nested `#strike[#quote[x]]`", () => {
+      const ed = caret("#strike[#quote[x]]", 16);
+      applyToggleWrap(ed, "#strike[", "]");
+
+      expect(ed.getModel().getValue()).toBe("#quote[x]");
+    });
+  });
+
   describe("undo-stop framing + source label", () => {
     it("pushes undo stops before AND after on the unwrap path, and focuses", () => {
       const ed = sel(1, 6, "*foo*");
@@ -1104,6 +1219,23 @@ describe("isInsideWrap", () => {
       const ed = caret("*_x_*", 4);
       expect(isInsideWrap(ed, "*", "*")).toBe(true);
       expect(isInsideWrap(ed, "_", "_")).toBe(true);
+    });
+
+    // Regression (T1 review): a caret in the GAP between two adjacent same-type
+    // wraps is NOT inside either — the greedy scan wrongly reported it inside.
+    it("returns false when the caret is in the GAP between `*a*` and `*b*`", () => {
+      const ed = caret("*a* *b*", 4);
+      expect(isInsideWrap(ed, "*", "*")).toBe(false);
+    });
+
+    it("returns true when the caret is inside `a` of `*a* *b*`", () => {
+      const ed = caret("*a* *b*", 2);
+      expect(isInsideWrap(ed, "*", "*")).toBe(true);
+    });
+
+    it("returns false when the caret is in the GAP between `_a_` and `_b_`", () => {
+      const ed = caret("_a_ _b_", 4);
+      expect(isInsideWrap(ed, "_", "_")).toBe(false);
     });
   });
 
