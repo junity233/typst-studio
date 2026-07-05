@@ -1044,7 +1044,15 @@ impl DocumentService {
         self.set_visibility(id, false);
         let (meta, last_doc, revision) = {
             let rt = tab.state.lock();
-            (rt.meta.clone(), rt.last_doc.clone(), rt.meta.revision)
+            // Tag the replay with the revision `last_doc` actually corresponds
+            // to, NOT the current `meta.revision`: if the user edited while
+            // hidden (or the watcher auto-reloaded a clean hidden doc) the
+            // current revision may be ahead of the cached compile result.
+            // Stamping the honest revision lets the frontend's stale-revision
+            // guard discard a replay that's older than a newer in-flight
+            // compile, and accept it only when it reflects the current buffer.
+            let honest_rev = rt.last_compiled_revision.unwrap_or(rt.meta.revision);
+            (rt.meta.clone(), rt.last_doc.clone(), honest_rev)
         };
         if let Some(doc) = last_doc {
             let pages = SvgRenderer::new().render(&doc);
