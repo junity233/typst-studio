@@ -83,6 +83,7 @@ impl TabState {
             origin: DocumentOrigin::Untitled,
             revision: 0,
             conflict: ConflictState::None,
+            hidden: false,
         };
         Self::with_meta(meta, initial_text)
     }

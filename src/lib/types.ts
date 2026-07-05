@@ -235,7 +235,16 @@ revision: number,
  * disk; `Modified` / `Missing` when the watcher detected an external disk
  * change that could not be auto-applied (dirty buffer / deleted file).
  */
-conflict: ConflictState, };
+conflict: ConflictState,
+/**
+ * Whether this document is soft-closed (hidden from the tab strip but kept
+ * alive in the background for instant reactivation). Defaults to `false`.
+ * The frontend's LRU policy eventually upgrades old hidden docs to a true
+ * close (hard_close_tab). Optional on the wire (`#[serde(default)]`) — the
+ * backend always sends it explicitly now, but old payloads / test fixtures
+ * that omit it deserialize as `false`.
+ */
+hidden?: boolean, };
 
 /**
  * How a document is anchored on disk (§4.2).
@@ -479,41 +488,49 @@ export type OpenExternalFilePayload = { path: string, };
  * current source text, so the frontend can hydrate Monaco without re-reading
  * the file from disk.
  */
-export type OpenedDocument = { content: string, 
+export type OpenedDocument = { content: string,
 /**
  * Stable unique id for this document (preserved across origin transitions).
  */
-id: DocumentId, 
+id: DocumentId,
 /**
  * Filesystem path, if backed by a file. `None` for untitled docs.
  * Derived from [`DocumentOrigin::canonical_path`].
  */
-path: string | null, 
+path: string | null,
 /**
  * Display title (filename or "Untitled").
  */
-title: string, 
+title: string,
 /**
  * Unsaved-changes flag.
  */
-dirty: boolean, 
+dirty: boolean,
 /**
  * Origin classification (§4.2). Drives resolution / watching / LSP.
  */
-origin: DocumentOrigin, 
+origin: DocumentOrigin,
 /**
  * Monotonic content revision. Bumped on every `update_text`. Carried by
  * compile/diagnostics/status events so stale results can be discarded.
  * `u64` maps to `bigint` by default in ts-rs, but Tauri serializes it as a
  * JSON number at runtime — override to `number` to match the wire format.
  */
-revision: number, 
+revision: number,
 /**
  * External-modification conflict state (§8.4). `None` when in sync with
  * disk; `Modified` / `Missing` when the watcher detected an external disk
  * change that could not be auto-applied (dirty buffer / deleted file).
  */
-conflict: ConflictState, };
+conflict: ConflictState,
+/**
+ * Whether this document is soft-closed (hidden from the tab strip but kept
+ * alive for instant reactivation). Flattened in from DocumentMeta. Defaults
+ * to `false`; always `false` for a freshly opened/created document. Optional
+ * on the wire (`#[serde(default)]`) so payloads that omit it (old fixtures)
+ * still type-check.
+ */
+hidden?: boolean, };
 
 /**
  * A 1-indexed text range (Monaco-friendly). Half-open `[start, end)`.

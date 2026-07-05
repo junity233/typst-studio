@@ -3,9 +3,10 @@ import type { SearchHit, SearchQuery } from "../lib/types";
 import { searchWorkspace } from "../lib/tauri";
 
 /**
- * Search view state (§Search view). Holds the query box text + option toggles,
- * the latest result set, and the bottom-panel visibility. The panel debounces
- * `run()` on query/option changes (300ms) so typing doesn't flood the backend.
+ * Search view state (§Search view). Holds the query box text + option toggles
+ * and the latest result set. The sidebar body debounces `run()` on query/option
+ * changes (300ms) so typing doesn't flood the backend. Visibility is owned by
+ * `uiStore.activeViewId` (Search is now a regular sidebar view), not here.
  */
 export interface SearchState {
   /** The query box text (not yet committed — `run` reads it live). */
@@ -16,15 +17,11 @@ export interface SearchState {
   results: SearchHit[];
   searching: boolean;
   error: string | null;
-  visible: boolean;
 
   setQuery: (q: string) => void;
   setOption: (key: "isRegex" | "caseSensitive" | "wholeWord", v: boolean) => void;
   run: () => Promise<void>;
   clear: () => void;
-  toggle: () => void;
-  show: () => void;
-  hide: () => void;
 }
 
 // Monotonic sequence counter for run() request ordering. A late-arriving older
@@ -39,7 +36,6 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   results: [],
   searching: false,
   error: null,
-  visible: false,
 
   setQuery: (q) => set({ query: q }),
   setOption: (key, v) => set({ [key]: v } as Pick<SearchState, typeof key>),
@@ -82,7 +78,4 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     ++runSeq;
     set({ query: "", results: [], error: null, searching: false });
   },
-  toggle: () => set((s) => ({ visible: !s.visible })),
-  show: () => set({ visible: true }),
-  hide: () => set({ visible: false }),
 }));

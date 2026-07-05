@@ -6,14 +6,16 @@ import { editorApiRef } from "../Editor/editorApiRef";
 import type { SearchHit } from "../../lib/types";
 
 /**
- * The bottom Search panel (§Search view). A query box + option toggles
- * (case / whole-word / regex) on top, and a grouped result list below. Clicking
- * a hit opens the file and reveals the line via the shared editor API ref.
+ * The Search view (§Search view), rendered inside the sidebar body. A query box
+ * + option toggles (case / whole-word / regex) on top, and a grouped result
+ * list below. Clicking a hit opens the file and reveals the line via the shared
+ * editor API ref.
  *
  * Debounced search: re-runs 300ms after the last query/option change; Enter
- * forces an immediate run, Escape hides the panel.
+ * forces an immediate run, Escape clears the query. Visibility is toggled via
+ * the Activity Bar (the sidebar host owns show/hide), not from within.
  */
-export function SearchPanel() {
+export function SearchPanel(_props: { viewId?: string }) {
   const query = useSearchStore((s) => s.query);
   const isRegex = useSearchStore((s) => s.isRegex);
   const caseSensitive = useSearchStore((s) => s.caseSensitive);
@@ -25,7 +27,6 @@ export function SearchPanel() {
   const setOption = useSearchStore((s) => s.setOption);
   const run = useSearchStore((s) => s.run);
   const clear = useSearchStore((s) => s.clear);
-  const hide = useSearchStore((s) => s.hide);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
 
   // Debounced search: re-runs 300ms after the last query/option change.
@@ -58,7 +59,7 @@ export function SearchPanel() {
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") void run();
-            if (e.key === "Escape") hide();
+            if (e.key === "Escape") clear();
           }}
           autoFocus
         />
@@ -88,7 +89,6 @@ export function SearchPanel() {
             .*
           </button>
         </div>
-        <button type="button" className="search-close" onClick={hide} title="Close">×</button>
       </div>
       <div className="search-results">
         {searching && <div className="search-status">Searching…</div>}

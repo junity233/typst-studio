@@ -7,10 +7,15 @@ import {
 } from "../documentsStore";
 import type { OpenedDocument } from "../../lib/types";
 
-// Mock the backend close + session capture so closeTab's async path can be
-// exercised without a live Tauri runtime. The mocks resolve cleanly; the
+// Mock the backend close + session capture so closeTab/hardClose's async path
+// can be exercised without a live Tauri runtime. The mocks resolve cleanly; the
 // cross-store cleanup coordination is what we assert.
-vi.mock("../../lib/tauri", () => ({ closeTab: vi.fn(() => Promise.resolve()) }));
+vi.mock("../../lib/tauri", () => ({
+  closeTab: vi.fn(() => Promise.resolve()),
+  softCloseTab: vi.fn(() => Promise.resolve()),
+  reactivateTab: vi.fn(() => Promise.resolve()),
+  hardCloseTab: vi.fn(() => Promise.resolve()),
+}));
 vi.mock("../../lib/session", () => ({
   captureAndSaveSession: vi.fn(() => Promise.resolve()),
   recordFile: vi.fn(),
@@ -317,22 +322,23 @@ describe("views store (tabsStore) operates on an id list (§10)", () => {
   });
 
   it("closeTab cleans up both stores (views + documents) and reassigns active", async () => {
-    // Cross-store coordination (§10): closing a view must drop the id from the
-    // views list AND remove the document from the domain store, and reassign
-    // activeId when the active view was the one closed.
+    // Phase B2: closeTab now SOFT-closes by default (the doc survives in
+    // `hidden`). The cross-store destroy coordination (drop the id AND delete
+    // the document) is now hardClose's contract — exercised below. softClose's
+    // keep-alive behavior is covered in tabsStore.softclose.test.ts.
     useDocumentsStore.setState({
       documents: {
         a: freshDocument({ id: "a", content: "A" }),
         b: freshDocument({ id: "b", content: "B" }),
       },
     });
-    useTabsStore.setState({ tabs: ["a", "b"], activeId: "a" });
+    useTabsStore.setState({ tabs: ["a", "b"], hidden: [], activeId: "a" });
 
-    await useTabsStore.getState().closeTab("a");
+    await useTabsStore.getState().hardClose("a");
 
     // Views list no longer references the closed id.
     expect(useTabsStore.getState().tabs).toEqual(["b"]);
-    // Domain store no longer holds the document.
+    // Domain store no longer holds the document (true destroy).
     expect(useDocumentsStore.getState().documents["a"]).toBeUndefined();
     // The other document is untouched.
     expect(useDocumentsStore.getState().documents["b"]).toBeDefined();
@@ -344,9 +350,11 @@ describe("views store (tabsStore) operates on an id list (§10)", () => {
     useDocumentsStore.setState({
       documents: { only: freshDocument({ id: "only", content: "X" }) },
     });
-    useTabsStore.setState({ tabs: ["only"], activeId: "only" });
+    useTabsStore.setState({ tabs: ["only"], hidden: [], activeId: "only" });
 
-    await useTabsStore.getState().closeTab("only");
+    // Phase B2: hardClose is the true-destroy path (softClose would keep the
+    // doc alive in `hidden`). The destroy semantics are what this test asserts.
+    await useTabsStore.getState().hardClose("only");
 
     expect(useTabsStore.getState().tabs).toEqual([]);
     expect(useTabsStore.getState().activeId).toBeNull();

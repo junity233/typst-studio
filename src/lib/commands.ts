@@ -118,9 +118,16 @@ export async function closeTabWithConfirm(id: string): Promise<boolean> {
       } catch (e) {
         console.warn(`[closeTabWithConfirm] discard_recovery failed for ${id}:`, e);
       }
+      // The user explicitly threw away unsaved edits — hard-close (destroy) so
+      // the dirty content doesn't survive in the soft-close cache. Soft-close
+      // is for "I'll come back to this"; discard is "throw it away."
+      await useTabsStore.getState().hardClose(id);
+      return true;
     }
   }
 
+  // The save and clean-tab paths still use closeTab = soft-close, which keeps
+  // the doc alive in the hidden cache for instant reactivation.
   await useTabsStore.getState().closeTab(id);
   return true;
 }

@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import type { DirEntry, EntryKind } from "../../lib/types";
 import { useWorkspaceStore } from "../../store/workspaceStore";
-import { useTabsStore, readOrderedDocuments } from "../../store/tabsStore";
+import { useTabsStore, readAllDocuments } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { openFileByPath, revealInFinder } from "../../lib/tauri";
 import { toIpcError } from "../../lib/ipc-error";
@@ -202,9 +202,14 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
     try {
       setLoading(true);
       const abs = `${rootPath}/${entry.relative}`;
-      const existing = readOrderedDocuments().find((t) => t.path === abs);
+      const existing = readAllDocuments().find((t) => t.path === abs);
       if (existing) {
-        useTabsStore.getState().activate(existing.id);
+        // Phase B2: a soft-closed file re-activates instead of opening a dup.
+        if (existing.hidden) {
+          await useTabsStore.getState().reactivate(existing.id);
+        } else {
+          useTabsStore.getState().activate(existing.id);
+        }
         return;
       }
       const doc = await openFileByPath(abs);

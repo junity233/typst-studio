@@ -2,8 +2,10 @@ import { create } from "zustand";
 import type { CompileStatus } from "../lib/ui-types";
 import type { ConflictState, LineRect, OpenedDocument, OutlineNode } from "../lib/types";
 import {
-  closeTab as closeTabBE,
+  hardCloseTab as hardCloseTabBE,
   newTab as newTabBE,
+  reactivateTab as reactivateTabBE,
+  softCloseTab as softCloseTabBE,
 } from "../lib/tauri";
 import { useDiagnosticsStore } from "./diagnosticsStore";
 import { captureAndSaveSession, recordFile } from "../lib/session";
@@ -41,13 +43,44 @@ export type Tab = Document;
 export interface TabsState {
   /** Ordered list of open document ids (the view order). */
   tabs: string[];
+  /**
+   * Soft-closed document ids (Phase B2), in LRU order: index 0 = oldest
+   * (next to be evicted). These tabs have left the strip but their backend
+   * state (worker/world/compile result) AND frontend state (documents[id]
+   * entry, Monaco model) all survive — reopening the file re-activates the
+   * hidden doc instantly. Capped at `MAX_HIDDEN`; overflow hard-closes the
+   * oldest (true destroy, frees the worker).
+   */
+  hidden: string[];
   activeId: string | null;
   /** Create an untitled tab via the backend; returns the new tab id. */
   openTab: (content?: string) => Promise<string>;
   /** Add an already-opened (file-backed) document to the store. */
   openPath: (doc: OpenedDocument) => void;
-  /** Close on the backend, then drop the local tab. */
+  /**
+   * Close a tab. By default (Phase B2) this soft-closes: the tab leaves the
+   * strip and its backend state is hidden (kept alive) rather than destroyed.
+   * `closeTabWithConfirm` (the X button) routes through here. True destruction
+   * (releasing the worker) happens via [`hardClose`] — used for LRU eviction.
+   */
   closeTab: (id: string) => Promise<void>;
+  /**
+   * Soft-close a tab (Phase B2): the tab leaves the strip but its backend +
+   * frontend state survives (kept in [`hidden`]). If `hidden` exceeds
+   * `MAX_HIDDEN`, the oldest hidden doc is hard-closed (LRU eviction).
+   */
+  softClose: (id: string) => Promise<void>;
+  /**
+   * Reactivate a soft-closed (hidden) document (Phase B2): move it back to the
+   * strip and make it active. The backend replays its cached compiled result.
+   */
+  reactivate: (id: string) => Promise<void>;
+  /**
+   * Hard-close a document (Phase B2): the true destroy — remove from
+   * `tabs`/`hidden`, delete the documents[id] entry, and release the backend
+   * worker/world. Used for LRU eviction of soft-closed docs; not recoverable.
+   */
+  hardClose: (id: string) => Promise<void>;
   /** Activate a view by id (no-op if the id isn't an open view). */
   activate: (id: string) => void;
   /** Update content and bump the revision (§7). Delegates to documentsStore. */
@@ -83,8 +116,16 @@ export interface TabsState {
 export const DEFAULT_CONTENT =
   "#set page(width: 21cm, height: 29.7cm)\n\nHello, Typst!\n";
 
+/**
+ * Maximum number of soft-closed (hidden) docs retained for instant reactivation
+ * (Phase B2 LRU). When `hidden` would exceed this, the oldest hidden doc is
+ * hard-closed (true destroy, freeing its worker).
+ */
+export const MAX_HIDDEN = 10;
+
 export const useTabsStore = create<TabsState>()((set, get) => ({
   tabs: [],
+  hidden: [],
   activeId: null,
 
   openTab: async (content) => {
@@ -99,32 +140,99 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
 
   openPath: (doc) => {
     useDocumentsStore.getState().openDocument(doc);
-    set((s) => ({ tabs: [...s.tabs, doc.id], activeId: doc.id }));
+    set((s) => {
+      // If the doc was soft-closed (in hidden) and is being re-added via a
+      // non-dedup path (e.g. openFileByPath → openPath), remove it from hidden
+      // so it doesn't appear in both arrays. Belt-and-suspenders against the
+      // backend handing back a hidden flag; the backend's open-from-* now
+      // clears it too, but this guarantees the frontend invariant regardless.
+      const hidden = s.hidden.filter((h) => h !== doc.id);
+      const tabs = s.tabs.includes(doc.id) ? s.tabs : [...s.tabs, doc.id];
+      return { tabs, hidden, activeId: doc.id };
+    });
     // Remember the opened file so it can be restored on next launch.
     if (doc.path) recordFile(doc.path);
     void captureAndSaveSession();
   },
 
   closeTab: async (id) => {
+    // Phase B2: the X button (via closeTabWithConfirm) now soft-closes by
+    // default — the tab leaves the strip but its state survives for instant
+    // reactivation. True destruction (releasing the worker) is hardClose,
+    // used for LRU eviction.
+    await get().softClose(id);
+  },
+
+  softClose: async (id) => {
     try {
-      await closeTabBE(id);
+      await softCloseTabBE(id);
     } catch (e) {
-      // Backend may reject (already gone); still drop the local tab.
-      console.warn("[closeTab] backend rejected:", e);
+      // Backend may reject (already gone); still hide the local tab.
+      console.warn("[softClose] backend rejected:", e);
     }
-    useDiagnosticsStore.getState().clearAll(id);
-    useDocumentsStore.getState().closeDocument(id);
-    useSaveStateStore.getState().clear(id);
+    // Compute the LRU eviction list BEFORE set (cleaner than reading it back
+    // out of state). newest goes at the end of hidden; if that overflows
+    // MAX_HIDDEN, the oldest (front) entries are evicted (hard-closed).
+    const prevHidden = get().hidden;
+    const nextHiddenAll = [...prevHidden, id];
+    const evict =
+      nextHiddenAll.length > MAX_HIDDEN
+        ? nextHiddenAll.slice(0, nextHiddenAll.length - MAX_HIDDEN)
+        : [];
+    const hidden =
+      nextHiddenAll.length > MAX_HIDDEN
+        ? nextHiddenAll.slice(nextHiddenAll.length - MAX_HIDDEN)
+        : nextHiddenAll;
     set((s) => {
       const tabs = s.tabs.filter((tabId) => tabId !== id);
       let activeId = s.activeId;
       if (activeId === id) {
         activeId = tabs.length > 0 ? tabs[tabs.length - 1] : null;
       }
-      return { tabs, activeId };
+      return { tabs, activeId, hidden };
     });
+    // Hard-close evicted docs AFTER set (avoids reentrant set). True destroy:
+    // frees the worker + deletes the documents[id] entry.
+    await Promise.all(evict.map((eid) => get().hardClose(eid)));
     // Await so the close-guard (useAppCommands) can await closeTab and have the
     // session capture complete before destroying the window.
+    await captureAndSaveSession();
+  },
+
+  reactivate: async (id) => {
+    try {
+      await reactivateTabBE(id);
+    } catch (e) {
+      // Backend may reject (already visible / unknown); still restore locally.
+      console.warn("[reactivate] backend rejected:", e);
+    }
+    set((s) => ({
+      hidden: s.hidden.filter((h) => h !== id),
+      tabs: s.tabs.includes(id) ? s.tabs : [...s.tabs, id],
+      activeId: id,
+    }));
+    void captureAndSaveSession();
+  },
+
+  hardClose: async (id) => {
+    try {
+      await hardCloseTabBE(id);
+    } catch (e) {
+      // Backend may reject (already gone); still drop the local tab.
+      console.warn("[hardClose] backend rejected:", e);
+    }
+    useDiagnosticsStore.getState().clearAll(id);
+    useDocumentsStore.getState().closeDocument(id);
+    useSaveStateStore.getState().clear(id);
+    set((s) => {
+      const tabs = s.tabs.filter((tabId) => tabId !== id);
+      const hidden = s.hidden.filter((h) => h !== id);
+      let activeId = s.activeId;
+      if (activeId === id) {
+        activeId = tabs.length > 0 ? tabs[tabs.length - 1] : null;
+      }
+      return { tabs, hidden, activeId };
+    });
     await captureAndSaveSession();
   },
 
@@ -203,6 +311,42 @@ export function readOrderedDocuments(): {
       return { id: d.id, path: d.path, content: d.content, dirty: d.dirty };
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);
+}
+
+/**
+ * Snapshot BOTH visible and soft-closed (hidden) documents (Phase B2), for the
+ * "is this file already open" dedup at the open sites. A file that was
+ * soft-closed is still "open" from the user's perspective — reopening it should
+ * re-activate the hidden doc rather than open a duplicate tab. Visible tabs
+ * come first (in display order), then hidden docs (LRU order). Reads both
+ * stores once (no subscription). Callers that find a hit in `hidden` should
+ * call [`useTabsStore.getState().reactivate`](Self.reactivate) instead of
+ * `activate`; use [`readOrderedDocuments`] when you want visible-only.
+ */
+export function readAllDocuments(): {
+  id: string;
+  path: string | null;
+  content: string;
+  dirty: boolean;
+  hidden: boolean;
+}[] {
+  const { tabs, hidden } = useTabsStore.getState();
+  const docs = useDocumentsStore.getState().documents;
+  const map = (id: string, isHidden: boolean) => {
+    const d = docs[id];
+    if (!d) return null;
+    return {
+      id: d.id,
+      path: d.path,
+      content: d.content,
+      dirty: d.dirty,
+      hidden: isHidden,
+    };
+  };
+  return [
+    ...tabs.map((id) => map(id, false)),
+    ...hidden.map((id) => map(id, true)),
+  ].filter((x): x is NonNullable<typeof x> => x !== null);
 }
 
 let initStarted = false;

@@ -482,6 +482,7 @@ mod tests {
             origin: crate::domain::document::DocumentOrigin::Untitled,
             revision: 1,
             conflict: ConflictState::None,
+            hidden: false,
         };
         let tab = Arc::new(TabState::with_meta(meta, "Hello".into()));
         let emitter_typed = Arc::new(RecordingEmitter::default());

@@ -313,6 +313,14 @@ pub struct DocumentMeta {
     /// change that could not be auto-applied (dirty buffer / deleted file).
     #[serde(default)]
     pub conflict: ConflictState,
+    /// Whether this document is soft-closed (hidden from the tab strip but kept
+    /// alive in the background for instant reactivation). Defaults to `false`.
+    /// Soft-close preserves the worker, EditorWorld, cached compile result, and
+    /// registry entry so reopening the file is instantaneous. The frontend's LRU
+    /// policy eventually upgrades old hidden docs to a true close
+    /// ([`hard_close`](crate::service::document_service::DocumentService::hard_close)).
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 impl DocumentMeta {
@@ -334,6 +342,7 @@ impl DocumentMeta {
             origin: DocumentOrigin::Untitled,
             revision: 0,
             conflict: ConflictState::None,
+            hidden: false,
         }
     }
 
@@ -349,6 +358,7 @@ impl DocumentMeta {
             origin: DocumentOrigin::WorkspaceFile { path, workspace_id },
             revision: 0,
             conflict: ConflictState::None,
+            hidden: false,
         }
     }
 
@@ -364,6 +374,7 @@ impl DocumentMeta {
             origin: DocumentOrigin::LooseFile { path, root },
             revision: 0,
             conflict: ConflictState::None,
+            hidden: false,
         }
     }
 
@@ -393,6 +404,7 @@ impl DocumentMeta {
             origin: DocumentOrigin::LooseFile { path, root },
             revision: 0,
             conflict: ConflictState::None,
+            hidden: false,
         }
     }
 }
@@ -548,5 +560,44 @@ mod tests {
         assert_eq!(meta.title, "notes.typ");
         assert!(matches!(meta.origin, DocumentOrigin::LooseFile { .. }));
         assert_eq!(meta.origin.resolution_root(), Some(Path::new("/x")));
+    }
+
+    /// Every constructor must default `hidden` to `false` — a freshly
+    /// opened/created document is always visible in the tab strip until the
+    /// user soft-closes it.
+    #[test]
+    #[allow(deprecated)]
+    fn constructors_default_hidden_false() {
+        assert!(!DocumentMeta::new_untitled().hidden);
+        let id = DocumentId::new();
+        let ws = WorkspaceId::new();
+        let p = PathBuf::from("/tmp/w.typ");
+        assert!(!DocumentMeta::with_workspace_path(id, p.clone(), ws).hidden);
+        assert!(
+            !DocumentMeta::with_loose_path(id, p, PathBuf::from("/tmp")).hidden,
+        );
+        assert!(!DocumentMeta::from_path(PathBuf::from("/x/y.typ")).hidden);
+    }
+
+    /// `#[serde(default)]` on `hidden` means a legacy payload (one without the
+    /// field) round-trips into `hidden: false`, so old persisted/recovery blobs
+    /// and pre-§B1 frontend messages still deserialize.
+    #[test]
+    fn hidden_defaults_false_when_absent_on_the_wire() {
+        // A pre-§B1 payload: no `hidden` key at all.
+        let legacy = r#"{
+            "id":"00000000-0000-0000-0000-000000000000",
+            "path":null,
+            "title":"Untitled",
+            "dirty":false,
+            "origin":{"kind":"untitled"},
+            "revision":0,
+            "conflict":"none"
+        }"#;
+        let meta: DocumentMeta = serde_json::from_str(legacy).unwrap();
+        assert!(!meta.hidden, "absent hidden field must default to false");
+        // And re-serializing emits it explicitly as false.
+        let v = serde_json::to_value(&meta).unwrap();
+        assert_eq!(v.get("hidden"), Some(&serde_json::Value::Bool(false)));
     }
 }
