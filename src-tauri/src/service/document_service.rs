@@ -948,6 +948,17 @@ impl DocumentService {
                 .cloned()
                 .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
         };
+
+        // A refresh/replay may submit the text already held by the world.
+        // Recompile it, but do not manufacture an edit: revision, dirty state,
+        // VFS state, and recovery snapshots must remain unchanged.
+        if tab.world.text() == content {
+            if let Some(worker) = self.store.workers.read().get(&id) {
+                worker.recompile();
+            }
+            return Ok(());
+        }
+
         tab.world.set_text(content.clone());
         // Atomically bump revision + set dirty under one lock.
         let (meta_snapshot, canon) = {
@@ -1278,6 +1289,20 @@ mod tests {
         document.update_text(meta.id, "b".into()).unwrap();
         let r2 = document.tab_revision(meta.id).unwrap();
         assert!(r2 > r1, "revision must be strictly monotonic");
+    }
+
+    #[test]
+    fn document_service_same_text_recompile_does_not_create_an_edit() {
+        let (document, _compile) = make_services();
+        let content = "#set page(width: 10cm)\n\nHello";
+        let meta = document.new_tab(Some(content.into()));
+
+        document.update_text(meta.id, content.into()).unwrap();
+
+        let after = document.tab_meta(meta.id).unwrap();
+        assert_eq!(after.revision, meta.revision);
+        assert!(!after.dirty);
+        assert_eq!(document.tab_text(meta.id).as_deref(), Some(content));
     }
 
     #[test]

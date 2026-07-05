@@ -1,12 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MonacoEditorReactComp } from "@typefox/monaco-editor-react";
 import type * as Monaco from "@codingame/monaco-vscode-editor-api";
-import type {
-  TextContents,
-  EditorApp,
-  EditorAppConfig,
-} from "monaco-languageclient/editorApp";
-import type { LanguageClientManager } from "monaco-languageclient/lcwrapper";
+import type { TextContents, EditorAppConfig } from "monaco-languageclient/editorApp";
 import { updateText } from "../../lib/tauri";
 import type { Tab } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
@@ -16,8 +10,6 @@ import { useDebouncedCallback } from "../../hooks/useDebounce";
 import { useLspStatus } from "../../store/lspStore";
 import { useSetting } from "../../hooks/useSetting";
 import {
-  buildVscodeApiConfig,
-  buildLanguageClientConfig,
   ensureVscodeApiInitialized,
 } from "./lspClient";
 import { monacoModelRegistry } from "./monacoModelRegistry";
@@ -37,11 +29,9 @@ import {
 import { registerTypstHighlighting } from "./typstHighlighting";
 import { usePasteConvert } from "./usePasteConvert";
 import type { DocumentOrigin } from "../../lib/types";
+import { DirectMonacoEditor } from "./DirectMonacoEditor";
+import { appLanguageClient } from "./appLanguageClient";
 
-/**
- * Imperative surface exposed to the parent for navigation (diagnostics goto,
- * preview click-to-source) and scroll-sync.
- */
 export interface MonacoEditorApi {
   /** Reveal a line, place the cursor, and focus (diagnostics / click-to-source). */
   revealLine: (line: number, column: number) => void;
@@ -103,19 +93,34 @@ interface MonacoEditorProps {
   onReady?: (api: MonacoEditorApi) => void;
 }
 
-const vscodeApiConfig = buildVscodeApiConfig();
-
 export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // Pre-initialize the monaco-vscode-api services ONCE before the wrapper
   // component mounts, so the wrapper's performGlobalInit takes its
   // "already initialised" branch and never news/races a second wrapper. See
   // `ensureVscodeApiInitialized` for the root-cause writeup.
   const [vscodeApiReady, setVscodeApiReady] = useState(false);
+  const [vscodeApiInitError, setVscodeApiInitError] = useState<string | null>(
+    null,
+  );
+  const [typstHighlightingReady, setTypstHighlightingReady] = useState(false);
+  const [editorRuntimeReady, setEditorRuntimeReady] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
-    ensureVscodeApiInitialized().then(() => {
-      if (!cancelled) setVscodeApiReady(true);
-    });
+    ensureVscodeApiInitialized()
+      .then(() => {
+        if (!cancelled) {
+          setVscodeApiReady(true);
+          setVscodeApiInitError(null);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setVscodeApiInitError(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -169,26 +174,6 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // non-undefined value into a ref so the prop is stable for the wrapper's
   // lifetime; wsUrl changes after mount do NOT reconfigure the wrapper's
   // client (recovery is AppLanguageClient's job in Phase B).
-  const liveLanguageClientConfig = useMemo(
-    () =>
-      wsUrl
-        ? buildLanguageClientConfig(
-            wsUrl,
-            rootPathRef.current,
-            workspaceNameRef.current,
-          )
-        : undefined,
-    [wsUrl],
-  );
-  const frozenLanguageClientConfigRef = useRef(liveLanguageClientConfig);
-  if (
-    frozenLanguageClientConfigRef.current === undefined &&
-    liveLanguageClientConfig !== undefined
-  ) {
-    frozenLanguageClientConfigRef.current = liveLanguageClientConfig;
-  }
-  const languageClientConfig = frozenLanguageClientConfigRef.current;
-
   // Editor + preview settings (reactive). Each `useSetting` re-renders this
   // component when its value changes, which flows new options into the memo
   // below — the wrapper live-applies them via `editor.updateOptions`.
@@ -328,10 +313,10 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // model-sync effect to activate models and restore view state. Memoized so
   // it's a stable reference for effect/use-hook dependencies (otherwise an
   // inline closure would retrigger the model-sync effect every render).
-  const editorAppRef = useRef<EditorApp | null>(null);
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const getEditor = useCallback<
     () => Monaco.editor.IStandaloneCodeEditor | null
-  >(() => editorAppRef.current?.getEditor() ?? null, []);
+  >(() => editorRef.current, []);
 
   // Register Typst syntax highlighting (TextMate grammar + theme CSS).
   // Runs once on mount, before the editor creates its model. The actual
@@ -339,8 +324,23 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // so it doesn't block editor creation — the model starts in plain-text mode
   // and re-tokenizes with colors once initialization completes.
   useEffect(() => {
-    void registerTypstHighlighting();
-  }, []);
+    if (!vscodeApiReady) return;
+    let cancelled = false;
+    void registerTypstHighlighting()
+      .then(() => {
+        if (!cancelled) setTypstHighlightingReady(true);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setVscodeApiInitError(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [vscodeApiReady]);
 
   // Apply settings-derived options directly to the live Monaco instance. The
   // wrapper's processConfig is no longer in the model-swap path (Phase A: no
@@ -383,6 +383,11 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
       .join("\u0000"),
   );
   useEffect(() => {
+    // createModel reaches StandaloneServices.get(). If it runs while the VS
+    // Code API is still starting, Monaco permanently initializes its singleton
+    // with the fallback services and ignores the real overrides added later.
+    if (!vscodeApiReady || !typstHighlightingReady) return;
+
     const documents = useDocumentsStore.getState().documents;
     const plan = computeModelSyncPlan(
       seenIdsRef.current,
@@ -427,7 +432,14 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         }
       }
     }
-  }, [openDocsKey, tab.id, prevTabId, getEditor]);
+  }, [
+    openDocsKey,
+    tab.id,
+    prevTabId,
+    getEditor,
+    vscodeApiReady,
+    typstHighlightingReady,
+  ]);
 
   // Save-As origin-transition effect (spec §11, Task 9). When a Save As (or a
   // rename) succeeds, `documentsStore.markSaved` / `rebindDocPath` transitions
@@ -495,6 +507,8 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   //     in `rebind_for_rename` (registry/world/VFS/watcher all moved), so the
   //     next recovery snapshot / session capture writes the NEW path.
   useEffect(() => {
+    if (!vscodeApiReady || !typstHighlightingReady) return;
+
     const documents = useDocumentsStore.getState().documents;
     const activeId = tab.id;
     const editor = getEditor();
@@ -527,7 +541,13 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     }
 
     prevOriginsRef.current = next;
-  }, [originsKey, tab.id, getEditor]);
+  }, [
+    originsKey,
+    tab.id,
+    getEditor,
+    vscodeApiReady,
+    typstHighlightingReady,
+  ]);
 
   // Rich-text paste: capture-phase listener converts pasted HTML to Typst and
   // resolves/inserts images. Wired through `getEditor` (closes over
@@ -550,9 +570,11 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     }
   };
 
-  const handleEditorStartDone = (editorApp?: EditorApp): void => {
-    editorAppRef.current = editorApp ?? null;
-    editorApp?.getEditor()?.updateOptions(settingsOptions);
+  const handleEditorStartDone = (
+    editor: Monaco.editor.IStandaloneCodeEditor,
+  ): void => {
+    editorRef.current = editor;
+    editor.updateOptions(settingsOptions);
     // The wrapper mounted with a throwaway default model (no codeResources);
     // swap in the active tab's real registry model now. This is the §10.5
     // "setModel" half for the very first tab — subsequent tab switches are
@@ -566,35 +588,36 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     // and `activate` would throw on an unknown id. Open idempotently here so
     // this callback is correct regardless of when it fires relative to the
     // effect.
-    const editor = getEditor();
-    if (editor !== null) {
-      const doc = useDocumentsStore.getState().documents[tab.id];
-      if (doc && !monacoModelRegistry.getModel(tab.id)) {
-        monacoModelRegistry.openModel(tab.id, {
-          content: doc.content,
-          origin: doc.origin,
-          revision: doc.revision,
-        });
-        seenIdsRef.current.add(tab.id);
-      }
-      const result = monacoModelRegistry.activate(tab.id, editor, null);
-      if (result.viewState !== null) {
-        editor.restoreViewState(result.viewState);
-      }
+    const doc = useDocumentsStore.getState().documents[tab.id];
+    if (doc && !monacoModelRegistry.getModel(tab.id)) {
+      monacoModelRegistry.openModel(tab.id, {
+        content: doc.content,
+        origin: doc.origin,
+        revision: doc.revision,
+      });
+      seenIdsRef.current.add(tab.id);
     }
-  };
-
-  const handleLanguageClientsStartDone = (
-    _lcsManager: LanguageClientManager,
-  ): void => {
-    // The language client's built-in diagnostics feature already routes
-    // `publishDiagnostics` into Monaco's marker service (which renders the
-    // squiggles). The bridge (spec §13.2 / §17) reads the marker service and
-    // mirrors markers into the per-document diagnosticsStore's `tinymist` slot
-    // (which the panel reads). It is generation-aware: on an LSP restart it
-    // clears stale tinymist diagnostics from the dead session. Idempotent.
+    const result = monacoModelRegistry.activate(tab.id, editor, null);
+    if (result.viewState !== null) {
+      editor.restoreViewState(result.viewState);
+    }
+    const model = editor.getModel();
+    // Initial backend compilation can finish before the frontend's event
+    // listeners are attached (especially on session restore). Replay the
+    // current text once when the preview is empty so it always gets a fresh
+    // compiled event. The backend treats unchanged text as a recompile rather
+    // than an edit, so this does not mark the document dirty or bump revision.
+    if (
+      doc &&
+      doc.svgPages.length === 0 &&
+      previewVisibleRef.current &&
+      model !== null
+    ) {
+      void updateText(doc.id, model.getValue()).catch((error) =>
+        console.warn("[MonacoEditor] initial preview compile failed:", error),
+      );
+    }
     installLspDiagnosticsBridge();
-
     onReady?.({
       revealLine: (line, column) => {
         const editor = getEditor();
@@ -669,6 +692,7 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         return getSelectionText(editor);
       },
     });
+    setEditorRuntimeReady(true);
   };
 
   const handleError = (error: Error): void => {
@@ -686,41 +710,41 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // it (and editorAppConfig) stable for the wrapper's lifetime.
   const lspReady =
     !lspLoading && (lspStatus.available ? wsUrl !== null : true);
-  if (!lspReady || !vscodeApiReady) {
+  useEffect(() => {
+    if (!editorRuntimeReady) return;
+    if (!lspReady) return;
+    if (wsUrl === null) return;
+    void appLanguageClient
+      .start({
+        wsUrl,
+        workspaceRootPath: rootPathRef.current,
+        workspaceName: workspaceNameRef.current,
+      })
+      .catch((error) => {
+        console.warn("[MonacoEditor] appLanguageClient.start failed:", error);
+      });
+  }, [editorRuntimeReady, lspReady, wsUrl]);
+
+  if (vscodeApiInitError !== null) {
+    return (
+      <div className="editor-pane">
+        {`Editor init failed: ${vscodeApiInitError}`}
+      </div>
+    );
+  }
+
+  if (!lspReady || !vscodeApiReady || !typstHighlightingReady) {
     return <div className="editor-pane">Loading editor...</div>;
   }
 
   return (
     <div className="editor-pane">
-      <MonacoEditorReactComp
-        // NO React `key`: the wrapper (@typefox/monaco-editor-react) initializes
-        // Monaco's VS Code services exactly once per process via
-        // MonacoVscodeApiWrapper.start(). A `key` change forces unmount+remount,
-        // and the wrapper re-runs start() on the new mount — panicking with
-        // "Services are already initialized" because MonacoVscodeApiWrapper's
-        // constructor resets the `vscodeApiInitialising` guard (a version-skew
-        // bug between monaco-editor-react@7.7 and monaco-languageclient). So
-        // the editor must mount exactly once for the whole app lifetime.
-        //
-        // Consequence: a wsUrl change (LSP restart / WebSocket drop) does NOT
-        // remount, so the language client won't auto-recover via remount. The
-        // wrapper's own restart path is dead code anyway (its onClose handler
-        // stops the client before restart runs, and setConfig is a no-op once
-        // a languageId is registered). Real recovery is the AppLanguageClient
-        // singleton's job (Task 4 / Phase B) — when that takes over the live
-        // session, this wrapper is removed entirely. For Phase A we accept
-        // "no auto-recovery on WS drop" in exchange for not panicking at boot.
-        vscodeApiConfig={vscodeApiConfig}
-        editorAppConfig={frozenEditorAppConfig}
-        languageClientConfig={languageClientConfig}
+      <DirectMonacoEditor
+        editorOptions={frozenEditorAppConfig?.editorOptions}
         style={{ height: "100%" }}
         onTextChanged={handleTextChanged}
         onEditorStartDone={handleEditorStartDone}
-        onLanguageClientsStartDone={handleLanguageClientsStartDone}
         onError={handleError}
-        // Keep the client alive across tab switches. The shared `lcsManager`
-        // singleton must NOT be disposed on every model swap.
-        enforceLanguageClientDispose={false}
       />
     </div>
   );

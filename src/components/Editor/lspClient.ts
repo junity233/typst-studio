@@ -1,9 +1,12 @@
 import type { MonacoVscodeApiConfig } from "monaco-languageclient/vscodeApiWrapper";
-import { MonacoVscodeApiWrapper } from "monaco-languageclient/vscodeApiWrapper";
-import type { LanguageClientConfig } from "monaco-languageclient/lcwrapper";
+import {
+  getEnhancedMonacoEnvironment,
+  MonacoVscodeApiWrapper,
+} from "monaco-languageclient/vscodeApiWrapper";
+import baseServiceOverride from "@codingame/monaco-vscode-base-service-override";
 import filesServiceOverride from "@codingame/monaco-vscode-files-service-override";
+import { servicesInitialized } from "@codingame/monaco-vscode-api/lifecycle";
 import { configureDefaultWorkerFactory } from "monaco-languageclient/workerFactory";
-import { buildLanguageClientOptions } from "./appLanguageClient";
 
 /**
  * Virtual path prefix under which in-memory (untitled) Typst docs live in the
@@ -53,7 +56,10 @@ export function buildVscodeApiConfig(): MonacoVscodeApiConfig {
     // themes) depend on. (Pre-Phase-A it also hosted our in-memory `file://`
     // overlay for virtual tab URIs; that overlay is gone — models now come from
     // monacoModelRegistry with URIs from originToUri.)
-    serviceOverrides: filesServiceOverride(),
+    serviceOverrides: {
+      ...baseServiceOverride(),
+      ...filesServiceOverride(),
+    },
     // Force-on semantic highlighting regardless of any user config; tinymist's
     // grammar is wired for it, and the configurationDefaults in the manifest
     // also enable it, but this is the server-agnostic guarantee.
@@ -107,77 +113,47 @@ export function buildVscodeApiConfig(): MonacoVscodeApiConfig {
  */
 let vscodeApiInitPromise: Promise<void> | null = null;
 
+function isServicesAlreadyInitializedError(error: unknown): boolean {
+  if (error instanceof Error) {
+    return /Services are already initialized/i.test(error.message);
+  }
+  if (typeof error === "string") {
+    return /Services are already initialized/i.test(error);
+  }
+  return false;
+}
+
 export function ensureVscodeApiInitialized(): Promise<void> {
   if (vscodeApiInitPromise !== null) return vscodeApiInitPromise;
   vscodeApiInitPromise = (async () => {
+    const wrapper = new MonacoVscodeApiWrapper(buildVscodeApiConfig());
     try {
-      const wrapper = new MonacoVscodeApiWrapper(buildVscodeApiConfig());
       await wrapper.start();
+      getEnhancedMonacoEnvironment().vscodeApiInitialising = false;
     } catch (e) {
       // If services were already initialized (e.g. by a prior partial init),
-      // start() throws — that's fine, the goal state (`vscodeApiInitialised
-      // === true`) still holds. Reset the memo so a caller can retry.
+      // start() can still throw before monaco-languageclient flips its own
+      // `vscodeApiInitialised` flag. In that case, COMPLETE the wrapper's
+      // global-init bookkeeping manually so later mounts see a coherent state
+      // (`servicesInitialized === true` AND `vscodeApiInitialised === true`).
+      if (
+        servicesInitialized &&
+        isServicesAlreadyInitializedError(e)
+      ) {
+        (
+          wrapper as unknown as {
+            markGlobalInitDone: () => void;
+          }
+        ).markGlobalInitDone();
+        getEnhancedMonacoEnvironment().vscodeApiInitialising = false;
+        return;
+      }
+      // Unexpected failure: reset the memo so a caller can retry.
       vscodeApiInitPromise = null;
       // eslint-disable-next-line no-console
-      console.warn("[lspClient] vscode-api init threw (may already be init):", e);
+      console.warn("[lspClient] vscode-api init failed:", e);
+      throw e;
     }
   })();
   return vscodeApiInitPromise;
-}
-
-/**
- * Build the `LanguageClientConfig` for connecting to the Rust-backend
- * WebSocket relay.
- *
- * The §7-compliant `clientOptions` (documentSelector for both `file`/`untitled`
- * schemes per §9.2, workspace rooting via `workspaceFolder` per §7.1/§7.2, the
- * three workspace-independent trigger flags per §7.3, and the §7.3/§21 #13
- * guarantee of NO global `rootPath`/`rootUri` override) are built by the SHARED
- * [`buildLanguageClientOptions`](./appLanguageClient.buildLanguageClientOptions)
- * helper. That helper is the single source of truth for the §7 options shape —
- * this wrapper path (the live `@typefox/monaco-editor-react` client) and the
- * `appLanguageClient` singleton path both emit identical options through it,
- * so the §7.3 rootPath tripwire test covers both for free.
- *
- * NOTE: This config drives the EXISTING wrapper-based client
- * (`@typefox/monaco-editor-react`'s `languageClientConfig` prop). Task 4 also
- * introduces `appLanguageClient.ts`, a standalone singleton that bypasses the
- * wrapper; the two coexist briefly until a later task rewires MonacoEditor to
- * use the singleton. Both paths emit the same §7-compliant options shape.
- */
-export function buildLanguageClientConfig(
-  wsUrl: string,
-  workspaceRootPath: string | null,
-  workspaceName: string | null,
-): LanguageClientConfig {
-  return {
-    languageId: "typst",
-    connection: {
-      options: {
-        $type: "WebSocketUrl",
-        url: wsUrl,
-        startOptions: {
-          onCall: () => console.log("[LSP] connected to tinymist"),
-          reportStatus: true,
-        },
-        stopOptions: {
-          onCall: () => console.log("[LSP] disconnected from tinymist"),
-          reportStatus: true,
-        },
-      },
-    },
-    // NOTE: no `restartOptions` here. monaco-languageclient's restart path is
-    // effectively dead code (the reader.onClose handler stops the client,
-    // flipping isStarted() to false before restartLC's guard runs), so the
-    // option would not reconnect. Recovery is handled instead by remounting
-    // this component (via a `key` derived from wsUrl in MonacoEditor), which
-    // the backend supports because it spawns a fresh tinymist per connection —
-    // so each remount runs a legal `initialize` handshake.
-    // §7.1/§7.2/§7.3 options sourced from the shared helper (single source of
-    // truth) — see appLanguageClient.buildLanguageClientOptions.
-    clientOptions: buildLanguageClientOptions(
-      workspaceRootPath,
-      workspaceName,
-    ),
-  };
 }

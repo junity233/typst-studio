@@ -282,6 +282,17 @@ describe("buildLanguageClientOptions — §7.1 有主工作区", () => {
     const opts = buildLanguageClientOptions("/home/me/proj", null);
     expect(opts.workspaceFolder?.name).toBe("proj");
   });
+
+  it("strips a Windows verbatim prefix before creating the workspace URI", () => {
+    const opts = buildLanguageClientOptions(
+      "\\\\?\\D:\\code\\typst-studio",
+      null,
+    );
+    expect(opts.workspaceFolder?.uri.toString()).toBe(
+      "file:///D:/code/typst-studio",
+    );
+    expect(opts.workspaceFolder?.name).toBe("typst-studio");
+  });
 });
 
 describe("buildLanguageClientOptions — §7.2 无主工作区", () => {

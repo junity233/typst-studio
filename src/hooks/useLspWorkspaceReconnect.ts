@@ -20,26 +20,19 @@ import { appLanguageClient } from "../components/Editor/appLanguageClient";
  * already alive, so `DidOpenTextDocumentFeature.register()` at `start()` time
  * replays them per Task 4's verification).
  *
- * ## Phase-C gating (CRITICAL — read before changing)
+ * ## Gating on `appLanguageClient.isRunning()`
  *
- * The wrapper-driven client (`buildLanguageClientConfig` in `lspClient.ts` +
- * the `languageClientConfig` prop on `MonacoEditor.tsx`) STILL drives the live
- * session today. `appLanguageClient` is built and correct but NOT YET the
- * active client — a later task rewires `MonacoEditor` to drop the wrapper.
- *
- * Until that rewire, this hook must NOT speculatively start `appLanguageClient`
- * on a workspace change: doing so would open a SECOND WebSocket to the backend,
- * and the backend's single-generation-single-connection rule (Task 6) means
- * whichever client connects first wins; the other is dropped — leaving the
- * wrapper's live session and `appLanguageClient` fighting.
+ * `appLanguageClient` is the singleton that drives the live LSP session
+ * (`MonacoEditor` calls `appLanguageClient.start(...)` once the editor runtime
+ * + LSP endpoint are ready). This hook must NOT speculatively start a SECOND
+ * client on a workspace change before that primary `start()` has run — the
+ * backend's single-generation-single-connection rule (Task 6) means whichever
+ * client connects first wins; a racing second client would be dropped.
  *
  * The hook is therefore gated on `appLanguageClient.isRunning()`: it only
- * triggers `start()` when SOMETHING ELSE has already started the singleton
- * (i.e. the rewire has happened, or a future caller opts in). Today nothing
- * starts it, so `isRunning()` is always `false` and this hook is an INERT
- * observer — it logs the workspace-change intent but takes no action. The new
- * code path stays present and unit-tested (see `shouldReconnectOnStatus`) so
- * the day the rewire lands, workspace-change reconnect just works.
+ * triggers `start()` when the singleton is already the active client (i.e. the
+ * primary `start()` from `MonacoEditor` has completed). Before that, it's an
+ * inert observer — it logs the workspace-change intent but takes no action.
  *
  * ## Decision helper
  *

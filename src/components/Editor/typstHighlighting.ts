@@ -26,7 +26,7 @@ import typstGrammar from "../../assets/grammar/typst.tmLanguage.json";
 import typstCodeGrammar from "../../assets/grammar/typst-code.tmLanguage.json";
 
 // Idempotency guard — register only once per page load.
-let registered = false;
+let registrationPromise: Promise<void> | null = null;
 
 /**
  * Register the Typst language + TextMate tokenizer + theme CSS.
@@ -40,9 +40,17 @@ let registered = false;
  * immediately with a plain-text fallback, then re-renders with colors once
  * initialization completes.
  */
-export async function registerTypstHighlighting(): Promise<void> {
-  if (registered) return;
-  registered = true;
+export function registerTypstHighlighting(): Promise<void> {
+  if (registrationPromise === null) {
+    registrationPromise = registerTypstHighlightingOnce().catch((error) => {
+      registrationPromise = null;
+      throw error;
+    });
+  }
+  return registrationPromise;
+}
+
+async function registerTypstHighlightingOnce(): Promise<void> {
 
   // ── 1. Register the typst language ────────────────────────────────────
   const monaco = await import("@codingame/monaco-vscode-editor-api");

@@ -34,15 +34,12 @@ type WrappedWebSocket = ReturnType<typeof toSocket>;
  * scope: React components only SUBSCRIBE to its state (§4.1 — "LSP 生命周期脱离
  * React editor 组件").
  *
- * SCOPE (Task 4 / Phase B 核心): this module is fully functional and unit-tested
- * at the pure-helper level, but it is NOT YET wired into the live editor. The
- * existing wrapper-driven client (`buildLanguageClientConfig` in `lspClient.ts`
- * + the `languageClientConfig` prop on `MonacoEditor.tsx`) keeps driving the
- * real session for now; the two coexist briefly. A later integration task will
- * rewire `MonacoEditor` to drop the wrapper's client and call
- * `appLanguageClient.start(...)` instead. Until then `start()` is simply never
- * invoked from the UI — but the state machine, generation tracking, and
- * spec-§7 options shape are correct and verified.
+ * SCOPE: this module is the live LSP client. `MonacoEditor` calls
+ * `appLanguageClient.start(...)` once the editor runtime + LSP endpoint are
+ * ready, and subscribes to its snapshot for the status bar. The previous
+ * `@typefox/monaco-editor-react` wrapper-driven client was removed (its
+ * internal two-effect `performGlobalInit` raced and panicked with "Services
+ * are already initialized"); this singleton is the sole LSP client now.
  *
  * Pure helpers (`buildLanguageClientOptions`, `mapStateChange`, `paramsEqual`)
  * are exported separately so the spec-critical logic is unit-testable without
@@ -176,9 +173,10 @@ export function buildLanguageClientOptions(
   };
 
   if (workspaceRootPath !== null) {
-    const name = workspaceName ?? basename(workspaceRootPath);
+    const uriPath = stripWindowsVerbatimPrefix(workspaceRootPath);
+    const name = workspaceName ?? basename(uriPath);
     options.workspaceFolder = {
-      uri: Uri.file(workspaceRootPath),
+      uri: Uri.file(uriPath),
       name,
       index: 0,
     };
@@ -257,6 +255,23 @@ export function paramsEqual(a: StartParams, b: StartParams): boolean {
 /** Extract the basename of a path cross-platform (used for WorkspaceFolder.name). */
 function basename(p: string): string {
   return p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+}
+
+/**
+ * Rust's canonicalize() returns verbatim paths on Windows (`\\?\C:\...`).
+ * VS Code's Uri.file treats that prefix as a UNC authority named `?`, producing
+ * an invalid `file://%3F/...` workspace URI. Convert it back to the regular
+ * Win32 spelling before building the URI. Verbatim UNC paths need their
+ * `UNC\server\share` tail restored to `\\server\share`.
+ */
+export function stripWindowsVerbatimPrefix(path: string): string {
+  if (path.startsWith("\\\\?\\UNC\\")) {
+    return `\\\\${path.slice(8)}`;
+  }
+  if (path.startsWith("\\\\?\\")) {
+    return path.slice(4);
+  }
+  return path;
 }
 
 /**
