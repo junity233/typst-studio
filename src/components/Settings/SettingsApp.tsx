@@ -12,6 +12,12 @@ import {
 } from "../../lib/tauri";
 import { toIpcError } from "../../lib/ipc-error";
 import i18n from "../../i18n";
+import {
+  localizedCategoryLabel,
+  localizedOptionLabel,
+  localizedSettingHelp,
+  localizedSettingLabel,
+} from "../../i18n/settingsManifest";
 import { Toggle } from "./Toggle";
 
 /** Icon + accent hue per category id. Falls back to a gear. */
@@ -64,7 +70,7 @@ function SettingsWindow({ categories }: { categories: ManifestCategory[] }) {
                 <span className="settings-category-icon">
                   <Icon size={15} strokeWidth={2} />
                 </span>
-                <span className="settings-category-label">{cat.label}</span>
+                <span className="settings-category-label">{localizedCategoryLabel(cat)}</span>
               </button>
             );
           })}
@@ -82,7 +88,7 @@ function CategoryPane({ category }: { category: ManifestCategory }) {
   return (
     <div className="settings-content">
       <header className="settings-content-header">
-        <h2 className="settings-content-title">{category.label}</h2>
+        <h2 className="settings-content-title">{localizedCategoryLabel(category)}</h2>
         <p className="settings-content-sub">
           {t("preferences", { count: category.settings.length })}
         </p>
@@ -163,11 +169,11 @@ function SettingRow({ def, last }: { def: SettingDef; last: boolean }) {
       <div className="setting-row-text">
         {showLabel && (
           <label className="setting-label" htmlFor={isInput ? `setting-${def.key}` : undefined}>
-            {def.label}
+            {localizedSettingLabel(def)}
           </label>
         )}
         <span className="setting-key">{def.key}</span>
-        {def.help && <span className="setting-help">{def.help}</span>}
+        {localizedSettingHelp(def) && <span className="setting-help">{localizedSettingHelp(def)}</span>}
       </div>
       <div className="setting-control">
         <SettingControl def={def} />
@@ -258,7 +264,7 @@ function ActionControl({ def }: { def: SettingDef }) {
       onClick={() => void run()}
       disabled={busy}
     >
-      {busy ? t("working") : def.label}
+      {busy ? t("working") : localizedSettingLabel(def)}
     </button>
   );
 }
@@ -328,13 +334,11 @@ function SelectControl({ def }: { def: SettingDef }) {
       : baseOptions;
   const fallback = typeof def.default === "string" ? def.default : (options[0] ?? "");
   const current = typeof value === "string" ? value : fallback;
-  /** Display label for an option: explicit `optionLabels` entry, a theme's
-   *  friendly name, else the capitalized option value (the default). */
+  /** Display label for an option: localized label, a theme's friendly name,
+   *  else the capitalized option value (the default). */
   const labelFor = (opt: string) => {
-    if (def.optionLabels?.[opt]) return def.optionLabels[opt];
     const theme = userThemes.find((t) => t.id === opt);
-    if (theme) return theme.name;
-    return opt.charAt(0).toUpperCase() + opt.slice(1);
+    return localizedOptionLabel(def, opt, theme?.name);
   };
   return (
     <select
