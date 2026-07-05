@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Typst Studio">
+  <title>Typst Studio</title>
+
+  <!-- Base: white rounded square (macOS squircle proportions). -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="#ffffff"/>
+
+  <!-- The "T": a geometric block letter in Action Blue (#0066cc),
+       built from a crossbar and a stem with 64px corner radius.
+       Centered, about 62% wide and 70% tall, holds shape down to 16px. -->
+  <path d="M 256 200 H 768 A 64 64 0 0 1 832 264 V 320 H 192 V 264 A 64 64 0 0 1 256 200 Z" fill="#0066cc"/>
+  <path d="M 432 320 H 592 V 736 A 64 64 0 0 1 528 800 H 496 A 64 64 0 0 1 432 736 Z" fill="#0066cc"/>
+
+  <!-- Baseline rule in ink (#1d1d1f), the typographer's page baseline.
+       Width matches the crossbar for symmetric composition. -->
+  <rect x="288" y="848" width="448" height="16" rx="8" fill="#1d1d1f"/>
+</svg>
