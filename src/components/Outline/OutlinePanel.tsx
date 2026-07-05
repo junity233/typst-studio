@@ -17,7 +17,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, ChevronsDownUp, ChevronsUpDown } from "lucide-react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { useTabsStore } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { editorApiRef } from "../Editor/editorApiRef";
@@ -162,10 +162,14 @@ export function OutlinePanel() {
       <div className="outline-empty">
         <div className="outline-empty-glyph">≡</div>
         <div className="outline-empty-text">
-          {t("outline.noHeadings", { defaultValue: "No headings" })}
+          {t("outline.noHeadings")}
         </div>
         <div className="outline-empty-hint">
-          Add headings with <code>=</code>, <code>==</code>, <code>===</code>
+          <Trans
+            t={t}
+            i18nKey="outline.addHeadingsHint"
+            components={{ code: <code /> }}
+          />
         </div>
       </div>
     );
@@ -173,12 +177,12 @@ export function OutlinePanel() {
 
   return (
     <div className="outline-root">
-      <div className="tree-toolbar" role="toolbar" aria-label="Outline actions">
+      <div className="tree-toolbar" role="toolbar" aria-label={t("outline.actionsAriaLabel")}>
         <button
           type="button"
           className="tree-toolbar-btn"
-          title="Collapse all"
-          aria-label="Collapse all sections"
+          title={t("outline.collapseAll")}
+          aria-label={t("outline.collapseAllAriaLabel")}
           disabled={!hasCollapsible || allCollapsed}
           onClick={collapseAll}
         >
@@ -187,15 +191,15 @@ export function OutlinePanel() {
         <button
           type="button"
           className="tree-toolbar-btn"
-          title="Expand all"
-          aria-label="Expand all sections"
+          title={t("outline.expandAll")}
+          aria-label={t("outline.expandAllAriaLabel")}
           disabled={collapsed.size === 0}
           onClick={expandAll}
         >
           <ChevronsUpDown size={14} />
         </button>
       </div>
-      <div className="outline-tree" role="tree" aria-label="Document outline">
+      <div className="outline-tree" role="tree" aria-label={t("outline.treeAriaLabel")}>
         {tree.map((tn) => (
           <TreeRow
             key={tn.index}

@@ -4,5 +4,10 @@
   "wholeWord": "Whole Word",
   "regex": "Regex",
   "searching": "Searching…",
-  "noResults": "No results"
+  "noResults": "No results",
+  "actionsAriaLabel": "Result actions",
+  "collapseAllFiles": "Collapse all files",
+  "expandAllFiles": "Expand all files",
+  "summary_one": "{{resultCount}} result in {{fileCount}} file",
+  "summary_other": "{{resultCount}} results in {{fileCount}} files"
 }

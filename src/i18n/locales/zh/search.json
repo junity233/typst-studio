@@ -4,5 +4,10 @@
   "wholeWord": "全字匹配",
   "regex": "正则表达式",
   "searching": "搜索中…",
-  "noResults": "无结果"
+  "noResults": "无结果",
+  "actionsAriaLabel": "结果操作",
+  "collapseAllFiles": "折叠所有文件",
+  "expandAllFiles": "展开所有文件",
+  "summary_one": "{{fileCount}} 个文件中的 {{resultCount}} 个结果",
+  "summary_other": "{{fileCount}} 个文件中的 {{resultCount}} 个结果"
 }

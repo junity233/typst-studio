@@ -17,7 +17,14 @@
   },
   "outline": {
     "title": "Outline",
-    "noHeadings": "No headings"
+    "noHeadings": "No headings",
+    "addHeadingsHint": "Add headings with <code>=</code>, <code>==</code>, <code>===</code>",
+    "actionsAriaLabel": "Outline actions",
+    "treeAriaLabel": "Document outline",
+    "collapseAll": "Collapse all",
+    "collapseAllAriaLabel": "Collapse all sections",
+    "expandAll": "Expand all",
+    "expandAllAriaLabel": "Expand all sections"
   },
   "search": {
     "title": "Search"

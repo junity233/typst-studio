@@ -145,12 +145,12 @@ export function SearchPanel(_props: { viewId?: string }) {
 
       <div className="search-results">
         {!searching && !error && grouped.length > 0 && (
-          <div className="tree-toolbar" role="toolbar" aria-label="Result actions">
+          <div className="tree-toolbar" role="toolbar" aria-label={t("actionsAriaLabel")}>
             <button
               type="button"
               className="tree-toolbar-btn"
-              title="Collapse all files"
-              aria-label="Collapse all files"
+              title={t("collapseAllFiles")}
+              aria-label={t("collapseAllFiles")}
               disabled={allCollapsed}
               onClick={collapseAll}
             >
@@ -159,16 +159,18 @@ export function SearchPanel(_props: { viewId?: string }) {
             <button
               type="button"
               className="tree-toolbar-btn"
-              title="Expand all files"
-              aria-label="Expand all files"
+              title={t("expandAllFiles")}
+              aria-label={t("expandAllFiles")}
               disabled={collapsed.size === 0}
               onClick={expandAll}
             >
               <ChevronsUpDown size={14} />
             </button>
             <span className="tree-toolbar-count">
-              {results.length} result{results.length === 1 ? "" : "s"} in{" "}
-              {grouped.length} file{grouped.length === 1 ? "" : "s"}
+              {t("summary", {
+                resultCount: results.length,
+                fileCount: grouped.length,
+              })}
             </span>
           </div>
         )}

@@ -17,7 +17,14 @@
   },
   "outline": {
     "title": "大纲",
-    "noHeadings": "无标题"
+    "noHeadings": "无标题",
+    "addHeadingsHint": "使用 <code>=</code>、<code>==</code>、<code>===</code> 添加标题",
+    "actionsAriaLabel": "大纲操作",
+    "treeAriaLabel": "文档大纲",
+    "collapseAll": "全部折叠",
+    "collapseAllAriaLabel": "折叠所有章节",
+    "expandAll": "全部展开",
+    "expandAllAriaLabel": "展开所有章节"
   },
   "search": {
     "title": "搜索"
