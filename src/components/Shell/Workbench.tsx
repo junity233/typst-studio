@@ -4,10 +4,8 @@ import "allotment/dist/style.css";
 import { Sidebar } from "../Sidebar/Sidebar";
 import { ActivityBar } from "./ActivityBar";
 import { EditorArea } from "./EditorArea";
-import { SearchPanel } from "../Search/SearchPanel";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
-import { useSearchStore } from "../../store/searchStore";
 import { useSettingsStore } from "../../store/settingsStore";
 import { getByPath } from "../../hooks/useSetting";
 import { loadSession } from "../../lib/session";
@@ -30,8 +28,6 @@ export function Workbench() {
   const sidebarVisible = useUiStore((s) => s.sidebarVisible);
   const setSidebar = useUiStore((s) => s.setSidebar);
   const setPreview = useUiStore((s) => s.setPreview);
-  // The bottom Search panel visibility (§Search view).
-  const searchVisible = useSearchStore((s) => s.visible);
 
   // The sidebar shows whenever the user hasn't hidden it (View → Toggle
   // Sidebar / Cmd+B). With no workspace open it renders the EmptyWorkspace
@@ -96,50 +92,27 @@ export function Workbench() {
   return (
     <div className="workbench">
       <ActivityBar />
-      {/*
-        Outer VERTICAL split: the main (sidebar|editor) row on top, the bottom
-        Search panel below. The Search panel is collapsible (§Search view) — its
-        pane uses the same `visible`-only toggle pattern as the sidebar below.
-      */}
-      <Allotment vertical proportionalLayout={false}>
-        <Allotment.Pane minSize={200}>
-          <Allotment proportionalLayout={false}>
-            {/*
-              Sidebar pane. CRITICAL: min/max/preferredSize stay CONSTANT
-              regardless of `visible`. Allotment restores a re-shown pane by
-              clamping its stashed _cachedVisibleSize against the view's CURRENT
-              min/max — but its React effect reconciles `visible` (which
-              restores the size) BEFORE it reconciles min/max, so zeroing
-              maxSize on hide makes the restore clamp to [0,0]=0 and the pane
-              stays invisible after reopening. Toggling only `visible` (with
-              `snap` for drag-to-collapse) is the supported API.
-            */}
-            <Allotment.Pane
-              minSize={0}
-              preferredSize={220}
-              maxSize={520}
-              visible={showSidebar}
-              snap
-            >
-              <Sidebar />
-            </Allotment.Pane>
-            <Allotment.Pane minSize={320}>
-              <EditorArea />
-            </Allotment.Pane>
-          </Allotment>
-        </Allotment.Pane>
+      <Allotment proportionalLayout={false}>
         {/*
-          Bottom Search panel (§Search view). Same `visible`-only toggle
-          semantics as the sidebar; drag-to-collapse via `snap`.
+          Sidebar pane. CRITICAL: min/max/preferredSize stay CONSTANT regardless
+          of `visible`. Allotment restores a re-shown pane by clamping its
+          stashed _cachedVisibleSize against the view's CURRENT min/max — but its
+          React effect reconciles `visible` (which restores the size) BEFORE it
+          reconciles min/max, so zeroing maxSize on hide makes the restore clamp
+          to [0,0]=0 and the pane stays invisible after reopening. Toggling only
+          `visible` (with `snap` for drag-to-collapse) is the supported API.
         */}
         <Allotment.Pane
-          minSize={100}
-          preferredSize={240}
-          maxSize={600}
-          visible={searchVisible}
+          minSize={0}
+          preferredSize={220}
+          maxSize={520}
+          visible={showSidebar}
           snap
         >
-          <SearchPanel />
+          <Sidebar />
+        </Allotment.Pane>
+        <Allotment.Pane minSize={320}>
+          <EditorArea />
         </Allotment.Pane>
       </Allotment>
     </div>

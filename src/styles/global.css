@@ -445,14 +445,13 @@ button {
 
 
 /* ============================================================================
-   Search panel (bottom, §Search view)
+   Search view (sidebar body, §Search view)
    ========================================================================= */
 .search-panel {
   display: flex;
   flex-direction: column;
   height: 100%;
   background: var(--color-canvas);
-  border-top: 1px solid var(--color-hairline);
 }
 
 .search-header {
@@ -503,23 +502,6 @@ button {
 .search-options button.active {
   background: var(--color-canvas-parchment);
   border-color: var(--color-primary);
-  color: var(--color-ink);
-}
-
-.search-close {
-  width: 24px;
-  height: 24px;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  color: var(--color-ink-muted-48);
-  font-size: 18px;
-  line-height: 1;
-  border-radius: var(--radius-sm);
-}
-
-.search-close:hover {
-  background: rgba(0, 0, 0, 0.06);
   color: var(--color-ink);
 }
 
