@@ -59,6 +59,16 @@ export async function openFile(): Promise<OpenedDocument | null> {
   return invoke<OpenedDocument | null>("open_file");
 }
 
+/**
+ * Open a native image file picker and return the absolute path of the chosen
+ * file, or `null` if the user cancels. The caller reads bytes via the fs plugin
+ * (mirrors the paste-image flow in `usePasteConvert`). Used by the format
+ * toolbar's Insert Image button.
+ */
+export async function pickImageFile(): Promise<string | null> {
+  return invoke<string | null>("pick_image_file");
+}
+
 /** Close the document on the backend, releasing its world/resources. */
 export async function closeTab(id: DocumentId): Promise<void> {
   await invoke("close_tab", { id });

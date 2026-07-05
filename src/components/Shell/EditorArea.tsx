@@ -3,6 +3,7 @@ import { Eye, EyeOff } from "lucide-react";
 import { TabStrip } from "../TitleBar/TabStrip";
 import { MonacoEditor } from "../Editor/MonacoEditor";
 import { editorApiRef } from "../Editor/editorApiRef";
+import { FormatToolbar } from "../FormatToolbar/FormatToolbar";
 import { PreviewPane } from "../Preview/PreviewPane";
 import { DiagnosticsPanel } from "../Diagnostics/DiagnosticsPanel";
 import { useTabsStore, useActiveDocument } from "../../store/tabsStore";
@@ -369,6 +370,11 @@ export function EditorArea() {
           {previewVisible ? <Eye size={14} /> : <EyeOff size={14} />}
         </button>
       </div>
+      <FormatToolbar
+        api={editorApiRef.current}
+        tab={activeTab}
+        disabled={activeTab === null}
+      />
       <main className="editor-area-main">
         {activeTab === null ? (
           <div className="pane pane-empty">No document open</div>
