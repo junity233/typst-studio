@@ -1,20 +1,19 @@
-import { lazy } from "react";
 import { Search } from "lucide-react";
 import type { HostApi } from "../api";
 import { useUiStore } from "../../store/uiStore";
 
-// The Search view's sidebar body — the real SearchPanel, lazy-loaded so it's
-// code-split from the main bundle (same pattern as the Explorer/SCM views).
-const SearchView = lazy(() =>
-  import("../../components/Search/SearchPanel").then((m) => ({ default: m.SearchPanel })),
-);
-
+// The host (Sidebar) wraps `component` in React.lazy(), so the factory MUST
+// return a Promise<{ default: ComponentType }> — i.e. the raw dynamic-import
+// shape. Do NOT pre-wrap in lazy() here (double-wraps; React rejects it with
+// "Lazy element type must resolve to a class or function"). Same pattern as
+// the Explorer/Outline/SCM views.
 export default function activate(ctx: HostApi): void {
   ctx.registerView({
     id: "workbench.search",
     title: "Search",
     icon: Search,
-    component: () => Promise.resolve({ default: SearchView }),
+    component: () =>
+      import("../../components/Search/SearchPanel").then((m) => ({ default: m.SearchPanel })),
     order: 10,
     when: "workspace",
   });
