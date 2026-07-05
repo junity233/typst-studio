@@ -9,6 +9,7 @@ import { DiagnosticsPanel } from "../Diagnostics/DiagnosticsPanel";
 import { useTabsStore, useActiveDocument } from "../../store/tabsStore";
 import { useUiStore } from "../../store/uiStore";
 import { useSetting } from "../../hooks/useSetting";
+import { useWheelZoom } from "../../hooks/useWheelZoom";
 import { updateText } from "../../lib/tauri";
 import {
   lineAtOrAboveY,
@@ -66,6 +67,50 @@ export function EditorArea() {
 
   // --- Scroll-sync & click-to-source wiring -------------------------------
   const [scrollSync] = useSetting<boolean>("preview.scrollSync");
+
+  // --- Ctrl/Cmd+wheel zoom (per-pane, persisted via settings) -------------
+  // Editor pane: editor.fontSize [8,32] step 1 (manifest default 13).
+  // Preview pane: preview.zoomLevel [0.25,4] step 0.1 (manifest default 1).
+  // The setters go through set_setting IPC → backend broadcasts settings_changed
+  // → all useSetting subscribers re-render → Monaco applies fontSize via
+  // updateOptions, preview applies zoomLevel via SvgPage's CSS `zoom`.
+  const [editorFontSize, setEditorFontSize] = useSetting<number>("editor.fontSize");
+  const [previewZoomLevel, setPreviewZoomLevel] = useSetting<number>("preview.zoomLevel");
+  // Keep live value in a ref so the native capture-phase wheel listener (which
+  // can't be a React synthetic handler) always reads the latest setting.
+  const editorFontSizeRef = useRef(editorFontSize);
+  editorFontSizeRef.current = editorFontSize;
+  const previewWheelZoom = useWheelZoom({
+    get: () => previewZoomLevel,
+    set: setPreviewZoomLevel,
+    min: 0.25,
+    max: 4,
+    step: 0.1,
+    fallback: 1,
+  });
+
+  // Monaco adds its own capture-phase wheel listener INSIDE its DOM; a React
+  // bubble-phase onWheel on `.pane-editor` would lose the race. Attach a native
+  // capture-phase listener on the pane div so we intercept Ctrl+wheel BEFORE
+  // it reaches Monaco, and call preventDefault to stop Monaco's zoom/scroll.
+  const editorPaneRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = editorPaneRef.current;
+    if (el === null) return;
+    const onWheel = (e: globalThis.WheelEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const current = editorFontSizeRef.current ?? 13;
+      const direction = e.deltaY < 0 ? 1 : -1;
+      const raw = current + direction * 1;
+      const next = Math.min(32, Math.max(8, raw));
+      if (next === current) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setEditorFontSize(next);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    return () => el.removeEventListener("wheel", onWheel, { capture: true });
+  }, [setEditorFontSize]);
   const previewPaneRef = useRef<HTMLDivElement | null>(null);
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
   const scrollSyncOn = scrollSync !== false; // default true when unset
@@ -383,7 +428,7 @@ export function EditorArea() {
             ref={containerRef}
             className={"editor-split" + (previewVisible ? "" : " preview-hidden")}
           >
-            <div className="pane pane-editor">
+            <div className="pane pane-editor" ref={editorPaneRef}>
               <MonacoEditor
                 tab={activeTab}
                 onChange={(value) => updateContent(activeTab.id, value)}
@@ -402,6 +447,7 @@ export function EditorArea() {
             <div
               className="pane pane-preview"
               style={previewVisible ? { width: previewWidth, flex: "0 0 " + previewWidth + "px" } : undefined}
+              onWheel={previewWheelZoom}
             >
               <PreviewPane
                 svgPages={activeTab.svgPages}
