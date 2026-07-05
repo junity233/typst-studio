@@ -93,24 +93,42 @@ export function EditorArea() {
   // bubble-phase onWheel on `.pane-editor` would lose the race. Attach a native
   // capture-phase listener on the pane div so we intercept Ctrl+wheel BEFORE
   // it reaches Monaco, and call preventDefault to stop Monaco's zoom/scroll.
-  const editorPaneRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const el = editorPaneRef.current;
-    if (el === null) return;
-    const onWheel = (e: globalThis.WheelEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      const current = editorFontSizeRef.current ?? 13;
-      const direction = e.deltaY < 0 ? 1 : -1;
-      const raw = current + direction * 1;
-      const next = Math.min(32, Math.max(8, raw));
-      if (next === current) return;
-      e.preventDefault();
-      e.stopPropagation();
-      setEditorFontSize(next);
-    };
-    el.addEventListener("wheel", onWheel, { passive: false, capture: true });
-    return () => el.removeEventListener("wheel", onWheel, { capture: true });
-  }, [setEditorFontSize]);
+  //
+  // Uses a callback ref (not useRef + useEffect) so the listener attaches the
+  // moment the `.pane-editor` div mounts — which is LATER than the first render
+  // (the div only exists when `activeTab !== null`, i.e. after session restore
+  // loads a document). A plain useEffect keyed on [setEditorFontSize] would run
+  // once before the div exists and never re-run. On unmount (React calls the
+  // ref with null), the stashed cleanup detaches the listener.
+  const editorPaneRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      const key = "_zoomCleanup" as keyof HTMLElement;
+      // Cleanup the previous element's listener (React calls null on the old
+      // node before calling with the new one).
+      const prev = (el ?? (null as unknown)) as HTMLElement | null;
+      if (prev && typeof prev[key] === "function") {
+        (prev[key] as unknown as () => void)();
+        delete prev[key];
+      }
+      if (el === null) return;
+      const onWheel = (e: globalThis.WheelEvent) => {
+        if (!(e.metaKey || e.ctrlKey)) return;
+        const current = editorFontSizeRef.current ?? 13;
+        const direction = e.deltaY < 0 ? 1 : -1;
+        const raw = current + direction * 1;
+        const next = Math.min(32, Math.max(8, raw));
+        if (next === current) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setEditorFontSize(next);
+      };
+      el.addEventListener("wheel", onWheel, { passive: false, capture: true });
+      (el as unknown as Record<string, unknown>)[key] = () => {
+        el.removeEventListener("wheel", onWheel, { capture: true });
+      };
+    },
+    [setEditorFontSize],
+  );
   const previewPaneRef = useRef<HTMLDivElement | null>(null);
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
   const scrollSyncOn = scrollSync !== false; // default true when unset
