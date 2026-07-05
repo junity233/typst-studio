@@ -138,7 +138,19 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // workspace-open must not rebuild the config for a mounted editor — that
   // would restart the client and race the relay (see rootPathRef note). The
   // fresh workspace folder is picked up on the next natural mount.
-  const languageClientConfig = useMemo(
+  //
+  // CRITICAL — frozen after first definition: the wrapper
+  // (@typefox/monaco-editor-react) has TWO effects that both call
+  // `performGlobalInit` (one keyed on editorAppConfig, one on
+  // languageClientConfig). If languageClientConfig transitions from
+  // `undefined` to a defined object AFTER mount (e.g. wsUrl resolving null→
+  // value), the second effect re-runs `performGlobalInit`, and a race with
+  // the first effect's async `apiWrapper.start()` double-initializes Monaco's
+  // services → "Services are already initialized" panic. We freeze the first
+  // non-undefined value into a ref so the prop is stable for the wrapper's
+  // lifetime; wsUrl changes after mount do NOT reconfigure the wrapper's
+  // client (recovery is AppLanguageClient's job in Phase B).
+  const liveLanguageClientConfig = useMemo(
     () =>
       wsUrl
         ? buildLanguageClientConfig(
@@ -149,6 +161,14 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         : undefined,
     [wsUrl],
   );
+  const frozenLanguageClientConfigRef = useRef(liveLanguageClientConfig);
+  if (
+    frozenLanguageClientConfigRef.current === undefined &&
+    liveLanguageClientConfig !== undefined
+  ) {
+    frozenLanguageClientConfigRef.current = liveLanguageClientConfig;
+  }
+  const languageClientConfig = frozenLanguageClientConfigRef.current;
 
   // Editor + preview settings (reactive). Each `useSetting` re-renders this
   // component when its value changes, which flows new options into the memo
@@ -232,6 +252,20 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     }),
     [settingsOptions],
   );
+  // CRITICAL — frozen after first render. The wrapper has an effect keyed on
+  // `editorAppConfig` that calls `performGlobalInit`; a new object identity
+  // here (every settings change) re-triggers it and races the languageClient-
+  // Config effect's init, double-initializing Monaco services. Settings are
+  // applied LIVE to the editor via `editor.updateOptions(...)` (see the
+  // settings-options effect below), so the wrapper's prop only needs to carry
+  // the initial options. Freeze the first computed value and never update it.
+  const frozenEditorAppConfigRef = useRef<EditorAppConfig | undefined>(
+    undefined,
+  );
+  if (frozenEditorAppConfigRef.current === undefined) {
+    frozenEditorAppConfigRef.current = editorAppConfig;
+  }
+  const frozenEditorAppConfig = frozenEditorAppConfigRef.current;
 
   // The current tab id, via a ref. CRITICAL: the editor instance is shared
   // across tabs, so `handleTextChanged` (registered once at mount) must read
@@ -622,9 +656,18 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     console.error("[MonacoEditor] error:", error);
   };
 
-  // Don't render until the initial LSP status fetch resolves — we need to know
-  // whether tinymist is available before deciding to wire up a language client.
-  if (lspLoading) {
+  // Don't render the wrapper until LSP status has STABILIZED, so the frozen
+  // languageClientConfig (below) captures its final value at first mount. The
+  // wrapper's two effects (editorAppConfig-keyed + languageClientConfig-keyed)
+  // both call performGlobalInit; if languageClientConfig transitions undefined
+  // → defined after mount, the second effect re-runs init and races the first
+  // → "Services are already initialized" panic. By waiting until the LSP
+  // status is stable (available⇒wsUrl non-empty, OR confirmed !available),
+  // the first mount sees the final languageClientConfig and the freeze keeps
+  // it (and editorAppConfig) stable for the wrapper's lifetime.
+  const lspReady =
+    !lspLoading && (lspStatus.available ? wsUrl !== null : true);
+  if (!lspReady) {
     return <div className="editor-pane">Loading editor...</div>;
   }
 
@@ -649,7 +692,7 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         // session, this wrapper is removed entirely. For Phase A we accept
         // "no auto-recovery on WS drop" in exchange for not panicking at boot.
         vscodeApiConfig={vscodeApiConfig}
-        editorAppConfig={editorAppConfig}
+        editorAppConfig={frozenEditorAppConfig}
         languageClientConfig={languageClientConfig}
         style={{ height: "100%" }}
         onTextChanged={handleTextChanged}
