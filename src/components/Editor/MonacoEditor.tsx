@@ -622,44 +622,32 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     console.error("[MonacoEditor] error:", error);
   };
 
-  // Don't render until the LSP status has STABILIZED. We need wsUrl to be in
-  // its final form before the first mount, because the wrapper's Monaco services
-  // can only be initialized ONCE per process — a wsUrl key change forces a
-  // remount that re-runs apiWrapper.start() and panics with
-  // "Services are already initialized".
-  //
-  // Two stable outcomes:
-  //   - tinymist found (`available=true`)  → wait until wsUrl is non-empty
-  //     (the backend's `lsp_status` event carries it; the initial fetch may
-  //     race and return an empty value briefly).
-  //   - tinymist NOT found (`available=false`) → wsUrl is intentionally empty
-  //     forever; mount immediately in degraded mode (no language client).
-  // `available` flips at most once (when `which::which` resolves), so once both
-  // `available` and `wsUrl` agree (available⇒wsUrl non-empty, OR !available),
-  // the key `lsp-${wsUrl ?? "nolsp"}` is stable for the rest of the session and
-  // no remount-induced services re-init can happen.
-  const lspReady =
-    !lspLoading && (lspStatus.available ? wsUrl !== null : true);
-  if (!lspReady) {
+  // Don't render until the initial LSP status fetch resolves — we need to know
+  // whether tinymist is available before deciding to wire up a language client.
+  if (lspLoading) {
     return <div className="editor-pane">Loading editor...</div>;
   }
 
   return (
     <div className="editor-pane">
       <MonacoEditorReactComp
-        // Phase A interim (spec §17 移除 list): the `key` is wsUrl-ONLY — it
-        // does NOT include `tab.id`, so a tab switch does NOT remount the
-        // editor (the whole point of §10.5: tab switch = setModel, no remount).
-        // The wsUrl `key` is retained because the wrapper's
-        // LanguageClientManager.setConfig is a no-op when the languageId already
-        // exists, and start() is gated on !isStarted() — so a wsUrl change
-        // while MOUNTED does NOT restart the client, and a dropped WebSocket
-        // permanently kills the client (monaco-languageclient's restart path is
-        // dead code: the onClose handler stops the client before restart runs).
-        // The only recovery is a full unmount+mount, which this `key` drives.
-        // Task 4 (Phase B) lifts the LanguageClient out of this component into
-        // AppLanguageClient; once that owns the lifecycle, this `key` can go.
-        key={`lsp-${wsUrl ?? "nolsp"}`}
+        // NO React `key`: the wrapper (@typefox/monaco-editor-react) initializes
+        // Monaco's VS Code services exactly once per process via
+        // MonacoVscodeApiWrapper.start(). A `key` change forces unmount+remount,
+        // and the wrapper re-runs start() on the new mount — panicking with
+        // "Services are already initialized" because MonacoVscodeApiWrapper's
+        // constructor resets the `vscodeApiInitialising` guard (a version-skew
+        // bug between monaco-editor-react@7.7 and monaco-languageclient). So
+        // the editor must mount exactly once for the whole app lifetime.
+        //
+        // Consequence: a wsUrl change (LSP restart / WebSocket drop) does NOT
+        // remount, so the language client won't auto-recover via remount. The
+        // wrapper's own restart path is dead code anyway (its onClose handler
+        // stops the client before restart runs, and setConfig is a no-op once
+        // a languageId is registered). Real recovery is the AppLanguageClient
+        // singleton's job (Task 4 / Phase B) — when that takes over the live
+        // session, this wrapper is removed entirely. For Phase A we accept
+        // "no auto-recovery on WS drop" in exchange for not panicking at boot.
         vscodeApiConfig={vscodeApiConfig}
         editorAppConfig={editorAppConfig}
         languageClientConfig={languageClientConfig}
@@ -668,10 +656,8 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         onEditorStartDone={handleEditorStartDone}
         onLanguageClientsStartDone={handleLanguageClientsStartDone}
         onError={handleError}
-        // Keep the client alive across tab switches (now even more important
-        // since we're not remounting on tab change). The shared `lcsManager`
-        // singleton must NOT be disposed on every model swap; only a wsUrl-keyed
-        // remount (recovery) tears it down, which this `false` allows.
+        // Keep the client alive across tab switches. The shared `lcsManager`
+        // singleton must NOT be disposed on every model swap.
         enforceLanguageClientDispose={false}
       />
     </div>
