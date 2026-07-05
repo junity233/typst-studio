@@ -1,0 +1,87 @@
+{
+  "saveFailed": {
+    "title": "保存失败",
+    "saveAsInstead": "{{reason}}\n\n是否另存为新文件？"
+  },
+  "saveChanges": {
+    "title": "是否保存对“{{name}}”的更改？",
+    "changesWillBeLost": "如果不保存，你的更改将会丢失。"
+  },
+  "closeUnsaved": {
+    "title_one": "你有 {{count}} 个未保存的文档",
+    "title_other": "你有 {{count}} 个未保存的文档",
+    "dontSaveChangesLost": "如果不保存，你的更改将会丢失。",
+    "saveAll": "全部保存"
+  },
+  "applyWorkspaceEdit": {
+    "title": "应用工作区编辑",
+    "body_one": "此工作区编辑涉及一个有未保存更改的文档:\n{{lines}}\n\n仍要应用吗?",
+    "body_other": "此工作区编辑涉及 {{count}} 个有未保存更改的文档:\n{{lines}}\n\n仍要应用吗?",
+    "reasonDeleteDirty": "删除此文件将丢弃未保存的编辑",
+    "reasonRenameOverwrite": "移动到此文件将覆盖其未保存的编辑",
+    "reasonOverwrite": "此操作将覆盖其未保存的编辑"
+  },
+  "commandLabel": {
+    "openFile": "打开文件",
+    "openFolder": "打开文件夹",
+    "save": "保存",
+    "saveAs": "另存为",
+    "closeTab": "关闭标签页",
+    "exportPdf": "导出 PDF",
+    "exportPng": "导出 PNG",
+    "exportSvg": "导出 SVG"
+  },
+  "conflict": {
+    "ariaLabel": "解决文件冲突",
+    "title": "解决冲突：{{title}}",
+    "compare": "比较",
+    "hideCompare": "隐藏比较",
+    "useDisk": "使用磁盘版本",
+    "overwriteDisk": "覆盖磁盘",
+    "later": "稍后处理",
+    "saveAs": "另存为…",
+    "compareToggleTitleOn": "将编辑器缓冲区与磁盘内容进行比较",
+    "compareToggleTitleOff": "此冲突类型没有可比较的磁盘内容",
+    "useDiskTitleOn": "用磁盘内容替换编辑器缓冲区",
+    "useDiskTitleOff": "仅在磁盘内容可读时可用（modified）",
+    "overwriteTitleOn": "用编辑器缓冲区覆盖磁盘文件",
+    "overwriteTitleOff": "仅在磁盘文件可写时可用（modified / replaced）",
+    "saveAsTitle": "将缓冲区保存到新文件（保留两个版本）",
+    "laterTitle": "继续编辑；在解决之前原地保存将一直被阻止",
+    "message": {
+      "modified": "磁盘上的文件在你编辑时发生了更改。请选择如何协调两个版本。",
+      "missing": "磁盘上的文件已被删除或移动。缓冲区已保留 —— 重新创建（另存为到相同路径）或另存到其他位置。",
+      "permission_changed": "文件已变为只读或不可访问。请修复文件权限，或另存为到可写位置。",
+      "replaced": "磁盘上的文件已被替换（内容相同，但文件标识已更改 —— 例如外部工具重写了它）。可选择覆盖以保留缓冲区，或另存为。"
+    },
+    "compareView": {
+      "ariaLabel": "编辑器缓冲区与磁盘内容对比",
+      "editorBuffer": "编辑器缓冲区",
+      "disk": "磁盘"
+    }
+  },
+  "recovery": {
+    "ariaLabel": "恢复未保存的文档",
+    "title": "恢复未保存的文档",
+    "message": "Typst Studio 未能正常关闭。以下文档包含已恢复的未保存更改。请逐个检查，并选择恢复、比较或丢弃。",
+    "discard": "丢弃",
+    "compare": "比较",
+    "recover": "恢复",
+    "diskChangedLabel": "磁盘已更改",
+    "diskChangedTitle": "自捕获此快照以来，磁盘上的文件已更改",
+    "untitledLabel": "未命名",
+    "untitledTitle": "此文档从未保存到磁盘",
+    "notSavedToDisk": "未保存到磁盘",
+    "compareTitleOn": "将快照与当前磁盘内容进行比较",
+    "compareTitleOff": "未命名文档没有可比较的磁盘版本",
+    "recoverTitleOn": "将未保存的缓冲区恢复到新标签页",
+    "recoverTitleOff": "磁盘已更改 —— 恢复前请先比较",
+    "unknownTime": "未知时间",
+    "compareView": {
+      "ariaLabel": "快照与磁盘内容对比",
+      "recoveredSnapshot": "已恢复（快照）",
+      "currentDisk": "当前磁盘",
+      "fileMissingOrNotOnDisk": "（文件缺失或不在磁盘上）"
+    }
+  }
+}

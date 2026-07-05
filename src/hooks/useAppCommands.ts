@@ -18,6 +18,7 @@ import { captureAndSaveSession } from "../lib/session";
 import { captureWindowBounds } from "../lib/windowState";
 import { captureLayout } from "../lib/layoutState";
 import { toIpcError } from "../lib/ipc-error";
+import i18n from "../i18n";
 import { commandRegistry } from "../extensions/registry";
 import { createHostApi } from "../extensions/api";
 // Import the workbench extension's lazy activator. Activating is deferred to
@@ -151,7 +152,9 @@ export async function dispatch(menuId: string): Promise<void> {
     console.warn(`[menu:${menuId}] failed:`, ipc.code, ipc.message);
     const cmd = commandRegistry.get(menuId);
     const label = cmd?.title ?? labelFor(menuId) ?? menuId;
-    window.alert(`${label}: ${ipc.message}`);
+    window.alert(
+      i18n.t("commandFailed", { ns: "errors", label, message: ipc.message }),
+    );
   }
 }
 
@@ -231,11 +234,14 @@ async function handleCloseRequested(): Promise<void> {
     return;
   }
   const choice = await useDialogStore.getState().confirm({
-    title: `You have ${dirty.length} unsaved document${dirty.length === 1 ? "" : "s"}`,
-    message: "If you don't save, your changes will be lost.",
-    confirmLabel: "Save All",
-    discardLabel: "Don't Save",
-    cancelLabel: "Cancel",
+    title: i18n.t("closeUnsaved.title", {
+      ns: "dialog",
+      count: dirty.length,
+    }),
+    message: i18n.t("closeUnsaved.dontSaveChangesLost", { ns: "dialog" }),
+    confirmLabel: i18n.t("closeUnsaved.saveAll", { ns: "dialog" }),
+    discardLabel: i18n.t("dontSave", { ns: "common" }),
+    cancelLabel: i18n.t("cancel", { ns: "common" }),
   });
   if (choice === "cancel") return;
   if (choice === "discard") {
@@ -347,14 +353,14 @@ export async function handleSaveAs(activeId: string | null): Promise<void> {
 /** Human label for an alert, given a menu id. */
 export function labelFor(menuId: string): string {
   switch (menuId) {
-    case "open-file": return "Open File";
-    case "open-folder": return "Open Folder";
-    case "save": return "Save";
-    case "save-as": return "Save As";
-    case "close-tab": return "Close Tab";
-    case "export-pdf": return "Export PDF";
-    case "export-png": return "Export PNG";
-    case "export-svg": return "Export SVG";
+    case "open-file": return i18n.t("commandLabel.openFile", { ns: "dialog" });
+    case "open-folder": return i18n.t("commandLabel.openFolder", { ns: "dialog" });
+    case "save": return i18n.t("commandLabel.save", { ns: "dialog" });
+    case "save-as": return i18n.t("commandLabel.saveAs", { ns: "dialog" });
+    case "close-tab": return i18n.t("commandLabel.closeTab", { ns: "dialog" });
+    case "export-pdf": return i18n.t("commandLabel.exportPdf", { ns: "dialog" });
+    case "export-png": return i18n.t("commandLabel.exportPng", { ns: "dialog" });
+    case "export-svg": return i18n.t("commandLabel.exportSvg", { ns: "dialog" });
     default: return menuId;
   }
 }

@@ -1,0 +1,8 @@
+{
+  "noPreview": "暂无预览",
+  "refresh": "刷新",
+  "refreshPreview": "刷新预览",
+  "page": "第 {{number}} 页",
+  "jumpToSourceMac": "⌘ 点击跳转到源码",
+  "jumpToSourceOther": "Ctrl+点击跳转到源码"
+}

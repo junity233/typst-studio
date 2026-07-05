@@ -1,0 +1,34 @@
+{
+  "explorer": {
+    "title": "Explorer",
+    "workspace": "Workspace",
+    "newFile": "New File",
+    "newFolder": "New Folder",
+    "collapseAll": "Collapse All",
+    "expandAll": "Expand All",
+    "rename": "Rename",
+    "copyName": "Copy Name",
+    "copyRelativePath": "Copy Relative Path",
+    "revealInFinder": "Reveal in Finder",
+    "revealInFileExplorer": "Reveal in File Explorer",
+    "delete": "Delete",
+    "folderEmpty": "This folder is empty.",
+    "namePlaceholder": "name"
+  },
+  "outline": {
+    "title": "Outline",
+    "noHeadings": "No headings"
+  },
+  "search": {
+    "title": "Search"
+  },
+  "sourceControl": {
+    "title": "Source Control"
+  },
+  "emptyWorkspace": {
+    "title": "No folder open",
+    "body": "Open a folder to browse its files as a workspace tree, with <code>#include</code> and <code>#image()</code> resolution.",
+    "openFolder": "Open Folder…"
+  },
+  "loading": "Loading…"
+}

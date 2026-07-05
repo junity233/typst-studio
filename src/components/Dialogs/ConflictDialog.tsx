@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   resolveConflictUseDisk,
   resolveConflictOverwrite,
@@ -8,6 +9,7 @@ import { useConflictDialogStore } from "../../store/conflictDialogStore";
 import { useDocumentsStore, type Document } from "../../store/documentsStore";
 import { useTabsStore } from "../../store/tabsStore";
 import { toIpcError, isCancelled } from "../../lib/ipc-error";
+import i18n from "../../i18n";
 import type { ConflictState } from "../../lib/types";
 
 /**
@@ -36,6 +38,7 @@ import type { ConflictState } from "../../lib/types";
  * missing) instead of the compare / use-disk actions.
  */
 export function ConflictDialog() {
+  const { t } = useTranslation("dialog");
   const openForId = useConflictDialogStore((s) => s.openForId);
   const error = useConflictDialogStore((s) => s.error);
   const close = useConflictDialogStore((s) => s.close);
@@ -142,10 +145,10 @@ export function ConflictDialog() {
         className="dialog conflict-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="Resolve file conflict"
+        aria-label={t("conflict.ariaLabel")}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="dialog-title">Resolve conflict: {doc.title}</h2>
+        <h2 className="dialog-title">{t("conflict.title", { title: doc.title })}</h2>
         <ConflictMessage variant={variant} />
         {error && <div className="conflict-error">{error}</div>}
         <div className="conflict-actions">
@@ -155,11 +158,11 @@ export function ConflictDialog() {
             disabled={!hasDiskContent || busy}
             title={
               hasDiskContent
-                ? "Compare the editor buffer with the disk content"
-                : "No disk content to compare for this conflict kind"
+                ? t("conflict.compareToggleTitleOn")
+                : t("conflict.compareToggleTitleOff")
             }
           >
-            {showCompare ? "Hide compare" : "Compare"}
+            {showCompare ? t("conflict.hideCompare") : t("conflict.compare")}
           </button>
           <button
             className="btn-utility"
@@ -167,11 +170,11 @@ export function ConflictDialog() {
             disabled={!hasDiskContent || busy}
             title={
               hasDiskContent
-                ? "Replace the editor buffer with the disk content"
-                : "Only available when the disk content is readable (modified)"
+                ? t("conflict.useDiskTitleOn")
+                : t("conflict.useDiskTitleOff")
             }
           >
-            Use disk
+            {t("conflict.useDisk")}
           </button>
           <button
             className="btn-utility"
@@ -179,28 +182,28 @@ export function ConflictDialog() {
             disabled={!canOverwrite(variant) || busy}
             title={
               canOverwrite(variant)
-                ? "Overwrite the disk file with the editor buffer"
-                : "Only available when the disk file is writable (modified / replaced)"
+                ? t("conflict.overwriteTitleOn")
+                : t("conflict.overwriteTitleOff")
             }
           >
-            Overwrite disk
+            {t("conflict.overwriteDisk")}
           </button>
           <button
             className="btn-utility"
             onClick={handleSaveAs}
             disabled={busy}
-            title="Save the buffer to a new file (keeps both versions)"
+            title={t("conflict.saveAsTitle")}
           >
-            Save As…
+            {t("conflict.saveAs")}
           </button>
           <button
             className="btn-primary"
             onClick={close}
             disabled={busy}
-            title="Keep editing; in-place save stays blocked until you resolve"
+            title={t("conflict.laterTitle")}
             autoFocus
           >
-            Later
+            {t("conflict.later")}
           </button>
         </div>
         {showCompare && hasDiskContent && (
@@ -230,17 +233,19 @@ function ConflictMessage({ variant }: { variant: ConflictState }) {
 /**
  * Human description of each conflict variant. Pure + exported so the render
  * test and any future status-bar tooltip share ONE definition of the wording.
+ * Reads the localized strings from the `dialog` namespace via the i18n
+ * singleton (English is the fallback, so the unit-test regexes still match).
  */
 export function conflictMessage(variant: ConflictState): string {
   switch (variant) {
     case "modified":
-      return "The file changed on disk while you had unsaved edits. Choose how to reconcile the two versions.";
+      return i18n.t("conflict.message.modified", { ns: "dialog" });
     case "missing":
-      return "The file was deleted or moved on disk. The buffer is preserved — recreate it (Save As to the same path) or save elsewhere.";
+      return i18n.t("conflict.message.missing", { ns: "dialog" });
     case "permission_changed":
-      return "The file became read-only or inaccessible. Fix the file permissions, or Save As to a writable location.";
+      return i18n.t("conflict.message.permission_changed", { ns: "dialog" });
     case "replaced":
-      return "The file was replaced on disk (same content, but the file identity changed — e.g. an external tool rewrote it). Overwrite to keep your buffer, or Save As.";
+      return i18n.t("conflict.message.replaced", { ns: "dialog" });
     case "none":
     default:
       return "";
@@ -259,18 +264,19 @@ function CompareView({
   buffer: string;
   disk: string;
 }) {
+  const { t } = useTranslation("dialog");
   return (
     <div
       className="conflict-compare"
       role="region"
-      aria-label="Editor buffer vs disk comparison"
+      aria-label={t("conflict.compareView.ariaLabel")}
     >
       <div className="conflict-compare-pane">
-        <div className="conflict-compare-label">Editor buffer</div>
+        <div className="conflict-compare-label">{t("conflict.compareView.editorBuffer")}</div>
         <pre>{buffer}</pre>
       </div>
       <div className="conflict-compare-pane">
-        <div className="conflict-compare-label">Disk</div>
+        <div className="conflict-compare-label">{t("conflict.compareView.disk")}</div>
         <pre>{disk}</pre>
       </div>
     </div>

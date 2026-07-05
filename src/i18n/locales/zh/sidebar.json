@@ -1,0 +1,34 @@
+{
+  "explorer": {
+    "title": "资源管理器",
+    "workspace": "工作区",
+    "newFile": "新建文件",
+    "newFolder": "新建文件夹",
+    "collapseAll": "全部折叠",
+    "expandAll": "全部展开",
+    "rename": "重命名",
+    "copyName": "复制名称",
+    "copyRelativePath": "复制相对路径",
+    "revealInFinder": "在访达中显示",
+    "revealInFileExplorer": "在文件资源管理器中显示",
+    "delete": "删除",
+    "folderEmpty": "此文件夹为空。",
+    "namePlaceholder": "名称"
+  },
+  "outline": {
+    "title": "大纲",
+    "noHeadings": "无标题"
+  },
+  "search": {
+    "title": "搜索"
+  },
+  "sourceControl": {
+    "title": "源代码管理"
+  },
+  "emptyWorkspace": {
+    "title": "未打开文件夹",
+    "body": "打开一个文件夹，以工作区树的形式浏览其中的文件，并解析 <code>#include</code> 和 <code>#image()</code>。",
+    "openFolder": "打开文件夹…"
+  },
+  "loading": "加载中…"
+}

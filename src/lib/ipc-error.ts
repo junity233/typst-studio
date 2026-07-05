@@ -9,6 +9,7 @@
  * yields a safe fallback so callers always have a typed error to branch on.
  */
 import type { ErrorCode } from "./types";
+import i18n from "../i18n";
 
 /**
  * Frontend-side `IpcError` shape. Mirrors the generated `types.ts` `IpcError`
@@ -96,13 +97,13 @@ export function formatSaveErrorMessage(e: unknown): string {
   const err = toIpcError(e);
   switch (err.code) {
     case "permission_denied":
-      return `Permission denied — Typst Studio can't write to this file. Try Save As to a writable location.`;
+      return i18n.t("savePermissionDenied", { ns: "errors" });
     case "read_only":
-      return `This file is read-only. Use Save As to write to a new location.`;
+      return i18n.t("saveReadOnly", { ns: "errors" });
     case "disk_full":
-      return `The disk is full. Free up space and try again, or use Save As to a different volume.`;
+      return i18n.t("saveDiskFull", { ns: "errors" });
     case "parent_missing":
-      return `The destination folder doesn't exist. Use Save As to pick a valid location.`;
+      return i18n.t("saveParentMissing", { ns: "errors" });
     case "target_missing":
     case "path_occupied":
     case "external_conflict":

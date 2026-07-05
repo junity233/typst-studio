@@ -1,0 +1,8 @@
+{
+  "__smoke__": "titlebar zh 就绪",
+  "openDocuments": "打开的文档",
+  "tabTooltip": "{{title}}{{dirty, client}}",
+  "dirtyTooltip": " • 未保存",
+  "closeTab": "关闭 {{title}}",
+  "newTab": "新建标签页"
+}

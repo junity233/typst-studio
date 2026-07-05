@@ -1,0 +1,18 @@
+{
+  "title": "Diagnostics",
+  "empty": "No diagnostics",
+  "columns": {
+    "line": "Line",
+    "message": "Message"
+  },
+  "severity": {
+    "error": "Error",
+    "warning": "Warning",
+    "info": "Info"
+  },
+  "row": {
+    "line": "line {{line}}",
+    "column": "column {{column}}",
+    "jumpTitle": "Double-click to jump to line"
+  }
+}

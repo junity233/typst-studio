@@ -5,6 +5,10 @@ import { SettingsApp } from "./components/Settings/SettingsApp";
 import { useSettingsStore } from "./store/settingsStore";
 import { useThemeStore } from "./store/themeStore";
 import { useTheme } from "./hooks/useTheme";
+import { useLanguage } from "./hooks/useLanguage";
+// Side-effect import: initializes i18next + registers React bindings. Must run
+// before any component that calls `useTranslation` renders.
+import "./i18n";
 import "./styles/global.css";
 
 class ErrorBoundary extends Component<
@@ -68,6 +72,10 @@ function Root() {
   }, []);
   // Apply the current theme in BOTH windows so the settings window matches.
   useTheme();
+  // Apply the current UI language in BOTH windows. Reads `appearance.language`
+  // and re-runs `i18n.changeLanguage` whenever the persisted setting changes
+  // (including cross-window, via the `settings_changed` broadcast).
+  useLanguage();
   return isSettingsWindow ? <SettingsApp /> : <App />;
 }
 

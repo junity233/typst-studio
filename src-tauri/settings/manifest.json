@@ -29,7 +29,11 @@
         { "key": "appearance.theme", "type": "select", "label": "Theme",
           "default": "default", "options": ["default"],
           "optionLabels": { "default": "Default" },
-          "help": "Custom themes live in <app-data>/themes/. Use 'Open themes folder' below to add one." }
+          "help": "Custom themes live in <app-data>/themes/. Use 'Open themes folder' below to add one." },
+        { "key": "appearance.language", "type": "select", "label": "Language",
+          "default": "auto", "options": ["auto", "en", "zh"],
+          "optionLabels": { "auto": "Auto (system)", "en": "English", "zh": "简体中文" },
+          "help": "Choose the UI language. Auto follows your system locale." }
     ]},
     { "id": "window", "label": "Window", "settings": [
         { "key": "window.sidebarVisible",   "type": "boolean", "label": "Show sidebar on startup", "default": true },

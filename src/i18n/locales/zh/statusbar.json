@@ -1,0 +1,55 @@
+{
+  "noDocument": "无文档",
+  "status": {
+    "ready": "就绪",
+    "compiling": "编译中…",
+    "compilingSlow": "编译中…（耗时较长）",
+    "compiled": "已编译",
+    "compiledIn": "编译耗时 {{ms}}ms",
+    "compileFailed": "编译失败"
+  },
+  "save": {
+    "saving": "保存中…",
+    "saveFailed": "保存失败"
+  },
+  "conflict": {
+    "label": "冲突",
+    "title": "此文件已在磁盘上更改并存在冲突——点击以解决"
+  },
+  "errors": {
+    "none": "无错误",
+    "count_one": "{{count}} 个错误",
+    "count_other": "{{count}} 个错误"
+  },
+  "watcher": {
+    "limited": "外部检测受限",
+    "limitedTitle": "实时外部变更检测不可用（已启用轮询回退）。重新加载/比较可能略有延迟。"
+  },
+  "lsp": {
+    "notInstalled": "LSP：未安装",
+    "off": "LSP：已关闭",
+    "message": "LSP：{{message}}",
+    "restartNeeded": "LSP：需要重启",
+    "reconnecting": "LSP：重新连接中…",
+    "connecting": "LSP：连接中…",
+    "connected": "LSP：已连接",
+    "lastTrigger": "上次触发：{{reason}}",
+    "restartButton": "重启",
+    "restartButtonTitle": "重启 LSP 服务器"
+  },
+  "startupProblems": {
+    "count_one": "{{count}} 个启动问题",
+    "count_other": "{{count}} 个启动问题",
+    "countTitle_one": "{{count}} 个启动问题——请查看问题面板",
+    "countTitle_other": "{{count}} 个启动问题——请查看问题面板",
+    "panelTitle": "启动问题（{{count}}）",
+    "panelAriaLabel_one": "{{count}} 个启动问题",
+    "panelAriaLabel_other": "{{count}} 个启动问题",
+    "copyDetails": "复制详情",
+    "copyDetailsTitle": "将纯文本摘要复制到剪贴板",
+    "dismiss": "忽略",
+    "dismissTitle": "关闭此面板",
+    "detailsHeader": "Typst Studio——启动问题",
+    "detailsCount": "数量：{{count}}"
+  }
+}

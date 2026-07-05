@@ -1,6 +1,7 @@
 import { List } from "lucide-react";
 import type { HostApi } from "../api";
 import { useUiStore } from "../../store/uiStore";
+import i18n from "../../i18n";
 
 // The host (Sidebar) wraps `component` in React.lazy(), so the factory MUST
 // return a Promise<{ default: ComponentType }> — i.e. the raw dynamic-import
@@ -10,7 +11,7 @@ export default function activate(ctx: HostApi): void {
   // headings), so `when: "always"` rather than `workspace`.
   ctx.registerView({
     id: "workbench.outline",
-    title: "Outline",
+    title: i18n.t("outline", { ns: "command" }),
     icon: List,
     component: () =>
       import("../../components/Outline/OutlinePanel").then((m) => ({
@@ -22,7 +23,7 @@ export default function activate(ctx: HostApi): void {
 
   ctx.registerCommand({
     id: "workbench.view.outline",
-    title: "Show Outline",
+    title: i18n.t("showOutline", { ns: "command" }),
     category: "View",
     keybinding: "CmdOrCtrl+Shift+O",
     handler: () => useUiStore.getState().setActiveView("workbench.outline"),

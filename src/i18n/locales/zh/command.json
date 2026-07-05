@@ -1,0 +1,15 @@
+{
+  "__smoke__": "command zh 就绪",
+  "explorer": "资源管理器",
+  "outline": "大纲",
+  "showOutline": "显示大纲",
+  "search": "搜索",
+  "findInFiles": "在文件中查找",
+  "sourceControl": "源代码管理",
+  "showSourceControl": "显示源代码管理",
+  "gitRefresh": "Git: 刷新",
+  "newTab": "新建标签页",
+  "toggleSidebar": "切换侧边栏",
+  "togglePreview": "切换预览",
+  "openSettings": "打开设置"
+}

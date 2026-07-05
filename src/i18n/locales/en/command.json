@@ -1,0 +1,15 @@
+{
+  "__smoke__": "command en ok",
+  "explorer": "Explorer",
+  "outline": "Outline",
+  "showOutline": "Show Outline",
+  "search": "Search",
+  "findInFiles": "Find in Files",
+  "sourceControl": "Source Control",
+  "showSourceControl": "Show Source Control",
+  "gitRefresh": "Git: Refresh",
+  "newTab": "New Tab",
+  "toggleSidebar": "Toggle Sidebar",
+  "togglePreview": "Toggle Preview",
+  "openSettings": "Open Settings"
+}

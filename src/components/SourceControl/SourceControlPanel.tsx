@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useGitStore, initGitAutoRefresh } from "../../store/gitStore";
 import type { GitStatusKind } from "../../lib/types";
 
@@ -13,6 +14,7 @@ import type { GitStatusKind } from "../../lib/types";
  * the panel shows a friendly hint instead of an error.
  */
 export function SourceControlPanel() {
+  const { t } = useTranslation("sourceControl");
   const changes = useGitStore((s) => s.changes);
   const recentLog = useGitStore((s) => s.recentLog);
   const loading = useGitStore((s) => s.loading);
@@ -32,10 +34,8 @@ export function SourceControlPanel() {
   if (!isRepo && !loading) {
     return (
       <div className="scm-empty">
-        <p>Not a git repository.</p>
-        <p className="scm-hint">
-          Open a folder containing a .git directory to enable source control.
-        </p>
+        <p>{t("notARepo")}</p>
+        <p className="scm-hint">{t("notARepoHint")}</p>
       </div>
     );
   }
@@ -58,7 +58,7 @@ export function SourceControlPanel() {
       <div className="scm-commit-box">
         <textarea
           className="scm-message"
-          placeholder="Message (Ctrl+Enter to commit)"
+          placeholder={t("messagePlaceholder")}
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={(e) => {
@@ -75,12 +75,12 @@ export function SourceControlPanel() {
             disabled={!message.trim() || staged.length === 0}
             onClick={doCommit}
           >
-            Commit
+            {t("commit")}
           </button>
           <button
             className="scm-refresh"
             onClick={() => void refresh()}
-            title="Refresh"
+            title={t("refresh")}
           >
             ⟳
           </button>
@@ -90,11 +90,11 @@ export function SourceControlPanel() {
       {error && <div className="scm-error">{error}</div>}
 
       <div className="scm-changes">
-        {loading && <div className="scm-status">Loading…</div>}
+        {loading && <div className="scm-status">{t("loading")}</div>}
 
         {unstaged.length > 0 && (
           <div className="scm-section">
-            <div className="scm-section-title">Changes ({unstaged.length})</div>
+            <div className="scm-section-title">{t("changes", { count: unstaged.length })}</div>
             {unstaged.map((c) => (
               <div key={c.path} className="scm-row">
                 <span className={`scm-badge scm-${c.unstaged}`}>
@@ -104,7 +104,7 @@ export function SourceControlPanel() {
                 <button
                   className="scm-action"
                   onClick={() => void stage(c.path)}
-                  title="Stage"
+                  title={t("stage")}
                 >
                   +
                 </button>
@@ -116,7 +116,7 @@ export function SourceControlPanel() {
         {staged.length > 0 && (
           <div className="scm-section">
             <div className="scm-section-title">
-              Staged Changes ({staged.length})
+              {t("stagedChanges", { count: staged.length })}
             </div>
             {staged.map((c) => (
               <div key={c.path} className="scm-row">
@@ -127,7 +127,7 @@ export function SourceControlPanel() {
                 <button
                   className="scm-action"
                   onClick={() => void unstage(c.path)}
-                  title="Unstage"
+                  title={t("unstage")}
                 >
                   −
                 </button>
@@ -137,13 +137,13 @@ export function SourceControlPanel() {
         )}
 
         {!loading && changes.length === 0 && (
-          <div className="scm-status">No changes</div>
+          <div className="scm-status">{t("noChanges")}</div>
         )}
       </div>
 
       {recentLog.length > 0 && (
         <div className="scm-log">
-          <div className="scm-section-title">Recent Commits</div>
+          <div className="scm-section-title">{t("recentCommits")}</div>
           {recentLog.map((c) => (
             <div key={c.id} className="scm-log-row">
               <span className="scm-log-msg">{c.message}</span>

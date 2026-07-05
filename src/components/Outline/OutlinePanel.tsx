@@ -17,6 +17,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, ChevronsDownUp, ChevronsUpDown } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useTabsStore } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { editorApiRef } from "../Editor/editorApiRef";
@@ -93,6 +94,7 @@ function activeHeadingIndex(outline: OutlineNode[], visibleLine: number): number
 }
 
 export function OutlinePanel() {
+  const { t } = useTranslation("sidebar");
   const activeId = useTabsStore((s) => s.activeId);
   const documents = useDocumentsStore((s) => s.documents);
 
@@ -159,7 +161,9 @@ export function OutlinePanel() {
     return (
       <div className="outline-empty">
         <div className="outline-empty-glyph">≡</div>
-        <div className="outline-empty-text">No headings in this document</div>
+        <div className="outline-empty-text">
+          {t("outline.noHeadings", { defaultValue: "No headings" })}
+        </div>
         <div className="outline-empty-hint">
           Add headings with <code>=</code>, <code>==</code>, <code>===</code>
         </div>

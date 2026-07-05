@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Plus, X, Hammer, Type, Eye, Monitor, Save, Database, Palette, FolderOpen, type LucideIcon } from "lucide-react";
+import { Trans, useTranslation } from "react-i18next";
 import type { ManifestCategory, SettingDef } from "../../lib/settings-types";
 import { useSetting } from "../../hooks/useSetting";
 import { useSettingsStore } from "../../store/settingsStore";
@@ -10,6 +11,13 @@ import {
   openThemesDir,
 } from "../../lib/tauri";
 import { toIpcError } from "../../lib/ipc-error";
+import i18n from "../../i18n";
+import {
+  localizedCategoryLabel,
+  localizedOptionLabel,
+  localizedSettingHelp,
+  localizedSettingLabel,
+} from "../../i18n/settingsManifest";
 import { Toggle } from "./Toggle";
 
 /** Icon + accent hue per category id. Falls back to a gear. */
@@ -31,22 +39,24 @@ const CATEGORY_ICON: Record<string, LucideIcon> = {
  * and writes straight through to the backend on change (live-apply, no Save).
  */
 export function SettingsApp() {
+  const { t } = useTranslation("settings");
   const manifest = useSettingsStore((s) => s.manifest);
   if (manifest === null) {
-    return <div className="settings-window settings-loading">Loading…</div>;
+    return <div className="settings-window settings-loading">{t("loading")}</div>;
   }
   return <SettingsWindow categories={manifest.categories} />;
 }
 
 function SettingsWindow({ categories }: { categories: ManifestCategory[] }) {
+  const { t } = useTranslation("settings");
   const [activeId, setActiveId] = useState<string>(categories[0]?.id ?? "");
   const active = categories.find((c) => c.id === activeId) ?? categories[0] ?? null;
 
   return (
     <div className="settings-window">
       <aside className="settings-sidebar">
-        <h1 className="settings-sidebar-title">Settings</h1>
-        <nav className="settings-categories" aria-label="Settings categories">
+        <h1 className="settings-sidebar-title">{t("sidebarTitle")}</h1>
+        <nav className="settings-categories" aria-label={t("categoriesAriaLabel")}>
           {categories.map((cat) => {
             const Icon = CATEGORY_ICON[cat.id] ?? Hammer;
             const isActive = cat.id === active?.id;
@@ -60,26 +70,27 @@ function SettingsWindow({ categories }: { categories: ManifestCategory[] }) {
                 <span className="settings-category-icon">
                   <Icon size={15} strokeWidth={2} />
                 </span>
-                <span className="settings-category-label">{cat.label}</span>
+                <span className="settings-category-label">{localizedCategoryLabel(cat)}</span>
               </button>
             );
           })}
         </nav>
       </aside>
       <main className="settings-pane">
-        {active ? <CategoryPane category={active} /> : <p className="settings-empty">No settings.</p>}
+        {active ? <CategoryPane category={active} /> : <p className="settings-empty">{t("empty")}</p>}
       </main>
     </div>
   );
 }
 
 function CategoryPane({ category }: { category: ManifestCategory }) {
+  const { t } = useTranslation("settings");
   return (
     <div className="settings-content">
       <header className="settings-content-header">
-        <h2 className="settings-content-title">{category.label}</h2>
+        <h2 className="settings-content-title">{localizedCategoryLabel(category)}</h2>
         <p className="settings-content-sub">
-          {category.settings.length} {category.settings.length === 1 ? "preference" : "preferences"}
+          {t("preferences", { count: category.settings.length })}
         </p>
       </header>
       <section className="settings-card">
@@ -99,6 +110,7 @@ function CategoryPane({ category }: { category: ManifestCategory }) {
  * so it lives here as a fixed extra row.
  */
 function OpenThemesFolderRow() {
+  const { t } = useTranslation("settings");
   const [busy, setBusy] = useState(false);
   const run = async () => {
     if (busy) return;
@@ -106,7 +118,12 @@ function OpenThemesFolderRow() {
     try {
       await openThemesDir();
     } catch (e) {
-      window.alert(`Action failed: ${toIpcError(e).message}`);
+      window.alert(
+        i18n.t("actionFailed", {
+          ns: "errors",
+          message: toIpcError(e).message,
+        }),
+      );
     } finally {
       setBusy(false);
     }
@@ -114,12 +131,14 @@ function OpenThemesFolderRow() {
   return (
     <div className="setting-row setting-row-last">
       <div className="setting-row-text">
-        <span className="setting-label">Themes folder</span>
+        <span className="setting-label">{t("themesFolder")}</span>
         <span className="setting-key">themes/</span>
         <span className="setting-help">
-          Drop a subfolder here containing <code>theme.css</code> (+ optional
-          <code> theme.json</code>) to add a custom theme. The picker above
-          updates live.
+          <Trans
+            ns="settings"
+            i18nKey="themesFolderHelp"
+            components={{ themeCss: <code />, themeJson: <code /> }}
+          />
         </span>
       </div>
       <div className="setting-control">
@@ -129,7 +148,7 @@ function OpenThemesFolderRow() {
           onClick={() => void run()}
           disabled={busy}
         >
-          <FolderOpen size={13} /> {busy ? "Opening…" : "Open"}
+          <FolderOpen size={13} /> {busy ? t("opening") : t("open")}
         </button>
       </div>
     </div>
@@ -150,11 +169,11 @@ function SettingRow({ def, last }: { def: SettingDef; last: boolean }) {
       <div className="setting-row-text">
         {showLabel && (
           <label className="setting-label" htmlFor={isInput ? `setting-${def.key}` : undefined}>
-            {def.label}
+            {localizedSettingLabel(def)}
           </label>
         )}
         <span className="setting-key">{def.key}</span>
-        {def.help && <span className="setting-help">{def.help}</span>}
+        {localizedSettingHelp(def) && <span className="setting-help">{localizedSettingHelp(def)}</span>}
       </div>
       <div className="setting-control">
         <SettingControl def={def} />
@@ -188,6 +207,7 @@ function SettingControl({ def }: { def: SettingDef }) {
  * id maps to an IPC call; a confirm dialog guards destructive actions.
  */
 function ActionControl({ def }: { def: SettingDef }) {
+  const { t } = useTranslation("settings");
   const [busy, setBusy] = useState(false);
 
   const run = async () => {
@@ -197,8 +217,8 @@ function ActionControl({ def }: { def: SettingDef }) {
       const alsoRecovery = def.action === "clearRecoveryData";
       const ok = window.confirm(
         alsoRecovery
-          ? "Delete ALL crash-recovery snapshots? This cannot be undone."
-          : "Clear the recent-workspaces list? This cannot be undone.",
+          ? i18n.t("confirmClearRecovery", { ns: "errors" })
+          : i18n.t("confirmClearRecent", { ns: "errors" }),
       );
       if (!ok) return;
     }
@@ -226,7 +246,12 @@ function ActionControl({ def }: { def: SettingDef }) {
       console.warn(`[settings] action ${def.action} failed:`, e);
       // IPC rejections arrive as the structured IpcError object (Batch 4 wire
       // format), not an Error instance — use toIpcError to avoid [object Object].
-      window.alert(`Action failed: ${toIpcError(e).message}`);
+      window.alert(
+        i18n.t("actionFailed", {
+          ns: "errors",
+          message: toIpcError(e).message,
+        }),
+      );
     } finally {
       setBusy(false);
     }
@@ -239,7 +264,7 @@ function ActionControl({ def }: { def: SettingDef }) {
       onClick={() => void run()}
       disabled={busy}
     >
-      {busy ? "Working…" : def.label}
+      {busy ? t("working") : localizedSettingLabel(def)}
     </button>
   );
 }
@@ -272,6 +297,7 @@ function NumberControl({ def, integer }: { def: SettingDef; integer: boolean }) 
 }
 
 function StringControl({ def }: { def: SettingDef }) {
+  const { t } = useTranslation("settings");
   const [value, setValue] = useSetting<string>(def.key);
   const fallback = typeof def.default === "string" ? def.default : "";
   const current = typeof value === "string" ? value : fallback;
@@ -281,7 +307,7 @@ function StringControl({ def }: { def: SettingDef }) {
       className="setting-input"
       type="text"
       value={current}
-      placeholder={fallback || "default"}
+      placeholder={fallback || t("default")}
       onChange={(e) => setValue(e.target.value)}
     />
   );
@@ -308,13 +334,11 @@ function SelectControl({ def }: { def: SettingDef }) {
       : baseOptions;
   const fallback = typeof def.default === "string" ? def.default : (options[0] ?? "");
   const current = typeof value === "string" ? value : fallback;
-  /** Display label for an option: explicit `optionLabels` entry, a theme's
-   *  friendly name, else the capitalized option value (the default). */
+  /** Display label for an option: localized label, a theme's friendly name,
+   *  else the capitalized option value (the default). */
   const labelFor = (opt: string) => {
-    if (def.optionLabels?.[opt]) return def.optionLabels[opt];
     const theme = userThemes.find((t) => t.id === opt);
-    if (theme) return theme.name;
-    return opt.charAt(0).toUpperCase() + opt.slice(1);
+    return localizedOptionLabel(def, opt, theme?.name);
   };
   return (
     <select
@@ -351,6 +375,7 @@ function mergeThemeOptions(staticOptions: string[], themes: { id: string }[]): s
 }
 
 function PathsControl({ def }: { def: SettingDef }) {
+  const { t } = useTranslation("settings");
   const [value, setValue] = useSetting<string[]>(def.key);
   const readonly = def.readonly === true;
   const list = Array.isArray(value)
@@ -382,7 +407,7 @@ function PathsControl({ def }: { def: SettingDef }) {
             <button
               type="button"
               className="path-chip-remove"
-              aria-label={`Remove ${p}`}
+              aria-label={t("removePath", { path: p })}
               onClick={() => remove(idx)}
             >
               <X size={12} />
@@ -395,7 +420,7 @@ function PathsControl({ def }: { def: SettingDef }) {
           <input
             className="setting-input path-add-input"
             type="text"
-            placeholder="/path/to/folder"
+            placeholder={t("pathsPlaceholder")}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -406,7 +431,7 @@ function PathsControl({ def }: { def: SettingDef }) {
             }}
           />
           <button type="button" className="path-add-btn" onClick={add}>
-            <Plus size={13} /> Add
+            <Plus size={13} /> {t("add")}
           </button>
         </div>
       )}

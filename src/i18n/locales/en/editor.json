@@ -1,0 +1,9 @@
+{
+  "loading": "Loading editor...",
+  "initFailed": "Editor init failed: {{message}}",
+  "noDocument": "No document open",
+  "preview": {
+    "show": "Show preview",
+    "hide": "Hide preview"
+  }
+}

@@ -2,6 +2,7 @@ import { GitBranch } from "lucide-react";
 import type { HostApi } from "../api";
 import { useUiStore } from "../../store/uiStore";
 import { useGitStore, initGitAutoRefresh } from "../../store/gitStore";
+import i18n from "../../i18n";
 
 // The host (Sidebar) wraps `component` in React.lazy(), so the factory MUST
 // return a Promise<{ default: ComponentType }> — i.e. the raw dynamic-import
@@ -16,7 +17,7 @@ import { useGitStore, initGitAutoRefresh } from "../../store/gitStore";
 export default function activate(ctx: HostApi): void {
   ctx.registerView({
     id: "workbench.scm",
-    title: "Source Control",
+    title: i18n.t("sourceControl", { ns: "command" }),
     icon: GitBranch,
     component: () =>
       import("../../components/SourceControl/SourceControlPanel").then((m) => ({
@@ -28,7 +29,7 @@ export default function activate(ctx: HostApi): void {
 
   ctx.registerCommand({
     id: "workbench.view.scm",
-    title: "Show Source Control",
+    title: i18n.t("showSourceControl", { ns: "command" }),
     category: "View",
     keybinding: "CmdOrCtrl+Shift+G",
     handler: () => {
@@ -39,7 +40,7 @@ export default function activate(ctx: HostApi): void {
 
   ctx.registerCommand({
     id: "git.refresh",
-    title: "Git: Refresh",
+    title: i18n.t("gitRefresh", { ns: "command" }),
     category: "Git",
     handler: () => {
       void useGitStore.getState().refresh();

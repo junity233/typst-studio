@@ -1,0 +1,14 @@
+{
+  "notARepo": "不是 git 仓库。",
+  "notARepoHint": "打开一个包含 .git 目录的文件夹以启用源代码管理。",
+  "messagePlaceholder": "消息（按 Ctrl+Enter 提交）",
+  "commit": "提交",
+  "refresh": "刷新",
+  "stage": "暂存",
+  "unstage": "取消暂存",
+  "changes": "更改 ({{count}})",
+  "stagedChanges": "暂存的更改 ({{count}})",
+  "noChanges": "无更改",
+  "recentCommits": "最近的提交",
+  "loading": "加载中…"
+}

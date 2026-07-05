@@ -1,0 +1,34 @@
+{
+  "toolbarLabel": "Text formatting",
+  "heading1": "Heading 1",
+  "heading2": "Heading 2",
+  "heading3": "Heading 3",
+  "bold": "Bold",
+  "italic": "Italic",
+  "strikethrough": "Strikethrough",
+  "code": "Inline code",
+  "link": "Link",
+  "codeBlock": "Code block",
+  "quote": "Quote",
+  "bulletList": "Bullet list",
+  "numberedList": "Numbered list",
+  "horizontalRule": "Horizontal rule",
+  "image": "Insert image",
+  "table": "Insert table",
+  "linkModal": {
+    "title": "Insert link",
+    "url": "URL",
+    "urlPlaceholder": "https://example.com",
+    "label": "Label (optional)",
+    "labelPlaceholder": "link text",
+    "cancel": "Cancel",
+    "insert": "Insert"
+  },
+  "tablePicker": {
+    "label": "Insert table",
+    "sizeRow": "{{count}} row",
+    "sizeRow_other": "{{count}} rows",
+    "sizeCol": "{{count}} col",
+    "sizeCol_other": "{{count}} cols"
+  }
+}

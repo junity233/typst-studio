@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 
 /**
  * The grid dimension (rows == cols == GRID_SIZE). Hard-coded 8 per the spec
@@ -31,6 +32,7 @@ export interface TableGridPickerProps {
  * result; this just reports `onSelect` / `onCancel`.
  */
 export function TableGridPicker({ anchor, onSelect, onCancel }: TableGridPickerProps) {
+  const { t } = useTranslation("formatToolbar");
   const ref = useRef<HTMLDivElement>(null);
   // Hovered grid size, in 1-indexed rows × cols. Defaults to 1×1 (the origin
   // cell) so the label is never empty on first paint.
@@ -89,11 +91,17 @@ export function TableGridPicker({ anchor, onSelect, onCancel }: TableGridPickerP
       ref={ref}
       className="table-grid-picker"
       role="dialog"
-      aria-label="Insert table"
+      aria-label={t("tablePicker.label", { defaultValue: "Insert table" })}
       style={{ left: pos.x, top: pos.y }}
     >
       <div className="table-grid-picker-label">
-        {hovered.rows} row{hovered.rows === 1 ? "" : "s"} × {hovered.cols} col{hovered.cols === 1 ? "" : "s"}
+        {t("tablePicker.sizeRow", {
+          count: hovered.rows,
+          defaultValue: `{{count}} row${hovered.rows === 1 ? "" : "s"}`,
+        })}{" × "}{t("tablePicker.sizeCol", {
+          count: hovered.cols,
+          defaultValue: `{{count}} col${hovered.cols === 1 ? "" : "s"}`,
+        })}
       </div>
       <div
         className="table-grid"

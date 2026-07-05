@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useActiveDocument } from "../../store/tabsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 
@@ -8,6 +9,7 @@ import { useWorkspaceStore } from "../../store/workspaceStore";
  * bare filename. For an untitled tab, shows "Untitled".
  */
 export function Breadcrumb() {
+  const { t } = useTranslation("commandBar");
   const activeTab = useActiveDocument();
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const workspaceName = useWorkspaceStore((s) => s.name);
@@ -48,10 +50,10 @@ export function Breadcrumb() {
         </span>
       ))}
       {activeTab.path === null && (
-        <span className="breadcrumb-crumb breadcrumb-untitled">Untitled</span>
+        <span className="breadcrumb-crumb breadcrumb-untitled">{t("untitled")}</span>
       )}
       {activeTab.dirty && (
-        <span className="breadcrumb-dirty" title="Unsaved changes">●</span>
+        <span className="breadcrumb-dirty" title={t("unsavedChanges")}>●</span>
       )}
     </div>
   );

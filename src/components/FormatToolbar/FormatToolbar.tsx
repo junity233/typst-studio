@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Tab } from "../../store/tabsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useSetting } from "../../hooks/useSetting";
@@ -92,6 +93,7 @@ export function FormatToolbar({
   tab,
   disabled,
 }: FormatToolbarProps) {
+  const { t } = useTranslation("formatToolbar");
   const workspace = useWorkspaceStore((s) => s.rootPath);
   const [insertImagePathTemplate] = useSetting<string>("editor.insertImagePath");
   // The table grid picker's anchor when open; null = closed. Set by the table
@@ -249,14 +251,14 @@ export function FormatToolbar({
   };
 
   return (
-    <div className="format-toolbar" role="toolbar" aria-label="Text formatting">
+    <div className="format-toolbar" role="toolbar" aria-label={t("toolbarLabel", { defaultValue: "Text formatting" })}>
       {FORMAT_BUTTON_GROUPS.map((group, groupIndex) => (
         <span key={group.id} className="format-toolbar-group">
           {group.buttons.map((button) => (
             <FormatToolbarButton
               key={button.id}
               icon={button.icon}
-              label={button.label}
+              label={t(button.id, { defaultValue: button.label })}
               disabled={isDisabled}
               pressed={computePressed(button.action)}
               onClick={

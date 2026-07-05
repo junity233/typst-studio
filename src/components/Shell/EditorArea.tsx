@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Eye, EyeOff } from "lucide-react";
 import { TabStrip } from "../TitleBar/TabStrip";
 import { MonacoEditor } from "../Editor/MonacoEditor";
@@ -43,6 +44,7 @@ function loadPreviewWidth(): number {
  * The preview width is persisted to localStorage and clamped to a sensible min.
  */
 export function EditorArea() {
+  const { t } = useTranslation("editor");
   const activeTab = useActiveDocument();
   const updateContent = useTabsStore((s) => s.updateContent);
   const previewVisible = useUiStore((s) => s.previewVisible);
@@ -452,7 +454,7 @@ export function EditorArea() {
           className="preview-toggle"
           type="button"
           onClick={() => setPreview(!previewVisible)}
-          title={previewVisible ? "Hide preview" : "Show preview"}
+          title={previewVisible ? t("preview.hide") : t("preview.show")}
           aria-pressed={previewVisible}
         >
           {previewVisible ? <Eye size={14} /> : <EyeOff size={14} />}
@@ -465,7 +467,7 @@ export function EditorArea() {
       />
       <main className="editor-area-main">
         {activeTab === null ? (
-          <div className="pane pane-empty">No document open</div>
+          <div className="pane pane-empty">{t("noDocument")}</div>
         ) : (
           <div
             ref={containerRef}

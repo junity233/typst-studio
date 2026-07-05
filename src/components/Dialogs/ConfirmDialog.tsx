@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useDialogStore } from "../../store/dialogStore";
 
 /**
@@ -6,14 +7,17 @@ import { useDialogStore } from "../../store/dialogStore";
  * Don't Save / Cancel. Keyboard: Enter = primary, Esc = cancel.
  */
 export function ConfirmDialog() {
+  const { t } = useTranslation(["dialog", "common"]);
   const current = useDialogStore((s) => s.current);
   const resolve = useDialogStore((s) => s.resolve);
 
   if (current === null) return null;
 
-  const confirmLabel = current.confirmLabel ?? "Save";
-  const cancelLabel = current.cancelLabel ?? "Cancel";
-  const discardLabel = current.discardLabel ?? "Don't Save";
+  // When a caller omits a label, fall back to the translated common strings so
+  // the defaults localize with the rest of the UI.
+  const confirmLabel = current.confirmLabel ?? t("common:save");
+  const cancelLabel = current.cancelLabel ?? t("common:cancel");
+  const discardLabel = current.discardLabel ?? t("common:dontSave");
 
   return (
     <div

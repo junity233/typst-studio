@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 
 export interface LinkModalProps {
   /**
@@ -30,6 +31,7 @@ export interface LinkModalProps {
  * `onConfirm` / `onCancel` report the result and the parent unmounts it.
  */
 export function LinkModal({ initialLabel = "", onConfirm, onCancel }: LinkModalProps) {
+  const { t } = useTranslation("formatToolbar");
   const [url, setUrl] = useState("");
   const [label, setLabel] = useState(initialLabel);
   const urlRef = useRef<HTMLInputElement>(null);
@@ -67,10 +69,10 @@ export function LinkModal({ initialLabel = "", onConfirm, onCancel }: LinkModalP
         className="dialog link-modal"
         role="dialog"
         aria-modal="true"
-        aria-label="Insert link"
+        aria-label={t("linkModal.title", { defaultValue: "Insert link" })}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="dialog-title">Insert link</h2>
+        <h2 className="dialog-title">{t("linkModal.title", { defaultValue: "Insert link" })}</h2>
         <form
           className="link-modal-form"
           // Enter inside any field submits the form; we handle it ourselves so
@@ -92,22 +94,22 @@ export function LinkModal({ initialLabel = "", onConfirm, onCancel }: LinkModalP
           }}
         >
           <label className="link-modal-field">
-            <span className="link-modal-label">URL</span>
+            <span className="link-modal-label">{t("linkModal.url", { defaultValue: "URL" })}</span>
             <input
               ref={urlRef}
               className="link-modal-input"
               type="text"
-              placeholder="https://example.com"
+              placeholder={t("linkModal.urlPlaceholder", { defaultValue: "https://example.com" })}
               value={url}
               onChange={(e) => setUrl(e.target.value)}
             />
           </label>
           <label className="link-modal-field">
-            <span className="link-modal-label">Label (optional)</span>
+            <span className="link-modal-label">{t("linkModal.label", { defaultValue: "Label (optional)" })}</span>
             <input
               className="link-modal-input"
               type="text"
-              placeholder="link text"
+              placeholder={t("linkModal.labelPlaceholder", { defaultValue: "link text" })}
               value={label}
               onChange={(e) => setLabel(e.target.value)}
             />
@@ -118,10 +120,10 @@ export function LinkModal({ initialLabel = "", onConfirm, onCancel }: LinkModalP
               className="btn-utility"
               onClick={onCancel}
             >
-              Cancel
+              {t("linkModal.cancel", { defaultValue: "Cancel" })}
             </button>
             <button type="submit" className="btn-primary">
-              Insert
+              {t("linkModal.insert", { defaultValue: "Insert" })}
             </button>
           </div>
         </form>

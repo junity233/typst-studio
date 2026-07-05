@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+// Initialize i18next so `useTranslation("formatToolbar")` resolves real labels
+// (the toolbar now translates button titles via t(button.id)); without this the
+// rendered title would be the raw key, not the English label the assertions pin.
+import "../../../i18n";
 // React 19 only runs `act`'s effect-flushing + warning behavior when this flag
 // is set. @testing-library/react sets it automatically; since we render via
 // react-dom/client directly, we opt in here so renders/clicks are fully

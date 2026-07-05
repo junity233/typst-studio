@@ -1,5 +1,6 @@
 import type { ApplyWorkspaceEditResult } from "vscode-languageserver-protocol";
 import type { TextEdit } from "vscode-languageserver-types";
+import i18n from "../../i18n";
 import type {
   WorkspaceEditPlan,
   PlannedModelEdit,
@@ -119,15 +120,17 @@ export function confirmationMessage(
   const lines = confirmations.map((c) => {
     const why =
       c.reason === "delete-dirty"
-        ? "deleting this file would discard unsaved edits"
+        ? i18n.t("applyWorkspaceEdit.reasonDeleteDirty", { ns: "dialog" })
         : c.reason === "rename-overwrite"
-          ? "moving onto this file would overwrite its unsaved edits"
-          : "this would overwrite its unsaved edits";
+          ? i18n.t("applyWorkspaceEdit.reasonRenameOverwrite", { ns: "dialog" })
+          : i18n.t("applyWorkspaceEdit.reasonOverwrite", { ns: "dialog" });
     return `  • ${c.uri} — ${why}`;
   });
-  return `This workspace edit touches ${
-    confirmations.length === 1 ? "a document" : `${confirmations.length} documents`
-  } with unsaved changes:\n${lines.join("\n")}\n\nApply anyway?`;
+  return i18n.t(`applyWorkspaceEdit.body`, {
+    ns: "dialog",
+    count: confirmations.length,
+    lines: lines.join("\n"),
+  });
 }
 
 /** A disk-side failure (URI + reason), collected by [`applyDiskEdits`](Self.applyDiskEdits). */
