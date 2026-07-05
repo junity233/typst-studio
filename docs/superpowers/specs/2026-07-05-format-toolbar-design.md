@@ -158,7 +158,11 @@ The toolbar reads `editorApiRef.current` (already in `EditorArea.tsx:50`); `read
 - Always operates on line starts; preserves cursor column sensibly.
 
 ### 5.3 Link button (`custom`)
-- A small modal rendered by `FormatToolbar` itself (overlay + text input) collecting a URL; on submit calls `api.wrapSelection('#link("URL")[', "]")` with the current selection as the label (or `URL` as fallback label).
+- A small modal rendered by `FormatToolbar` itself (overlay + text input) collecting a URL and an optional label. The selection text pre-fills the label field. On submit:
+  - **Typed label present** → `api.replaceSelection('#link("URL")[label]')`.
+  - **No typed label, but a selection exists** → `api.wrapSelection('#link("URL")[', "]")`, so the selected text becomes the label.
+  - **No typed label and no selection** → `api.replaceSelection('#link("URL")')` (a bare link; avoids the invalid `#link("URL")[]`).
+  - The URL is escaped via `escapeTypstStr`.
 - Esc cancels; Enter submits.
 
 ### 5.4 Image button (`custom`) → `useInsertImage.ts`

@@ -103,15 +103,23 @@ export function applyWrapSelection(
   const sel = editor.getSelection();
   if (!model || !sel) return;
 
-  const collapsed =
-    sel.selectionStartLineNumber === sel.positionLineNumber &&
-    sel.selectionStartColumn === sel.positionColumn;
+  // Normalize to document order (start ≤ end). Monaco tolerates reversed
+  // ranges in executeEdits/getValueInRange, but the post-edit selection math
+  // below needs document-order anchors to highlight the right span — without
+  // this, a right-to-left selection would leave the highlight in the wrong
+  // place after the wrap.
+  const startLine = Math.min(sel.selectionStartLineNumber, sel.positionLineNumber);
+  const startCol = columnAtStart(sel, startLine);
+  const endLine = Math.max(sel.selectionStartLineNumber, sel.positionLineNumber);
+  const endCol = columnAtEnd(sel, endLine);
+
+  const collapsed = startLine === endLine && startCol === endCol;
 
   const range: Monaco.IRange = {
-    startLineNumber: sel.selectionStartLineNumber,
-    startColumn: sel.selectionStartColumn,
-    endLineNumber: sel.positionLineNumber,
-    endColumn: sel.positionColumn,
+    startLineNumber: startLine,
+    startColumn: startCol,
+    endLineNumber: endLine,
+    endColumn: endCol,
   };
 
   let insertText: string;
@@ -123,8 +131,8 @@ export function applyWrapSelection(
     insertText = prefix + placeholder + suffix;
     // Placeholder sits at caret + prefix.length … caret + prefix.length + placeholder.length.
     afterStart = {
-      line: range.startLineNumber,
-      col: range.startColumn + prefix.length,
+      line: startLine,
+      col: startCol + prefix.length,
     };
     afterEnd = {
       line: afterStart.line,
@@ -134,12 +142,8 @@ export function applyWrapSelection(
     const selectedText = model.getValueInRange(range);
     insertText = prefix + selectedText + suffix;
     // Selection covers prefix + selected + suffix.
-    afterStart = { line: range.startLineNumber, col: range.startColumn };
-    afterEnd = computeEndAfterInsert(
-      range.startLineNumber,
-      range.startColumn,
-      insertText,
-    );
+    afterStart = { line: startLine, col: startCol };
+    afterEnd = computeEndAfterInsert(startLine, startCol, insertText);
   }
 
   editor.pushUndoStop();
@@ -171,20 +175,28 @@ export function applyReplaceSelection(
   const sel = editor.getSelection();
   if (!sel) return;
 
+  // Normalize to document order so the post-edit selection covers the inserted
+  // text regardless of which direction the user dragged. (See applyWrapSelection
+  // for the rationale; applyToggleLinePrefix already normalizes via min/max.)
+  const startLine = Math.min(sel.selectionStartLineNumber, sel.positionLineNumber);
+  const startCol = columnAtStart(sel, startLine);
+  const endLine = Math.max(sel.selectionStartLineNumber, sel.positionLineNumber);
+  const endCol = columnAtEnd(sel, endLine);
+
   const range: Monaco.IRange = {
-    startLineNumber: sel.selectionStartLineNumber,
-    startColumn: sel.selectionStartColumn,
-    endLineNumber: sel.positionLineNumber,
-    endColumn: sel.positionColumn,
+    startLineNumber: startLine,
+    startColumn: startCol,
+    endLineNumber: endLine,
+    endColumn: endCol,
   };
 
-  const end = computeEndAfterInsert(range.startLineNumber, range.startColumn, text);
+  const end = computeEndAfterInsert(startLine, startCol, text);
 
   editor.pushUndoStop();
   editor.executeEdits("format-replace", [{ range, text }]);
   editor.setSelection({
-    startLineNumber: range.startLineNumber,
-    startColumn: range.startColumn,
+    startLineNumber: startLine,
+    startColumn: startCol,
     endLineNumber: end.line,
     endColumn: end.col,
   });
@@ -328,6 +340,41 @@ function prefixDelta(content: string, prefix: string): number {
   const stripped = match ? match[1] : "";
   const newPrefix = prefix === stripped ? "" : prefix;
   return newPrefix.length - stripped.length;
+}
+
+/**
+ * The column of the document-ORDER start of a selection (the smaller line's
+ * column). For a single-line selection the start is `min(startCol, endCol)`;
+ * for a multi-line selection the smaller line's column is always the start.
+ *
+ * Used together with {@link columnAtEnd} to normalize a (possibly reversed)
+ * `ISelection` into a document-order range for both the edit and the post-edit
+ * selection math — without this, a right-to-left selection would leave the
+ * post-edit highlight in the wrong place.
+ */
+function columnAtStart(sel: Monaco.ISelection, startLine: number): number {
+  // On the smaller line: pick that line's own column from whichever end of the
+  // selection sits on it. For a single-line selection both ends are on this
+  // line, so the start column is the smaller of the two.
+  if (sel.selectionStartLineNumber === sel.positionLineNumber) {
+    return Math.min(sel.selectionStartColumn, sel.positionColumn);
+  }
+  return sel.selectionStartLineNumber === startLine
+    ? sel.selectionStartColumn
+    : sel.positionColumn;
+}
+
+/**
+ * The column of the document-ORDER end of a selection (the larger line's
+ * column). Companion to {@link columnAtStart}.
+ */
+function columnAtEnd(sel: Monaco.ISelection, endLine: number): number {
+  if (sel.selectionStartLineNumber === sel.positionLineNumber) {
+    return Math.max(sel.selectionStartColumn, sel.positionColumn);
+  }
+  return sel.selectionStartLineNumber === endLine
+    ? sel.selectionStartColumn
+    : sel.positionColumn;
 }
 
 // ---------------------------------------------------------------------------

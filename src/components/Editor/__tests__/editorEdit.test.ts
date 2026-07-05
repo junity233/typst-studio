@@ -38,6 +38,45 @@ interface Coord {
 }
 
 /**
+ * Normalize a (possibly reversed) range to document order (start ≤ end by line,
+ * then by column on the same line). Real Monaco's `Range` constructor and
+ * `getValueInRange`/`executeEdits` accept reversed ranges and treat them as
+ * their forward equivalent; the fake mirrors that so tests exercise the same
+ * behavior the helpers see in production.
+ */
+function normalizeRange(range: Monaco.IRange): {
+  startLineNumber: number;
+  startColumn: number;
+  endLineNumber: number;
+  endColumn: number;
+} {
+  const { startLineNumber, startColumn, endLineNumber, endColumn } = range;
+  if (
+    startLineNumber < endLineNumber ||
+    (startLineNumber === endLineNumber && startColumn <= endColumn)
+  ) {
+    return { startLineNumber, startColumn, endLineNumber, endColumn };
+  }
+  // Reversed — swap. For a same-line reversed range, the start column becomes
+  // min(start,end); for a cross-line reversed range, the start line/column is
+  // whichever end sits on the smaller line.
+  if (startLineNumber === endLineNumber) {
+    return {
+      startLineNumber,
+      startColumn: endColumn,
+      endLineNumber,
+      endColumn: startColumn,
+    };
+  }
+  return {
+    startLineNumber: endLineNumber,
+    startColumn: endColumn,
+    endLineNumber: startLineNumber,
+    endColumn: startColumn,
+  };
+}
+
+/**
  * In-memory editor that mimics the slice of `IStandaloneCodeEditor` the
  * `editorEdit` helpers use. Internally it keeps a buffer string (lines joined
  * by `\n`) and an `ISelection`-shaped cursor. Each helper call mutates both.
@@ -120,17 +159,23 @@ class FakeEditor implements EditEditor {
     // Apply back-to-front by buffer offset so an earlier edit can't shift a
     // later edit's range. (Real Monaco applies the full batch atomically
     // against the pre-edit document; this emulates that ordering.)
-    const withOffsets = edits.map((edit) => ({
-      startOffset: this.toOffset({
-        lineNumber: edit.range.startLineNumber,
-        column: edit.range.startColumn,
-      }),
-      endOffset: this.toOffset({
-        lineNumber: edit.range.endLineNumber,
-        column: edit.range.endColumn,
-      }),
-      text: edit.text ?? "",
-    }));
+    const withOffsets = edits.map((edit) => {
+      // Normalize each edit's range to document order before computing offsets
+      // — real Monaco applies edits against forward ranges, and a reversed
+      // range would compute startOffset > endOffset (yielding an empty slice).
+      const n = normalizeRange(edit.range);
+      return {
+        startOffset: this.toOffset({
+          lineNumber: n.startLineNumber,
+          column: n.startColumn,
+        }),
+        endOffset: this.toOffset({
+          lineNumber: n.endLineNumber,
+          column: n.endColumn,
+        }),
+        text: edit.text ?? "",
+      };
+    });
     withOffsets.sort((a, b) => b.startOffset - a.startOffset);
     for (const edit of withOffsets) {
       this.buffer =
@@ -178,18 +223,22 @@ class FakeModel implements EditModel {
   }
 
   getValueInRange(range: Monaco.IRange): string {
+    // Normalize to document order — real Monaco's getValueInRange accepts
+    // reversed ranges and reads them forward; the fake must match so tests
+    // exercise the same behavior the helpers see in production.
+    const n = normalizeRange(range);
     const lines = this.owner["lines"]();
-    if (range.startLineNumber === range.endLineNumber) {
-      const line = lines[range.startLineNumber - 1] ?? "";
-      return line.slice(range.startColumn - 1, range.endColumn - 1);
+    if (n.startLineNumber === n.endLineNumber) {
+      const line = lines[n.startLineNumber - 1] ?? "";
+      return line.slice(n.startColumn - 1, n.endColumn - 1);
     }
     const parts: string[] = [];
-    for (let ln = range.startLineNumber; ln <= range.endLineNumber; ln++) {
+    for (let ln = n.startLineNumber; ln <= n.endLineNumber; ln++) {
       const line = lines[ln - 1] ?? "";
-      if (ln === range.startLineNumber) {
-        parts.push(line.slice(range.startColumn - 1));
-      } else if (ln === range.endLineNumber) {
-        parts.push(line.slice(0, range.endColumn - 1));
+      if (ln === n.startLineNumber) {
+        parts.push(line.slice(n.startColumn - 1));
+      } else if (ln === n.endLineNumber) {
+        parts.push(line.slice(0, n.endColumn - 1));
       } else {
         parts.push(line);
       }
@@ -231,6 +280,23 @@ function sel(startCol: number, endCol: number, buffer: string): FakeEditor {
     selectionStartColumn: startCol,
     positionLineNumber: 1,
     positionColumn: endCol,
+  });
+}
+
+/**
+ * Build a FakeEditor with a single-line buffer and a REVERSED selection — the
+ * anchor (selectionStart) is at `endCol` and the active position is at
+ * `startCol`, emulating a right-to-left drag. The covered text is the same as
+ * `sel(startCol, endCol)`, but the ISelection is reversed, which is what
+ * `applyWrapSelection`/`applyReplaceSelection` must normalize before computing
+ * the post-edit selection (regression coverage for the reversed-range bug).
+ */
+function selReversed(startCol: number, endCol: number, buffer: string): FakeEditor {
+  return new FakeEditor(buffer, {
+    selectionStartLineNumber: 1,
+    selectionStartColumn: endCol,
+    positionLineNumber: 1,
+    positionColumn: startCol,
   });
 }
 
@@ -368,6 +434,34 @@ describe("applyWrapSelection", () => {
     applyWrapSelection(ed, "*", "*");
     expect(ed.lastEditSource).toBe("format-wrap");
   });
+
+  describe("reversed selection (right-to-left drag)", () => {
+    // Regression coverage: a reversed ISelection (anchor > active) must be
+    // normalized before the post-edit selection is computed, otherwise the
+    // highlight lands in the wrong place (covering text after the wrap point
+    // rather than the wrapped span). Real Monaco normalizes the EDIT range
+    // internally, so the inserted text was always correct — but the selection
+    // math used the un-normalized anchor column.
+    it("wraps the correct text and selects the wrapped span", () => {
+      // selReversed(7, 12) covers `world` in `Hello world`, but anchor=12,
+      // active=7 (right-to-left). Wrapping with * must yield `Hello *world*`
+      // with the selection covering `*world*` (cols 7..13), NOT some span
+      // starting at col 12.
+      const ed = selReversed(7, 12, "Hello world");
+      applyWrapSelection(ed, "*", "*");
+
+      expect(ed.getModel().getValue()).toBe("Hello *world*");
+      expect(ed.getSelection()).toEqual({
+        // Forward selection over the wrapped span (col 7 .. col 14): the
+        // selection is exclusive of the end char, so `*world*` (7 chars) ends
+        // at col 7+7 = 14. Matches the forward-selection case.
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 7,
+        positionLineNumber: 1,
+        positionColumn: 14,
+      });
+    });
+  });
 });
 
 // ===========================================================================
@@ -445,6 +539,27 @@ describe("applyReplaceSelection", () => {
     const ed = caret("foo", 4);
     applyReplaceSelection(ed, "X");
     expect(ed.lastEditSource).toBe("format-replace");
+  });
+
+  describe("reversed selection (right-to-left drag)", () => {
+    // Regression coverage: same class of bug as applyWrapSelection's reversed
+    // case — without normalization the post-edit selection covers the wrong
+    // span (text after the insertion point rather than the inserted text).
+    it("replaces the correct text and selects the inserted span", () => {
+      // selReversed(7, 10) covers `wor` in `Hello world` (anchor=10, active=7).
+      // Replacing with `XYZ` must yield `Hello XYZld` with the selection over
+      // `XYZ` (cols 7..10), NOT a span starting at the old anchor col 10.
+      const ed = selReversed(7, 10, "Hello world");
+      applyReplaceSelection(ed, "XYZ");
+
+      expect(ed.getModel().getValue()).toBe("Hello XYZld");
+      expect(ed.getSelection()).toEqual({
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 7,
+        positionLineNumber: 1,
+        positionColumn: 10,
+      });
+    });
   });
 });
 

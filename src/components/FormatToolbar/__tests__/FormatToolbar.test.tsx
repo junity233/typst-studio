@@ -569,3 +569,76 @@ describe("FormatToolbar — link flow", () => {
     expect(document.body.querySelector(".link-modal")).toBeNull();
   });
 });
+
+// ----------------------------------------------------------------------------
+// Table flow (spec §5.5: render-loop ternary opens picker; cell click inserts)
+//
+// Regression coverage for the table button's special-cased onClick — the only
+// button dispatched via a render-loop id check (`button.id === TABLE_BUTTON_ID`)
+// rather than through dispatchAction. The pieces (TableGridPicker,
+// buildTableSnippet) are unit-tested independently; this locks the wiring
+// inside FormatToolbar (the ternary, the picker mount, handleTableSelect →
+// replaceSelection) so a regression that breaks the table button can't pass
+// silently.
+// ----------------------------------------------------------------------------
+
+describe("FormatToolbar — table flow", () => {
+  beforeEach(cleanup);
+
+  const clickTableButton = (container: HTMLElement) => {
+    const btn = container.querySelector<HTMLButtonElement>(
+      'button.format-toolbar-button[title="Insert table"]',
+    );
+    expect(btn, "Insert table button should exist").not.toBeNull();
+    act(() => {
+      btn!.click();
+    });
+  };
+
+  it("clicking Insert table mounts the TableGridPicker portal", () => {
+    const api = makeMockApi();
+    const c = render(
+      <FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />,
+    );
+    expect(document.body.querySelector(".table-grid-picker")).toBeNull();
+    clickTableButton(c);
+    expect(document.body.querySelector(".table-grid-picker")).not.toBeNull();
+  });
+
+  it("selecting a 3×2 grid inserts buildTableSnippet(3, 2) via replaceSelection", () => {
+    const api = makeMockApi();
+    const c = render(
+      <FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />,
+    );
+    clickTableButton(c);
+    // The picker renders 64 cells (8×8); clicking cell at (r=2, c=1) selects
+    // 3 rows × 2 cols (origin-anchored rectangle).
+    const cells = document.body.querySelectorAll(".table-grid-cell");
+    expect(cells.length).toBe(64);
+    act(() => {
+      // index = r * 8 + c = 2 * 8 + 1 = 17
+      const cell = cells[17]! as HTMLElement;
+      cell.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      cell.click();
+    });
+    expect(api.spies.replace).toHaveBeenCalledTimes(1);
+    // buildTableSnippet(rows=3, cols=2) → 6 [ ] cells across 3 rows.
+    const inserted = api.spies.replace.mock.calls[0]![0] as string;
+    expect(inserted).toContain("columns: 2");
+    // 6 cells of `[ ]` (single space).
+    const cellCount = (inserted.match(/\[ \]/g) ?? []).length;
+    expect(cellCount).toBe(6);
+    // Picker unmounts after select.
+    expect(document.body.querySelector(".table-grid-picker")).toBeNull();
+  });
+
+  it("the table button is disabled when the toolbar is disabled", () => {
+    const c = render(
+      <FormatToolbar api={makeMockApi()} tab={FAKE_TAB} disabled={true} />,
+    );
+    const btn = c.querySelector<HTMLButtonElement>(
+      'button.format-toolbar-button[title="Insert table"]',
+    );
+    expect(btn!.disabled).toBe(true);
+  });
+});
