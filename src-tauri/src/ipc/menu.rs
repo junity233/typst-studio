@@ -15,6 +15,8 @@ use tauri::menu::{
 };
 use tauri::{AppHandle, Emitter as _, Runtime};
 
+use super::menu_labels::{self, Key, Language};
+
 /// Payload emitted on the `menu_event` channel when an id-backed menu item or
 /// check item is activated. The frontend dispatches on `id` (and reads
 /// `checked` for toggle items).
@@ -72,20 +74,28 @@ pub mod ids {
 
 /// Build the full application menu. On macOS the first submenu is the app-name
 /// menu (About/Services/Hide/Quit) — Tauri does not auto-insert it.
+///
+/// Labels are localized at build time per the persisted `appearance.language`
+/// setting (read directly from `settings.json`, since `SettingsService` is not
+/// yet constructed at this point in the startup sequence — see
+/// [`read_language_setting`]). Changing the language in Settings does NOT
+/// rebuild the menu live; restart the app to pick up a new language.
 pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let lang = menu_labels::resolve(read_language_setting().as_deref());
+
     // ---- macOS app-name menu ----
     #[cfg(target_os = "macos")]
-    let app_menu = build_app_name_menu(app)?;
+    let app_menu = build_app_name_menu(app, lang)?;
 
     // ---- Export (nested under File; built first so File can reference it) ----
     let export = Submenu::with_items(
         app,
-        "Export",
+        menu_labels::lookup(Key::Export, lang),
         true,
         &[
-            &MenuItem::with_id(app, ids::EXPORT_PDF, "PDF…", true, None::<&str>)?,
-            &MenuItem::with_id(app, ids::EXPORT_PNG, "PNG…", true, None::<&str>)?,
-            &MenuItem::with_id(app, ids::EXPORT_SVG, "SVG…", true, None::<&str>)?,
+            &MenuItem::with_id(app, ids::EXPORT_PDF, menu_labels::lookup(Key::ExportPdf, lang), true, None::<&str>)?,
+            &MenuItem::with_id(app, ids::EXPORT_PNG, menu_labels::lookup(Key::ExportPng, lang), true, None::<&str>)?,
+            &MenuItem::with_id(app, ids::EXPORT_SVG, menu_labels::lookup(Key::ExportSvg, lang), true, None::<&str>)?,
         ],
     )?;
 
@@ -93,23 +103,23 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     // Populated from the session's `recent_workspaces` at menu-build time. The
     // menu is static for the session's lifetime; reopening a workspace refreshes
     // the list on the NEXT launch. (A live-refresh menu is a future polish.)
-    let open_recent = build_open_recent_submenu(app)?;
+    let open_recent = build_open_recent_submenu(app, lang)?;
 
     // ---- File (Export + Open Recent live here as nested submenus) ----
     let file = Submenu::with_items(
         app,
-        "File",
+        menu_labels::lookup(Key::File, lang),
         true,
         &[
-            &MenuItem::with_id(app, ids::NEW_TAB, "New Tab", true, Some("CmdOrCtrl+T"))?,
-            &MenuItem::with_id(app, ids::OPEN_FILE, "Open File…", true, Some("CmdOrCtrl+O"))?,
-            &MenuItem::with_id(app, ids::OPEN_FOLDER, "Open Folder…", true, None::<&str>)?,
+            &MenuItem::with_id(app, ids::NEW_TAB, menu_labels::lookup(Key::NewTab, lang), true, Some("CmdOrCtrl+T"))?,
+            &MenuItem::with_id(app, ids::OPEN_FILE, menu_labels::lookup(Key::OpenFile, lang), true, Some("CmdOrCtrl+O"))?,
+            &MenuItem::with_id(app, ids::OPEN_FOLDER, menu_labels::lookup(Key::OpenFolder, lang), true, None::<&str>)?,
             &open_recent,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, ids::SAVE, "Save", true, Some("CmdOrCtrl+S"))?,
-            &MenuItem::with_id(app, ids::SAVE_AS, "Save As…", true, Some("CmdOrCtrl+Shift+S"))?,
+            &MenuItem::with_id(app, ids::SAVE, menu_labels::lookup(Key::Save, lang), true, Some("CmdOrCtrl+S"))?,
+            &MenuItem::with_id(app, ids::SAVE_AS, menu_labels::lookup(Key::SaveAs, lang), true, Some("CmdOrCtrl+Shift+S"))?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, ids::CLOSE_TAB, "Close Tab", true, Some("CmdOrCtrl+W"))?,
+            &MenuItem::with_id(app, ids::CLOSE_TAB, menu_labels::lookup(Key::CloseTab, lang), true, Some("CmdOrCtrl+W"))?,
             &PredefinedMenuItem::separator(app)?,
             &export,
         ],
@@ -119,17 +129,23 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     // On non-macOS the Settings entry has no app-name menu to live in, so it is
     // appended here. Named locals (not inline temporaries) are required because
     // the items outlive the single statement that registers them.
-    let undo = PredefinedMenuItem::undo(app, None)?;
-    let redo = PredefinedMenuItem::redo(app, None)?;
+    let undo = PredefinedMenuItem::undo(app, Some(menu_labels::lookup(Key::Undo, lang)))?;
+    let redo = PredefinedMenuItem::redo(app, Some(menu_labels::lookup(Key::Redo, lang)))?;
     let edit_sep = PredefinedMenuItem::separator(app)?;
-    let cut = PredefinedMenuItem::cut(app, None)?;
-    let copy = PredefinedMenuItem::copy(app, None)?;
-    let paste = PredefinedMenuItem::paste(app, None)?;
-    let select_all = PredefinedMenuItem::select_all(app, None)?;
+    let cut = PredefinedMenuItem::cut(app, Some(menu_labels::lookup(Key::Cut, lang)))?;
+    let copy = PredefinedMenuItem::copy(app, Some(menu_labels::lookup(Key::Copy, lang)))?;
+    let paste = PredefinedMenuItem::paste(app, Some(menu_labels::lookup(Key::Paste, lang)))?;
+    let select_all =
+        PredefinedMenuItem::select_all(app, Some(menu_labels::lookup(Key::SelectAll, lang)))?;
 
     #[cfg(not(target_os = "macos"))]
-    let settings_item =
-        MenuItem::with_id(app, ids::OPEN_SETTINGS, "Settings…", true, Some("CmdOrCtrl+,"))?;
+    let settings_item = MenuItem::with_id(
+        app,
+        ids::OPEN_SETTINGS,
+        menu_labels::lookup(Key::Settings, lang),
+        true,
+        Some("CmdOrCtrl+,"),
+    )?;
 
     // `mut` is only needed on platforms that append the Settings item below
     // (non-macOS); on macOS the push is cfg'd out, so silence unused_mut there.
@@ -139,32 +155,32 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     #[cfg(not(target_os = "macos"))]
     edit_items.push(&settings_item);
 
-    let edit = Submenu::with_items(app, "Edit", true, &edit_items)?;
+    let edit = Submenu::with_items(app, menu_labels::lookup(Key::Edit, lang), true, &edit_items)?;
 
     // ---- View (Find in Files + toggle items) ----
     let view = Submenu::with_items(
         app,
-        "View",
+        menu_labels::lookup(Key::View, lang),
         true,
         &[
             &MenuItem::with_id(
                 app,
                 ids::FIND_IN_FILES,
-                "Find in Files",
+                menu_labels::lookup(Key::FindInFiles, lang),
                 true,
                 Some("CmdOrCtrl+Shift+F"),
             )?,
             &MenuItem::with_id(
                 app,
                 ids::SOURCE_CONTROL,
-                "Source Control",
+                menu_labels::lookup(Key::SourceControl, lang),
                 true,
                 Some("CmdOrCtrl+Shift+G"),
             )?,
             &MenuItem::with_id(
                 app,
                 ids::OUTLINE,
-                "Outline",
+                menu_labels::lookup(Key::Outline, lang),
                 true,
                 Some("CmdOrCtrl+Shift+O"),
             )?,
@@ -172,7 +188,7 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &CheckMenuItem::with_id(
                 app,
                 ids::TOGGLE_SIDEBAR,
-                "Toggle Sidebar",
+                menu_labels::lookup(Key::ToggleSidebar, lang),
                 true,
                 true,
                 Some("CmdOrCtrl+B"),
@@ -180,7 +196,7 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &CheckMenuItem::with_id(
                 app,
                 ids::TOGGLE_PREVIEW,
-                "Toggle Preview",
+                menu_labels::lookup(Key::TogglePreview, lang),
                 true,
                 true,
                 Some("CmdOrCtrl+\\"),
@@ -195,7 +211,7 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .build();
     let help = Submenu::with_items(
         app,
-        "Help",
+        menu_labels::lookup(Key::Help, lang),
         true,
         &[&PredefinedMenuItem::about(app, None, Some(about_meta))?],
     )?;
@@ -219,13 +235,19 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 /// structure is stable across launches.
 fn build_open_recent_submenu<R: Runtime>(
     app: &AppHandle<R>,
+    lang: Language,
 ) -> tauri::Result<Submenu<R>> {
     let recents = read_recent_workspaces(app);
     if recents.is_empty() {
         // A disabled placeholder keeps the submenu structure stable.
-        let placeholder =
-            MenuItem::with_id(app, "open-recent-empty", "No recent workspaces", false, None::<&str>)?;
-        return Submenu::with_items(app, "Open Recent", true, &[&placeholder]);
+        let placeholder = MenuItem::with_id(
+            app,
+            "open-recent-empty",
+            menu_labels::lookup(Key::NoRecentWorkspaces, lang),
+            false,
+            None::<&str>,
+        )?;
+        return Submenu::with_items(app, menu_labels::lookup(Key::OpenRecent, lang), true, &[&placeholder]);
     }
     // Build one item per recent workspace, labeled by its basename (full path is
     // long; the basename + the index-id → the frontend resolves the full path).
@@ -242,7 +264,7 @@ fn build_open_recent_submenu<R: Runtime>(
     // Collect as trait-object references for `with_items`.
     let item_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> =
         items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<R>).collect();
-    Submenu::with_items(app, "Open Recent", true, &item_refs)
+    Submenu::with_items(app, menu_labels::lookup(Key::OpenRecent, lang), true, &item_refs)
 }
 
 /// Read the `recent_workspaces` list directly from `session.json` in the app
@@ -289,10 +311,28 @@ fn short_label(path: &str) -> String {
         _ => path.to_string(),
     }
 }
+
+/// Read `appearance.language` directly from `settings.json` at menu-build
+/// time. Bypasses `SettingsService` (not yet constructed — the menu builds
+/// inside `.build()`, before `.setup()` runs) and `app.path()` (panics here for
+/// the same reason — see [`crate::paths`] and the note on
+/// [`read_recent_workspaces`]).
+///
+/// Best-effort, mirroring [`read_recent_workspaces`]: any failure (no config
+/// dir, missing/corrupt file, no `appearance.language` field) returns `None`,
+/// and the caller's [`menu_labels::resolve`] falls back to the system locale.
+/// A first-launch user with no `settings.json` yet therefore gets a menu in
+/// the OS language (or English), which is the right default.
+fn read_language_setting() -> Option<String> {
+    let cfg_dir = crate::paths::app_config_dir()?;
+    let raw = std::fs::read_to_string(cfg_dir.join("settings.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.get("appearance")?.get("language")?.as_str().map(String::from)
+}
 /// The macOS app-name submenu: About / Services / Hide / Hide Others / Quit.
 /// Quit (Cmd+Q) is a predefined item whose accelerator + behavior are baked in.
 #[cfg(target_os = "macos")]
-fn build_app_name_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Submenu<R>> {
+fn build_app_name_menu<R: Runtime>(app: &AppHandle<R>, lang: Language) -> tauri::Result<Submenu<R>> {
     Submenu::with_items(
         app,
         app.package_info().name.clone(),
@@ -300,7 +340,13 @@ fn build_app_name_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Submenu<
         &[
             &PredefinedMenuItem::about(app, None, None)?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, ids::OPEN_SETTINGS, "Settings…", true, Some("CmdOrCtrl+,"))?,
+            &MenuItem::with_id(
+                app,
+                ids::OPEN_SETTINGS,
+                menu_labels::lookup(Key::Settings, lang),
+                true,
+                Some("CmdOrCtrl+,"),
+            )?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,
