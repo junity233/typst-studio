@@ -16,7 +16,7 @@
  * headings or no document is active.
  */
 import { useEffect, useMemo, useState } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, ChevronsDownUp, ChevronsUpDown } from "lucide-react";
 import { useTabsStore } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { editorApiRef } from "../Editor/editorApiRef";
@@ -56,6 +56,26 @@ function buildTree(outline: OutlineNode[]): TreeNode[] {
     }
   }
   return roots;
+}
+
+/**
+ * Collect the indices of every node that has children (i.e. every collapsible
+ * node). Used by the "collapse all" toolbar action — folding exactly these
+ * hides the whole tree's descendants while keeping every heading reachable
+ * (the parent rows stay visible).
+ */
+function collectInternalIndices(roots: TreeNode[]): number[] {
+  const out: number[] = [];
+  const walk = (nodes: TreeNode[]) => {
+    for (const tn of nodes) {
+      if (tn.children.length > 0) {
+        out.push(tn.index);
+        walk(tn.children);
+      }
+    }
+  };
+  walk(roots);
+  return out;
 }
 
 /**
@@ -121,6 +141,16 @@ export function OutlinePanel() {
       return next;
     });
 
+  // The internal-node indices are stable for a given tree, so we can derive
+  // them once per `tree` change. Toolbar "collapse all" folds every node that
+  // has children; "expand all" clears the set.
+  const internalIndices = useMemo(() => collectInternalIndices(tree), [tree]);
+  const collapseAll = () => setCollapsed(new Set(internalIndices));
+  const expandAll = () => setCollapsed(new Set());
+  const hasCollapsible = internalIndices.length > 0;
+  const allCollapsed =
+    hasCollapsible && internalIndices.every((i) => collapsed.has(i));
+
   const reveal = (line: number) => {
     editorApiRef.current?.revealLine(line, 1);
   };
@@ -138,18 +168,42 @@ export function OutlinePanel() {
   }
 
   return (
-    <div className="outline-tree" role="tree" aria-label="Document outline">
-      {tree.map((tn) => (
-        <TreeRow
-          key={tn.index}
-          tn={tn}
-          depth={0}
-          collapsed={collapsed}
-          onToggle={toggle}
-          onReveal={reveal}
-          activeIdx={activeIdx}
-        />
-      ))}
+    <div className="outline-root">
+      <div className="tree-toolbar" role="toolbar" aria-label="Outline actions">
+        <button
+          type="button"
+          className="tree-toolbar-btn"
+          title="Collapse all"
+          aria-label="Collapse all sections"
+          disabled={!hasCollapsible || allCollapsed}
+          onClick={collapseAll}
+        >
+          <ChevronsDownUp size={14} />
+        </button>
+        <button
+          type="button"
+          className="tree-toolbar-btn"
+          title="Expand all"
+          aria-label="Expand all sections"
+          disabled={collapsed.size === 0}
+          onClick={expandAll}
+        >
+          <ChevronsUpDown size={14} />
+        </button>
+      </div>
+      <div className="outline-tree" role="tree" aria-label="Document outline">
+        {tree.map((tn) => (
+          <TreeRow
+            key={tn.index}
+            tn={tn}
+            depth={0}
+            collapsed={collapsed}
+            onToggle={toggle}
+            onReveal={reveal}
+            activeIdx={activeIdx}
+          />
+        ))}
+      </div>
     </div>
   );
 }

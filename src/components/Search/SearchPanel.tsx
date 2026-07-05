@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, FileText } from "lucide-react";
+import { ChevronRight, ChevronsDownUp, ChevronsUpDown, FileText } from "lucide-react";
 import { useSearchStore } from "../../store/searchStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { openFile } from "../../lib/openFile";
@@ -90,6 +90,15 @@ export function SearchPanel(_props: { viewId?: string }) {
       return next;
     });
 
+  // Toolbar "collapse all" / "expand all" — operates on the current result
+  // set's file list. Disabled when there's nothing to act on (no files, or
+  // already in the target state).
+  const allFiles = grouped.map(([f]) => f);
+  const collapseAll = () => setCollapsed(new Set(allFiles));
+  const expandAll = () => setCollapsed(new Set());
+  const hasFiles = allFiles.length > 0;
+  const allCollapsed = hasFiles && allFiles.every((f) => collapsed.has(f));
+
   return (
     <div className="search-panel">
       <div className="search-header">
@@ -133,6 +142,34 @@ export function SearchPanel(_props: { viewId?: string }) {
       </div>
 
       <div className="search-results">
+        {!searching && !error && grouped.length > 0 && (
+          <div className="tree-toolbar" role="toolbar" aria-label="Result actions">
+            <button
+              type="button"
+              className="tree-toolbar-btn"
+              title="Collapse all files"
+              aria-label="Collapse all files"
+              disabled={allCollapsed}
+              onClick={collapseAll}
+            >
+              <ChevronsDownUp size={14} />
+            </button>
+            <button
+              type="button"
+              className="tree-toolbar-btn"
+              title="Expand all files"
+              aria-label="Expand all files"
+              disabled={collapsed.size === 0}
+              onClick={expandAll}
+            >
+              <ChevronsUpDown size={14} />
+            </button>
+            <span className="tree-toolbar-count">
+              {results.length} result{results.length === 1 ? "" : "s"} in{" "}
+              {grouped.length} file{grouped.length === 1 ? "" : "s"}
+            </span>
+          </div>
+        )}
         {searching && <div className="search-status">Searching…</div>}
         {error && <div className="search-error">{error}</div>}
         {!searching && !error && results.length === 0 && query.trim() && (
