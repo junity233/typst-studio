@@ -595,36 +595,74 @@ button {
 
 /* ============================================================================
    Outline (§Outline) — document heading tree sidebar panel.
+
+   DESIGN.md language: weight-based hierarchy (H1 caption-strong, deeper
+   levels caption), ink-muted color drift down the levels, Action Blue active
+   accent + left stripe, parchment hover, soft nesting guide lines instead of
+   borders, no chrome shadows. Modeled on Xcode's navigator / macOS Finder
+   column view — expand/collapse chevrons, clear visual nesting.
    ========================================================================= */
-.outline-panel {
+.outline-tree {
+  height: 100%;
+  overflow: auto;
+  padding: var(--space-xs) 0;
+}
+
+/* --- Empty state -------------------------------------------------------- */
+.outline-empty {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
   height: 100%;
-  overflow-y: auto;
-  padding: var(--space-xxs) 0;
-}
-
-.outline-empty {
-  padding: var(--space-lg);
-  color: var(--color-ink-muted-48);
-  font: var(--text-caption);
+  padding: var(--space-xl) var(--space-md);
   text-align: center;
+  gap: var(--space-xs);
 }
 
+.outline-empty-glyph {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 300;
+  color: var(--color-ink-muted-48);
+  line-height: 1;
+  margin-bottom: var(--space-xxs);
+}
+
+.outline-empty-text {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+  letter-spacing: -0.224px;
+}
+
+.outline-empty-hint {
+  font: var(--text-fine-print);
+  color: var(--color-ink-muted-48);
+  margin-top: var(--space-xxs);
+}
+
+.outline-empty-hint code {
+  font-family: var(--font-mono);
+  background: var(--color-canvas-parchment);
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  color: var(--color-ink-muted-80);
+}
+
+/* --- Row ---------------------------------------------------------------- */
 .outline-row {
   display: flex;
-  width: 100%;
-  text-align: left;
-  border: none;
-  background: transparent;
-  /* `padding-left` is set inline by JSX based on level — `--space-sm` is the
-     base right/bottom padding (the inline style overrides left only). */
-  padding: 4px var(--space-sm);
-  cursor: pointer;
-  gap: var(--space-xs);
+  align-items: center;
+  /* Indent per depth via the inline `--outline-depth` custom property.
+     16px per level matches the original spacing and stays legible in the
+     220px sidebar down to ~5 levels. */
+  padding-left: calc(var(--space-xs) + var(--outline-depth, 0) * 16px);
+  padding-right: var(--space-sm);
+  height: 26px;
+  gap: 2px;
   color: var(--color-ink);
-  font: var(--text-caption); /* 14/400 */
-  letter-spacing: -0.224px;
+  cursor: default;
+  user-select: none;
   transition: background-color 100ms ease;
 }
 
@@ -632,11 +670,108 @@ button {
   background: var(--color-canvas-parchment);
 }
 
+/* Hierarchy via weight + color drift (DESIGN.md: weight, not case or chrome).
+   H1 reads as a section header (caption-strong, full ink); each deeper level
+   softens toward ink-muted-80 so the eye walks the hierarchy naturally. */
+.outline-level-1 {
+  font: var(--text-caption-strong); /* 14/600 */
+  letter-spacing: -0.224px;
+  color: var(--color-ink);
+}
+
+.outline-level-2 {
+  font: var(--text-caption); /* 14/400 */
+  letter-spacing: -0.224px;
+  color: var(--color-ink);
+}
+
+.outline-level-3,
+.outline-level-4,
+.outline-level-5,
+.outline-level-6 {
+  font: var(--text-caption);
+  letter-spacing: -0.224px;
+  color: var(--color-ink-muted-80);
+}
+
+/* Active row — the heading whose source line is currently in view in the
+   editor (Xcode-navigator style). Action Blue text + a 2px left stripe in
+   the depth gutter; no background fill (DESIGN.md: surface change divides,
+   don't add chrome). */
+.outline-row.active {
+  color: var(--color-primary);
+}
+
+.outline-row.active::before {
+  content: "";
+  position: absolute;
+  /* The stripe sits in the depth gutter, aligned to the row's left edge
+     after the depth indent. */
+  left: calc(var(--outline-depth, 0) * 16px + var(--space-xs));
+  margin-left: -8px;
+  align-self: stretch;
+  width: 2px;
+  height: 16px;
+  background: var(--color-primary);
+  border-radius: var(--radius-pill);
+}
+
+.outline-row.active {
+  position: relative;
+}
+
+/* --- Expand / collapse chevron ----------------------------------------- */
+.outline-twisty {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-ink-muted-48);
+  cursor: pointer;
+  padding: 0;
+  border-radius: var(--radius-xs);
+  transition: transform 120ms ease, color 100ms ease, background-color 100ms ease;
+}
+
+.outline-twisty:hover:not(:disabled) {
+  background: var(--color-divider-soft);
+  color: var(--color-ink);
+}
+
+.outline-twisty:disabled {
+  cursor: default;
+  visibility: hidden; /* keep the column for alignment, just hide the glyph */
+}
+
+.outline-twisty svg {
+  transition: transform 120ms ease;
+}
+
+/* Collapsed = pointing right (default chevron). Expanded = rotated 90° down. */
+.outline-twisty svg.expanded {
+  transform: rotate(90deg);
+}
+
+/* --- Numbering + title -------------------------------------------------- */
 .outline-numbering {
   flex: 0 0 auto;
   color: var(--color-ink-muted-48);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
+  /* The numbering sits in a fixed-width slot so titles align across rows
+     regardless of "1" vs "1.2.3". */
+  min-width: 20px;
+  text-align: right;
+  margin-right: 2px;
+}
+
+.outline-row.active .outline-numbering {
+  color: var(--color-primary);
+  opacity: 0.7;
 }
 
 .outline-title {
@@ -644,6 +779,28 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+/* --- Nesting guide lines (the soft "where am I in the tree" cue) -------- */
+/* Each level's children container draws a faint vertical line in the depth
+   gutter, so the eye traces parent → child without needing heavy borders.
+   The line uses --color-divider-soft (DESIGN.md's hairline-soft tone). */
+.outline-children {
+  position: relative;
+}
+
+.outline-children::before {
+  content: "";
+  position: absolute;
+  /* Line sits at the parent's depth gutter (one level shallower than the
+     children it contains). */
+  left: calc(var(--space-xs) + var(--outline-depth, 0) * 16px + 8px);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-divider-soft);
+  pointer-events: none;
 }
 
 
