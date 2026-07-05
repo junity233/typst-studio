@@ -236,6 +236,213 @@ export function getSelectionText(editor: EditEditor): string {
 }
 
 /**
+ * Idempotent wrap toggle: if the selection/caret already sits inside a
+ * `prefix…suffix` region, **unwrap** it (replace the full `prefix…suffix` span
+ * with the inner text and select the inner text); otherwise **wrap** it
+ * (delegating to {@link applyWrapSelection}). Used by the format toolbar's
+ * bold/italic/code/strikethrough/quote buttons (state-aware toolbar T1).
+ *
+ * - **Non-empty selection:** if the selected text itself starts with `prefix`
+ *   and ends with `suffix` (and is long enough to contain both markers), unwrap
+ *   to the inner text; otherwise wrap the selection.
+ * - **Collapsed caret:** scan the caret's line (single-line only) via
+ *   {@link findEnclosingWrap} for the nearest enclosing `prefix…suffix` pair.
+ *   If found, unwrap that pair; if not, insert a `prefix + placeholder + suffix`
+ *   placeholder and select it.
+ *
+ * Toggling twice returns to the original (idempotent). Framed as one undo step
+ * (undo stops before + after) and focused, matching the other edit helpers.
+ *
+ * @param editor      The live Monaco editor.
+ * @param prefix      Markup before the selection/placeholder (e.g. `"*"`).
+ * @param suffix      Markup after (e.g. `"*"`, or `"]"` for `#strike[…]).
+ * @param placeholder Text to insert for a collapsed caret with no enclosing
+ *   pair (default `"text"`).
+ */
+export function applyToggleWrap(
+  editor: EditEditor,
+  prefix: string,
+  suffix: string,
+  placeholder: string = DEFAULT_PLACEHOLDER,
+): void {
+  const model = editor.getModel();
+  const sel = editor.getSelection();
+  if (!model || !sel) return;
+
+  // Normalize to document order (start ≤ end). See applyWrapSelection for why.
+  const startLine = Math.min(sel.selectionStartLineNumber, sel.positionLineNumber);
+  const startCol = columnAtStart(sel, startLine);
+  const endLine = Math.max(sel.selectionStartLineNumber, sel.positionLineNumber);
+  const endCol = columnAtEnd(sel, endLine);
+  const collapsed = startLine === endLine && startCol === endCol;
+
+  const wrappedSelectionRange = (fullSpanStartCol: number, inner: string) => ({
+    startLineNumber: startLine,
+    startColumn: fullSpanStartCol,
+    endLineNumber: startLine,
+    endColumn: fullSpanStartCol + inner.length,
+  });
+
+  if (!collapsed) {
+    const range: Monaco.IRange = {
+      startLineNumber: startLine,
+      startColumn: startCol,
+      endLineNumber: endLine,
+      endColumn: endCol,
+    };
+    const selectedText = model.getValueInRange(range);
+
+    if (
+      selectedText.length >= prefix.length + suffix.length &&
+      selectedText.startsWith(prefix) &&
+      selectedText.endsWith(suffix)
+    ) {
+      // UNWRAP: drop the markers, keep the inner text, select it.
+      const inner = selectedText.slice(
+        prefix.length,
+        selectedText.length - suffix.length,
+      );
+      const after = computeEndAfterInsert(startLine, startCol, inner);
+
+      editor.pushUndoStop();
+      editor.executeEdits("format-toggle-wrap", [{ range, text: inner }]);
+      editor.setSelection({
+        startLineNumber: startLine,
+        startColumn: startCol,
+        endLineNumber: after.line,
+        endColumn: after.col,
+      });
+      editor.pushUndoStop();
+      editor.focus();
+      return;
+    }
+    // Not already wrapped → wrap (delegate to the existing helper, which frames
+    // its own undo stops + focus).
+    applyWrapSelection(editor, prefix, suffix, placeholder);
+    return;
+  }
+
+  // Collapsed caret: single-line scan for an enclosing pair on this line.
+  const line = model.getLineContent(startLine);
+  const pair = findEnclosingWrap(line, startCol, prefix, suffix);
+  if (!pair) {
+    // No enclosing pair → insert a placeholder wrap (delegates undo/focus).
+    applyWrapSelection(editor, prefix, suffix, placeholder);
+    return;
+  }
+
+  // UNWRAP the pair span [pair.startCol, pair.endCol] → inner text.
+  const inner = line.slice(
+    pair.startCol - 1 + prefix.length,
+    pair.endCol - 1 - suffix.length,
+  );
+  const range: Monaco.IRange = {
+    startLineNumber: startLine,
+    startColumn: pair.startCol,
+    endLineNumber: startLine,
+    endColumn: pair.endCol,
+  };
+
+  editor.pushUndoStop();
+  editor.executeEdits("format-toggle-wrap", [{ range, text: inner }]);
+  editor.setSelection(wrappedSelectionRange(pair.startCol, inner));
+  editor.pushUndoStop();
+  editor.focus();
+}
+
+/**
+ * Query whether the current selection/caret sits inside a `prefix…suffix`
+ * region on its line. Used by the format toolbar to set `aria-pressed` on the
+ * bold/italic/code/strikethrough/quote buttons (state-aware toolbar T1).
+ *
+ * - **Collapsed caret:** true iff {@link findEnclosingWrap} finds an enclosing
+ *   pair on the caret's line.
+ * - **Non-empty selection:** true if the selected text itself is wrapped
+ *   (starts with `prefix`, ends with `suffix`); otherwise, for a single-line
+ *   selection, true if a pair on that line encloses the *whole* selection
+ *   range. Multi-line selections that aren't themselves wrapped return false.
+ *
+ * Pure read: no edits, no undo stops, no focus.
+ *
+ * @param editor The live Monaco editor.
+ * @param prefix Markup before the region (e.g. `"*"`).
+ * @param suffix Markup after (e.g. `"*"`, or `"]"` for `#strike[…]).
+ * @returns `true` if the selection/caret is inside a matching wrap.
+ */
+export function isInsideWrap(
+  editor: EditEditor,
+  prefix: string,
+  suffix: string,
+): boolean {
+  const model = editor.getModel();
+  const sel = editor.getSelection();
+  if (!model || !sel) return false;
+
+  const startLine = Math.min(sel.selectionStartLineNumber, sel.positionLineNumber);
+  const startCol = columnAtStart(sel, startLine);
+  const endLine = Math.max(sel.selectionStartLineNumber, sel.positionLineNumber);
+  const endCol = columnAtEnd(sel, endLine);
+  const collapsed = startLine === endLine && startCol === endCol;
+
+  if (collapsed) {
+    const line = model.getLineContent(startLine);
+    return findEnclosingWrap(line, startCol, prefix, suffix) !== null;
+  }
+
+  // Non-empty selection: first check whether the selection text itself is
+  // wrapped (handles multi-line too — a multi-line selection that happens to
+  // start with prefix and end with suffix counts as wrapped).
+  const range: Monaco.IRange = {
+    startLineNumber: startLine,
+    startColumn: startCol,
+    endLineNumber: endLine,
+    endColumn: endCol,
+  };
+  const selectedText = model.getValueInRange(range);
+  if (
+    selectedText.length >= prefix.length + suffix.length &&
+    selectedText.startsWith(prefix) &&
+    selectedText.endsWith(suffix)
+  ) {
+    return true;
+  }
+
+  // Single-line selection: true if a pair on this line encloses the whole
+  // selection range. (findEnclosingWrap already proves the start column is
+  // inside the pair; we just also require the end column to be within the
+  // pair's span.)
+  if (startLine !== endLine) return false;
+  const line = model.getLineContent(startLine);
+  const pair = findEnclosingWrap(line, startCol, prefix, suffix);
+  return pair !== null && pair.endCol >= endCol;
+}
+
+/**
+ * Query whether the document-order first line of the selection starts with
+ * `prefix`. Used by the format toolbar to set `aria-pressed` on the heading and
+ * list buttons (state-aware toolbar T1).
+ *
+ * The check is a precise `startsWith` for the EXACT prefix, so it discriminates
+ * heading levels correctly: a `== ` line returns TRUE for `"== "` but FALSE for
+ * `"= "` (its second char is `=`, not ` `). Only the selection's START line is
+ * consulted (the toolbar reflects the caret's anchor line).
+ *
+ * Pure read: no edits, no undo stops, no focus.
+ *
+ * @param editor The live Monaco editor.
+ * @param prefix The exact line prefix to test (e.g. `"= "`, `"== "`, `"- "`).
+ * @returns `true` if the selection's first line starts with `prefix`.
+ */
+export function isLinePrefixActive(editor: EditEditor, prefix: string): boolean {
+  const model = editor.getModel();
+  const sel = editor.getSelection();
+  if (!model || !sel) return false;
+
+  const startLine = Math.min(sel.selectionStartLineNumber, sel.positionLineNumber);
+  return model.getLineContent(startLine).startsWith(prefix);
+}
+
+/**
  * Toggle a line-prefix marker (e.g. `= ` H1, `== ` H2, `- ` bullet, `+ `
  * numbered) on every line touched by the selection (or just the caret's line
  * if collapsed).
@@ -422,4 +629,91 @@ function countChar(haystack: string, needle: string): number {
 function clampColumn(model: EditModel, line: number, col: number): number {
   const max = model.getLineMaxColumn(line);
   return Math.max(1, Math.min(col, max));
+}
+
+/**
+ * Find the nearest `prefix…suffix` pair on `line` that encloses column
+ * `caretCol1Based`. Used by {@link applyToggleWrap} and {@link isInsideWrap} to
+ * decide whether the caret sits inside a wrap region (bold `*…*`, italic
+ * `_…_`, code `` `…` ``, strikethrough `#strike[…]`, quote `#quote[…]`).
+ *
+ * Returns the 1-based columns of the FULL pair span: `startCol` is the column
+ * of the prefix's first char; `endCol` is the column AFTER the suffix's last
+ * char (so the range `[startCol, endCol]` exactly covers `prefix…suffix` when
+ * passed to `getValueInRange`, which slices `line.slice(startCol - 1, endCol - 1)`).
+ * Returns `null` when no enclosing pair exists on the line.
+ *
+ * ## Column convention
+ *
+ * Column N means the caret sits AFTER the (N−1)th char (Monaco convention), so
+ * the char immediately to the caret's LEFT is at 0-based index `N − 2`, and the
+ * char to the RIGHT is at index `N − 1`. A pair `prefix…suffix` encloses the
+ * caret when the prefix sits at-or-left of the caret's left char and the suffix
+ * sits at-or-right of the caret's right char.
+ *
+ * ## Algorithm (greedy, single-line — NO marker balancing)
+ *
+ * 1. Scan leftward from the caret's left char for the rightmost `prefix`
+ *    occurrence whose last char is at-or-left of the caret's left char. For
+ *    symmetric markers (`prefix === suffix`) the prefix char itself must be
+ *    ≤ the left index; for bracket-pair openers the whole opener must sit left
+ *    of the caret.
+ * 2. From that prefix's end, scan rightward for the nearest `suffix` whose
+ *    first char is at-or-right of the caret's right char.
+ * 3. If both exist, the pair encloses the caret → return it.
+ *
+ * For nested markers like `*_x_*` with the caret in `x`, this greedy approach
+ * finds the INNERMOST layer for each marker type (`*` → the inner `*…*`,
+ * `_` → the inner `_…_`), which is the desired toggle behavior (toggling bold
+ * unwraps one layer at a time). Typst markup is simple enough that this greedy
+ * scan is correct for the markers in play; this is intentionally NOT a parser.
+ *
+ * @param line            The single line of text to scan.
+ * @param caretCol1Based  The 1-based caret column on that line.
+ * @param prefix          The opener markup to find left of the caret.
+ * @param suffix          The closer markup to find right of the caret.
+ * @returns The 1-based `[startCol, endCol]` of the enclosing pair, or `null`.
+ */
+function findEnclosingWrap(
+  line: string,
+  caretCol1Based: number,
+  prefix: string,
+  suffix: string,
+): { startCol: number; endCol: number } | null {
+  // Caret's left char index (0-based) = caretCol1Based - 2; right char index
+  // = caretCol1Based - 1. Clamp left at -1 (caret at column 1 → no left char).
+  const leftIdx = caretCol1Based - 2;
+  const rightIdx = caretCol1Based - 1;
+
+  // Step 1: rightmost prefix occurrence whose last char sits at-or-left of the
+  // caret's left char. lastIndexOf scans right-to-left, so its first hit (when
+  // we cap the fromIndex at leftIdx - prefix.length + 1) is the nearest one.
+  // For symmetric single-char markers, the prefix char can be the caret's left
+  // char itself; for multi-char bracket openers (`#strike[`, `#quote[`) the
+  // whole opener must sit at-or-left of the left char — the fromIndex cap below
+  // handles both cases uniformly.
+  const prefixFrom = leftIdx - prefix.length + 1;
+  let prefixStart = line.lastIndexOf(prefix, Math.max(-1, prefixFrom));
+  if (prefixStart === -1 || prefixStart + prefix.length - 1 > leftIdx) {
+    return null;
+  }
+  // Edge: when prefix and suffix share text (e.g. symmetric `*`), the prefix
+  // we found could itself be the suffix of a degenerate empty region; that's
+  // fine — step 2 will still find a suffix to the right.
+
+  // Step 2: nearest suffix occurrence whose first char sits at-or-right of the
+  // caret's right char, AND at-or-after the prefix's end. Scan rightward.
+  const suffixSearchFrom = Math.max(rightIdx, prefixStart + prefix.length);
+  let suffixStart = line.indexOf(suffix, suffixSearchFrom);
+  if (suffixStart === -1) {
+    return null;
+  }
+  // Degenerate guard: for symmetric markers, the suffix we found could equal
+  // the prefix position (empty content `**` with caret inside). Allow it — an
+  // empty wrap is still a wrap.
+
+  return {
+    startCol: prefixStart + 1,
+    endCol: suffixStart + suffix.length + 1,
+  };
 }

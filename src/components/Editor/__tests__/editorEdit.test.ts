@@ -4,6 +4,9 @@ import {
   applyWrapSelection,
   applyReplaceSelection,
   applyToggleLinePrefix,
+  applyToggleWrap,
+  isInsideWrap,
+  isLinePrefixActive,
   getSelectionText,
 } from "../editorEdit";
 import type { EditEditor, EditModel } from "../editorEdit";
@@ -857,5 +860,380 @@ describe("applyToggleLinePrefix", () => {
     const m = ed.getModel();
     expect(m.getLineContent(1)).toBe("- a");
     expect(m.getLineContent(5)).toBe("- e");
+  });
+});
+
+// ===========================================================================
+// applyToggleWrap
+// ===========================================================================
+//
+// Spec (state-aware toolbar T1): an idempotent wrap toggle. If the
+// selection/caret already sits inside a `prefix…suffix` region, UNWRAP it
+// (replace the full span with the inner text); otherwise WRAP it (delegating to
+// applyWrapSelection). Toggling twice returns to the original.
+
+describe("applyToggleWrap", () => {
+  describe("non-empty selection", () => {
+    it("wraps unwrapped selected text (delegates to applyWrapSelection)", () => {
+      // sel 1..4 selects `foo` in buffer `foobar`.
+      const ed = sel(1, 4, "foobar");
+      applyToggleWrap(ed, "*", "*");
+
+      expect(ed.getModel().getValue()).toBe("*foo*bar");
+      // selection covers the whole `*foo*` span → cols 1..6.
+      expect(ed.getSelection()).toEqual({
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 1,
+        positionLineNumber: 1,
+        positionColumn: 6,
+      });
+    });
+
+    it("unwraps an already-wrapped selection (`*foo*` selected → `foo`)", () => {
+      // buffer `*foo*`, selection covers all of it (cols 1..6 = `*foo*`).
+      const ed = sel(1, 6, "*foo*");
+      applyToggleWrap(ed, "*", "*");
+
+      expect(ed.getModel().getValue()).toBe("foo");
+      expect(ed.getSelection()).toEqual({
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 1,
+        positionLineNumber: 1,
+        positionColumn: 4,
+      });
+    });
+
+    it("is idempotent: wrap then unwrap returns to the original", () => {
+      const ed = caret("foo", 1);
+      // Round-trip via explicit selections of the wrapped span.
+      // Step 1: wrap `foo` (sel 1..4).
+      ed.setSelection({
+        startLineNumber: 1,
+        startColumn: 1,
+        endLineNumber: 1,
+        endColumn: 4,
+      });
+      applyToggleWrap(ed, "*", "*");
+      expect(ed.getModel().getValue()).toBe("*foo*");
+      // Step 2: the selection now covers `*foo*` (cols 1..6); toggle again.
+      applyToggleWrap(ed, "*", "*");
+      expect(ed.getModel().getValue()).toBe("foo");
+      expect(ed.getSelection()).toEqual({
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 1,
+        positionLineNumber: 1,
+        positionColumn: 4,
+      });
+    });
+
+    it("does NOT unwrap a selection that only shares a prefix (`*foo` selected)", () => {
+      // `*foo` starts with `*` but has no closing `*` → must WRAP, not strip.
+      const ed = sel(1, 5, "*foo");
+      applyToggleWrap(ed, "*", "*");
+
+      expect(ed.getModel().getValue()).toBe("**foo*");
+    });
+
+    it("treats a selection shorter than prefix+suffix as not-wrapped", () => {
+      // `*` alone (length 1) is shorter than prefix+suffix (2) → wrap it.
+      const ed = sel(1, 2, "*");
+      applyToggleWrap(ed, "*", "*");
+
+      expect(ed.getModel().getValue()).toBe("***");
+    });
+
+    it("unwraps a strikethrough selection (`#strike[text]` → `text`)", () => {
+      // buffer `#strike[text]`, selection covers all 14 chars.
+      const ed = sel(1, 14, "#strike[text]");
+      applyToggleWrap(ed, "#strike[", "]");
+
+      expect(ed.getModel().getValue()).toBe("text");
+      expect(ed.getSelection()).toEqual({
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 1,
+        positionLineNumber: 1,
+        positionColumn: 5,
+      });
+    });
+
+    it("unwraps a quote selection (`#quote[text]` → `text`)", () => {
+      const ed = sel(1, 13, "#quote[text]");
+      applyToggleWrap(ed, "#quote[", "]");
+
+      expect(ed.getModel().getValue()).toBe("text");
+    });
+  });
+
+  describe("collapsed caret", () => {
+    it("unwraps the enclosing pair (caret inside `*foo*`)", () => {
+      // caret between `f` and `o` (col 3). Pair [1,6) → unwrap to `foo`.
+      const ed = caret("*foo*", 3);
+      applyToggleWrap(ed, "*", "*");
+
+      expect(ed.getModel().getValue()).toBe("foo");
+      expect(ed.getSelection()).toEqual({
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 1,
+        positionLineNumber: 1,
+        positionColumn: 4,
+      });
+    });
+
+    it("inserts a placeholder when the caret is NOT inside any wrap", () => {
+      const ed = caret("Hello world", 6);
+      applyToggleWrap(ed, "*", "*");
+
+      expect(ed.getModel().getValue()).toBe("Hello*text* world");
+      // placeholder `text` at cols 7..11.
+      expect(ed.getSelection()).toMatchObject({
+        selectionStartColumn: 7,
+        positionColumn: 11,
+      });
+    });
+
+    it("inserts a custom placeholder when no pair encloses the caret", () => {
+      const ed = caret("ab", 1);
+      applyToggleWrap(ed, "_", "_", "italic");
+
+      expect(ed.getModel().getValue()).toBe("_italic_ab");
+    });
+
+    it("unwraps a bracket-pair region (caret inside `#strike[foo]`)", () => {
+      // buffer `#strike[foo]`, caret inside `foo` (col 10, between f and o).
+      const ed = caret("#strike[foo]", 10);
+      applyToggleWrap(ed, "#strike[", "]");
+
+      expect(ed.getModel().getValue()).toBe("foo");
+      expect(ed.getSelection()).toEqual({
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 1,
+        positionLineNumber: 1,
+        positionColumn: 4,
+      });
+    });
+
+    it("unwraps a quote region (caret inside `#quote[bar]`)", () => {
+      // caret inside `bar` (col 10).
+      const ed = caret("#quote[bar]", 10);
+      applyToggleWrap(ed, "#quote[", "]");
+
+      expect(ed.getModel().getValue()).toBe("bar");
+    });
+
+    it("unwraps the INNERMOST layer of nested `*_x_*` for bold", () => {
+      // caret inside `x` (col 4). Toggling bold unwraps the inner `*…*` → `_x_`.
+      const ed = caret("*_x_*", 4);
+      applyToggleWrap(ed, "*", "*");
+
+      expect(ed.getModel().getValue()).toBe("_x_");
+      expect(ed.getSelection()).toEqual({
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 1,
+        positionLineNumber: 1,
+        positionColumn: 4,
+      });
+    });
+
+    it("unwraps the italic layer of nested `*_x_*` for italic", () => {
+      // caret inside `x` (col 4). Toggling italic unwraps `_…_` → `*x*`.
+      const ed = caret("*_x_*", 4);
+      applyToggleWrap(ed, "_", "_");
+
+      expect(ed.getModel().getValue()).toBe("*x*");
+    });
+  });
+
+  describe("undo-stop framing + source label", () => {
+    it("pushes undo stops before AND after on the unwrap path, and focuses", () => {
+      const ed = sel(1, 6, "*foo*");
+      applyToggleWrap(ed, "*", "*");
+
+      expect(ed.undoStopCount).toBe(2);
+      expect(ed.focusCount).toBe(1);
+    });
+
+    it("pushes undo stops on the caret-unwrap path too", () => {
+      const ed = caret("*foo*", 3);
+      applyToggleWrap(ed, "*", "*");
+
+      expect(ed.undoStopCount).toBe(2);
+      expect(ed.focusCount).toBe(1);
+    });
+
+    it("uses the 'format-toggle-wrap' source label on the unwrap path", () => {
+      const ed = sel(1, 6, "*foo*");
+      applyToggleWrap(ed, "*", "*");
+      expect(ed.lastEditSource).toBe("format-toggle-wrap");
+    });
+
+    it("batches the caret-unwrap into exactly ONE executeEdits call", () => {
+      const ed = caret("*foo*", 3);
+      applyToggleWrap(ed, "*", "*");
+      expect(ed.executeEditsCallCount).toBe(1);
+    });
+  });
+});
+
+// ===========================================================================
+// isInsideWrap
+// ===========================================================================
+//
+// Spec (state-aware toolbar T1): pure query used by the toolbar to set
+// aria-pressed. True when the selection/caret sits inside a `prefix…suffix`
+// region on its line. Never mutates the buffer/selection, never frames edits.
+
+describe("isInsideWrap", () => {
+  describe("collapsed caret", () => {
+    it("returns true when the caret is inside `*foo*` (bold)", () => {
+      const ed = caret("*foo*", 3);
+      expect(isInsideWrap(ed, "*", "*")).toBe(true);
+    });
+
+    it("returns false when the caret is outside any wrap", () => {
+      const ed = caret("Hello world", 6);
+      expect(isInsideWrap(ed, "*", "*")).toBe(false);
+    });
+
+    it("returns true for strike, false for bold when inside `#strike[x]`", () => {
+      const ed = caret("#strike[x]", 10);
+      expect(isInsideWrap(ed, "#strike[", "]")).toBe(true);
+      expect(isInsideWrap(ed, "*", "*")).toBe(false);
+    });
+
+    it("returns true for BOTH bold and italic when the caret is in nested `*_x_*`", () => {
+      const ed = caret("*_x_*", 4);
+      expect(isInsideWrap(ed, "*", "*")).toBe(true);
+      expect(isInsideWrap(ed, "_", "_")).toBe(true);
+    });
+  });
+
+  describe("non-empty selection", () => {
+    it("returns true when the selection text itself is wrapped (`*foo*`)", () => {
+      const ed = sel(1, 6, "*foo*");
+      expect(isInsideWrap(ed, "*", "*")).toBe(true);
+    });
+
+    it("returns false when the selection text is unwrapped (`foo`)", () => {
+      const ed = sel(1, 4, "foo");
+      expect(isInsideWrap(ed, "*", "*")).toBe(false);
+    });
+
+    it("returns true when a single-line selection is fully enclosed by a pair", () => {
+      // buffer `*foo*`, select only `foo` (cols 2..5). The pair [1,6) encloses it.
+      const ed = sel(2, 5, "*foo*");
+      expect(isInsideWrap(ed, "*", "*")).toBe(true);
+    });
+
+    it("returns false when a single-line selection extends past the pair", () => {
+      // buffer `*foo* bar`, select `*foo*` + the space (cols 1..7). The pair
+      // [1,6) does NOT enclose col 7 → false.
+      const ed = sel(1, 7, "*foo* bar");
+      expect(isInsideWrap(ed, "*", "*")).toBe(false);
+    });
+
+    it("returns true for a selection fully inside the pair (`foo` in `*foo* bar`)", () => {
+      // select `foo` (cols 2..5) inside the pair [1,6) → enclosed.
+      const ed = sel(2, 5, "*foo* bar");
+      expect(isInsideWrap(ed, "*", "*")).toBe(true);
+    });
+  });
+
+  describe("pure read (no mutation)", () => {
+    it("does not mutate the buffer, selection, or frame edits/focus", () => {
+      const ed = sel(1, 6, "*foo*");
+      const beforeBuffer = ed.getModel().getValue();
+      const beforeSel = ed.getSelection();
+      const result = isInsideWrap(ed, "*", "*");
+
+      expect(result).toBe(true);
+      expect(ed.getModel().getValue()).toBe(beforeBuffer);
+      expect(ed.getSelection()).toEqual(beforeSel);
+      expect(ed.undoStopCount).toBe(0);
+      expect(ed.executeEditsCallCount).toBe(0);
+      expect(ed.focusCount).toBe(0);
+    });
+  });
+});
+
+// ===========================================================================
+// isLinePrefixActive
+// ===========================================================================
+//
+// Spec (state-aware toolbar T1): pure query for the heading/list buttons.
+// True iff the selection's document-order first line starts with `prefix`.
+// The precise startsWith check discriminates heading levels: `== ` is NOT
+// active for `"= "` because its second char is `=`, not ` `.
+
+describe("isLinePrefixActive", () => {
+  it("returns true when the line starts with the prefix (`= Hello`, `= `)", () => {
+    const ed = caret("= Hello", 1);
+    expect(isLinePrefixActive(ed, "= ")).toBe(true);
+  });
+
+  it("discriminates heading levels: `== Hello` is NOT `= `, but IS `== `", () => {
+    const ed = caret("== Hello", 1);
+    expect(isLinePrefixActive(ed, "= ")).toBe(false);
+    expect(isLinePrefixActive(ed, "== ")).toBe(true);
+  });
+
+  it("discriminates H3: `=== Deep` is NOT `== `, but IS `=== `", () => {
+    const ed = caret("=== Deep", 1);
+    expect(isLinePrefixActive(ed, "== ")).toBe(false);
+    expect(isLinePrefixActive(ed, "=== ")).toBe(true);
+  });
+
+  it("returns true for a bullet prefix, false for a different prefix", () => {
+    const ed = caret("- item", 1);
+    expect(isLinePrefixActive(ed, "- ")).toBe(true);
+    expect(isLinePrefixActive(ed, "+ ")).toBe(false);
+  });
+
+  it("returns false for plain text under any prefix", () => {
+    const ed = caret("plain text", 1);
+    expect(isLinePrefixActive(ed, "= ")).toBe(false);
+    expect(isLinePrefixActive(ed, "- ")).toBe(false);
+  });
+
+  it("only inspects the START line of a multi-line selection", () => {
+    // line 1 has `- `, line 2 is plain.
+    const ed = new FakeEditor("- item\nplain", {
+      selectionStartLineNumber: 1,
+      selectionStartColumn: 1,
+      positionLineNumber: 2,
+      positionColumn: 6,
+    });
+    expect(isLinePrefixActive(ed, "- ")).toBe(true);
+    expect(isLinePrefixActive(ed, "= ")).toBe(false);
+  });
+
+  it("inspects the start line even for a reversed (upward) selection", () => {
+    // anchor on line 2 (plain), active on line 1 (`= `) — start line is line 1.
+    const ed = new FakeEditor("= h1\nplain", {
+      selectionStartLineNumber: 2,
+      selectionStartColumn: 6,
+      positionLineNumber: 1,
+      positionColumn: 1,
+    });
+    expect(isLinePrefixActive(ed, "= ")).toBe(true);
+  });
+
+  it("does not treat an equals run without a space as a heading", () => {
+    // `=Hello` (no space) is NOT a Typst heading prefix.
+    const ed = caret("=Hello", 1);
+    expect(isLinePrefixActive(ed, "= ")).toBe(false);
+  });
+
+  it("is a pure read: no buffer/selection mutation, no edits/focus", () => {
+    const ed = caret("= Hello", 1);
+    const beforeBuffer = ed.getModel().getValue();
+    const beforeSel = ed.getSelection();
+    const result = isLinePrefixActive(ed, "= ");
+
+    expect(result).toBe(true);
+    expect(ed.getModel().getValue()).toBe(beforeBuffer);
+    expect(ed.getSelection()).toEqual(beforeSel);
+    expect(ed.undoStopCount).toBe(0);
+    expect(ed.executeEditsCallCount).toBe(0);
+    expect(ed.focusCount).toBe(0);
   });
 });
