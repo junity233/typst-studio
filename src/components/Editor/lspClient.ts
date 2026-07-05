@@ -1,4 +1,5 @@
 import type { MonacoVscodeApiConfig } from "monaco-languageclient/vscodeApiWrapper";
+import { MonacoVscodeApiWrapper } from "monaco-languageclient/vscodeApiWrapper";
 import type { LanguageClientConfig } from "monaco-languageclient/lcwrapper";
 import filesServiceOverride from "@codingame/monaco-vscode-files-service-override";
 import { configureDefaultWorkerFactory } from "monaco-languageclient/workerFactory";
@@ -80,6 +81,48 @@ export function buildVscodeApiConfig(): MonacoVscodeApiConfig {
     // is published to npm, restore the `extensions` field and delete
     // typstHighlighting.ts.
   };
+}
+
+/**
+ * Initialize the monaco-vscode-api services EXACTLY ONCE, before the
+ * `@typefox/monaco-editor-react` wrapper component mounts.
+ *
+ * WHY: the wrapper has TWO effects (keyed on `editorAppConfig` and
+ * `languageClientConfig`) that BOTH call `performGlobalInit`, which news a
+ * `MonacoVscodeApiWrapper` and calls `start()`. When both effects fire in the
+ * same commit, the second `start()` races the first's async services-init and
+ * panics with "Services are already initialized" (Monaco's services can only
+ * be initialized once per process). The wrapper's `vscodeApiInitialising`
+ * guard is meant to prevent this, but `start()` only sets it AFTER several
+ * awaits, leaving a window the second effect falls into.
+ *
+ * FIX: pre-initialize the services ourselves here, so by the time the wrapper
+ * mounts, `envEnhanced.vscodeApiInitialised === true`. The wrapper's
+ * `performGlobalInit` then takes its `else if (initialised === true)` branch
+ * (index.js:117) — it neither news a wrapper nor calls `start()`, so no race
+ * is possible regardless of how many of its effects fire.
+ *
+ * Idempotent + memoized: the singleton wrapper is constructed and started
+ * once; the returned promise is shared across all callers.
+ */
+let vscodeApiInitPromise: Promise<void> | null = null;
+
+export function ensureVscodeApiInitialized(): Promise<void> {
+  if (vscodeApiInitPromise !== null) return vscodeApiInitPromise;
+  vscodeApiInitPromise = (async () => {
+    try {
+      const wrapper = new MonacoVscodeApiWrapper(buildVscodeApiConfig());
+      await wrapper.start();
+    } catch (e) {
+      // If services were already initialized (e.g. by a prior partial init),
+      // start() throws — that's fine, the goal state (`vscodeApiInitialised
+      // === true`) still holds. Reset the memo so a caller can retry.
+      vscodeApiInitPromise = null;
+      // eslint-disable-next-line no-console
+      console.warn("[lspClient] vscode-api init threw (may already be init):", e);
+    }
+  })();
+  return vscodeApiInitPromise;
 }
 
 /**

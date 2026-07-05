@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MonacoEditorReactComp } from "@typefox/monaco-editor-react";
 import type * as Monaco from "@codingame/monaco-vscode-editor-api";
 import type {
@@ -15,7 +15,11 @@ import { useUiStore } from "../../store/uiStore";
 import { useDebouncedCallback } from "../../hooks/useDebounce";
 import { useLspStatus } from "../../store/lspStore";
 import { useSetting } from "../../hooks/useSetting";
-import { buildVscodeApiConfig, buildLanguageClientConfig } from "./lspClient";
+import {
+  buildVscodeApiConfig,
+  buildLanguageClientConfig,
+  ensureVscodeApiInitialized,
+} from "./lspClient";
 import { monacoModelRegistry } from "./monacoModelRegistry";
 import { installLspDiagnosticsBridge } from "./lspDiagnosticsBridge";
 import { computeModelSyncPlan } from "./editorModelSync";
@@ -102,6 +106,21 @@ interface MonacoEditorProps {
 const vscodeApiConfig = buildVscodeApiConfig();
 
 export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
+  // Pre-initialize the monaco-vscode-api services ONCE before the wrapper
+  // component mounts, so the wrapper's performGlobalInit takes its
+  // "already initialised" branch and never news/races a second wrapper. See
+  // `ensureVscodeApiInitialized` for the root-cause writeup.
+  const [vscodeApiReady, setVscodeApiReady] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    ensureVscodeApiInitialized().then(() => {
+      if (!cancelled) setVscodeApiReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Single source of truth for LSP status across the app (shared with
   // StatusBar). Seeds from get_lsp_status, then subscribes to events.
   const { status: lspStatus, loading: lspLoading } = useLspStatus();
@@ -667,7 +686,7 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // it (and editorAppConfig) stable for the wrapper's lifetime.
   const lspReady =
     !lspLoading && (lspStatus.available ? wsUrl !== null : true);
-  if (!lspReady) {
+  if (!lspReady || !vscodeApiReady) {
     return <div className="editor-pane">Loading editor...</div>;
   }
 
