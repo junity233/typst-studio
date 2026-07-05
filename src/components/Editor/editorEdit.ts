@@ -218,13 +218,12 @@ export function getSelectionText(editor: EditEditor): string {
   const sel = editor.getSelection();
   if (!model || !sel) return "";
 
-  // Normalize to document order. Real Monaco's `getValueInRange` does NOT
-  // normalize reversed ranges (it validates each position independently and
-  // preserves the original order), so a cross-line upward selection would
-  // return wrong text. Same-line reversed happens to work because
-  // `String.prototype.substring` swaps out-of-order args, but the cross-line
-  // case is genuinely broken without this. Mirrors the normalization the edit
-  // paths apply (applyWrapSelection/applyReplaceSelection).
+  // Normalize to document order. Real Monaco's `getValueInRange` already
+  // normalizes reversed ranges (its `Range` constructor swaps start/end when
+  // start > end), so this is belt-and-suspenders — defensive in case the
+  // editor surface ever changes, and keeps this read path symmetric with the
+  // edit paths (applyWrapSelection/applyReplaceSelection), which genuinely
+  // need the normalization for their post-edit selection math.
   const startLine = Math.min(sel.selectionStartLineNumber, sel.positionLineNumber);
   const endLine = Math.max(sel.selectionStartLineNumber, sel.positionLineNumber);
   const range: Monaco.IRange = {
