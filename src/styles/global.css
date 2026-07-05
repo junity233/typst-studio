@@ -522,25 +522,103 @@ button {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-xxs) 0;
+  padding: var(--space-xs) 0;
 }
 
 .search-file-group {
   margin-bottom: var(--space-xxs);
 }
 
-.search-file-name {
-  font: var(--text-caption-strong); /* 14/600 */
+/* File header row — a button so it's keyboard-focusable; click toggles the
+   group's collapse state. Sits at the base inset (no depth), with the chevron
+   + file glyph + path components aligned in a single line. */
+.search-file-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--space-xxs);
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 3px var(--space-sm);
+  cursor: pointer;
   color: var(--color-ink);
-  padding: var(--space-xxs) var(--space-sm) 2px;
+  font: var(--text-caption); /* 14/400 — file rows are scannable, not loud */
+  letter-spacing: -0.224px;
+  transition: background-color 100ms ease;
+}
+
+.search-file-row:hover {
+  background: var(--color-canvas-parchment);
+}
+
+/* Chevron rotates 90deg on expand (matches the Outline tree convention). */
+.search-chevron {
+  flex: 0 0 auto;
+  color: var(--color-ink-muted-48);
+  transition: transform 120ms ease;
+}
+.search-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.search-file-icon {
+  flex: 0 0 auto;
+  color: var(--color-ink-muted-48);
+}
+
+/* The directory prefix is dimmed so the filename reads as the row's identity
+   (VSCode convention — keeps long paths scannable in a narrow sidebar). */
+.search-file-dir {
+  color: var(--color-ink-muted-48);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 0 1 auto;
 }
 
+.search-file-name {
+  font-weight: 600; /* filename is caption-strong-weight within the caption-tier row */
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 1 auto;
+}
+
+/* Per-file hit count pill — a small muted chip, right-aligned. Reads as
+   "this file has N hits" without competing with the filename. */
 .search-hit-count {
+  flex: 0 0 auto;
+  margin-left: auto;
+  min-width: 16px;
+  text-align: center;
+  padding: 0 5px;
+  height: 16px;
+  line-height: 16px;
+  font: var(--text-fine-print); /* 12/400 */
   color: var(--color-ink-muted-48);
-  font-weight: 400; /* the count de-emphasizes vs the filename */
+  background: var(--color-canvas-parchment);
+  border-radius: var(--radius-pill);
+}
+
+/* Hit rows — children of a file group, indented one level under the file row.
+   Mono font for line content (it's source code); the line number is muted. */
+.search-hits {
+  position: relative;
+}
+
+/* Soft nesting guide line in the depth gutter — the eye traces hit → parent
+   file without a hard border (DESIGN.md: surface change divides). */
+.search-hits::before {
+  content: "";
+  position: absolute;
+  left: 18px; /* aligns under the file row's chevron column */
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-divider-soft);
+  pointer-events: none;
 }
 
 .search-hit-row {
@@ -549,7 +627,7 @@ button {
   text-align: left;
   border: none;
   background: transparent;
-  padding: 3px var(--space-sm) 3px var(--space-md);
+  padding: 3px var(--space-sm) 3px 32px; /* 32px left = one level under the file row */
   cursor: pointer;
   gap: var(--space-xs);
   color: var(--color-ink);
@@ -565,6 +643,8 @@ button {
 .search-hit-line {
   flex: 0 0 auto;
   color: var(--color-ink-muted-48);
+  min-width: 24px;
+  text-align: right;
 }
 
 .search-hit-text {

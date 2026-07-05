@@ -1,4 +1,5 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronRight, FileText } from "lucide-react";
 import { useSearchStore } from "../../store/searchStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { openFile } from "../../lib/openFile";
@@ -7,9 +8,15 @@ import type { SearchHit } from "../../lib/types";
 
 /**
  * The Search view (§Search view), rendered inside the sidebar body. A query box
- * + option toggles (case / whole-word / regex) on top, and a grouped result
- * list below. Clicking a hit opens the file and reveals the line via the shared
- * editor API ref.
+ * + option toggles (case / whole-word / regex) on top, and a tree-shaped result
+ * list below: results are grouped by file, each file group is collapsible, and
+ * clicking a hit opens the file and reveals the line via the shared editor API
+ * ref.
+ *
+ * The tree shape mirrors the Outline view's design language (DESIGN.md):
+ * chevron expand/collapse, weight-based hierarchy, parchment hover, soft
+ * nesting guide lines. Default state is all-expanded so users see results
+ * immediately; collapsing a file is for de-cluttering once they've scanned it.
  *
  * Debounced search: re-runs 300ms after the last query/option change; Enter
  * forces an immediate run, Escape clears the query. Visibility is toggled via
@@ -39,6 +46,8 @@ export function SearchPanel(_props: { viewId?: string }) {
     return () => clearTimeout(t);
   }, [query, isRegex, caseSensitive, wholeWord, run, clear]);
 
+  // Group hits by file path (preserves first-seen order, which is the walkdir
+  // traversal order — stable across re-runs of the same query).
   const grouped = useMemo(() => {
     const m = new Map<string, SearchHit[]>();
     for (const h of results) {
@@ -48,6 +57,38 @@ export function SearchPanel(_props: { viewId?: string }) {
     }
     return [...m.entries()];
   }, [results]);
+
+  // Collapsed file paths. Defaults to "all expanded" — the user just ran a
+  // search and wants to see what came back. Collapsing is for de-cluttering
+  // after they've scanned a file's hits.
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  // Reset collapse state whenever the result set changes substantively. We
+  // track by the sorted file list (cheap to derive) so a search that returns
+  // the same files but different hit lines doesn't reset the user's manual
+  // collapses, but a genuinely new search does. Also reset on query change
+  // since a typed query is the clearest "new search" signal.
+  const fileSignature = grouped.map(([f]) => f).join("\n");
+  const lastSigRef = useRef(fileSignature);
+  const lastQueryRef = useRef(query);
+  useEffect(() => {
+    if (
+      fileSignature !== lastSigRef.current ||
+      query !== lastQueryRef.current
+    ) {
+      lastSigRef.current = fileSignature;
+      lastQueryRef.current = query;
+      setCollapsed(new Set());
+    }
+  }, [fileSignature, query]);
+
+  const toggleFile = (file: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(file)) next.delete(file);
+      else next.add(file);
+      return next;
+    });
 
   return (
     <div className="search-panel">
@@ -90,35 +131,71 @@ export function SearchPanel(_props: { viewId?: string }) {
           </button>
         </div>
       </div>
+
       <div className="search-results">
         {searching && <div className="search-status">Searching…</div>}
         {error && <div className="search-error">{error}</div>}
         {!searching && !error && results.length === 0 && query.trim() && (
           <div className="search-status">No results</div>
         )}
-        {grouped.map(([file, hits]) => (
-          <div key={file} className="search-file-group">
-            <div className="search-file-name">
-              {file} <span className="search-hit-count">({hits.length})</span>
-            </div>
-            {hits.map((h, i) => (
+
+        {grouped.map(([file, hits]) => {
+          const isCollapsed = collapsed.has(file);
+          const { dir, name } = splitPath(file);
+          return (
+            <div key={file} className="search-file-group">
+              {/* File header row — click toggles collapse for the whole group.
+                  Shows a file glyph + chevron + dimmed dir + bold name + count. */}
               <button
-                key={i}
                 type="button"
-                className="search-hit-row"
-                onClick={() => handleHitClick(rootPath, h.relative, h.line, h.column)}
+                className="search-file-row"
+                aria-expanded={!isCollapsed}
+                onClick={() => toggleFile(file)}
+                title={file}
               >
-                <span className="search-hit-line">L{h.line}</span>
-                <span className="search-hit-text">
-                  {renderHitText(h.lineText, h.matchStart, h.matchEnd)}
-                </span>
+                <ChevronRight
+                  size={12}
+                  className={isCollapsed ? "search-chevron" : "search-chevron expanded"}
+                />
+                <FileText size={13} className="search-file-icon" />
+                {dir && <span className="search-file-dir">{dir}/</span>}
+                <span className="search-file-name">{name}</span>
+                <span className="search-hit-count">{hits.length}</span>
               </button>
-            ))}
-          </div>
-        ))}
+
+              {!isCollapsed && (
+                <div className="search-hits" role="group">
+                  {hits.map((h, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      className="search-hit-row"
+                      title={`${file}:${h.line}`}
+                      onClick={() =>
+                        handleHitClick(rootPath, h.relative, h.line, h.column)
+                      }
+                    >
+                      <span className="search-hit-line">{h.line}</span>
+                      <span className="search-hit-text">
+                        {renderHitText(h.lineText, h.matchStart, h.matchEnd)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
+}
+
+/** Split `dir/sub/file.typ` → { dir: "dir/sub", name: "file.typ" }. */
+function splitPath(relative: string): { dir: string; name: string } {
+  const idx = relative.lastIndexOf("/");
+  if (idx === -1) return { dir: "", name: relative };
+  return { dir: relative.slice(0, idx), name: relative.slice(idx + 1) };
 }
 
 /** Render the line text with the matched range wrapped in `<mark>`. */
