@@ -9,7 +9,7 @@ import {
   saveSession,
   discardRecovery,
 } from "../lib/tauri";
-import { useTabsStore, readOrderedDocuments } from "../store/tabsStore";
+import { useTabsStore, readAllDocuments } from "../store/tabsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { useUiStore } from "../store/uiStore";
 import { useDialogStore } from "../store/dialogStore";
@@ -217,8 +217,11 @@ async function handleOpenRecent(menuId: string): Promise<void> {
  */
 async function handleCloseRequested(): Promise<void> {
   // Read the live view order + domain state fresh (no React selector) so the
-  // dirty check reflects current edits at the moment of close.
-  const docs = readOrderedDocuments();
+  // dirty check reflects current edits at the moment of close. Includes
+  // soft-closed (hidden) docs: a hidden doc can still hold unsaved edits in its
+  // alive Monaco model, and silently losing them on app exit would violate the
+  // "no data loss without prompting" guarantee.
+  const docs = readAllDocuments();
   const dirty = docs.filter((t) => t.dirty);
   if (dirty.length === 0) {
     await captureAndSaveSession();

@@ -72,8 +72,9 @@ describe("closeTabWithConfirm 'Don't Save' calls discard_recovery (§5.1.4)", ()
       ([cmd]) => cmd === "discard_recovery",
     )?.[1];
     expect(discardArgs).toEqual({ id: "doc-x" });
-    // close_tab was also invoked (the backend close).
-    expect(calls).toContain("close_tab");
+    // Phase B2: closeTab now soft-closes by default, so the backend close
+    // command is `soft_close_tab` (the doc is hidden, not destroyed).
+    expect(calls).toContain("soft_close_tab");
   });
 
   it("dirty tab + 'Save' → does NOT discard recovery", async () => {

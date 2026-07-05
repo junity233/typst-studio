@@ -64,6 +64,34 @@ export async function closeTab(id: DocumentId): Promise<void> {
   await invoke("close_tab", { id });
 }
 
+/**
+ * Soft-close a tab (Phase B2): the tab leaves the strip but its backend state
+ * (worker/world/compile result) survives, marked `hidden`. Reopening the same
+ * file re-activates the hidden doc via [`reactivateTab`] — instant, no reload.
+ */
+export async function softCloseTab(id: DocumentId): Promise<void> {
+  await invoke<void>("soft_close_tab", { id });
+}
+
+/**
+ * Reactivate a soft-closed (hidden) document (Phase B2): un-hide it on the
+ * backend and replay its cached compiled result. Returns the document meta +
+ * content (same shape as [`openFileByPath`]); the frontend updates its
+ * visibility from the views store rather than re-opening from disk.
+ */
+export async function reactivateTab(id: DocumentId): Promise<OpenedDocument> {
+  return invoke<OpenedDocument>("reactivate_tab", { id });
+}
+
+/**
+ * Hard-close a document (Phase B2): the true destroy — releases the worker /
+ * world / compile result. Used for LRU eviction of soft-closed docs (and any
+ * future "force close"). Unlike [`softCloseTab`], this is not recoverable.
+ */
+export async function hardCloseTab(id: DocumentId): Promise<void> {
+  await invoke<void>("hard_close_tab", { id });
+}
+
 /** Push the latest source text to the backend (debounced by caller). */
 export async function updateText(
   id: DocumentId,
