@@ -35,6 +35,10 @@ export interface FormatApi {
   replaceSelection: MonacoEditorApi["replaceSelection"];
   toggleLinePrefix: MonacoEditorApi["toggleLinePrefix"];
   getSelectionText: MonacoEditorApi["getSelectionText"];
+  toggleWrap: MonacoEditorApi["toggleWrap"];
+  isInsideWrap: MonacoEditorApi["isInsideWrap"];
+  isLinePrefixActive: MonacoEditorApi["isLinePrefixActive"];
+  onDidChangeCursorPosition: MonacoEditorApi["onDidChangeCursorPosition"];
 }
 
 /**

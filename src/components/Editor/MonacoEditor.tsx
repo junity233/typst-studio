@@ -24,6 +24,9 @@ import {
   applyWrapSelection,
   applyReplaceSelection,
   applyToggleLinePrefix,
+  applyToggleWrap,
+  isInsideWrap as isInsideWrapHelper,
+  isLinePrefixActive as isLinePrefixActiveHelper,
   getSelectionText,
 } from "./editorEdit";
 import { registerTypstHighlighting } from "./typstHighlighting";
@@ -75,6 +78,21 @@ export interface MonacoEditorApi {
    *  no selection). Used by the toolbar's link flow (spec §5.3) to use the
    *  selection as the link label / fall back to a bare link. */
   getSelectionText: () => string;
+  /** Idempotent wrap toggle: unwrap if the selection (or caret surroundings) is
+   *  already wrapped in `prefix…suffix`, else wrap. Single-line caret scan.
+   *  Used by the bold/italic/strikethrough/code/quote buttons so clicking bold
+   *  on `*foo*` removes the bold instead of double-wrapping. */
+  toggleWrap: (prefix: string, suffix: string, placeholder?: string) => void;
+  /** Does the current selection/caret sit inside a `prefix…suffix` region on its
+   *  line? Used by the toolbar to set the wrap buttons' `aria-pressed` state. */
+  isInsideWrap: (prefix: string, suffix: string) => boolean;
+  /** Does the caret/selection's first line start with `prefix`? Used by the
+   *  toolbar to set the heading/list buttons' `aria-pressed` state. */
+  isLinePrefixActive: (prefix: string) => boolean;
+  /** Subscribe to editor cursor-position or selection changes. The callback
+   *  receives no args (the toolbar re-queries `isInsideWrap`/`isLinePrefixActive`
+   *  on each fire). Returns an unsubscribe function. Mirrors `onDidScrollChange`. */
+  onDidChangeCursorPosition: (cb: () => void) => () => void;
 }
 
 /**
@@ -690,6 +708,37 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         const editor = getEditor();
         if (!editor) return "";
         return getSelectionText(editor);
+      },
+      // Format-toolbar state-aware seam (Task 2): idempotent toggle + queries
+      // mirror the wrapSelection/replaceSelection/toggleLinePrefix/​getSelection
+      // edit seam above — same getEditor() gating, same thin-dispatcher shape.
+      toggleWrap: (prefix, suffix, placeholder) => {
+        const editor = getEditor();
+        if (!editor) return;
+        applyToggleWrap(editor, prefix, suffix, placeholder);
+      },
+      isInsideWrap: (prefix, suffix) => {
+        const editor = getEditor();
+        if (!editor) return false;
+        return isInsideWrapHelper(editor, prefix, suffix);
+      },
+      isLinePrefixActive: (prefix) => {
+        const editor = getEditor();
+        if (!editor) return false;
+        return isLinePrefixActiveHelper(editor, prefix);
+      },
+      // Subscription mirroring `onDidScrollChange` above. Fire on BOTH cursor-
+      // position changes (caret moves: clicks, arrow keys) and selection changes
+      // (drag/select) so the toolbar's aria-pressed state tracks both.
+      onDidChangeCursorPosition: (cb) => {
+        const editor = getEditor();
+        if (!editor) return () => {};
+        const d1 = editor.onDidChangeCursorPosition(() => cb());
+        const d2 = editor.onDidChangeCursorSelection(() => cb());
+        return () => {
+          d1.dispose();
+          d2.dispose();
+        };
       },
     });
     setEditorRuntimeReady(true);

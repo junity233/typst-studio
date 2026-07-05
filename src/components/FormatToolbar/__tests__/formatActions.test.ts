@@ -290,6 +290,11 @@ describe("exported types are usable", () => {
       replaceSelection: () => {},
       toggleLinePrefix: () => {},
       getSelectionText: () => "",
+      // State-aware seam (T2): the four new methods must also satisfy FormatApi.
+      toggleWrap: () => {},
+      isInsideWrap: () => false,
+      isLinePrefixActive: () => false,
+      onDidChangeCursorPosition: () => () => {},
     };
     expect(typeof api.wrapSelection).toBe("function");
   });

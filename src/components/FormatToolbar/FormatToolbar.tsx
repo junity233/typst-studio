@@ -133,6 +133,14 @@ export function FormatToolbar({
       replaceSelection: api.replaceSelection,
       toggleLinePrefix: api.toggleLinePrefix,
       getSelectionText: api.getSelectionText,
+      // State-aware seam (T2): thread the four new methods through so this
+      // object satisfies the now-wider FormatApi. The toolbar's aria-pressed
+      // computation + dispatchAction toggle (T3) consume them; T2 only needs
+      // them present so the type checks.
+      toggleWrap: api.toggleWrap,
+      isInsideWrap: api.isInsideWrap,
+      isLinePrefixActive: api.isLinePrefixActive,
+      onDidChangeCursorPosition: api.onDidChangeCursorPosition,
     };
     const actionCtx: ActionContext = {
       tab,

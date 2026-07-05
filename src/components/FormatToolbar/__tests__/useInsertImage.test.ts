@@ -50,6 +50,12 @@ const makeMockApi = (): FormatApi & {
     replaceSelection: replace,
     toggleLinePrefix: vi.fn(),
     getSelectionText: vi.fn(() => ""),
+    // State-aware seam (T2): present to satisfy FormatApi; the image flow never
+    // touches them, so they default to inactive returns.
+    toggleWrap: vi.fn(),
+    isInsideWrap: vi.fn().mockReturnValue(false),
+    isLinePrefixActive: vi.fn().mockReturnValue(false),
+    onDidChangeCursorPosition: vi.fn().mockReturnValue(() => {}),
     replace,
   };
 };

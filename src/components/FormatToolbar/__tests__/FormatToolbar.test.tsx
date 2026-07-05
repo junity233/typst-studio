@@ -59,6 +59,14 @@ const makeMockApi = (): FormatApi & {
     replaceSelection: replace,
     toggleLinePrefix: line,
     getSelectionText,
+    // State-aware seam (T2): spies exist so the toolbar re-query surface is
+    // satisfied; the default returns match a "nothing pressed" baseline so the
+    // aria-pressed computation (added in T3) reads as inactive. T3 will wire
+    // these to real assertions; T2 only needs them present so tsc + tests pass.
+    toggleWrap: vi.fn(),
+    isInsideWrap: vi.fn().mockReturnValue(false),
+    isLinePrefixActive: vi.fn().mockReturnValue(false),
+    onDidChangeCursorPosition: vi.fn().mockReturnValue(() => {}),
     spies: { wrap, replace, line, getSelectionText },
   };
 };
