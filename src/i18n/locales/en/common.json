@@ -1,0 +1,21 @@
+{
+  "__smoke__": "i18n ok",
+  "cancel": "Cancel",
+  "save": "Save",
+  "saveAs": "Save As…",
+  "dontSave": "Don't Save",
+  "ok": "OK",
+  "apply": "Apply",
+  "dismiss": "Dismiss",
+  "close": "Close",
+  "open": "Open",
+  "add": "Add",
+  "delete": "Delete",
+  "rename": "Rename",
+  "confirm": "Confirm",
+  "yes": "Yes",
+  "no": "No",
+  "loading": "Loading…",
+  "working": "Working…",
+  "restart": "Restart"
+}

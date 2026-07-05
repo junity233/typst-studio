@@ -1,0 +1,21 @@
+{
+  "__smoke__": "i18n 就绪",
+  "cancel": "取消",
+  "save": "保存",
+  "saveAs": "另存为…",
+  "dontSave": "不保存",
+  "ok": "确定",
+  "apply": "应用",
+  "dismiss": "忽略",
+  "close": "关闭",
+  "open": "打开",
+  "add": "添加",
+  "delete": "删除",
+  "rename": "重命名",
+  "confirm": "确认",
+  "yes": "是",
+  "no": "否",
+  "loading": "加载中…",
+  "working": "处理中…",
+  "restart": "重启"
+}
