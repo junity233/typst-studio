@@ -622,9 +622,25 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     console.error("[MonacoEditor] error:", error);
   };
 
-  // Don't render until the initial LSP status fetch resolves — we need to know
-  // whether tinymist is available before deciding to wire up a language client.
-  if (lspLoading) {
+  // Don't render until the LSP status has STABILIZED. We need wsUrl to be in
+  // its final form before the first mount, because the wrapper's Monaco services
+  // can only be initialized ONCE per process — a wsUrl key change forces a
+  // remount that re-runs apiWrapper.start() and panics with
+  // "Services are already initialized".
+  //
+  // Two stable outcomes:
+  //   - tinymist found (`available=true`)  → wait until wsUrl is non-empty
+  //     (the backend's `lsp_status` event carries it; the initial fetch may
+  //     race and return an empty value briefly).
+  //   - tinymist NOT found (`available=false`) → wsUrl is intentionally empty
+  //     forever; mount immediately in degraded mode (no language client).
+  // `available` flips at most once (when `which::which` resolves), so once both
+  // `available` and `wsUrl` agree (available⇒wsUrl non-empty, OR !available),
+  // the key `lsp-${wsUrl ?? "nolsp"}` is stable for the rest of the session and
+  // no remount-induced services re-init can happen.
+  const lspReady =
+    !lspLoading && (lspStatus.available ? wsUrl !== null : true);
+  if (!lspReady) {
     return <div className="editor-pane">Loading editor...</div>;
   }
 
