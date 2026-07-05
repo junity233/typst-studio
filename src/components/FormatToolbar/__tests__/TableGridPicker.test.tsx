@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+// Initialize i18next so the picker's size label resolves to its plural form
+// with the row/col count (the test asserts the count appears in the label).
+import "../../../i18n";
 // React 19 only runs `act`'s effect-flushing + warning behavior when this flag
 // is set. We render via react-dom/client directly (no @testing-library/react),
 // so opt in here. Mirrors FormatToolbar.test.tsx.

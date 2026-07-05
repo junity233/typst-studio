@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+// Initialize i18next so the modal's translated placeholders/labels resolve to
+// their English values (the test queries inputs by placeholder text).
+import "../../../i18n";
 // React 19 only runs `act`'s effect-flushing + warning behavior when this flag
 // is set. Opt in here (matches FormatToolbar.test.tsx) so effects (autofocus)
 // flush before assertions.

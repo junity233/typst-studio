@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useViews } from "../../extensions/hooks";
 import { useUiStore } from "../../store/uiStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
@@ -9,13 +10,14 @@ import { useWorkspaceStore } from "../../store/workspaceStore";
  * sidebar). Views gated `when: "workspace"` are disabled until a folder opens.
  */
 export function ActivityBar() {
+  const { t } = useTranslation("commandBar");
   const views = useViews();
   const activeViewId = useUiStore((s) => s.activeViewId);
   const toggleView = useUiStore((s) => s.toggleView);
   const hasWorkspace = useWorkspaceStore((s) => s.rootPath !== null);
 
   return (
-    <nav className="activity-bar" role="toolbar" aria-label="Views">
+    <nav className="activity-bar" role="toolbar" aria-label={t("views")}>
       {views.map((v) => {
         const disabled = v.when === "workspace" && !hasWorkspace;
         const isActive = activeViewId === v.id;

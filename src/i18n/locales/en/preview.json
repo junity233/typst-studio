@@ -1,0 +1,8 @@
+{
+  "noPreview": "No preview yet",
+  "refresh": "Refresh",
+  "refreshPreview": "Refresh preview",
+  "page": "Page {{number}}",
+  "jumpToSourceMac": "⌘ Click to jump to source",
+  "jumpToSourceOther": "Ctrl+Click to jump to source"
+}

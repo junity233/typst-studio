@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
   ChevronsDownUp,
@@ -19,7 +20,9 @@ import { useTabsStore, readAllDocuments } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { openFileByPath, revealInFinder } from "../../lib/tauri";
 import { toIpcError } from "../../lib/ipc-error";
+import i18n from "../../i18n";
 import { useContextMenuStore } from "./contextMenuStore";
+import type { TFunction } from "i18next";
 
 const ICON_SIZE = 14;
 
@@ -33,6 +36,7 @@ const ICON_SIZE = 14;
  * Drag-to-move is deferred — create/rename/delete cover the daily cases.
  */
 export function Explorer(_props: { viewId?: string }) {
+  const { t } = useTranslation(["sidebar", "common"]);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const name = useWorkspaceStore((s) => s.name);
   const tree = useWorkspaceStore((s) => s.tree);
@@ -61,26 +65,26 @@ export function Explorer(_props: { viewId?: string }) {
       [
         {
           type: "action",
-          label: "New File",
+          label: t("sidebar:explorer.newFile"),
           icon: <FilePlus size={ICON_SIZE} />,
           onSelect: () => handleNew("file"),
         },
         {
           type: "action",
-          label: "New Folder",
+          label: t("sidebar:explorer.newFolder"),
           icon: <FolderPlus size={ICON_SIZE} />,
           onSelect: () => handleNew("dir"),
         },
         { type: "separator" },
         {
           type: "action",
-          label: "Collapse All",
+          label: t("sidebar:explorer.collapseAll"),
           icon: <ChevronsDownUp size={ICON_SIZE} />,
           onSelect: () => void collapseAll(),
         },
         {
           type: "action",
-          label: "Expand All",
+          label: t("sidebar:explorer.expandAll"),
           icon: <ChevronsUpDown size={ICON_SIZE} />,
           onSelect: () => void expandAll(),
         },
@@ -93,18 +97,18 @@ export function Explorer(_props: { viewId?: string }) {
   return (
     <div className="explorer">
       <div className="explorer-header" title={rootPath}>
-        <span className="explorer-title">{name ?? "Workspace"}</span>
+        <span className="explorer-title">{name ?? t("sidebar:explorer.workspace")}</span>
         <span className="explorer-actions">
           <button
             className="explorer-action"
-            title="New file"
+            title={t("sidebar:explorer.newFile")}
             onClick={() => handleNew("file")}
           >
             <FilePlus size={14} />
           </button>
           <button
             className="explorer-action"
-            title="New folder"
+            title={t("sidebar:explorer.newFolder")}
             onClick={() => handleNew("dir")}
           >
             <FolderPlus size={14} />
@@ -113,7 +117,7 @@ export function Explorer(_props: { viewId?: string }) {
       </div>
       <div className="explorer-body" onContextMenu={handleBodyContextMenu}>
         {rootEntries.length === 0 && pendingNew === null ? (
-          <p className="explorer-empty">This folder is empty.</p>
+          <p className="explorer-empty">{t("sidebar:explorer.folderEmpty")}</p>
         ) : (
           <ul className="tree" role="tree">
             {/* Inline "new entry" row at the top of the root listing. */}
@@ -158,6 +162,7 @@ interface TreeRowProps {
 }
 
 function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendingNew }: TreeRowProps) {
+  const { t } = useTranslation(["sidebar", "common"]);
   const openPath = useTabsStore((s) => s.openPath);
   const activeId = useTabsStore((s) => s.activeId);
   // Subscribe to the documents map so the active-file highlight tracks path
@@ -216,7 +221,13 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
       openPath(doc);
     } catch (e) {
       console.error("[Explorer] open failed:", e);
-      window.alert(`Could not open ${entry.name}: ${toIpcError(e).message}`);
+      window.alert(
+        i18n.t("couldNotOpenFile", {
+          ns: "errors",
+          name: entry.name,
+          message: toIpcError(e).message,
+        }),
+      );
     } finally {
       setLoading(false);
     }
@@ -225,7 +236,7 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    openMenu(buildRowMenu(entry, setRenaming, setPendingNew, deleteEntry), e.clientX, e.clientY);
+    openMenu(buildRowMenu(entry, setRenaming, setPendingNew, deleteEntry, t), e.clientX, e.clientY);
   };
 
   const commitRename = async (newName: string) => {
@@ -239,7 +250,12 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
     try {
       await renameEntry(entry.relative, to);
     } catch (e) {
-      window.alert(`Rename failed: ${toIpcError(e).message}`);
+      window.alert(
+        i18n.t("renameFailed", {
+          ns: "errors",
+          message: toIpcError(e).message,
+        }),
+      );
     }
   };
 
@@ -326,6 +342,7 @@ function buildRowMenu(
   setRenaming: (v: boolean) => void,
   setPendingNew: (v: { dir: string; kind: EntryKind } | null) => void,
   deleteEntry: (rel: string) => Promise<unknown>,
+  t: TFunction,
 ) {
   const isDir = entry.kind === "dir";
   const parentDir = entry.relative.includes("/")
@@ -340,7 +357,7 @@ function buildRowMenu(
   const items = [
     {
       type: "action" as const,
-      label: "New File",
+      label: t("sidebar:explorer.newFile"),
       icon: <FilePlus size={ICON_SIZE} />,
       onSelect: () => setPendingNew({ dir: isDir ? entry.relative : parentDir, kind: "file" as EntryKind }),
     },
@@ -348,7 +365,7 @@ function buildRowMenu(
       ? [
           {
             type: "action" as const,
-            label: "New Folder",
+            label: t("sidebar:explorer.newFolder"),
             icon: <FolderPlus size={ICON_SIZE} />,
             onSelect: () =>
               setPendingNew({ dir: entry.relative, kind: "dir" as EntryKind }),
@@ -357,35 +374,40 @@ function buildRowMenu(
       : []),
     {
       type: "action" as const,
-      label: "Rename",
+      label: t("sidebar:explorer.rename"),
       icon: <Pencil size={ICON_SIZE} />,
       onSelect: () => setRenaming(true),
     },
     { type: "separator" as const },
     {
       type: "action" as const,
-      label: "Copy Name",
+      label: t("sidebar:explorer.copyName"),
       icon: <Copy size={ICON_SIZE} />,
       onSelect: () => copyToClipboard(entry.name),
     },
     {
       type: "action" as const,
-      label: "Copy Relative Path",
+      label: t("sidebar:explorer.copyRelativePath"),
       icon: <Copy size={ICON_SIZE} />,
       onSelect: () => copyToClipboard(entry.relative),
     },
     {
       type: "action" as const,
-      label: "Reveal in Finder",
+      label: t("sidebar:explorer.revealInFinder"),
       icon: <SquareArrowOutUpRight size={ICON_SIZE} />,
       onSelect: () => void revealInFinder(entry.relative).catch((e) => {
-        window.alert(`Reveal failed: ${toIpcError(e).message}`);
+        window.alert(
+          i18n.t("revealFailed", {
+            ns: "errors",
+            message: toIpcError(e).message,
+          }),
+        );
       }),
     },
     { type: "separator" as const },
     {
       type: "action" as const,
-      label: "Delete",
+      label: t("common:delete"),
       icon: <Trash2 size={ICON_SIZE} />,
       danger: true,
       onSelect: () => void handleDeleteWithConfirm(entry, deleteEntry),
@@ -403,7 +425,10 @@ async function handleDeleteWithConfirm(
   // Trash" rather than "This cannot be undone".
   const isDir = entry.kind === "dir";
   const ok = window.confirm(
-    `Move "${entry.name}" to the Trash?${isDir ? " This folder and everything in it will be moved to the Trash." : ""}`,
+    i18n.t(isDir ? "deleteConfirmDir" : "deleteConfirmFile", {
+      ns: "errors",
+      name: entry.name,
+    }),
   );
   if (!ok) return;
   try {
@@ -417,13 +442,24 @@ async function handleDeleteWithConfirm(
       const affected = extractAffectedDocs(err.details);
       const names = affected.length > 0 ? affected.join("\n") : "";
       window.alert(
-        `Cannot delete "${entry.name}": ${affected.length} unsaved document(s) open under this path. Save or close them first.${
-          names ? "\n\n" + names : ""
-        }`,
+        names
+          ? i18n.t("deleteBlockedWithNames", {
+              ns: "errors",
+              name: entry.name,
+              count: affected.length,
+              names,
+            })
+          : i18n.t("deleteBlocked", {
+              ns: "errors",
+              name: entry.name,
+              count: affected.length,
+            }),
       );
       return;
     }
-    window.alert(`Delete failed: ${err.message}`);
+    window.alert(
+      i18n.t("deleteFailed", { ns: "errors", message: err.message }),
+    );
   }
 }
 
@@ -451,6 +487,7 @@ function InlineName({
   onSubmit: (value: string) => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation("sidebar");
   const [value, setValue] = useState(initial);
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -462,7 +499,7 @@ function InlineName({
       ref={ref}
       className="tree-input"
       value={value}
-      placeholder="name"
+      placeholder={t("explorer.namePlaceholder")}
       onChange={(e) => setValue(e.target.value)}
       onClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => {

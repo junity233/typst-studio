@@ -15,6 +15,7 @@ import {
 import { monacoModelRegistry } from "./monacoModelRegistry";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { useDialogStore } from "../../store/dialogStore";
+import i18n from "../../i18n";
 
 /**
  * The production `workspace/applyEdit` request handler + its registration helper
@@ -143,10 +144,10 @@ export async function handleApplyWorkspaceEdit(
       useDialogStore
         .getState()
         .confirm({
-          title: params.label ?? "Apply workspace edit",
+          title: params.label ?? i18n.t("applyWorkspaceEdit.title", { ns: "dialog" }),
           message,
-          confirmLabel: "Apply",
-          cancelLabel: "Cancel",
+          confirmLabel: i18n.t("apply", { ns: "common" }),
+          cancelLabel: i18n.t("cancel", { ns: "common" }),
         })
         .then((r) => r === "confirm"),
     applyModels: (modelEdits) =>

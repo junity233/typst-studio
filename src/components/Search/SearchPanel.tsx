@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useSearchStore } from "../../store/searchStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { openFile } from "../../lib/openFile";
@@ -16,6 +17,7 @@ import type { SearchHit } from "../../lib/types";
  * the Activity Bar (the sidebar host owns show/hide), not from within.
  */
 export function SearchPanel(_props: { viewId?: string }) {
+  const { t } = useTranslation("search");
   const query = useSearchStore((s) => s.query);
   const isRegex = useSearchStore((s) => s.isRegex);
   const caseSensitive = useSearchStore((s) => s.caseSensitive);
@@ -54,7 +56,7 @@ export function SearchPanel(_props: { viewId?: string }) {
       <div className="search-header">
         <input
           className="search-input"
-          placeholder="Search in workspace…"
+          placeholder={t("placeholder")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
@@ -68,7 +70,7 @@ export function SearchPanel(_props: { viewId?: string }) {
             type="button"
             className={caseSensitive ? "active" : ""}
             onClick={() => setOption("caseSensitive", !caseSensitive)}
-            title="Match Case"
+            title={t("matchCase")}
           >
             Aa
           </button>
@@ -76,7 +78,7 @@ export function SearchPanel(_props: { viewId?: string }) {
             type="button"
             className={wholeWord ? "active" : ""}
             onClick={() => setOption("wholeWord", !wholeWord)}
-            title="Whole Word"
+            title={t("wholeWord")}
           >
             W
           </button>
@@ -84,17 +86,17 @@ export function SearchPanel(_props: { viewId?: string }) {
             type="button"
             className={isRegex ? "active" : ""}
             onClick={() => setOption("isRegex", !isRegex)}
-            title="Regex"
+            title={t("regex")}
           >
             .*
           </button>
         </div>
       </div>
       <div className="search-results">
-        {searching && <div className="search-status">Searching…</div>}
+        {searching && <div className="search-status">{t("searching")}</div>}
         {error && <div className="search-error">{error}</div>}
         {!searching && !error && results.length === 0 && query.trim() && (
-          <div className="search-status">No results</div>
+          <div className="search-status">{t("noResults")}</div>
         )}
         {grouped.map(([file, hits]) => (
           <div key={file} className="search-file-group">

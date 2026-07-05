@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type * as Monaco from "@codingame/monaco-vscode-editor-api";
 import type { TextContents, EditorAppConfig } from "monaco-languageclient/editorApp";
 import { updateText } from "../../lib/tauri";
@@ -94,6 +95,7 @@ interface MonacoEditorProps {
 }
 
 export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
+  const { t } = useTranslation("editor");
   // Pre-initialize the monaco-vscode-api services ONCE before the wrapper
   // component mounts, so the wrapper's performGlobalInit takes its
   // "already initialised" branch and never news/races a second wrapper. See
@@ -728,13 +730,13 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   if (vscodeApiInitError !== null) {
     return (
       <div className="editor-pane">
-        {`Editor init failed: ${vscodeApiInitError}`}
+        {t("initFailed", { message: vscodeApiInitError })}
       </div>
     );
   }
 
   if (!lspReady || !vscodeApiReady || !typstHighlightingReady) {
-    return <div className="editor-pane">Loading editor...</div>;
+    return <div className="editor-pane">{t("loading")}</div>;
   }
 
   return (

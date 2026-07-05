@@ -10,12 +10,14 @@
  * Empty state: "No headings" — shown when the document has no outlineable
  * headings or no document is active.
  */
+import { useTranslation } from "react-i18next";
 import { useTabsStore } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { editorApiRef } from "../Editor/editorApiRef";
 import type { OutlineNode } from "../../lib/types";
 
 export function OutlinePanel() {
+  const { t } = useTranslation("sidebar");
   const activeId = useTabsStore((s) => s.activeId);
   const documents = useDocumentsStore((s) => s.documents);
 
@@ -24,7 +26,7 @@ export function OutlinePanel() {
     : [];
 
   if (outline.length === 0) {
-    return <div className="outline-empty">No headings</div>;
+    return <div className="outline-empty">{t("outline.noHeadings")}</div>;
   }
 
   return (

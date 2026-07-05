@@ -1,0 +1,8 @@
+{
+  "placeholder": "在工作区中搜索…",
+  "matchCase": "区分大小写",
+  "wholeWord": "全字匹配",
+  "regex": "正则表达式",
+  "searching": "搜索中…",
+  "noResults": "无结果"
+}

@@ -1,0 +1,20 @@
+{
+  "savePermissionDenied": "Permission denied — Typst Studio can't write to this file. Try Save As to a writable location.",
+  "saveReadOnly": "This file is read-only. Use Save As to write to a new location.",
+  "saveDiskFull": "The disk is full. Free up space and try again, or use Save As to a different volume.",
+  "saveParentMissing": "The destination folder doesn't exist. Use Save As to pick a valid location.",
+  "couldNotOpen": "Could not open: {{message}}",
+  "couldNotOpenFile": "Could not open {{name}}: {{message}}",
+  "couldNotOpenFolder": "Could not open folder: {{message}}",
+  "commandFailed": "{{label}}: {{message}}",
+  "actionFailed": "Action failed: {{message}}",
+  "renameFailed": "Rename failed: {{message}}",
+  "revealFailed": "Reveal failed: {{message}}",
+  "deleteFailed": "Delete failed: {{message}}",
+  "deleteBlocked": "Cannot delete \"{{name}}\": {{count}} unsaved document(s) open under this path. Save or close them first.",
+  "deleteBlockedWithNames": "Cannot delete \"{{name}}\": {{count}} unsaved document(s) open under this path. Save or close them first.\n\n{{names}}",
+  "deleteConfirmFile": "Move \"{{name}}\" to the Trash?",
+  "deleteConfirmDir": "Move \"{{name}}\" to the Trash? This folder and everything in it will be moved to the Trash.",
+  "confirmClearRecovery": "Delete ALL crash-recovery snapshots? This cannot be undone.",
+  "confirmClearRecent": "Clear the recent-workspaces list? This cannot be undone."
+}

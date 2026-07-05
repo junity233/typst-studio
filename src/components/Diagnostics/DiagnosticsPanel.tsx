@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useDiagnosticsForDoc } from "../../store/diagnosticsStore";
 import type { Diagnostic, Range } from "../../lib/types";
 
@@ -22,15 +23,15 @@ function severityClass(severity: Diagnostic["severity"]): string {
   }
 }
 
-function severityLabel(severity: Diagnostic["severity"]): string {
+function severityLabelKey(severity: Diagnostic["severity"]): string {
   switch (severity) {
     case "Error":
-      return "Error";
+      return "severity.error";
     case "Warning":
-      return "Warning";
+      return "severity.warning";
     case "Info":
     default:
-      return "Info";
+      return "severity.info";
   }
 }
 
@@ -40,6 +41,7 @@ export function DiagnosticsPanel({
   onToggle,
   onGoto,
 }: DiagnosticsPanelProps) {
+  const { t } = useTranslation("diagnostics");
   // §13.1: the combined view (compiler + tinymist) for this doc. The selector
   // returns a stable empty array when there is nothing to show.
   const diagnostics = useDiagnosticsForDoc(tabId);
@@ -63,7 +65,7 @@ export function DiagnosticsPanel({
     >
       <div className="diagnostics-header">
         <button className="diagnostics-toggle" onClick={onToggle}>
-          {collapsed ? "▸" : "▾"} Diagnostics
+          {collapsed ? "▸" : "▾"} {t("title")}
           {sorted.length > 0 && (
             <span className="diagnostics-count">{sorted.length}</span>
           )}
@@ -71,14 +73,14 @@ export function DiagnosticsPanel({
       </div>
       <div className="diagnostics-body">
         {sorted.length === 0 ? (
-          <div className="diag-empty">No diagnostics</div>
+          <div className="diag-empty">{t("empty")}</div>
         ) : (
           <table className="diag-table">
             <thead>
               <tr>
                 <th className="diag-col-sev" scope="col"> </th>
-                <th className="diag-col-loc" scope="col">Line</th>
-                <th className="diag-col-msg" scope="col">Message</th>
+                <th className="diag-col-loc" scope="col">{t("columns.line")}</th>
+                <th className="diag-col-msg" scope="col">{t("columns.message")}</th>
               </tr>
             </thead>
             <tbody>
@@ -87,16 +89,16 @@ export function DiagnosticsPanel({
                   key={i}
                   className={`diag-row ${severityClass(d.severity)}`}
                   onDoubleClick={() => onGoto(d.range)}
-                  title="Double-click to jump to line"
+                  title={t("row.jumpTitle")}
                 >
                   <td className="diag-col-sev">
                     <span className={`diag-sev-text ${severityClass(d.severity)}`}>
-                      {severityLabel(d.severity)}
+                      {t(severityLabelKey(d.severity))}
                     </span>
                   </td>
                   <td className="diag-col-loc">
-                    <span className="diag-loc-line">line {d.range.start_line}</span>
-                    <span className="diag-loc-col">column {d.range.start_column}</span>
+                    <span className="diag-loc-line">{t("row.line", { line: d.range.start_line })}</span>
+                    <span className="diag-loc-col">{t("row.column", { column: d.range.start_column })}</span>
                   </td>
                   <td className="diag-col-msg">{d.message}</td>
                 </tr>

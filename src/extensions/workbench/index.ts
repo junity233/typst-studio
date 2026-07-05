@@ -17,6 +17,7 @@ import {
   handleSaveAs,
   labelFor,
 } from "../../hooks/useAppCommands";
+import i18n from "../../i18n";
 
 /**
  * In-tree 'workbench' extension: registers the core File/View/Export commands
@@ -55,7 +56,7 @@ export default function activate(ctx: HostApi): void {
 
   ctx.registerCommand({
     id: "new-tab",
-    title: labelFor("new-tab") || "New Tab",
+    title: labelFor("new-tab") || i18n.t("newTab", { ns: "command" }),
     category: "File",
     keybinding: "CmdOrCtrl+T",
     handler: async () => {
@@ -128,7 +129,7 @@ export default function activate(ctx: HostApi): void {
 
   ctx.registerCommand({
     id: "toggle-sidebar",
-    title: "Toggle Sidebar",
+    title: i18n.t("toggleSidebar", { ns: "command" }),
     category: "View",
     keybinding: "CmdOrCtrl+B",
     handler: () => useUiStore.getState().toggleSidebar(),
@@ -136,7 +137,7 @@ export default function activate(ctx: HostApi): void {
 
   ctx.registerCommand({
     id: "toggle-preview",
-    title: "Toggle Preview",
+    title: i18n.t("togglePreview", { ns: "command" }),
     category: "View",
     keybinding: "CmdOrCtrl+\\",
     handler: () => useUiStore.getState().togglePreview(),
@@ -144,7 +145,7 @@ export default function activate(ctx: HostApi): void {
 
   ctx.registerCommand({
     id: "open-settings",
-    title: "Open Settings",
+    title: i18n.t("openSettings", { ns: "command" }),
     category: "View",
     keybinding: "CmdOrCtrl+,",
     handler: async () => {

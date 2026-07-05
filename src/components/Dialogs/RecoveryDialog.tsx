@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useRecoveryStore, recoverRequiresCompareFirst } from "../../store/recoveryStore";
 import {
   recoverDocument,
@@ -9,6 +10,7 @@ import type { RecoverableInfo, CompareRecovery } from "../../lib/types";
 import { useTabsStore } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { toIpcError } from "../../lib/ipc-error";
+import i18n from "../../i18n";
 
 /**
  * Crash-recovery dialog (§5.1.3).
@@ -36,6 +38,7 @@ import { toIpcError } from "../../lib/ipc-error";
  * auto-closes and normal session restore proceeds.
  */
 export function RecoveryDialog() {
+  const { t } = useTranslation("dialog");
   const dialogOpen = useRecoveryStore((s) => s.dialogOpen);
   const recoverable = useRecoveryStore((s) => s.recoverable);
 
@@ -47,15 +50,11 @@ export function RecoveryDialog() {
         className="dialog recovery-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="Recover unsaved documents"
+        aria-label={t("recovery.ariaLabel")}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="dialog-title">Recover unsaved documents</h2>
-        <p className="dialog-message">
-          Typst Studio did not close cleanly. The following documents have
-          unsaved changes that were recovered. Review each and choose whether to
-          recover, compare, or discard.
-        </p>
+        <h2 className="dialog-title">{t("recovery.title")}</h2>
+        <p className="dialog-message">{t("recovery.message")}</p>
         <ul className="recovery-list">
           {recoverable.map((snap) => (
             <RecoveryRow key={snap.documentId} snap={snap} />
@@ -68,6 +67,7 @@ export function RecoveryDialog() {
 
 /** One recoverable document row. Self-contained: holds its own compare state. */
 function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
+  const { t } = useTranslation("dialog");
   const markDecided = useRecoveryStore((s) => s.markDecided);
   const markCompared = useRecoveryStore((s) => s.markCompared);
   // §5.1.3: a disk-changed doc's Recover is disabled until the user has
@@ -159,13 +159,13 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
       <div className="recovery-row-head">
         <span className="recovery-name">{snap.title}</span>
         {snap.diskChanged && (
-          <span className="recovery-flag" title="The file on disk changed since this snapshot was captured">
-            disk changed
+          <span className="recovery-flag" title={t("recovery.diskChangedTitle")}>
+            {t("recovery.diskChangedLabel")}
           </span>
         )}
         {isUntitled && (
-          <span className="recovery-flag" title="This document was never saved to disk">
-            untitled
+          <span className="recovery-flag" title={t("recovery.untitledTitle")}>
+            {t("recovery.untitledLabel")}
           </span>
         )}
       </div>
@@ -173,7 +173,7 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
         {snap.canonicalPath ? (
           <span className="recovery-path">{snap.canonicalPath}</span>
         ) : (
-          <span className="recovery-path">Not saved to disk</span>
+          <span className="recovery-path">{t("recovery.notSavedToDisk")}</span>
         )}
         <span className="recovery-time">{captured}</span>
       </div>
@@ -184,24 +184,24 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
           onClick={handleDiscard}
           disabled={busy}
         >
-          Discard
+          {t("recovery.discard")}
         </button>
         <button
           className="btn-ghost"
           onClick={handleCompare}
           disabled={busy || isUntitled}
-          title={isUntitled ? "Untitled docs have no disk version to compare" : "Compare the snapshot with the current disk content"}
+          title={isUntitled ? t("recovery.compareTitleOff") : t("recovery.compareTitleOn")}
         >
-          Compare
+          {t("recovery.compare")}
         </button>
         <button
           className="btn-primary"
           onClick={handleRecover}
           disabled={busy || mustCompare}
-          title={mustCompare ? "Disk changed — compare first before recovering" : "Recover the unsaved buffer into a new tab"}
+          title={mustCompare ? t("recovery.recoverTitleOff") : t("recovery.recoverTitleOn")}
           autoFocus={!mustCompare}
         >
-          Recover
+          {t("recovery.recover")}
         </button>
       </div>
       {compare && <CompareView compare={compare} />}
@@ -216,15 +216,16 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
  * explicit.
  */
 function CompareView({ compare }: { compare: CompareRecovery }) {
+  const { t } = useTranslation("dialog");
   return (
-    <div className="recovery-compare" role="region" aria-label="Snapshot vs disk comparison">
+    <div className="recovery-compare" role="region" aria-label={t("recovery.compareView.ariaLabel")}>
       <div className="recovery-compare-pane">
-        <div className="recovery-compare-label">Recovered (snapshot)</div>
+        <div className="recovery-compare-label">{t("recovery.compareView.recoveredSnapshot")}</div>
         <pre>{compare.snapshot}</pre>
       </div>
       <div className="recovery-compare-pane">
-        <div className="recovery-compare-label">Current disk</div>
-        <pre>{compare.disk ?? "(file missing or not on disk)"}</pre>
+        <div className="recovery-compare-label">{t("recovery.compareView.currentDisk")}</div>
+        <pre>{compare.disk ?? t("recovery.compareView.fileMissingOrNotOnDisk")}</pre>
       </div>
     </div>
   );
@@ -235,7 +236,7 @@ function CompareView({ compare }: { compare: CompareRecovery }) {
  * invalid input falls back to the raw number so the UI never breaks.
  */
 function formatCaptureTime(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return "unknown time";
+  if (!Number.isFinite(ms) || ms <= 0) return i18n.t("recovery.unknownTime", { ns: "dialog" });
   try {
     return new Date(ms).toLocaleString();
   } catch {

@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useSetting } from "../../hooks/useSetting";
 import { SvgPage } from "./SvgPage";
 import type { LineRect } from "../../lib/types";
@@ -37,6 +38,7 @@ export function PreviewPane({
   paneRef,
   pageRefs,
 }: PreviewPaneProps) {
+  const { t } = useTranslation("preview");
   const [autoRefresh] = useSetting<boolean>("preview.autoRefresh");
   const [zoomLevel] = useSetting<number>("preview.zoomLevel");
   const [background] = useSetting<string>("preview.background");
@@ -94,13 +96,13 @@ export function PreviewPane({
           className="preview-refresh"
           type="button"
           onClick={onRefresh}
-          title="Refresh preview"
+          title={t("refreshPreview")}
         >
-          Refresh
+          {t("refresh")}
         </button>
       )}
       {svgPages.length === 0 ? (
-        <div className="preview-empty">No preview yet</div>
+        <div className="preview-empty">{t("noPreview")}</div>
       ) : (
         svgPages.map((svg, i) => (
           <SvgPage

@@ -1,9 +1,23 @@
 import { Suspense, lazy, useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useViews } from "../../extensions/hooks";
 import { useUiStore } from "../../store/uiStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { onFsChanged } from "../../lib/tauri";
 import { EmptyWorkspace } from "./EmptyWorkspace";
+
+/**
+ * Built-in sidebar view ids → translation keys. View titles themselves are
+ * contributed by extensions (which other i18n phases own), so the Sidebar maps
+ * the known built-in view ids to localized titles here. Unknown/contributed
+ * views fall back to their contributed `title`.
+ */
+const VIEW_TITLE_KEYS: Record<string, string> = {
+  "workbench.explorer": "sidebar:explorer.title",
+  "workbench.outline": "sidebar:outline.title",
+  "workbench.search": "sidebar:search.title",
+  "workbench.scm": "sidebar:sourceControl.title",
+};
 
 /**
  * The left sidebar: a host for the currently active view from the ViewRegistry.
@@ -13,6 +27,7 @@ import { EmptyWorkspace } from "./EmptyWorkspace";
  * files change on disk (consumed by the Explorer view via the workspace store).
  */
 export function Sidebar() {
+  const { t } = useTranslation("sidebar");
   const activeViewId = useUiStore((s) => s.activeViewId);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const refreshAll = useWorkspaceStore((s) => s.refreshAll);
@@ -65,13 +80,16 @@ export function Sidebar() {
   }
 
   // After this point both view and ViewComponent are guaranteed non-null.
+  const titleKey = view ? VIEW_TITLE_KEYS[view.id] : undefined;
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
-        <span className="sidebar-title">{view!.title}</span>
+        <span className="sidebar-title">
+          {titleKey ? t(titleKey) : view!.title}
+        </span>
       </div>
       <div className="sidebar-body">
-        <Suspense fallback={<div className="sidebar-loading">Loading…</div>}>
+        <Suspense fallback={<div className="sidebar-loading">{t("loading")}</div>}>
           <ViewComponent viewId={view!.id} />
         </Suspense>
       </div>

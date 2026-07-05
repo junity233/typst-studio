@@ -9,25 +9,30 @@ import { useConflictDialogStore } from "../../store/conflictDialogStore";
 import { useWatcherHealthStore } from "../../store/watcherHealthStore";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 
 function statusLabel(
+  t: TFunction<"statusbar">,
   status: CompileStatus,
   durationMs: number | null,
 ): string {
   switch (status) {
     case "compiling":
-      return "Compiling…";
+      return t("status.compiling");
     case "slow":
       // §6.2: a compile that has run past the slow threshold. Still in
       // progress — a terminal success/error follows.
-      return "Compiling… (taking a while)";
+      return t("status.compilingSlow");
     case "success":
-      return durationMs !== null ? `Compiled in ${durationMs}ms` : "Compiled";
+      return durationMs !== null
+        ? t("status.compiledIn", { ms: durationMs })
+        : t("status.compiled");
     case "error":
-      return "Compile failed";
+      return t("status.compileFailed");
     case "idle":
     default:
-      return "Ready";
+      return t("status.ready");
   }
 }
 
@@ -38,27 +43,28 @@ function statusLabel(
  * `restartReason` trigger when present.
  */
 function lspLabel(
+  t: TFunction<"statusbar">,
   statusKind: LspStatusKind,
   available: boolean,
   message: string | null,
 ): string {
-  if (!available && statusKind === "unavailable") return "LSP: not installed";
+  if (!available && statusKind === "unavailable") return t("lsp.notInstalled");
   switch (statusKind) {
     case "disabled":
-      return "LSP: off";
+      return t("lsp.off");
     case "unavailable":
-      return "LSP: not installed";
+      return t("lsp.notInstalled");
     case "failed":
       // `message` carries the "manual restart required" hint on this branch.
-      return message ? `LSP: ${message}` : "LSP: restart needed";
+      return message ? t("lsp.message", { message }) : t("lsp.restartNeeded");
     case "restarting":
-      return "LSP: reconnecting…";
+      return t("lsp.reconnecting");
     case "awaitingClient":
-      return "LSP: connecting…";
+      return t("lsp.connecting");
     case "running":
-      return "LSP: connected";
+      return t("lsp.connected");
     default:
-      return "LSP: restart needed";
+      return t("lsp.restartNeeded");
   }
 }
 
@@ -82,6 +88,7 @@ function lspNeedsAction(statusKind: LspStatusKind, available: boolean): boolean 
 }
 
 export function StatusBar() {
+  const { t } = useTranslation("statusbar");
   const tab = useActiveDocument();
   // §13.1: combined diagnostics (compiler + tinymist) for the active doc.
   const diagnostics = useDiagnosticsForDoc(tab?.id ?? null);
@@ -108,11 +115,11 @@ export function StatusBar() {
   let saveClass = "";
   if (typeof saveState !== "string") {
     if ("saving" in saveState) {
-      saveLabel = "Saving…";
+      saveLabel = t("save.saving");
     } else if ("saved" in saveState) {
       saveLabel = ""; // Saved is the normal state — no label.
     } else if ("failed" in saveState) {
-      saveLabel = "Save failed";
+      saveLabel = t("save.saveFailed");
       saveClass = "statusbar-status--error";
     }
   }
@@ -156,16 +163,16 @@ export function StatusBar() {
   return (
     <footer className="statusbar">
       <span className={"statusbar-section" + (statusClass ? " " + statusClass : "")}>
-        {tab !== null ? statusLabel(tab.status, tab.durationMs) : "No document"}
+        {tab !== null ? statusLabel(t, tab.status, tab.durationMs) : t("noDocument")}
       </span>
       {isConflicted && tab !== null && (
         <span
           className="statusbar-section statusbar-status--conflict"
           role="button"
-          title="This file changed on disk and is in conflict — click to resolve"
+          title={t("conflict.title")}
           onClick={() => openConflict(tab.id)}
         >
-          Conflict
+          {t("conflict.label")}
         </span>
       )}
       {saveLabel !== "" && (
@@ -186,17 +193,17 @@ export function StatusBar() {
         {errorCount > 0
           ? (
             <span className="statusbar-badge-error">
-              {errorCount} {errorCount === 1 ? "error" : "errors"}
+              {t("errors.count", { count: errorCount })}
             </span>
           )
-          : <span className="statusbar-badge">No errors</span>}
+          : <span className="statusbar-badge">{t("errors.none")}</span>}
       </span>
       {watcherFailed && (
         <span
           className="statusbar-section statusbar-status--conflict"
-          title="Live external-change detection is unavailable (the polling fallback is active). Reload/compare may be slightly delayed."
+          title={t("watcher.limitedTitle")}
         >
-          External detection limited
+          {t("watcher.limited")}
         </span>
       )}
       <span
@@ -206,28 +213,28 @@ export function StatusBar() {
         }
         title={
           lspStatus.restartReason
-            ? `Last trigger: ${lspStatus.restartReason}`
+            ? t("lsp.lastTrigger", { reason: lspStatus.restartReason })
             : lspStatus.message ?? undefined
         }
       >
-        {lspLabel(lspStatus.statusKind, lspStatus.available, lspStatus.message)}
+        {lspLabel(t, lspStatus.statusKind, lspStatus.available, lspStatus.message)}
         {needsAction && (
           <button
             type="button"
             className="statusbar-lsp-restart"
-            title="Restart the LSP server"
+            title={t("lsp.restartButtonTitle")}
             onClick={restartLsp}
           >
-            Restart
+            {t("lsp.restartButton")}
           </button>
         )}
       </span>
       {problemCount > 0 && (
         <span
           className="statusbar-section statusbar-badge-error"
-          title={`${problemCount} startup ${problemCount === 1 ? "issue" : "issues"} — see the problems panel`}
+          title={t("startupProblems.countTitle", { count: problemCount })}
         >
-          {problemCount} startup {problemCount === 1 ? "issue" : "issues"}
+          {t("startupProblems.count", { count: problemCount })}
         </span>
       )}
     </footer>

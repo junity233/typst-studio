@@ -9,6 +9,7 @@ import {
   SAVE_AS_RECOVERY_CODES,
   toIpcError,
 } from "./ipc-error";
+import i18n from "../i18n";
 
 /**
  * Save a single tab: Save As if untitled, save in place if titled. Returns
@@ -51,10 +52,13 @@ export async function saveTab(id: string): Promise<boolean> {
     // For permission/readonly/path-occupied codes, offer Save As first.
     if (SAVE_AS_RECOVERY_CODES.has(err.code) && tab.path !== null) {
       const choice = await useDialogStore.getState().confirm({
-        title: "Save failed",
-        message: `${formatSaveErrorMessage(e)}\n\nSave as a new file instead?`,
-        confirmLabel: "Save As…",
-        cancelLabel: "Cancel",
+        title: i18n.t("saveFailed.title", { ns: "dialog" }),
+        message: i18n.t("saveFailed.saveAsInstead", {
+          ns: "dialog",
+          reason: formatSaveErrorMessage(e),
+        }),
+        confirmLabel: i18n.t("saveAs", { ns: "common" }),
+        cancelLabel: i18n.t("cancel", { ns: "common" }),
       });
       if (choice === "confirm") {
         try {
@@ -100,11 +104,11 @@ export async function closeTabWithConfirm(id: string): Promise<boolean> {
   if (tab.dirty) {
     const name = tab.title;
     const choice = await useDialogStore.getState().confirm({
-      title: `Save changes to "${name}"?`,
-      message: "Your changes will be lost if you don't save them.",
-      confirmLabel: "Save",
-      discardLabel: "Don't Save",
-      cancelLabel: "Cancel",
+      title: i18n.t("saveChanges.title", { ns: "dialog", name }),
+      message: i18n.t("saveChanges.changesWillBeLost", { ns: "dialog" }),
+      confirmLabel: i18n.t("save", { ns: "common" }),
+      discardLabel: i18n.t("dontSave", { ns: "common" }),
+      cancelLabel: i18n.t("cancel", { ns: "common" }),
     });
     if (choice === "cancel") return false;
     if (choice === "confirm") {

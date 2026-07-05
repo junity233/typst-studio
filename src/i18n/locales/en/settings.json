@@ -1,0 +1,17 @@
+{
+  "__smoke__": "settings en ok",
+  "loading": "Loading…",
+  "sidebarTitle": "Settings",
+  "categoriesAriaLabel": "Settings categories",
+  "empty": "No settings.",
+  "preferences_one": "{{count}} preference",
+  "preferences_other": "{{count}} preferences",
+  "themesFolder": "Themes folder",
+  "themesFolderHelp": "Drop a subfolder here containing <themeCss>theme.css</themeCss> (+ optional <themeJson> theme.json</themeJson>) to add a custom theme. The picker above updates live.",
+  "open": "Open",
+  "opening": "Opening…",
+  "working": "Working…",
+  "default": "default",
+  "add": "Add",
+  "removePath": "Remove {{path}}"
+}

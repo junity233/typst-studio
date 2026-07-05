@@ -1,0 +1,14 @@
+{
+  "notARepo": "Not a git repository.",
+  "notARepoHint": "Open a folder containing a .git directory to enable source control.",
+  "messagePlaceholder": "Message (Ctrl+Enter to commit)",
+  "commit": "Commit",
+  "refresh": "Refresh",
+  "stage": "Stage",
+  "unstage": "Unstage",
+  "changes": "Changes ({{count}})",
+  "stagedChanges": "Staged Changes ({{count}})",
+  "noChanges": "No changes",
+  "recentCommits": "Recent Commits",
+  "loading": "Loading…"
+}

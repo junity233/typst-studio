@@ -1,0 +1,8 @@
+{
+  "placeholder": "Search in workspace…",
+  "matchCase": "Match Case",
+  "wholeWord": "Whole Word",
+  "regex": "Regex",
+  "searching": "Searching…",
+  "noResults": "No results"
+}

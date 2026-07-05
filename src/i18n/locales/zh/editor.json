@@ -1,0 +1,9 @@
+{
+  "loading": "正在加载编辑器…",
+  "initFailed": "编辑器初始化失败：{{message}}",
+  "noDocument": "未打开文档",
+  "preview": {
+    "show": "显示预览",
+    "hide": "隐藏预览"
+  }
+}

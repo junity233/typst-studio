@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { LineRect } from "../../lib/types";
 import { clientToPagePt, lineFromPoint, parseViewBoxPt } from "./previewMapping";
 
@@ -53,6 +54,7 @@ export const SvgPage = memo(function SvgPage({
   onJumpToLine,
   pageRef,
 }: SvgPageProps) {
+  const { t } = useTranslation("preview");
   const [url, setUrl] = useState<string>("");
   const imgRef = useRef<HTMLImageElement | null>(null);
 
@@ -96,7 +98,7 @@ export const SvgPage = memo(function SvgPage({
         <img
           ref={imgRef}
           src={url}
-          alt={`Page ${pageNumber}`}
+          alt={t("page", { number: pageNumber })}
           className={
             "svg-page-img" +
             (onJumpToLine && lineRects && lineRects.length > 0
@@ -107,7 +109,7 @@ export const SvgPage = memo(function SvgPage({
           onClick={handleJumpClick}
           title={
             onJumpToLine && lineRects && lineRects.length > 0
-              ? IS_MAC ? "⌘ Click to jump to source" : "Ctrl+Click to jump to source"
+              ? IS_MAC ? t("jumpToSourceMac") : t("jumpToSourceOther")
               : undefined
           }
         />

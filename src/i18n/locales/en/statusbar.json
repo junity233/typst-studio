@@ -1,0 +1,55 @@
+{
+  "noDocument": "No document",
+  "status": {
+    "ready": "Ready",
+    "compiling": "Compiling…",
+    "compilingSlow": "Compiling… (taking a while)",
+    "compiled": "Compiled",
+    "compiledIn": "Compiled in {{ms}}ms",
+    "compileFailed": "Compile failed"
+  },
+  "save": {
+    "saving": "Saving…",
+    "saveFailed": "Save failed"
+  },
+  "conflict": {
+    "label": "Conflict",
+    "title": "This file changed on disk and is in conflict — click to resolve"
+  },
+  "errors": {
+    "none": "No errors",
+    "count_one": "{{count}} error",
+    "count_other": "{{count}} errors"
+  },
+  "watcher": {
+    "limited": "External detection limited",
+    "limitedTitle": "Live external-change detection is unavailable (the polling fallback is active). Reload/compare may be slightly delayed."
+  },
+  "lsp": {
+    "notInstalled": "LSP: not installed",
+    "off": "LSP: off",
+    "message": "LSP: {{message}}",
+    "restartNeeded": "LSP: restart needed",
+    "reconnecting": "LSP: reconnecting…",
+    "connecting": "LSP: connecting…",
+    "connected": "LSP: connected",
+    "lastTrigger": "Last trigger: {{reason}}",
+    "restartButton": "Restart",
+    "restartButtonTitle": "Restart the LSP server"
+  },
+  "startupProblems": {
+    "count_one": "{{count}} startup issue",
+    "count_other": "{{count}} startup issues",
+    "countTitle_one": "{{count}} startup issue — see the problems panel",
+    "countTitle_other": "{{count}} startup issues — see the problems panel",
+    "panelTitle": "Startup issues ({{count}})",
+    "panelAriaLabel_one": "{{count}} startup issue",
+    "panelAriaLabel_other": "{{count}} startup issues",
+    "copyDetails": "Copy details",
+    "copyDetailsTitle": "Copy a plain-text summary to the clipboard",
+    "dismiss": "Dismiss",
+    "dismissTitle": "Dismiss this panel",
+    "detailsHeader": "Typst Studio — startup problems",
+    "detailsCount": "Count: {{count}}"
+  }
+}

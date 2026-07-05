@@ -1,5 +1,6 @@
 import { Files } from "lucide-react";
 import type { HostApi } from "../api";
+import i18n from "../../i18n";
 
 // The host (Sidebar) wraps `component` in React.lazy(), so the factory MUST
 // return a Promise<{ default: ComponentType }> — i.e. the raw dynamic-import
@@ -8,7 +9,7 @@ import type { HostApi } from "../api";
 export default function activate(ctx: HostApi): void {
   ctx.registerView({
     id: "workbench.explorer",
-    title: "Explorer",
+    title: i18n.t("explorer", { ns: "command" }),
     icon: Files,
     component: () =>
       import("../../components/Sidebar/Explorer").then((m) => ({ default: m.Explorer })),

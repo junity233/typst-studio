@@ -1,0 +1,20 @@
+{
+  "savePermissionDenied": "权限被拒 —— Typst Studio 无法写入此文件。请尝试另存为到可写位置。",
+  "saveReadOnly": "此文件为只读。请使用另存为写入到新位置。",
+  "saveDiskFull": "磁盘已满。请释放空间后重试,或另存为到其他卷。",
+  "saveParentMissing": "目标文件夹不存在。请使用另存为选择有效位置。",
+  "couldNotOpen": "无法打开:{{message}}",
+  "couldNotOpenFile": "无法打开 {{name}}:{{message}}",
+  "couldNotOpenFolder": "无法打开文件夹:{{message}}",
+  "commandFailed": "{{label}}:{{message}}",
+  "actionFailed": "操作失败:{{message}}",
+  "renameFailed": "重命名失败:{{message}}",
+  "revealFailed": "显示失败:{{message}}",
+  "deleteFailed": "删除失败:{{message}}",
+  "deleteBlocked": "无法删除\"{{name}}\":该路径下有 {{count}} 个未保存的文档。请先保存或关闭它们。",
+  "deleteBlockedWithNames": "无法删除\"{{name}}\":该路径下有 {{count}} 个未保存的文档。请先保存或关闭它们。\n\n{{names}}",
+  "deleteConfirmFile": "将\"{{name}}\"移到废纸篓?",
+  "deleteConfirmDir": "将\"{{name}}\"移到废纸篓?此文件夹及其中的所有内容都将被移到废纸篓。",
+  "confirmClearRecovery": "删除所有崩溃恢复快照?此操作无法撤销。",
+  "confirmClearRecent": "清空最近的工作区列表?此操作无法撤销。"
+}

@@ -1,6 +1,7 @@
 import { useTabsStore } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { closeTabWithConfirm } from "../../lib/commands";
+import { useTranslation } from "react-i18next";
 
 export function TabStrip() {
   const tabs = useTabsStore((s) => s.tabs);
@@ -9,9 +10,10 @@ export function TabStrip() {
   const openTab = useTabsStore((s) => s.openTab);
   // Subscribe to the documents map so the dirty indicator updates live.
   const documents = useDocumentsStore((s) => s.documents);
+  const { t } = useTranslation("titlebar");
 
   return (
-    <div className="tabstrip" role="tablist" aria-label="Open documents">
+    <div className="tabstrip" role="tablist" aria-label={t("openDocuments")}>
       {tabs.map((id) => {
         const active = id === activeId;
         const doc = documents[id];
@@ -25,13 +27,15 @@ export function TabStrip() {
             aria-selected={active}
             className={"tab" + (active ? " tab-active" : "")}
             onClick={() => activate(id)}
+            title={t("tabTooltip", { title, dirty })}
           >
             {dirty && <span className="tab-dirty" aria-hidden="true" />}
             <span className="tab-title">{title}</span>
             <button
               className="tab-close"
               type="button"
-              aria-label={`Close ${title}`}
+              aria-label={t("closeTab", { title })}
+              title={t("closeTab", { title })}
               onClick={(e) => {
                 e.stopPropagation();
                 void closeTabWithConfirm(id);
@@ -45,7 +49,8 @@ export function TabStrip() {
       <button
         className="tab-add"
         type="button"
-        aria-label="New tab"
+        aria-label={t("newTab")}
+        title={t("newTab")}
         onClick={() => openTab()}
       >
         +

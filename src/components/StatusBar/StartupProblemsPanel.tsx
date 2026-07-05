@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { useStartupProblemsStore } from "../../store/startupProblemsStore";
 import type { StartupProblem } from "../../lib/types";
 
@@ -26,6 +28,7 @@ import type { StartupProblem } from "../../lib/types";
  * footprint).
  */
 export function StartupProblemsPanel() {
+  const { t } = useTranslation("statusbar");
   const problems = useStartupProblemsStore((s) => s.problems);
   const clearStore = useStartupProblemsStore((s) => s.dismiss);
   const [dismissed, setDismissed] = useState(false);
@@ -35,7 +38,7 @@ export function StartupProblemsPanel() {
   }
 
   const copyDetails = async () => {
-    const text = formatDetails(problems);
+    const text = formatDetails(t, problems);
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -54,28 +57,28 @@ export function StartupProblemsPanel() {
       className="startup-problems-panel"
       role="alert"
       aria-live="polite"
-      aria-label={`${problems.length} startup ${problems.length === 1 ? "issue" : "issues"}`}
+      aria-label={t("startupProblems.panelAriaLabel", { count: problems.length })}
     >
       <div className="startup-problems-panel-header">
         <span className="startup-problems-panel-title">
-          Startup issues ({problems.length})
+          {t("startupProblems.panelTitle", { count: problems.length })}
         </span>
         <div className="startup-problems-panel-actions">
           <button
             type="button"
             className="startup-problems-panel-btn"
             onClick={() => void copyDetails()}
-            title="Copy a plain-text summary to the clipboard"
+            title={t("startupProblems.copyDetailsTitle")}
           >
-            Copy details
+            {t("startupProblems.copyDetails")}
           </button>
           <button
             type="button"
             className="startup-problems-panel-btn"
             onClick={dismiss}
-            title="Dismiss this panel"
+            title={t("startupProblems.dismissTitle")}
           >
-            Dismiss
+            {t("startupProblems.dismiss")}
           </button>
         </div>
       </div>
@@ -92,13 +95,16 @@ export function StartupProblemsPanel() {
 }
 
 /** Format the problems as a plain-text block for clipboard / bug reports. */
-function formatDetails(problems: StartupProblem[]): string {
+function formatDetails(
+  t: TFunction<"statusbar">,
+  problems: StartupProblem[],
+): string {
   const lines = problems.map(
     (p, i) => `${i + 1}. [${p.component}] ${p.message}`,
   );
   return [
-    "Typst Studio — startup problems",
-    `Count: ${problems.length}`,
+    t("startupProblems.detailsHeader"),
+    t("startupProblems.detailsCount", { count: problems.length }),
     "",
     ...lines,
   ].join("\n");

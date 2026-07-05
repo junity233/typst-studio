@@ -1,0 +1,82 @@
+{
+  "saveFailed": {
+    "title": "Save failed",
+    "saveAsInstead": "{{reason}}\n\nSave as a new file instead?"
+  },
+  "saveChanges": {
+    "title": "Save changes to \"{{name}}\"?",
+    "changesWillBeLost": "Your changes will be lost if you don't save them."
+  },
+  "closeUnsaved": {
+    "title_one": "You have {{count}} unsaved document",
+    "title_other": "You have {{count}} unsaved documents",
+    "dontSaveChangesLost": "If you don't save, your changes will be lost.",
+    "saveAll": "Save All"
+  },
+  "applyWorkspaceEdit": {
+    "title": "Apply workspace edit"
+  },
+  "commandLabel": {
+    "openFile": "Open File",
+    "openFolder": "Open Folder",
+    "save": "Save",
+    "saveAs": "Save As",
+    "closeTab": "Close Tab",
+    "exportPdf": "Export PDF",
+    "exportPng": "Export PNG",
+    "exportSvg": "Export SVG"
+  },
+  "conflict": {
+    "ariaLabel": "Resolve file conflict",
+    "title": "Resolve conflict: {{title}}",
+    "compare": "Compare",
+    "hideCompare": "Hide compare",
+    "useDisk": "Use disk",
+    "overwriteDisk": "Overwrite disk",
+    "later": "Later",
+    "saveAs": "Save As…",
+    "compareToggleTitleOn": "Compare the editor buffer with the disk content",
+    "compareToggleTitleOff": "No disk content to compare for this conflict kind",
+    "useDiskTitleOn": "Replace the editor buffer with the disk content",
+    "useDiskTitleOff": "Only available when the disk content is readable (modified)",
+    "overwriteTitleOn": "Overwrite the disk file with the editor buffer",
+    "overwriteTitleOff": "Only available when the disk file is writable (modified / replaced)",
+    "saveAsTitle": "Save the buffer to a new file (keeps both versions)",
+    "laterTitle": "Keep editing; in-place save stays blocked until you resolve",
+    "message": {
+      "modified": "The file changed on disk while you had unsaved edits. Choose how to reconcile the two versions.",
+      "missing": "The file was deleted or moved on disk. The buffer is preserved — recreate it (Save As to the same path) or save elsewhere.",
+      "permission_changed": "The file became read-only or inaccessible. Fix the file permissions, or Save As to a writable location.",
+      "replaced": "The file was replaced on disk (same content, but the file identity changed — e.g. an external tool rewrote it). Overwrite to keep your buffer, or Save As."
+    },
+    "compareView": {
+      "ariaLabel": "Editor buffer vs disk comparison",
+      "editorBuffer": "Editor buffer",
+      "disk": "Disk"
+    }
+  },
+  "recovery": {
+    "ariaLabel": "Recover unsaved documents",
+    "title": "Recover unsaved documents",
+    "message": "Typst Studio did not close cleanly. The following documents have unsaved changes that were recovered. Review each and choose whether to recover, compare, or discard.",
+    "discard": "Discard",
+    "compare": "Compare",
+    "recover": "Recover",
+    "diskChangedLabel": "disk changed",
+    "diskChangedTitle": "The file on disk changed since this snapshot was captured",
+    "untitledLabel": "untitled",
+    "untitledTitle": "This document was never saved to disk",
+    "notSavedToDisk": "Not saved to disk",
+    "compareTitleOn": "Compare the snapshot with the current disk content",
+    "compareTitleOff": "Untitled docs have no disk version to compare",
+    "recoverTitleOn": "Recover the unsaved buffer into a new tab",
+    "recoverTitleOff": "Disk changed — compare first before recovering",
+    "unknownTime": "unknown time",
+    "compareView": {
+      "ariaLabel": "Snapshot vs disk comparison",
+      "recoveredSnapshot": "Recovered (snapshot)",
+      "currentDisk": "Current disk",
+      "fileMissingOrNotOnDisk": "(file missing or not on disk)"
+    }
+  }
+}

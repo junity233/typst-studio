@@ -1,0 +1,17 @@
+{
+  "__smoke__": "settings zh 就绪",
+  "loading": "加载中…",
+  "sidebarTitle": "设置",
+  "categoriesAriaLabel": "设置分类",
+  "empty": "暂无设置项。",
+  "preferences_one": "{{count}} 项设置",
+  "preferences_other": "{{count}} 项设置",
+  "themesFolder": "主题文件夹",
+  "themesFolderHelp": "将包含 <themeCss>theme.css</themeCss>（可附带 <themeJson> theme.json</themeJson>）的子文件夹放入此处即可添加自定义主题。上方的选择器会实时更新。",
+  "open": "打开",
+  "opening": "正在打开…",
+  "working": "处理中…",
+  "default": "默认",
+  "add": "添加",
+  "removePath": "移除 {{path}}"
+}
