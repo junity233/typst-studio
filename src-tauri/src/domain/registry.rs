@@ -134,6 +134,17 @@ impl DocumentRegistry {
     pub fn list(&self) -> Vec<DocumentMeta> {
         self.by_id.values().cloned().collect()
     }
+
+    /// Mark a document as hidden (soft-closed) or visible (§B1). The flag is
+    /// orthogonal to registration: a hidden document stays in `by_id` /
+    /// `by_canonical` so [`find_by_canonical`](Self::find_by_canonical) still
+    /// returns its id — that's the reuse anchor that lets reopening a soft-closed
+    /// file reactivate instead of re-opening. No-op if `id` is not registered.
+    pub fn set_hidden(&mut self, id: DocumentId, hidden: bool) {
+        if let Some(meta) = self.by_id.get_mut(&id) {
+            meta.hidden = hidden;
+        }
+    }
 }
 
 /// Concurrency wrapper — the registry is shared across the editor service and
@@ -254,5 +265,41 @@ mod tests {
         reg.rebind(id, ws_meta(id, "/tmp/saved.typ")).unwrap();
         assert_eq!(reg.find_by_canonical(std::path::Path::new("/tmp/saved.typ")), Some(id));
         assert_eq!(reg.len(), 1);
+    }
+
+    /// §B1: `set_hidden` flips the flag on the registered meta, and a hidden
+    /// document stays resolvable by both id and canonical path (the reuse
+    /// anchor for reactivate).
+    #[test]
+    fn set_hidden_flips_flag_and_keeps_doc_registered() {
+        let mut reg = DocumentRegistry::new();
+        let id = DocumentId::new();
+        reg.register(ws_meta(id, "/tmp/hide.typ")).unwrap();
+        assert!(!reg.get(id).unwrap().hidden);
+
+        reg.set_hidden(id, true);
+        assert!(reg.get(id).unwrap().hidden, "hidden flag must be set");
+        // Still resolvable by canonical path — the whole point of soft-close is
+        // that find_existing returns the hidden id so the frontend reactivates
+        // instead of opening a duplicate.
+        assert_eq!(
+            reg.find_by_canonical(std::path::Path::new("/tmp/hide.typ")),
+            Some(id),
+            "hidden docs must remain findable by canonical path"
+        );
+        assert_eq!(reg.len(), 1, "soft-close must NOT shrink the registry");
+
+        // Toggling back to visible is symmetric.
+        reg.set_hidden(id, false);
+        assert!(!reg.get(id).unwrap().hidden);
+    }
+
+    /// `set_hidden` on an unknown id is a silent no-op (soft_close / reactivate
+    /// guard on the tab map, which is the authority on "open at all").
+    #[test]
+    fn set_hidden_on_unknown_id_is_noop() {
+        let mut reg = DocumentRegistry::new();
+        reg.set_hidden(DocumentId::new(), true); // must not panic
+        assert_eq!(reg.len(), 0);
     }
 }

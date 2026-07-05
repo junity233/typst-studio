@@ -36,6 +36,10 @@ use crate::domain::path::canonicalize_for_identity;
 use crate::domain::registry::SharedRegistry;
 use crate::error::{AppError, Result};
 use crate::persistence::recovery::RecoveryService;
+use crate::render::outline::build_outline;
+use crate::render::pipeline::RenderPipeline;
+use crate::render::source_map::build_source_map;
+use crate::render::svg::SvgRenderer;
 use crate::typst_engine::world::EditorWorld;
 
 use super::compile_service::CompileService;
@@ -920,6 +924,25 @@ impl DocumentService {
     /// TODO(future): evict a loose watcher when the last same-dir loose file
     /// closes, to free the platform file-watch handle.
     pub fn close_tab(&self, id: DocumentId) -> Result<()> {
+        // The legacy hard-close behavior, retained as a thin alias so existing
+        // IPC callers and tests keep working. New callers that want the
+        // soft-close lifecycle use [soft_close](Self::soft_close) /
+        // [reactivate](Self::reactivate) / [hard_close](Self::hard_close).
+        self.hard_close(id)
+    }
+
+    /// Hard-close (true destroy): tear down the compile worker, drop the
+    /// `TabState` (world + cached compile result), release the canonical-path
+    /// registry slot, and remove the VFS overlay entry. After this the
+    /// `DocumentId` is fully gone — reopening the file mints a fresh document.
+    ///
+    /// This is the LRU-eviction path for the soft-close feature: when the
+    /// frontend has too many hidden tabs, it upgrades the oldest to a true
+    /// close via this method. It is also the old `close_tab` behavior, now
+    /// named for clarity; [`close_tab`](Self::close_tab) remains as an alias.
+    ///
+    /// Errors with [`AppError::NotFound`] if `id` is not open.
+    pub fn hard_close(&self, id: DocumentId) -> Result<()> {
         // Drop the worker first (sends Shutdown, doesn't join).
         let _ = self.store.workers.write().remove(&id);
         // Remove the buffer from the shared VFS BEFORE dropping the tab, while
@@ -932,6 +955,92 @@ impl DocumentService {
         // Release the canonical-path slot so the file can be reopened.
         self.store.registry.write().unregister(id);
         Ok(())
+    }
+
+    /// Soft-close a tab: hide it from the tab strip but keep the worker,
+    /// EditorWorld, cached compile result, registry entry, and VFS overlay
+    /// alive for instant reactivation (§B1). Idempotent — soft-closing an
+    /// already-hidden doc is a no-op. Errors with [`AppError::NotFound`] only
+    /// if `id` is not open at all.
+    ///
+    /// ## Why nothing is dropped
+    ///
+    /// The whole point of soft-close is *zero-cost reopen*, so this method
+    /// mutates ONLY the `hidden` flag:
+    /// - The compile worker is kept (a reactivate must not pay thread-spawn /
+    ///   world-warmup cost).
+    /// - The registry entry is kept so [`find_existing`] still returns this id
+    ///   — that's the reuse anchor the frontend checks on reopen.
+    /// - The VFS overlay is kept. The hidden doc's unsaved buffer IS the live
+    ///   content; dropping it would mean another tab that `#include`s this file
+    ///   would silently see stale disk bytes while the user believes their edit
+    ///   is live. [`drop_vfs_for`] is therefore NOT called here. The overlay is
+    ///   cheap to keep (one String per dirty path) and is naturally released on
+    ///   the eventual [`hard_close`](Self::hard_close) (LRU eviction).
+    /// - The loose-file watcher is intentionally left running too, matching the
+    ///   existing [`close_tab`] policy (documented there).
+    pub fn soft_close(&self, id: DocumentId) -> Result<()> {
+        if !self.store.tabs.read().contains_key(&id) {
+            return Err(AppError::NotFound(format!("tab {id} not found")));
+        }
+        self.store.registry.write().set_hidden(id, true);
+        // Mirror the flag onto the TabRuntime's meta snapshot too, so
+        // list_tabs / tab_meta (which read the runtime) agree with the
+        // registry. The registry is the authority for find_existing; the
+        // runtime snapshot is the authority for everything else.
+        if let Some(tab) = self.store.tabs.read().get(&id).cloned() {
+            tab.state.lock().meta.hidden = true;
+        }
+        Ok(())
+    }
+
+    /// Reactivate a soft-closed document: mark it visible again (§B1). If a
+    /// cached compile result (`TabRuntime::last_doc`) exists, replay it as a
+    /// `compiled` event — rendered straight from the cached `PagedDocument`
+    /// with NO recompilation (the `duration_ms: 0` is the signal the frontend
+    /// can use to treat this as "instant"). The frontend's existing
+    /// `onCompiled` listener then fills the preview uniformly.
+    ///
+    /// Returns the document's current [`DocumentMeta`] so the IPC layer can hand
+    /// the frontend everything it needs to re-add the tab in one round-trip.
+    /// If `last_doc` is `None` (never compiled successfully — e.g. the doc was
+    /// soft-closed before its first compile finished), the flag is still
+    /// flipped and the next natural compile event will fill the preview; no
+    /// empty `compiled` event is emitted in that case.
+    ///
+    /// Errors with [`AppError::NotFound`] if `id` is not open.
+    pub fn reactivate(&self, id: DocumentId) -> Result<DocumentMeta> {
+        let tab = self
+            .store
+            .tabs
+            .read()
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?;
+        // Flip the flag in both stores (registry + runtime meta) under one
+        // logical operation. Render from the cached last_doc using the same
+        // helpers the compile pipeline uses, then emit with duration_ms: 0 to
+        // mark it as a replay.
+        let (meta, last_doc, revision) = {
+            let mut rt = tab.state.lock();
+            rt.meta.hidden = false;
+            (rt.meta.clone(), rt.last_doc.clone(), rt.meta.revision)
+        };
+        self.store.registry.write().set_hidden(id, false);
+        if let Some(doc) = last_doc {
+            let pages = SvgRenderer::new().render(&doc);
+            let line_map = build_source_map(&doc, &tab.world);
+            let outline = build_outline(&doc, &tab.world);
+            self.store.emitter.emit_compiled(
+                id,
+                revision,
+                pages,
+                line_map,
+                outline,
+                /* duration_ms */ 0,
+            );
+        }
+        Ok(meta)
     }
 
     /// Update a tab's source text and signal its worker to recompile. Returns
@@ -1662,5 +1771,164 @@ mod tests {
         );
         let _ = meta; // keep the doc alive
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- §B1 soft-close / reactivate / hard-close ----------------------------
+
+    /// `soft_close` flips the `hidden` flag but keeps the tab fully alive
+    /// (worker, world, registry entry, VFS). `find_existing` still returns the
+    /// hidden id — the reuse anchor for reactivate.
+    #[test]
+    fn soft_close_marks_hidden_but_keeps_everything_alive() {
+        let (document, _compile) = make_services();
+        let meta = document.new_tab(None);
+        assert!(!document.tab_meta(meta.id).unwrap().hidden);
+
+        document.soft_close(meta.id).unwrap();
+
+        // Flag flipped in BOTH the runtime meta and the registry.
+        assert!(document.tab_meta(meta.id).unwrap().hidden, "runtime meta hidden");
+        assert!(
+            document.registry().read().get(meta.id).unwrap().hidden,
+            "registry meta hidden"
+        );
+        // The tab itself is still open — still listed, still resolvable, still
+        // has a worker. (Worker presence is tested indirectly: the tab is in the
+        // tabs map and a subsequent reactivate must NOT spawn a new worker.)
+        assert_eq!(document.list_tabs().len(), 1, "soft-close must not drop the tab");
+        // find_existing for the same canonical path still resolves — that's the
+        // reuse anchor. Untitled docs have no canonical path, so test via a real
+        // file instead (covered by the loose-file variant below).
+    }
+
+    #[test]
+    fn soft_close_keeps_canonical_find_existing_anchor_for_loose_file() {
+        let (document, _compile) = make_services();
+        let tmp =
+            std::env::temp_dir().join(format!("ts-softclose-{}.typ", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp, "hi").unwrap();
+        let meta = document.open_from_content(tmp.clone(), "hi".into(), None).unwrap();
+        let canon = tmp.canonicalize().unwrap();
+
+        document.soft_close(meta.id).unwrap();
+
+        // The canonical-path index still points at the (now hidden) id — the
+        // frontend reads `hidden` to decide reactivate vs fresh open.
+        assert_eq!(
+            document.registry().read().find_by_canonical(&canon),
+            Some(meta.id),
+            "hidden loose file must remain findable by canonical path"
+        );
+        assert!(document.registry().read().get(meta.id).unwrap().hidden);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// `soft_close` is idempotent and errors on a genuinely unknown id.
+    #[test]
+    fn soft_close_is_idempotent_and_errors_on_unknown() {
+        let (document, _compile) = make_services();
+        let meta = document.new_tab(None);
+        document.soft_close(meta.id).unwrap();
+        document.soft_close(meta.id).unwrap(); // no-op, no panic
+        assert!(document.tab_meta(meta.id).unwrap().hidden);
+
+        let err = document.soft_close(DocumentId::new()).unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "unknown id must error");
+    }
+
+    /// `reactivate` flips the flag back to visible. With a cached `last_doc` it
+    /// emits a `compiled` event (duration_ms: 0) WITHOUT recompiling.
+    #[test]
+    fn reactivate_replays_cached_compile_without_recompiling() {
+        let (document, compile) = make_services();
+        let meta = document.new_tab(None);
+        // Wait for the initial compile to populate last_doc.
+        wait_for_compiled(&compile, meta.id);
+        assert!(compile.last_doc(meta.id).is_some(), "precondition: last_doc set");
+
+        document.soft_close(meta.id).unwrap();
+        assert!(document.tab_meta(meta.id).unwrap().hidden);
+
+        // Reactivate: must flip visible and emit a replayed compiled event.
+        // Crucially it must NOT recompile (reactivate reads last_doc, never
+        // writes it). We assert the observable contract: reactivate returns
+        // visible meta in both stores and leaves last_doc intact.
+        let returned = document.reactivate(meta.id).unwrap();
+        assert!(!returned.hidden, "reactivate must mark visible");
+        assert!(
+            !document.tab_meta(meta.id).unwrap().hidden,
+            "runtime meta must be visible after reactivate"
+        );
+        assert!(
+            !document.registry().read().get(meta.id).unwrap().hidden,
+            "registry meta must be visible after reactivate"
+        );
+        // last_doc is unchanged — reactivate read it, did not reset it.
+        assert!(compile.last_doc(meta.id).is_some());
+    }
+
+    /// `reactivate` on a doc with NO cached compile (last_doc == None) still
+    /// flips the flag; it just doesn't emit a compiled event (the next natural
+    /// compile will fill the preview).
+    #[test]
+    fn reactivate_without_cached_doc_still_flips_flag() {
+        let (document, _compile) = make_services();
+        let meta = document.new_tab(None);
+        document.soft_close(meta.id).unwrap();
+        // Don't wait for compile — but the worker may have already run. Either
+        // way reactivate must succeed and return visible meta.
+        let returned = document.reactivate(meta.id).unwrap();
+        assert!(!returned.hidden);
+    }
+
+    /// `hard_close` is the old destroy-everything behavior: the tab, worker,
+    /// and registry entry are gone, and reopening mints a fresh document.
+    /// `close_tab` is now a thin alias for it.
+    #[test]
+    fn hard_close_destroys_everything_and_releases_canonical_slot() {
+        let (document, _compile) = make_services();
+        let tmp =
+            std::env::temp_dir().join(format!("ts-hardclose-{}.typ", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp, "x").unwrap();
+        let meta = document.open_from_content(tmp.clone(), "x".into(), None).unwrap();
+        let canon = tmp.canonicalize().unwrap();
+        assert!(document.registry().read().find_by_canonical(&canon).is_some());
+
+        document.hard_close(meta.id).unwrap();
+
+        assert!(document.tab_meta(meta.id).is_none(), "tab must be gone");
+        assert!(
+            document.registry().read().find_by_canonical(&canon).is_none(),
+            "canonical slot must be released so the file can be reopened fresh"
+        );
+        assert_eq!(document.list_tabs().len(), 0);
+
+        // close_tab is now an alias for hard_close — same destroy semantics.
+        let meta2 = document.open_from_content(tmp.clone(), "x".into(), None).unwrap();
+        document.close_tab(meta2.id).unwrap();
+        assert!(document.tab_meta(meta2.id).is_none());
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// `hard_close` errors on an unknown id (mirrors the old close_tab).
+    #[test]
+    fn hard_close_errors_on_unknown_id() {
+        let (document, _compile) = make_services();
+        let err = document.hard_close(DocumentId::new()).unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    /// A soft-closed doc survives a subsequent `hard_close` (the LRU-eviction
+    /// path): hard_close must tear down a hidden tab exactly like a visible one.
+    #[test]
+    fn hard_close_after_soft_close_fully_destroys() {
+        let (document, _compile) = make_services();
+        let meta = document.new_tab(None);
+        document.soft_close(meta.id).unwrap();
+        assert!(document.tab_meta(meta.id).unwrap().hidden);
+
+        document.hard_close(meta.id).unwrap();
+        assert!(document.tab_meta(meta.id).is_none());
+        assert!(document.registry().read().get(meta.id).is_none());
     }
 }

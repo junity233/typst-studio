@@ -17,7 +17,7 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::domain::diagnostics::Diagnostic;
-use crate::domain::document::DocumentId;
+use crate::domain::document::{DocumentId, DocumentMeta};
 use crate::error::{AppError, Result};
 use crate::ipc::events::OpenedDocument;
 use crate::ipc::state::AppState;
@@ -75,6 +75,31 @@ pub async fn open_file(
 #[tauri::command]
 pub async fn close_tab(state: State<'_, AppState>, id: DocumentId) -> Result<()> {
     state.editor.close_tab(id)
+}
+
+/// Soft-close a tab (§B1): hide it from the tab strip but keep its worker,
+/// EditorWorld, cached compile result, and registry entry alive for instant
+/// reactivation. The frontend's LRU policy later upgrades old hidden docs to a
+/// true close via [`hard_close_tab`].
+#[tauri::command]
+pub async fn soft_close_tab(state: State<'_, AppState>, id: DocumentId) -> Result<()> {
+    state.editor.soft_close(id)
+}
+
+/// Reactivate a soft-closed tab (§B1): mark it visible again and, if a cached
+/// compile result exists, replay it as a `compiled` event (no recompilation).
+/// Returns the current `DocumentMeta` so the frontend can re-add the tab in one
+/// round-trip.
+#[tauri::command]
+pub async fn reactivate_tab(state: State<'_, AppState>, id: DocumentId) -> Result<DocumentMeta> {
+    state.editor.reactivate(id)
+}
+
+/// Hard-close a tab (§B1, the LRU-eviction path): destroy worker + world +
+/// registry entry + VFS — the old `close_tab` destroy-everything behavior.
+#[tauri::command]
+pub async fn hard_close_tab(state: State<'_, AppState>, id: DocumentId) -> Result<()> {
+    state.editor.hard_close(id)
 }
 
 /// Update a tab's source text and schedule a 300ms debounced compile.

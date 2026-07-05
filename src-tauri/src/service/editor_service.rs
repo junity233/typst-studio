@@ -202,9 +202,27 @@ impl EditorService {
         self.document.reclassify_documents(ws);
     }
 
-    /// Delegates to [`DocumentService::close_tab`].
+    /// Delegates to [`DocumentService::close_tab`] (now a hard-close alias, §B1).
     pub fn close_tab(&self, id: DocumentId) -> Result<()> {
         self.document.close_tab(id)
+    }
+
+    /// Delegates to [`DocumentService::soft_close`] (§B1): hide the tab but keep
+    /// its worker / world / cached compile / registry entry alive for reactivation.
+    pub fn soft_close(&self, id: DocumentId) -> Result<()> {
+        self.document.soft_close(id)
+    }
+
+    /// Delegates to [`DocumentService::reactivate`] (§B1): mark visible and, if
+    /// a cached compile exists, replay it as a `compiled` event (no recompile).
+    pub fn reactivate(&self, id: DocumentId) -> Result<DocumentMeta> {
+        self.document.reactivate(id)
+    }
+
+    /// Delegates to [`DocumentService::hard_close`] (§B1): destroy worker /
+    /// world / registry entry / VFS — the LRU-eviction path.
+    pub fn hard_close(&self, id: DocumentId) -> Result<()> {
+        self.document.hard_close(id)
     }
 
     /// Delegates to [`DocumentService::update_text`].
