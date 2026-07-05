@@ -2061,6 +2061,28 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.setting-help {
+  /* Sub-secondary description text. Has no explicit style historically, so it
+     inherited --text-body (17px) and towered over the 14px label — making the
+     description louder than the title it explains. Now pinned to fine-print
+     (12px) in muted gray to recede behind the label. */
+  margin-top: 2px; /* part the "label+key" group from the description */
+  font-family: var(--font-text);
+  font-size: 12px; /* DESIGN.md fine-print — one notch below the 14px label */
+  font-weight: 400;
+  line-height: 1.4; /* multi-line descriptions stay readable; --text-fine-print's 1.0 is single-line only */
+  letter-spacing: 0; /* ≤12px never gets negative tracking (DESIGN.md) */
+  color: var(--color-ink-muted-48); /* #7a7a7a — same muted tier as .setting-key */
+}
+.setting-help code {
+  /* Inline filename refs inside a description (e.g. theme.css / theme.json). */
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 0 4px;
+  background: var(--color-canvas-parchment);
+  border-radius: var(--radius-xs);
+  color: var(--color-ink-muted-80);
+}
 .setting-control {
   flex: 0 0 auto;
   display: inline-flex;
@@ -2098,6 +2120,45 @@ button {
   background-repeat: no-repeat;
   background-position: right 10px center;
   appearance: none;
+}
+
+/* ---- Action button (Open / Export / Clear / Open themes) ----
+   These render as <button> via ActionControl / OpenThemesFolderRow but had no
+   style, so they inherited --text-body (17px) and read as oversized text links.
+   Pinned to the same chrome as .setting-input so all right-hand controls share
+   one grammar; Action-Blue text marks the affordance (DESIGN.md: every
+   "click me" is Action Blue). */
+.setting-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 7px 14px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  color: var(--color-primary);
+  font-family: var(--font-text);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: -0.1px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+.setting-action-btn:hover {
+  border-color: var(--color-primary);
+}
+.setting-action-btn:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.12);
+}
+.setting-action-btn:active {
+  transform: scale(0.95); /* DESIGN.md system-wide press micro-interaction */
+}
+.setting-action-btn:disabled,
+.setting-action-busy {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* ---- Toggle (iOS-style switch) ----
