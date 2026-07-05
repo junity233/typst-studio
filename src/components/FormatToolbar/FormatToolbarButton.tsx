@@ -5,9 +5,13 @@ import type { LucideIcon } from "lucide-react";
  *
  * - `icon`     — a lucide-react component (Bold, Heading1, …).
  * - `label`    — the tooltip text (native `title`) and accessible name.
- * - `pressed`  — future active-state (e.g. bold when the selection sits inside
- *                `*…*`). Currently always undefined; threaded so T5/T6-style
- *                selection-aware highlighting can land without a prop change.
+ * - `pressed`  — active state: true when the caret/selection sits inside this
+ *                button's markup (e.g. Bold is pressed inside `*…*`, Heading 1
+ *                is pressed on a `= ` line). Drives `aria-pressed` and the
+ *                parchment-tint highlight (`.format-toolbar-button[aria-pressed="true"]`).
+ *                Computed by `FormatToolbar`'s `computePressed` from the live
+ *                editor API on every render (re-render is triggered by the
+ *                `cursorTick` subscription).
  * - `disabled` — mirrors the toolbar-level disabled flag (no tab / no editor API).
  *
  * Presentational only — the click handler is supplied by the parent container,
