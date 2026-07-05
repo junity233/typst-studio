@@ -420,7 +420,7 @@ function PathsControl({ def }: { def: SettingDef }) {
           <input
             className="setting-input path-add-input"
             type="text"
-            placeholder="/path/to/folder"
+            placeholder={t("pathsPlaceholder")}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {

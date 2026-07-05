@@ -14,7 +14,12 @@
     "saveAll": "Save All"
   },
   "applyWorkspaceEdit": {
-    "title": "Apply workspace edit"
+    "title": "Apply workspace edit",
+    "body_one": "This workspace edit touches a document with unsaved changes:\n{{lines}}\n\nApply anyway?",
+    "body_other": "This workspace edit touches {{count}} documents with unsaved changes:\n{{lines}}\n\nApply anyway?",
+    "reasonDeleteDirty": "deleting this file would discard unsaved edits",
+    "reasonRenameOverwrite": "moving onto this file would overwrite its unsaved edits",
+    "reasonOverwrite": "this would overwrite its unsaved edits"
   },
   "commandLabel": {
     "openFile": "Open File",

@@ -14,7 +14,12 @@
     "saveAll": "全部保存"
   },
   "applyWorkspaceEdit": {
-    "title": "应用工作区编辑"
+    "title": "应用工作区编辑",
+    "body_one": "此工作区编辑涉及一个有未保存更改的文档:\n{{lines}}\n\n仍要应用吗?",
+    "body_other": "此工作区编辑涉及 {{count}} 个有未保存更改的文档:\n{{lines}}\n\n仍要应用吗?",
+    "reasonDeleteDirty": "删除此文件将丢弃未保存的编辑",
+    "reasonRenameOverwrite": "移动到此文件将覆盖其未保存的编辑",
+    "reasonOverwrite": "此操作将覆盖其未保存的编辑"
   },
   "commandLabel": {
     "openFile": "打开文件",

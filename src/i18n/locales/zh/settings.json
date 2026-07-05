@@ -14,6 +14,7 @@
   "default": "默认",
   "add": "添加",
   "removePath": "移除 {{path}}",
+  "pathsPlaceholder": "/路径/到/文件夹",
 
   "category.compiler": "编译器",
   "category.editor": "编辑器",
