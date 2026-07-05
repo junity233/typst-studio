@@ -140,7 +140,16 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
 
   openPath: (doc) => {
     useDocumentsStore.getState().openDocument(doc);
-    set((s) => ({ tabs: [...s.tabs, doc.id], activeId: doc.id }));
+    set((s) => {
+      // If the doc was soft-closed (in hidden) and is being re-added via a
+      // non-dedup path (e.g. openFileByPath → openPath), remove it from hidden
+      // so it doesn't appear in both arrays. Belt-and-suspenders against the
+      // backend handing back a hidden flag; the backend's open-from-* now
+      // clears it too, but this guarantees the frontend invariant regardless.
+      const hidden = s.hidden.filter((h) => h !== doc.id);
+      const tabs = s.tabs.includes(doc.id) ? s.tabs : [...s.tabs, doc.id];
+      return { tabs, hidden, activeId: doc.id };
+    });
     // Remember the opened file so it can be restored on next launch.
     if (doc.path) recordFile(doc.path);
     void captureAndSaveSession();

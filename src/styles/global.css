@@ -16,7 +16,6 @@
   --color-ink-muted-80: #333333; /* slightly softer body text */
   --color-ink-muted-48: #7a7a7a; /* disabled / fine-print */
   --color-divider-soft: #f0f0f0;
-  --color-hover: rgba(0, 0, 0, 0.05); /* DESIGN.md soft-translucent hover fill */
   --color-hairline: #e0e0e0; /* 1px borders */
   --color-canvas: #ffffff; /* editor + svg paper */
   --color-canvas-parchment: #f5f5f7; /* default app canvas, preview, status */

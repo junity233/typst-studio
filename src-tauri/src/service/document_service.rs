@@ -188,6 +188,14 @@ impl DocumentService {
     ) -> Result<DocumentMeta> {
         let canon = canonicalize_for_identity(&path)?;
         if let Some(existing) = find_existing(&self.store, &canon) {
+            // §B1 dedup invariant: reopening a soft-closed (hidden) file makes
+            // it visible again. find_existing returns the meta as-is (the
+            // registry carries the `hidden` flag), so a hidden doc would be
+            // handed back with hidden == true and the caller (openPath) would
+            // leave it in BOTH the visible tabs list AND the hidden list.
+            // Flip the flag to visible here (idempotent for an already-visible
+            // doc) so the returned meta is consistent.
+            self.set_visibility(existing.id, false);
             return Ok(existing);
         }
         let meta = classify_new(DocumentId::new(), canon.clone(), workspace);
@@ -224,6 +232,9 @@ impl DocumentService {
     ) -> Result<DocumentMeta> {
         let canon = canonicalize_for_identity(&path)?;
         if let Some(existing) = find_existing(&self.store, &canon) {
+            // §B1 dedup invariant: see `open_from_content` — a soft-closed
+            // (hidden) doc must be made visible on reopen.
+            self.set_visibility(existing.id, false);
             return Ok(existing);
         }
         let meta = classify_new(DocumentId::new(), canon.clone(), workspace);
@@ -983,15 +994,26 @@ impl DocumentService {
         if !self.store.tabs.read().contains_key(&id) {
             return Err(AppError::NotFound(format!("tab {id} not found")));
         }
-        self.store.registry.write().set_hidden(id, true);
-        // Mirror the flag onto the TabRuntime's meta snapshot too, so
-        // list_tabs / tab_meta (which read the runtime) agree with the
-        // registry. The registry is the authority for find_existing; the
-        // runtime snapshot is the authority for everything else.
-        if let Some(tab) = self.store.tabs.read().get(&id).cloned() {
-            tab.state.lock().meta.hidden = true;
-        }
+        // Flip the flag in BOTH the registry and the runtime meta snapshot
+        // (shared helper). The registry is the authority for find_existing;
+        // the runtime snapshot is the authority for list_tabs / tab_meta.
+        self.set_visibility(id, true);
         Ok(())
+    }
+
+    /// Flip a document's `hidden` flag in BOTH the registry and the matching
+    /// [`TabRuntime`] meta snapshot under one logical operation, so
+    /// `find_existing` (registry), `list_tabs` / `tab_meta` (runtime), and the
+    /// frontend's `hidden` flag all agree. Shared by `soft_close` (sets true),
+    /// `reactivate` (sets false), and the open-on-hit path in
+    /// `open_from_disk` / `open_from_content` (sets false — reopening an
+    /// open-but-hidden file makes it visible again). No-op on the runtime
+    /// side if the tab is missing; the registry is the source of truth there.
+    fn set_visibility(&self, id: DocumentId, hidden: bool) {
+        self.store.registry.write().set_hidden(id, hidden);
+        if let Some(tab) = self.store.tabs.read().get(&id).cloned() {
+            tab.state.lock().meta.hidden = hidden;
+        }
     }
 
     /// Reactivate a soft-closed document: mark it visible again (§B1). If a
@@ -1017,16 +1039,13 @@ impl DocumentService {
             .get(&id)
             .cloned()
             .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?;
-        // Flip the flag in both stores (registry + runtime meta) under one
-        // logical operation. Render from the cached last_doc using the same
-        // helpers the compile pipeline uses, then emit with duration_ms: 0 to
-        // mark it as a replay.
+        // Flip the flag in both stores (registry + runtime meta) via the shared
+        // helper, then snapshot the meta + cached last_doc for the replay.
+        self.set_visibility(id, false);
         let (meta, last_doc, revision) = {
-            let mut rt = tab.state.lock();
-            rt.meta.hidden = false;
+            let rt = tab.state.lock();
             (rt.meta.clone(), rt.last_doc.clone(), rt.meta.revision)
         };
-        self.store.registry.write().set_hidden(id, false);
         if let Some(doc) = last_doc {
             let pages = SvgRenderer::new().render(&doc);
             let line_map = build_source_map(&doc, &tab.world);
@@ -1330,6 +1349,21 @@ mod tests {
         let compile = Arc::new(CompileService::new(store));
         document.with_compile(compile.clone());
         (document, compile)
+    }
+
+    /// Like [`make_services`] but also hands back the concrete [`SpyEmitter`] so
+    /// a test can inspect which `compiled` events were emitted (e.g. the
+    /// reactivate-replay assertion). The emitter is the same `Arc` shared with
+    /// the services, so its `compiled_ids` reflect everything the services emit.
+    fn make_services_with_spy() -> (Arc<DocumentService>, Arc<CompileService>, Arc<SpyEmitter>) {
+        let emitter = Arc::new(SpyEmitter {
+            compiled_ids: Mutex::new(Vec::new()),
+        });
+        let store = TabStore::new(emitter.clone());
+        let document = Arc::new(DocumentService::new(store.clone()));
+        let compile = Arc::new(CompileService::new(store));
+        document.with_compile(compile.clone());
+        (document, compile, emitter)
     }
 
     fn wait_for_compiled(compile: &CompileService, id: DocumentId) {
@@ -1840,7 +1874,7 @@ mod tests {
     /// emits a `compiled` event (duration_ms: 0) WITHOUT recompiling.
     #[test]
     fn reactivate_replays_cached_compile_without_recompiling() {
-        let (document, compile) = make_services();
+        let (document, compile, emitter) = make_services_with_spy();
         let meta = document.new_tab(None);
         // Wait for the initial compile to populate last_doc.
         wait_for_compiled(&compile, meta.id);
@@ -1865,6 +1899,12 @@ mod tests {
         );
         // last_doc is unchanged — reactivate read it, did not reset it.
         assert!(compile.last_doc(meta.id).is_some());
+        // The replayed `compiled` event was emitted for this doc (the original
+        // initial-compile event plus the reactivate replay both land here).
+        assert!(
+            emitter.compiled_ids.lock().contains(&meta.id),
+            "reactivate should replay a compiled event for a doc with a cached last_doc"
+        );
     }
 
     /// `reactivate` on a doc with NO cached compile (last_doc == None) still

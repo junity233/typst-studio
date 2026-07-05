@@ -7,6 +7,7 @@ import type {
   DirEntry,
   DocsReboundPayload,
   DocumentId,
+  DocumentMeta,
   EntryKind,
   FocusViewPayload,
   FsChangedPayload,
@@ -75,12 +76,13 @@ export async function softCloseTab(id: DocumentId): Promise<void> {
 
 /**
  * Reactivate a soft-closed (hidden) document (Phase B2): un-hide it on the
- * backend and replay its cached compiled result. Returns the document meta +
- * content (same shape as [`openFileByPath`]); the frontend updates its
- * visibility from the views store rather than re-opening from disk.
+ * backend and replay its cached compiled result. Returns the document meta (no
+ * content — content is already on the frontend; the compiled event replays the
+ * preview). The frontend updates its visibility from the views store rather
+ * than re-opening from disk.
  */
-export async function reactivateTab(id: DocumentId): Promise<OpenedDocument> {
-  return invoke<OpenedDocument>("reactivate_tab", { id });
+export async function reactivateTab(id: DocumentId): Promise<DocumentMeta> {
+  return invoke<DocumentMeta>("reactivate_tab", { id });
 }
 
 /**
