@@ -21,6 +21,14 @@ interface SvgPageProps {
   lineRects?: LineRect[];
   /** Invoked with a 1-indexed source line on double-click. */
   onJumpToLine?: (line: number) => void;
+  /**
+   * Fired when the rendered `<img>` finishes decoding its SVG blob. Used by
+   * scroll-sync to re-read page geometry at the moment the height becomes
+   * non-zero (the blob decode is async, so geometry read at render time is
+   * still height:0). Fired once per `svg` change (SvgPage revokes + recreates
+   * the blob URL each compile).
+   */
+  onImgLoad?: () => void;
   /** Ref set to the page wrapper element (used by scroll-sync). */
   pageRef?: React.Ref<HTMLDivElement>;
 }
@@ -54,6 +62,7 @@ export const SvgPage = memo(function SvgPage({
   zoom = 1,
   lineRects,
   onJumpToLine,
+  onImgLoad,
   pageRef,
 }: SvgPageProps) {
   const { t } = useTranslation("preview");
@@ -108,6 +117,7 @@ export const SvgPage = memo(function SvgPage({
               : "")
           }
           draggable={false}
+          onLoad={onImgLoad}
           onClick={handleJumpClick}
           title={
             onJumpToLine && lineRects && lineRects.length > 0

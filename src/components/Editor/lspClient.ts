@@ -3,6 +3,7 @@ import {
   getEnhancedMonacoEnvironment,
   MonacoVscodeApiWrapper,
 } from "monaco-languageclient/vscodeApiWrapper";
+import { Uri } from "vscode";
 import baseServiceOverride from "@codingame/monaco-vscode-base-service-override";
 import filesServiceOverride from "@codingame/monaco-vscode-files-service-override";
 import { servicesInitialized } from "@codingame/monaco-vscode-api/lifecycle";
@@ -70,19 +71,65 @@ export function buildVscodeApiConfig(): MonacoVscodeApiConfig {
     // thread ("Could not create web worker(s)... Falling back to loading web
     // worker code in main thread, which might cause UI freezes").
     monacoWorkerFactory: configureDefaultWorkerFactory,
+    // Mark the embedded workbench's workspace as TEMPORARY so it does NOT
+    // persist/restore editor-group state (the real fix for the recurring
+    // `Unable to read file '.../Documents/typst/Untitled.typ'` error).
+    //
+    // Typst Studio owns its documents entirely: open/close/restore goes through
+    // our Zustand stores + [`monacoModelRegistry`](./monacoModelRegistry.ts),
+    // and the editor is driven by `editor.setModel` directly — never through
+    // the workbench's `IEditorService.openEditor`. The workbench editor part,
+    // however, is mounted (because `viewsConfig.$type === "EditorService"` needs
+    // an editor pane container) and would otherwise revive any editor input it
+    // persisted to browser storage on a previous run. That revival path reads
+    // each revived input's resource from disk — and a leftover untitled-with-
+    // associated-path editor (path = workspace root + Save-As default name
+    // "Untitled.typ") produces a failing read of a nonexistent file, racing our
+    // registry-owned Typst model and breaking tokenization.
+    //
+    // The gate is `isTemporaryWorkspace(workspace)` (returns true when the
+    // workspace `configuration` URI's scheme is `tmp`). A temporary workspace
+    // makes `shouldRestoreEditors()` return `false` → `restorePreviousState:
+    // false` on the editor part → it skips reviving persisted editor inputs
+    // entirely. Since we never open workbench editor inputs, nothing is ever
+    // persisted either, so a fresh workspace stays clean.
+    //
+    // The `workspaceUri` (not `folderUri`) form is required: single-folder
+    // workspaces set `Workspace.configuration = null`, which `isTemporaryWorkspace`
+    // never treats as temporary regardless of the folder URI's scheme. A
+    // multi-root workspace carries its config path as `Workspace.configuration`,
+    // so a `tmp:`-scheme `workspaceUri` is detected as temporary. The `tmp:`
+    // URI has no file-service provider, so the workspace-config reader resolves
+    // to an empty folder list — harmless, since the app doesn't use the
+    // workbench's workspace folders (tinymist's root comes from
+    // `workspaceRootPath` via `appLanguageClient`, independently).
+    //
+    // The `userConfiguration` settings below (`workbench.startupEditor: none`,
+    // `window.restoreWindows: none`) are kept as a secondary defense, but on
+    // their own they do NOT suppress the non-empty-workspace editor-group
+    // restore — only the temporary-workspace gate does.
+    workspaceConfig: {
+      workspaceProvider: {
+        // A throwaway `tmp:`-scheme workspace file URI. Stable string is fine:
+        // it only needs to look like a multi-root workspace config so the
+        // resolved `Workspace.configuration` carries the `tmp` scheme.
+        workspace: { workspaceUri: Uri.parse("tmp://typst-studio/workspace.code-workspace") },
+        trusted: true,
+        // The app never calls window-reopen; a no-op satisfies the interface.
+        async open() {
+          return true;
+        },
+      },
+    },
     userConfiguration: {
       // NOTE: In monaco-vscode-api v25, the workbench theme service never
       // actually loads this theme from the bundled extension. The real theme
       // + token CSS is applied manually by typstHighlighting.ts. This entry
       // is kept for forward compatibility (v34+ loads it properly).
       //
-      // Also disable the VS Code workbench's own editor restore/startup flow.
-      // Typst Studio renders and restores documents through our Zustand stores
-      // + monacoModelRegistry; letting the embedded workbench open its own
-      // hidden "startup" editor can spawn an extra untitled/file working copy
-      // (observed on Windows as a failing read of Documents/Untitled.typ),
-      // which races our registry-owned Typst model and leaves tokenization in
-      // a broken state. We want exactly one editor session: ours.
+      // Secondary defense against the workbench's own startup editor flow (see
+      // the `workspaceConfig` comment above for the primary fix). These do not
+      // suppress editor-group restore on their own.
       json: JSON.stringify({
         "workbench.colorTheme": "Default Light Modern",
         "workbench.startupEditor": "none",

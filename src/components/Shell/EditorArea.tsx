@@ -156,7 +156,18 @@ export function EditorArea() {
     },
     [setEditorFontSize],
   );
+  // Scroll-sync reads/writes `scrollTop` on this ref, so it MUST point at the
+  // actual scroll container (`.preview-pane`, `overflow: auto`). It is therefore
+  // populated SOLELY by `PreviewPane`'s `paneRef` prop — NOT by the `.pane-preview`
+  // wrapper's callback ref below, which would otherwise overwrite it with the
+  // non-scrolling ancestor and silently break both sync directions (scrollTop
+  // reads as 0 forever; writes move nothing).
   const previewPaneRef = useRef<HTMLDivElement | null>(null);
+  // The `.pane-preview` wrapper is NOT the scroll container; it only hosts the
+  // capture-phase Ctrl+wheel zoom listener (which must sit ABOVE the scroll
+  // container to intercept before it). Kept separate so it can't clobber the
+  // scroll ref above.
+  const panePreviewWrapperRef = useRef<HTMLDivElement | null>(null);
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
   const scrollSyncOn = scrollSync !== false; // default true when unset
   // Latest lineMap + svg pages for use inside stable callbacks.
@@ -390,6 +401,34 @@ export function EditorArea() {
     kick("preview");
   }, [scrollSyncOn, kick, isApplying]);
 
+  // Keep `pageMetrics` fresh without requiring a user scroll. `refreshPageMetrics`
+  // only runs inside `kick()` otherwise, so a recompile / zoom change / tab switch
+  // (which reflow the pages) would leave the cached offsetTop/pxPerPt stale until
+  // the next scroll — and worse, a fresh compile's <img> hasn't decoded yet at
+  // kick time, so the cache ends up sparse/empty and both mappers return null →
+  // `tick` early-exits → sync silently drops until the user scrolls again.
+  //
+  // Two layers:
+  //  (1) This effect re-runs on every geometry-changing input (compile output,
+  //      lineMap, zoom, visibility, active tab) and defers the refresh one
+  //      rAF so the just-rendered <img> has had a frame to decode.
+  //  (2) SvgPage's <img onLoad> (wired via `onPageImgLoad`) fires once each page
+  //      after its blob URL finishes decoding — the backstop for documents where
+  //      decoding takes more than one frame.
+  // Neither starts an alignment on its own (no user input yet); they only feed
+  // `kick()` correct geometry when the user DOES scroll.
+  useEffect(() => {
+    const raf = requestAnimationFrame(refreshPageMetrics);
+    return () => cancelAnimationFrame(raf);
+  }, [
+    activeTab?.id,
+    activeTab?.svgPages,
+    activeTab?.lineMap,
+    previewZoomLevel,
+    previewVisible,
+    refreshPageMetrics,
+  ]);
+
   // Cleanup the animation loop on unmount.
   useEffect(() => {
     return () => {
@@ -446,6 +485,16 @@ export function EditorArea() {
     );
   };
 
+  // Each page's <img> finishes decoding its blob URL once per compile (SvgPage
+  // revokes + recreates the URL on every `svg` change). At that moment the
+  // rendered height is finally non-zero, so this is the reliable signal to
+  // re-read page geometry — closing the window where `refreshPageMetrics` would
+  // have skipped the page (height 0) and left the sync mappers with nothing to
+  // map to. Stable callback: depends only on `refreshPageMetrics`.
+  const handlePageImgLoad = useCallback(() => {
+    refreshPageMetrics();
+  }, [refreshPageMetrics]);
+
   return (
     <div className="editor-area">
       <div className="editor-area-header">
@@ -493,7 +542,11 @@ export function EditorArea() {
               className="pane pane-preview"
               style={previewVisible ? { width: previewWidth, flex: "0 0 " + previewWidth + "px" } : undefined}
               ref={(el) => {
-                previewPaneRef.current = el;
+                // NOTE: this is the .pane-preview WRAPPER, not the scroll
+                // container. Only the zoom listener attaches here; the scroll
+                // ref is owned by PreviewPane's `paneRef` (→ .preview-pane) so
+                // the two can't clobber each other.
+                panePreviewWrapperRef.current = el;
                 previewPaneZoomRef(el);
               }}
             >
@@ -503,6 +556,7 @@ export function EditorArea() {
                 onRefresh={handleRefresh}
                 onJumpToLine={handleJumpToLine}
                 onScroll={handlePreviewScroll}
+                onPageImgLoad={handlePageImgLoad}
                 paneRef={previewPaneRef}
                 pageRefs={pageRefs}
               />

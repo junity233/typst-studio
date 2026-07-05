@@ -14,6 +14,13 @@ interface PreviewPaneProps {
   onJumpToLine?: (line: number) => void;
   /** Fired (rAF-throttled internally by the caller) on preview scroll. */
   onScroll?: () => void;
+  /**
+   * Fired when a page's rendered `<img>` finishes decoding its SVG blob. Used
+   * by the scroll-sync owner to refresh page-geometry cache at the moment the
+   * rendered height becomes non-zero (the blob decode is async, so geometry
+   * read at render time is still height:0). Receives the 0-based page index.
+   */
+  onPageImgLoad?: (pageIndex: number) => void;
   /** Ref onto the scroll container (`.preview-pane`). */
   paneRef?: React.Ref<HTMLDivElement>;
   /** Refs to each `.svg-page` wrapper, indexed by 0-based page number. */
@@ -35,6 +42,7 @@ export function PreviewPane({
   onRefresh,
   onJumpToLine,
   onScroll,
+  onPageImgLoad,
   paneRef,
   pageRefs,
 }: PreviewPaneProps) {
@@ -112,6 +120,7 @@ export function PreviewPane({
             zoom={zoom}
             lineRects={rectsByPage.get(i)}
             onJumpToLine={onJumpToLine}
+            onImgLoad={onPageImgLoad ? () => onPageImgLoad(i) : undefined}
             pageRef={refForPage(i)}
           />
         ))
