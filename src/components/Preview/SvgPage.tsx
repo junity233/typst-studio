@@ -40,10 +40,12 @@ interface SvgPageProps {
  * bitmap). For MVP (viewing only) this is acceptable; text selection can be
  * re-added later via a hybrid approach (overlay transparent text layer).
  *
- * `zoom` is applied as the CSS `zoom` property (valid in Tauri's WKWebView and
- * WebView2/WebKitGTK): it scales the page box AND reflows the surrounding flex
- * column, so adjacent pages keep their spacing — unlike `transform: scale`,
- * which would overlap siblings.
+  * `zoom` scales the page by setting its width to `${zoom * 100}%` of the
+ * preview pane (the `<img>` is `width: 100%; height: auto`, so it scales with
+ * the wrapper). This reflows the surrounding flex column so adjacent pages
+ * keep their spacing. (Previously used CSS `zoom`, but WebView2 does not
+ * reliably re-layout a `width: 100%` box under `zoom` — the page stayed the
+ * same size regardless of the zoom value.)
  */
 export const SvgPage = memo(function SvgPage({
   svg,
@@ -90,7 +92,7 @@ export const SvgPage = memo(function SvgPage({
       ref={pageRef}
       className="svg-page"
       data-page={pageNumber}
-      style={zoom !== 1 ? { zoom } : undefined}
+      style={zoom !== 1 ? { width: `${zoom * 100}%` } : undefined}
     >
       {url && (
         <img

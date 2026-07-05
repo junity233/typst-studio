@@ -279,14 +279,18 @@ button {
 .preview-pane {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
+  overflow: auto;
   /* Slim padding so the page nearly fills the pane but isn't flush against
      the edges; small gap so stacked pages read as separate sheets without a
      large gutter. */
   padding: var(--space-sm);
   display: flex;
   flex-direction: column;
-  align-items: center;
+  /* `safe center` = center when the page fits, but fall back to start when it
+     overflows (zoom > pane width), so the scrollbar can reach the page's left
+     edge. Without `safe`, `align-items: center` clips the overflow symmetrically
+     and the scrollbar can't scroll to the start of the content. */
+  align-items: safe center;
   gap: var(--space-xs);
   background: var(--color-canvas-parchment);
 }
@@ -674,6 +678,64 @@ button {
 
 
 /* ============================================================================
+   Shared tree toolbar — used by Outline (heading tree) and Search (per-file
+   result groups) for the "collapse all / expand all" actions. A whisper-quiet
+   row of ghost icon buttons + an optional count label. Follows DESIGN.md:
+   utility-tier (radius-sm), ink-muted-48 default, no chrome shadow, parchment
+   hover. Disabled when the action is a no-op (already in target state).
+   ========================================================================= */
+.tree-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  padding: var(--space-xxs) var(--space-sm);
+  /* Hairline under the toolbar separates it from the rows below without a
+     heavy chrome bar — the row of muted icons already reads as a header. */
+  border-bottom: 1px solid var(--color-divider-soft);
+}
+
+.tree-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-ink-muted-48);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background-color 100ms ease, color 100ms ease;
+}
+
+.tree-toolbar-btn:hover:not(:disabled) {
+  background: var(--color-divider-soft);
+  color: var(--color-ink);
+}
+
+.tree-toolbar-btn:active:not(:disabled) {
+  /* DESIGN.md system-wide micro-interaction. */
+  transform: scale(0.95);
+}
+
+.tree-toolbar-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Optional count/summary label on the trailing side of the toolbar. Used by
+   Search to show "N results in M files"; Outline has no equivalent so it just
+   omits the element. */
+.tree-toolbar-count {
+  margin-left: auto;
+  font: var(--text-fine-print); /* 12/400 */
+  color: var(--color-ink-muted-48);
+  letter-spacing: -0.12px;
+}
+
+
+/* ============================================================================
    Outline (§Outline) — document heading tree sidebar panel.
 
    DESIGN.md language: weight-based hierarchy (H1 caption-strong, deeper
@@ -682,8 +744,18 @@ button {
    borders, no chrome shadows. Modeled on Xcode's navigator / macOS Finder
    column view — expand/collapse chevrons, clear visual nesting.
    ========================================================================= */
-.outline-tree {
+.outline-root {
+  display: flex;
+  flex-direction: column;
   height: 100%;
+  min-height: 0;
+}
+
+.outline-tree {
+  /* Inside .outline-root: the toolbar is fixed-height above, the tree fills
+     the rest and scrolls independently. */
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   padding: var(--space-xs) 0;
 }
