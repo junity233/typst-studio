@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Tab } from "../../store/tabsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useSetting } from "../../hooks/useSetting";
@@ -32,7 +32,12 @@ export function dispatchAction(
 ): void {
   switch (action.kind) {
     case "wrap":
-      api.wrapSelection(action.prefix, action.suffix, action.placeholder);
+      // Idempotent: toggleWrap removes the markers when the selection is already
+      // inside them, adds them otherwise (state-aware toolbar T3). The action
+      // table's `kind` stays "wrap" — only the dispatch routing changes. The
+      // link flow's handleLinkConfirm still uses wrapSelection directly (it
+      // always inserts, never removes).
+      api.toggleWrap(action.prefix, action.suffix, action.placeholder);
       return;
     case "replace":
       api.replaceSelection(action.text);
@@ -101,6 +106,23 @@ export function FormatToolbar({
   // can confirm as-is or type a different label.
   const [linkInitialLabel, setLinkInitialLabel] = useState("");
 
+  // cursorTick: a re-render trigger, not a value the render reads directly.
+  // The subscription below fires on caret moves (clicks, arrows) and selection
+  // drags (T2 wires both); each fire bumps the tick so computePressed (which
+  // queries isInsideWrap / isLinePrefixActive synchronously during render)
+  // re-reads the live editor state. This mirrors the dropped readyTick pattern.
+  const [cursorTick, setCursorTick] = useState(0);
+
+  // Re-query each button's aria-pressed state when the caret/selection moves.
+  // Gated on api + disabled: with no api there's nothing to subscribe to, and
+  // a disabled toolbar renders no pressed state anyway (computePressed
+  // short-circuits). The returned disposer is wired through to React's effect
+  // cleanup so a re-subscribe (api/disabled change) unhooks the old listener.
+  useEffect(() => {
+    if (api === null || disabled) return;
+    return api.onDidChangeCursorPosition(() => setCursorTick((t) => t + 1));
+  }, [api, disabled]);
+
   // The insert-image flow (picker → copy → insert). The hook tolerates a null
   // tab (bails internally) so we can always call it at the top level and pass
   // the current tab through; each render's closure captures the latest ctx.
@@ -110,6 +132,29 @@ export function FormatToolbar({
   // prop already covers the no-tab case; the api check is defensive (e.g. tab
   // open but Monaco still mounting).
   const isDisabled = disabled || api === null;
+
+  // Compute a button's aria-pressed state from the live editor state. Called
+  // during render (cheap: at most 10 single-line scans), and re-run on every
+  // render — the cursorTick effect above ensures a re-render after each cursor
+  // move so this re-reads fresh editor state. wrap buttons are pressed when the
+  // selection sits inside their markers; linePrefix buttons when every selected
+  // line already carries the prefix; replace / custom have no meaningful
+  // active state (they're one-shot insertions), so they report false. The
+  // isDisabled guard short-circuits so a disabled toolbar never shows pressed.
+  // `void cursorTick` documents that the tick's sole purpose is to trigger the
+  // re-render in which this function re-runs — it is intentionally not read.
+  void cursorTick;
+  const computePressed = (action: FormatAction): boolean => {
+    if (isDisabled || api === null) return false;
+    switch (action.kind) {
+      case "wrap":
+        return api.isInsideWrap(action.prefix, action.suffix);
+      case "linePrefix":
+        return api.isLinePrefixActive(action.prefix);
+      default:
+        return false;
+    }
+  };
 
   // openModal dispatches a React-rendered popup from an action's `run`. Today
   // only "link" exists; the switch leaves room to add more without touching the
@@ -213,6 +258,7 @@ export function FormatToolbar({
               icon={button.icon}
               label={button.label}
               disabled={isDisabled}
+              pressed={computePressed(button.action)}
               onClick={
                 button.id === TABLE_BUTTON_ID
                   ? openTablePicker

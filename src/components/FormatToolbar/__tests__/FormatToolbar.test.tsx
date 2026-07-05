@@ -47,6 +47,10 @@ const makeMockApi = (): FormatApi & {
     wrap: ReturnType<typeof vi.fn>;
     replace: ReturnType<typeof vi.fn>;
     line: ReturnType<typeof vi.fn>;
+    toggleWrap: ReturnType<typeof vi.fn>;
+    isInsideWrap: ReturnType<typeof vi.fn>;
+    isLinePrefixActive: ReturnType<typeof vi.fn>;
+    onDidChangeCursorPosition: ReturnType<typeof vi.fn>;
     getSelectionText: ReturnType<typeof vi.fn>;
   };
 } => {
@@ -54,20 +58,34 @@ const makeMockApi = (): FormatApi & {
   const replace = vi.fn();
   const line = vi.fn();
   const getSelectionText = vi.fn(() => ""); // empty selection by default
+  // State-aware seam (T2/T3): toggleWrap is what dispatchAction's wrap branch
+  // now calls (idempotent). isInsideWrap / isLinePrefixActive default to false
+  // so the aria-pressed computation reads as inactive unless a test overrides.
+  // onDidChangeCursorPosition returns a no-op disposer (matches the real API
+  // contract); tests that need to drive the subscription capture the callback.
+  const toggleWrap = vi.fn();
+  const isInsideWrap = vi.fn().mockReturnValue(false);
+  const isLinePrefixActive = vi.fn().mockReturnValue(false);
+  const onDidChangeCursorPosition = vi.fn().mockReturnValue(() => {});
   return {
     wrapSelection: wrap,
     replaceSelection: replace,
     toggleLinePrefix: line,
     getSelectionText,
-    // State-aware seam (T2): spies exist so the toolbar re-query surface is
-    // satisfied; the default returns match a "nothing pressed" baseline so the
-    // aria-pressed computation (added in T3) reads as inactive. T3 will wire
-    // these to real assertions; T2 only needs them present so tsc + tests pass.
-    toggleWrap: vi.fn(),
-    isInsideWrap: vi.fn().mockReturnValue(false),
-    isLinePrefixActive: vi.fn().mockReturnValue(false),
-    onDidChangeCursorPosition: vi.fn().mockReturnValue(() => {}),
-    spies: { wrap, replace, line, getSelectionText },
+    toggleWrap,
+    isInsideWrap,
+    isLinePrefixActive,
+    onDidChangeCursorPosition,
+    spies: {
+      wrap,
+      replace,
+      line,
+      toggleWrap,
+      isInsideWrap,
+      isLinePrefixActive,
+      onDidChangeCursorPosition,
+      getSelectionText,
+    },
   };
 };
 
@@ -120,7 +138,7 @@ describe("dispatchAction — per-kind dispatch", () => {
     vi.clearAllMocks();
   });
 
-  it("wrap → calls wrapSelection(prefix, suffix, placeholder)", () => {
+  it("wrap → calls toggleWrap(prefix, suffix, placeholder) (idempotent)", () => {
     const api = makeMockApi();
     const action: FormatAction = {
       kind: "wrap",
@@ -129,17 +147,19 @@ describe("dispatchAction — per-kind dispatch", () => {
       placeholder: "bold",
     };
     dispatchAction(action, api, ctx);
-    expect(api.spies.wrap).toHaveBeenCalledTimes(1);
-    expect(api.spies.wrap).toHaveBeenCalledWith("*", "*", "bold");
+    expect(api.spies.toggleWrap).toHaveBeenCalledTimes(1);
+    expect(api.spies.toggleWrap).toHaveBeenCalledWith("*", "*", "bold");
+    // wrapSelection is NOT called by dispatch (only the link flow uses it now).
+    expect(api.spies.wrap).not.toHaveBeenCalled();
     expect(api.spies.replace).not.toHaveBeenCalled();
     expect(api.spies.line).not.toHaveBeenCalled();
   });
 
-  it("wrap without placeholder → forwards undefined", () => {
+  it("wrap without placeholder → forwards undefined to toggleWrap", () => {
     const api = makeMockApi();
     dispatchAction({ kind: "wrap", prefix: "<", suffix: ">" }, api, ctx);
-    expect(api.spies.wrap).toHaveBeenCalledTimes(1);
-    expect(api.spies.wrap).toHaveBeenCalledWith("<", ">", undefined);
+    expect(api.spies.toggleWrap).toHaveBeenCalledTimes(1);
+    expect(api.spies.toggleWrap).toHaveBeenCalledWith("<", ">", undefined);
   });
 
   it("replace → calls replaceSelection(text)", () => {
@@ -170,8 +190,9 @@ describe("dispatchAction — per-kind dispatch", () => {
   });
 
   it("every button's action dispatches exactly one call against the api", () => {
-    // For each real button, dispatching should hit exactly one of the three
-    // spy methods once (custom hits its own `run`, not the spies).
+    // For each real button, dispatching should hit exactly one of the generic
+    // spy methods once (custom hits its own `run`, not the spies). wrap now
+    // routes through toggleWrap (idempotent), so the count includes it.
     for (const button of ALL_BUTTONS) {
       const api = makeMockApi();
       const customRun =
@@ -183,6 +204,7 @@ describe("dispatchAction — per-kind dispatch", () => {
       dispatchAction(wrapped, api, ctx);
       const total =
         api.spies.wrap.mock.calls.length +
+        api.spies.toggleWrap.mock.calls.length +
         api.spies.replace.mock.calls.length +
         api.spies.line.mock.calls.length;
       const expectedCustom = button.action.kind === "custom" ? 0 : 1;
@@ -359,7 +381,7 @@ describe("FormatToolbar — click wires to the right FormatApi method", () => {
     });
   };
 
-  it("Bold (wrap) → wrapSelection('*', '*', 'bold')", () => {
+  it("Bold (wrap) → toggleWrap('*', '*', 'bold') (idempotent)", () => {
     const api = makeMockApi();
     const c = render(
       <FormatToolbar
@@ -369,8 +391,11 @@ describe("FormatToolbar — click wires to the right FormatApi method", () => {
       />,
     );
     clickByTitle(c, "Bold");
-    expect(api.spies.wrap).toHaveBeenCalledTimes(1);
-    expect(api.spies.wrap).toHaveBeenCalledWith("*", "*", "bold");
+    expect(api.spies.toggleWrap).toHaveBeenCalledTimes(1);
+    expect(api.spies.toggleWrap).toHaveBeenCalledWith("*", "*", "bold");
+    // dispatchAction's wrap branch no longer calls wrapSelection (only the link
+    // flow does).
+    expect(api.spies.wrap).not.toHaveBeenCalled();
   });
 
   it("Heading 1 (linePrefix) → toggleLinePrefix('= ')", () => {
@@ -411,7 +436,134 @@ describe("FormatToolbar — click wires to the right FormatApi method", () => {
       />,
     );
     clickByTitle(c, "Bold");
-    expect(api.spies.wrap).not.toHaveBeenCalled();
+    expect(api.spies.toggleWrap).not.toHaveBeenCalled();
+  });
+});
+
+// ----------------------------------------------------------------------------
+// Pressed state (aria-pressed) — state-aware toolbar T3
+// ----------------------------------------------------------------------------
+
+describe("FormatToolbar — aria-pressed state", () => {
+  beforeEach(cleanup);
+
+  // Helper: find a button by title.
+  const findByTitle = (container: HTMLElement, title: string) => {
+    const btn = container.querySelector<HTMLButtonElement>(
+      `button.format-toolbar-button[title="${title}"]`,
+    );
+    expect(btn, `button titled "${title}" should exist`).not.toBeNull();
+    return btn!;
+  };
+
+  it("isInsideWrap true → the matching wrap button is aria-pressed=true", () => {
+    const api = makeMockApi();
+    // Simulate the caret sitting inside `*…*` (bold) but not `_…_` (italic).
+    api.spies.isInsideWrap.mockImplementation((prefix) => prefix === "*");
+    const c = render(
+      <FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />,
+    );
+    expect(findByTitle(c, "Bold").getAttribute("aria-pressed")).toBe("true");
+    expect(findByTitle(c, "Italic").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("isLinePrefixActive true → the matching linePrefix button is pressed", () => {
+    const api = makeMockApi();
+    // Simulate every selected line already carrying `= ` (H1) but not `== `.
+    api.spies.isLinePrefixActive.mockImplementation((p) => p === "= ");
+    const c = render(
+      <FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />,
+    );
+    expect(findByTitle(c, "Heading 1").getAttribute("aria-pressed")).toBe("true");
+    expect(findByTitle(c, "Heading 2").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("replace / custom buttons are never pressed", () => {
+    const api = makeMockApi();
+    const c = render(
+      <FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />,
+    );
+    // Code block is a `replace`; Insert table / image / link are `custom`.
+    expect(findByTitle(c, "Code block").getAttribute("aria-pressed")).toBe("false");
+    expect(findByTitle(c, "Insert table").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("disabled=true → no button is pressed even when the mocks return true", () => {
+    const api = makeMockApi();
+    api.spies.isInsideWrap.mockReturnValue(true);
+    api.spies.isLinePrefixActive.mockReturnValue(true);
+    const c = render(
+      <FormatToolbar api={api} tab={FAKE_TAB} disabled={true} />,
+    );
+    // computePressed short-circuits on isDisabled → every button reports false.
+    for (const b of Array.from(c.querySelectorAll("button.format-toolbar-button"))) {
+      expect(b.getAttribute("aria-pressed")).toBe("false");
+    }
+  });
+
+  it("api=null → no button is pressed", () => {
+    const c = render(
+      <FormatToolbar api={null} tab={FAKE_TAB} disabled={false} />,
+    );
+    for (const b of Array.from(c.querySelectorAll("button.format-toolbar-button"))) {
+      expect(b.getAttribute("aria-pressed")).toBe("false");
+    }
+  });
+
+  it("subscribes to onDidChangeCursorPosition when api present + enabled", () => {
+    const api = makeMockApi();
+    render(<FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />);
+    expect(api.spies.onDidChangeCursorPosition).toHaveBeenCalledTimes(1);
+    expect(api.spies.onDidChangeCursorPosition).toHaveBeenCalledWith(
+      expect.any(Function),
+    );
+  });
+
+  it("does not subscribe when disabled or api is null", () => {
+    const api = makeMockApi();
+    render(<FormatToolbar api={api} tab={FAKE_TAB} disabled={true} />);
+    expect(api.spies.onDidChangeCursorPosition).not.toHaveBeenCalled();
+
+    const api2 = makeMockApi();
+    render(<FormatToolbar api={null} tab={FAKE_TAB} disabled={false} />);
+    expect(api2.spies.onDidChangeCursorPosition).not.toHaveBeenCalled();
+  });
+
+  it("a cursor-position callback re-queries isInsideWrap (re-render)", () => {
+    // Verify the cursorTick re-render mechanism: capture the subscription
+    // callback, flip isInsideWrap's return value, fire the callback, and
+    // assert the button's pressed state follows. isInsideWrap is re-queried
+    // on the re-render, proving the subscription drives a fresh pressed read.
+    const api = makeMockApi();
+    let inside = false;
+    api.spies.isInsideWrap.mockImplementation(() => inside);
+    const c = render(
+      <FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />,
+    );
+    const bold = () => findByTitle(c, "Bold");
+    expect(bold().getAttribute("aria-pressed")).toBe("false");
+
+    // Flip the editor state, then fire the captured cursor-position callback.
+    inside = true;
+    const cb = api.spies.onDidChangeCursorPosition.mock.calls[0]![0] as () => void;
+    act(() => {
+      cb();
+    });
+    expect(bold().getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("returns the disposer from onDidChangeCursorPosition on cleanup", () => {
+    // The effect's returned disposer must be the one onDidChangeCursorPosition
+    // returned, so an api/disabled change unhooks the old listener. Capture the
+    // disposer, unmount, and assert it was called.
+    const disposed = vi.fn();
+    const api = makeMockApi();
+    api.spies.onDidChangeCursorPosition.mockReturnValue(disposed);
+    render(<FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />);
+    act(() => {
+      cleanup();
+    });
+    expect(disposed).toHaveBeenCalledTimes(1);
   });
 });
 
