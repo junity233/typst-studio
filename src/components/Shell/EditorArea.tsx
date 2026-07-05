@@ -9,7 +9,6 @@ import { DiagnosticsPanel } from "../Diagnostics/DiagnosticsPanel";
 import { useTabsStore, useActiveDocument } from "../../store/tabsStore";
 import { useUiStore } from "../../store/uiStore";
 import { useSetting } from "../../hooks/useSetting";
-import { useWheelZoom } from "../../hooks/useWheelZoom";
 import { updateText } from "../../lib/tauri";
 import {
   lineAtOrAboveY,
@@ -80,14 +79,40 @@ export function EditorArea() {
   // can't be a React synthetic handler) always reads the latest setting.
   const editorFontSizeRef = useRef(editorFontSize);
   editorFontSizeRef.current = editorFontSize;
-  const previewWheelZoom = useWheelZoom({
-    get: () => previewZoomLevel,
-    set: setPreviewZoomLevel,
-    min: 0.25,
-    max: 4,
-    step: 0.1,
-    fallback: 1,
-  });
+  // Like the editor pane, attach a capture-phase native wheel listener so
+  // Ctrl+wheel is intercepted before the `.preview-pane` scroll container
+  // starts scrolling (its overflow-y:auto can consume the event before the
+  // React bubble-phase onWheel fires). Live value via ref.
+  const previewZoomLevelRef = useRef(previewZoomLevel);
+  previewZoomLevelRef.current = previewZoomLevel;
+  const previewPaneZoomRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      const key = "_zoomCleanup" as keyof HTMLElement;
+      const prev = (el ?? (null as unknown)) as HTMLElement | null;
+      if (prev && typeof prev[key] === "function") {
+        (prev[key] as unknown as () => void)();
+        delete prev[key];
+      }
+      if (el === null) return;
+      const onWheel = (e: globalThis.WheelEvent) => {
+        if (!(e.metaKey || e.ctrlKey)) return;
+        const current = previewZoomLevelRef.current ?? 1;
+        const direction = e.deltaY < 0 ? 1 : -1;
+        const raw = current + direction * 0.1;
+        const rounded = Math.round(raw * 1e6) / 1e6;
+        const next = Math.min(4, Math.max(0.25, rounded));
+        if (next === current) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setPreviewZoomLevel(next);
+      };
+      el.addEventListener("wheel", onWheel, { passive: false, capture: true });
+      (el as unknown as Record<string, unknown>)[key] = () => {
+        el.removeEventListener("wheel", onWheel, { capture: true });
+      };
+    },
+    [setPreviewZoomLevel],
+  );
 
   // Monaco adds its own capture-phase wheel listener INSIDE its DOM; a React
   // bubble-phase onWheel on `.pane-editor` would lose the race. Attach a native
@@ -465,7 +490,10 @@ export function EditorArea() {
             <div
               className="pane pane-preview"
               style={previewVisible ? { width: previewWidth, flex: "0 0 " + previewWidth + "px" } : undefined}
-              onWheel={previewWheelZoom}
+              ref={(el) => {
+                previewPaneRef.current = el;
+                previewPaneZoomRef(el);
+              }}
             >
               <PreviewPane
                 svgPages={activeTab.svgPages}
