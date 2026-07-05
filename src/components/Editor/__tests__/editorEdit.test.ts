@@ -598,12 +598,13 @@ describe("getSelectionText", () => {
   });
 
   describe("reversed selection", () => {
-    // Regression coverage: getSelectionText must normalize a reversed ISelection
-    // before reading — real Monaco's getValueInRange does NOT normalize (it
-    // validates positions independently and preserves order), so a cross-line
-    // upward drag would otherwise return wrong text. This is the read path
-    // behind the Link button (spec §5.3), where wrong/empty text flips the
-    // wrap-vs-replace decision.
+    // Behavior pin: getSelectionText normalizes a reversed ISelection via
+    // columnAtStart/columnAtEnd before reading. Real Monaco's getValueInRange
+    // ALSO normalizes (its Range constructor swaps reversed ranges), so this is
+    // belt-and-suspenders — but it pins the read path's correctness for an
+    // upward drag (the Link button's wrap-vs-replace decision, spec §5.3), and
+    // keeps this describe block symmetric with applyWrapSelection /
+    // applyReplaceSelection's reversed-selection regression coverage above.
     it("same-line reversed returns the same text as forward", () => {
       // `world` in `Hello world`, selected right-to-left (anchor col 12, active 7).
       const ed = new FakeEditor("Hello world", {
