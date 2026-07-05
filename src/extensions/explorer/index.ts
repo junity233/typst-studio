@@ -1,18 +1,17 @@
-import { lazy } from "react";
 import { Files } from "lucide-react";
 import type { HostApi } from "../api";
 
-// Vite splits this into its own chunk
-const ExplorerView = lazy(() =>
-  import("../../components/Sidebar/Explorer").then((m) => ({ default: m.Explorer })),
-);
-
+// The host (Sidebar) wraps `component` in React.lazy(), so the factory MUST
+// return a Promise<{ default: ComponentType }> — i.e. the raw dynamic-import
+// shape. Do NOT pre-wrap in lazy() here: that double-wraps and React rejects
+// it ("Lazy element type must resolve to a class or function").
 export default function activate(ctx: HostApi): void {
   ctx.registerView({
     id: "workbench.explorer",
     title: "Explorer",
     icon: Files,
-    component: () => Promise.resolve({ default: ExplorerView }),
+    component: () =>
+      import("../../components/Sidebar/Explorer").then((m) => ({ default: m.Explorer })),
     order: 0,
     when: "workspace",
   });

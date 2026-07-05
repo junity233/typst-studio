@@ -250,9 +250,15 @@ fn build_open_recent_submenu<R: Runtime>(
 /// no `recentWorkspaces` field) → empty vec. Used only at menu-build time to
 /// populate "Open Recent"; the authoritative read is the SessionService in
 /// `.setup`.
-fn read_recent_workspaces<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
-    use tauri::Manager as _;
-    let Ok(cfg_dir) = app.path().app_config_dir() else {
+///
+/// NOTE: this runs at `.build()` time (menu construction), BEFORE `.setup`,
+/// so `app.path()` is NOT usable — `PathResolver` is only `manage`d once
+/// `.build()` completes. We resolve the config dir from env vars via
+/// [`crate::paths::app_config_dir`] instead, which mirrors the same path
+/// Tauri would compute. (Using `app.path()` here panics with
+/// `state() called before manage() for PathResolver`.)
+fn read_recent_workspaces<R: Runtime>(_app: &AppHandle<R>) -> Vec<String> {
+    let Some(cfg_dir) = crate::paths::app_config_dir() else {
         return Vec::new();
     };
     let path = cfg_dir.join("session.json");

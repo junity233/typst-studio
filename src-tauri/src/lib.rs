@@ -19,6 +19,7 @@ pub mod git;
 pub mod ipc;
 pub mod lsp;
 pub mod net;
+pub mod paths;
 pub mod persistence;
 pub mod project;
 pub mod render;

@@ -1,15 +1,10 @@
-import { lazy } from "react";
 import { List } from "lucide-react";
 import type { HostApi } from "../api";
 import { useUiStore } from "../../store/uiStore";
 
-// Vite splits this into its own chunk, matching the Explorer/Search extensions.
-const OutlineView = lazy(() =>
-  import("../../components/Outline/OutlinePanel").then((m) => ({
-    default: m.OutlinePanel,
-  })),
-);
-
+// The host (Sidebar) wraps `component` in React.lazy(), so the factory MUST
+// return a Promise<{ default: ComponentType }> — i.e. the raw dynamic-import
+// shape. Do NOT pre-wrap in lazy() here (double-wraps; React rejects it).
 export default function activate(ctx: HostApi): void {
   // The Outline view is always available (a single untitled doc can have
   // headings), so `when: "always"` rather than `workspace`.
@@ -17,7 +12,10 @@ export default function activate(ctx: HostApi): void {
     id: "workbench.outline",
     title: "Outline",
     icon: List,
-    component: () => Promise.resolve({ default: OutlineView }),
+    component: () =>
+      import("../../components/Outline/OutlinePanel").then((m) => ({
+        default: m.OutlinePanel,
+      })),
     order: 30,
     when: "always",
   });

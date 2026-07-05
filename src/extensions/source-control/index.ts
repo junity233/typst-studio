@@ -1,16 +1,12 @@
-import { lazy } from "react";
 import { GitBranch } from "lucide-react";
 import type { HostApi } from "../api";
 import { useUiStore } from "../../store/uiStore";
 import { useGitStore, initGitAutoRefresh } from "../../store/gitStore";
 
-// The Source Control sidebar body. Code-split so the gix IPC surface only
-// loads when the user opens the view.
-const SourceControlView = lazy(() =>
-  import("../../components/SourceControl/SourceControlPanel").then((m) => ({
-    default: m.SourceControlPanel,
-  })),
-);
+// The host (Sidebar) wraps `component` in React.lazy(), so the factory MUST
+// return a Promise<{ default: ComponentType }> — i.e. the raw dynamic-import
+// shape. Do NOT pre-wrap in lazy() here (double-wraps; React rejects it).
+// Code-split: the gix IPC surface only loads when the user opens the view.
 
 /**
  * Source Control extension (§Source Control). Registers the SCM activity-bar
@@ -22,7 +18,10 @@ export default function activate(ctx: HostApi): void {
     id: "workbench.scm",
     title: "Source Control",
     icon: GitBranch,
-    component: () => Promise.resolve({ default: SourceControlView }),
+    component: () =>
+      import("../../components/SourceControl/SourceControlPanel").then((m) => ({
+        default: m.SourceControlPanel,
+      })),
     order: 20,
     when: "workspace",
   });
