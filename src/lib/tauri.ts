@@ -422,6 +422,16 @@ export async function openLogDir(): Promise<string> {
   return invoke<string>("open_log_dir");
 }
 
+/**
+ * Open the WebView devtools (F12 console) on the main window. Used by the
+ * Settings "Open developer tools" action so users can self-diagnose rendering
+ * and IPC issues in shipped (release) builds, where the F12 accelerator is
+ * otherwise inert.
+ */
+export async function openDevtools(): Promise<void> {
+  await invoke("open_devtools");
+}
+
 // --- Themes ------------------------------------------------------------------
 
 /**

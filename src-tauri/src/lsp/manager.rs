@@ -33,6 +33,15 @@ use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::sync::{oneshot, watch};
 
+// `CREATE_NO_WINDOW`: on Windows, spawning a console subprocess from a
+// `windows_subsystem = "windows"` (GUI) parent would flash a cmd window on
+// every tinymist (re)spawn. The flag below suppresses it. `tokio::process::
+// Command` exposes `creation_flags` as an inherent method on Windows (no
+// `CommandExt` trait import needed), and the constant is cfg-gated away on
+// non-Windows, so the whole block compiles to nothing there.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 use super::relay;
 
 /// Configuration for the LSP manager.
@@ -1061,13 +1070,18 @@ impl LspManager {
                     // failure (binary deleted, resource limits) is per-
                     // connection — drop this connection but keep serving, so a
                     // transient failure doesn't kill the whole bridge.
-                    let mut child = match Command::new(&config.tinymist_path)
-                        .arg("lsp")
-                        .stdin(std::process::Stdio::piped())
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::piped())
-                        .kill_on_drop(true)
-                        .spawn()
+                    let mut child = match {
+                        let mut cmd = Command::new(&config.tinymist_path);
+                        cmd.arg("lsp")
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .kill_on_drop(true);
+                        #[cfg(windows)]
+                        cmd.creation_flags(CREATE_NO_WINDOW);
+                        cmd
+                    }
+                    .spawn()
                     {
                         Ok(c) => c,
                         Err(e) => {

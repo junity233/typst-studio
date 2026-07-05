@@ -21,7 +21,12 @@ default = []
 export-types = ["dep:ts-rs"]
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `devtools`: enables `WebviewWindow::open_devtools()` in release builds. Used
+# by the Settings → Diagnostics "Open developer tools" action so users can
+# self-debug rendering/IPC issues in shipped builds (the F12 accelerator is
+# otherwise a no-op in release). The feature compiles in but is inert unless
+# `open_devtools()` is actually called.
+tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
@@ -33,6 +38,14 @@ tauri-plugin-fs = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Strip Windows `\\?\` verbatim prefix from canonicalized paths. Rust's
+# `Path::canonicalize` returns verbatim paths on Windows (via
+# `GetFinalPathNameByHandle`); those bypass Win32 path parsing, so a frontend
+# that joins them with `/` separators (or any code that mixes `/` and `\`)
+# hits `ERROR_INVALID_NAME` (os error 123). `dunce::simplified` removes the
+# prefix when it's safe, restoring ordinary Win32 paths. No-op on non-Windows.
+dunce = "1"
 
 # Typst engine (official crates, pinned to 0.15)
 typst = "0.15"

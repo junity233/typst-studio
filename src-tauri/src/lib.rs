@@ -149,6 +149,9 @@ pub fn run() {
             ipc::settings_commands::open_settings,
             // Diagnostics (§7.4): open the rolling-log directory.
             ipc::settings_commands::open_log_dir,
+            // Open WebView devtools (F12 console) on the main window — lets
+            // users self-diagnose in shipped builds.
+            ipc::settings_commands::open_devtools,
             // Theme commands (appearance.theme).
             ipc::theme_commands::list_themes,
             ipc::theme_commands::get_theme_css,

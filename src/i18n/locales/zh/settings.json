@@ -63,5 +63,7 @@
   "setting.action.clearRecoveryData": "清除恢复数据",
   "settingHelp.action.clearRecoveryData": "删除 <app-data>/recovery/ 中的所有崩溃恢复快照。",
   "setting.action.openLogDir": "打开日志目录",
+  "setting.action.openDevtools": "打开开发者工具",
+  "settingHelp.action.openDevtools": "在主窗口打开 WebView 控制台 (F12),用于检查渲染和 IPC 错误。",
   "setting.action.exportDiagnostics": "导出诊断信息包"
 }

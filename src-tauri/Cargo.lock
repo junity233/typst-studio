@@ -7382,6 +7382,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "comemo 0.4.0",
+ "dunce",
  "futures-util",
  "gix",
  "http",

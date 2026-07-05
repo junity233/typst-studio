@@ -63,5 +63,7 @@
   "setting.action.clearRecoveryData": "Clear recovery data",
   "settingHelp.action.clearRecoveryData": "Delete all crash-recovery snapshots from <app-data>/recovery/.",
   "setting.action.openLogDir": "Open log directory",
+  "setting.action.openDevtools": "Open developer tools",
+  "settingHelp.action.openDevtools": "Open the WebView console (F12) on the main window to inspect rendering and IPC errors.",
   "setting.action.exportDiagnostics": "Export diagnostics bundle"
 }

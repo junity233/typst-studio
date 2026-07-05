@@ -7,6 +7,7 @@ import { useSettingsStore } from "../../store/settingsStore";
 import { useThemeStore } from "../../store/themeStore";
 import {
   clearRecentWorkspaces,
+  openDevtools,
   openLogDir,
   openThemesDir,
 } from "../../lib/tauri";
@@ -238,6 +239,9 @@ function ActionControl({ def }: { def: SettingDef }) {
           break;
         case "openLogDir":
           await openLogDir();
+          break;
+        case "openDevtools":
+          await openDevtools();
           break;
         default:
           console.warn(`[settings] unknown action: ${def.action}`);

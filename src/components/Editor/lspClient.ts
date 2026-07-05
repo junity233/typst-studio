@@ -75,8 +75,18 @@ export function buildVscodeApiConfig(): MonacoVscodeApiConfig {
       // actually loads this theme from the bundled extension. The real theme
       // + token CSS is applied manually by typstHighlighting.ts. This entry
       // is kept for forward compatibility (v34+ loads it properly).
+      //
+      // Also disable the VS Code workbench's own editor restore/startup flow.
+      // Typst Studio renders and restores documents through our Zustand stores
+      // + monacoModelRegistry; letting the embedded workbench open its own
+      // hidden "startup" editor can spawn an extra untitled/file working copy
+      // (observed on Windows as a failing read of Documents/Untitled.typ),
+      // which races our registry-owned Typst model and leaves tokenization in
+      // a broken state. We want exactly one editor session: ours.
       json: JSON.stringify({
         "workbench.colorTheme": "Default Light Modern",
+        "workbench.startupEditor": "none",
+        "window.restoreWindows": "none",
       }),
     },
     // NOTE: the `extensions` field (tinymist manifest with contributes.grammars

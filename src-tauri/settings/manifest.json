@@ -53,6 +53,8 @@
     ]},
     { "id": "diagnostics", "label": "Diagnostics", "settings": [
         { "key": "action.openLogDir",       "type": "string", "label": "Open log directory", "default": "", "readonly": true, "action": "openLogDir" },
+        { "key": "action.openDevtools",     "type": "string", "label": "Open developer tools", "default": "", "readonly": true, "action": "openDevtools",
+          "help": "Open the WebView console (F12) on the main window to inspect rendering and IPC errors." },
         { "key": "action.exportDiagnostics","type": "string", "label": "Export diagnostics bundle", "default": "", "readonly": true, "action": "exportDiagnostics" }
     ]}
   ]

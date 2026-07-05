@@ -435,12 +435,19 @@ pub async fn open_file_by_path(
 ) -> Result<OpenedDocument> {
     let path = PathBuf::from(path);
     let path_for_read = path.clone();
-    // Read on a blocking thread.
+    // Read on a blocking thread. We surface the offending path alongside the
+    // OS error — the raw message (e.g. "invalid syntax (os error 123)") alone
+    // is useless for diagnosing which entry in the tree is bad. Routed through
+    // `Other` rather than `Io` so the path is part of the user-visible message;
+    // this is fine because invalid-name errors don't benefit from IoTransient's
+    // "retry might help" semantics.
+    let path_for_err = path.to_string_lossy().into_owned();
     let content = tauri::async_runtime::spawn_blocking(move || {
         std::fs::read_to_string(&path_for_read)
     })
     .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
+    .map_err(|e| AppError::Other(format!("join error: {e}")))?
+    .map_err(|e| AppError::Other(format!("read {path_for_err:?}: {e}")))?;
 
     // The editor service classifies the file (loose vs workspace) and builds a
     // resolver-anchored world accordingly. A workspace file gets the workspace

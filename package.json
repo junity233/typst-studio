@@ -4,13 +4,14 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "npm run fetch-grammar && vite",
-    "build": "npm run fetch-grammar && tsc && vite build",
+    "dev": "npm run fetch-grammar && npm run fetch-monaco-assets && vite",
+    "build": "npm run fetch-grammar && npm run fetch-monaco-assets && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest",
     "test:run": "vitest run",
-    "fetch-grammar": "node scripts/fetch-grammar.mjs"
+    "fetch-grammar": "node scripts/fetch-grammar.mjs",
+    "fetch-monaco-assets": "node scripts/fetch-monaco-assets.mjs"
   },
   "dependencies": {
     "@codingame/monaco-vscode-files-service-override": "^25.1.2",

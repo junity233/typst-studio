@@ -17,6 +17,11 @@ dist-ssr
 src/assets/grammar/*.json
 !src/assets/grammar/.gitkeep
 
+# Monaco runtime assets (oniguruma WASM + theme JSONs) are mirrored into
+# public/vendor/ by `npm run fetch-monaco-assets` from node_modules — build
+# output, not source.
+public/vendor/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -33,3 +38,8 @@ src/assets/grammar/*.json
 
 # Local git worktrees (isolated dev workspaces)
 .worktrees/
+
+# Agent / tool scratch dirs (never commit)
+.codex-temp/
+.playwright-cli/
+.playwright-mcp/

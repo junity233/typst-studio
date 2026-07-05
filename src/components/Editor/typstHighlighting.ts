@@ -25,6 +25,21 @@
 import typstGrammar from "../../assets/grammar/typst.tmLanguage.json";
 import typstCodeGrammar from "../../assets/grammar/typst-code.tmLanguage.json";
 
+// Oniguruma WASM + VS Code Light theme JSONs, copied from `node_modules` into
+// `public/vendor/` by `scripts/fetch-monaco-assets.mjs` (runs in the `dev` and
+// `build` npm scripts, same pattern as `fetch-grammar`). We fetch them by URL
+// from the served root rather than via `import`/`?url` because:
+//   - the `@codingame/...` packages don't expose these files through their
+//     `exports` map, so Rollup can't resolve a `?url` import at build time;
+//   - the previous hardcoded `/node_modules/@codingame/...` paths only exist
+//     under Vite's dev middleware (which serves node_modules directly) and 404
+//     in the production build (dist/ has no node_modules/), leaving oniguruma
+//     and the theme JSONs unloaded and the editor rendered unstyled.
+// Serving them from `public/vendor/` makes the URL identical in dev and prod.
+const ONIG_WASM_URL = "/vendor/vscode-oniguruma/onig.wasm";
+const LIGHT_VS_THEME_URL = "/vendor/themes/light_vs.json";
+const LIGHT_PLUS_THEME_URL = "/vendor/themes/light_plus.json";
+
 // Idempotency guard — register only once per page load.
 let registrationPromise: Promise<void> | null = null;
 
@@ -103,9 +118,7 @@ async function doInit(): Promise<unknown> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const onigModule = (onigNS as any).main ?? (onigNS as any).default;
 
-  const wasmResponse = await fetch(
-    "/node_modules/@codingame/monaco-vscode-textmate-service-override/external/vscode-oniguruma/release/onig.wasm",
-  );
+  const wasmResponse = await fetch(ONIG_WASM_URL);
   if (!wasmResponse.ok) {
     throw new Error(`onig.wasm fetch failed: ${wasmResponse.status}`);
   }
@@ -143,11 +156,9 @@ async function doInit(): Promise<unknown> {
   // v25's theme service never loads "Default Light Modern", so we load the
   // bundled Light theme JSONs directly. Light+ includes Light, so we merge
   // both token-color lists: base first, plus overrides second.
-  const themeBase =
-    "/node_modules/@codingame/monaco-vscode-theme-defaults-default-extension/resources/";
   const [vsResp, plusResp] = await Promise.all([
-    fetch(themeBase + "light_vs.json"),
-    fetch(themeBase + "light_plus.json"),
+    fetch(LIGHT_VS_THEME_URL),
+    fetch(LIGHT_PLUS_THEME_URL),
   ]);
   if (!vsResp.ok || !plusResp.ok) {
     throw new Error(`theme fetch failed: vs=${vsResp.status} plus=${plusResp.status}`);

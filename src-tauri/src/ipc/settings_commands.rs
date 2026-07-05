@@ -101,6 +101,23 @@ pub async fn open_log_dir(app: AppHandle) -> Result<String> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
+/// Open the WebView2/WebKit devtools (F12 console) on the main editor window.
+///
+/// Requires the `devtools` Tauri feature (enabled in `Cargo.toml`); without it
+/// `open_devtools` is a no-op on release Windows builds. Provided as a Settings
+/// action so users can self-diagnose rendering/IPC issues in shipped builds
+/// without keyboard accelerators (which are also gated on devtools).
+#[tauri::command]
+pub async fn open_devtools(app: AppHandle) -> Result<()> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Err(AppError::Other(
+            "main window not found; devtools can only open on a live webview".into(),
+        ));
+    };
+    window.open_devtools();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::should_restart_for_setting;

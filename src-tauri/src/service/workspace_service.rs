@@ -123,7 +123,15 @@ impl WorkspaceService {
                 root.display()
             )));
         }
-        let canonical = root.canonicalize().map_err(|e| AppError::Io(e))?;
+        let canonical = root.canonicalize().map_err(AppError::Io)?;
+        // `canonicalize` yields a `\\?\`-prefixed verbatim path on Windows;
+        // strip it (when safe) so downstream consumers — the frontend, which
+        // joins `meta.root` with `/` separators, and any Win32 API that doesn't
+        // tolerate mixed `/` under verbatim — see an ordinary path. Without
+        // this, opening a workspace produces `rootPath = \\?\C:\...`, and the
+        // Explorer's double-click join `rootPath + "/" + relative` is rejected
+        // by the OS as `ERROR_INVALID_NAME` (os error 123).
+        let canonical = dunce::simplified(&canonical).to_path_buf();
         let name = canonical
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
