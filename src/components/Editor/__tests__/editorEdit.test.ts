@@ -596,6 +596,41 @@ describe("getSelectionText", () => {
     expect(ed.executeEditsCallCount).toBe(0);
     expect(ed.focusCount).toBe(0);
   });
+
+  describe("reversed selection", () => {
+    // Regression coverage: getSelectionText must normalize a reversed ISelection
+    // before reading — real Monaco's getValueInRange does NOT normalize (it
+    // validates positions independently and preserves order), so a cross-line
+    // upward drag would otherwise return wrong text. This is the read path
+    // behind the Link button (spec §5.3), where wrong/empty text flips the
+    // wrap-vs-replace decision.
+    it("same-line reversed returns the same text as forward", () => {
+      // `world` in `Hello world`, selected right-to-left (anchor col 12, active 7).
+      const ed = new FakeEditor("Hello world", {
+        selectionStartLineNumber: 1,
+        selectionStartColumn: 12,
+        positionLineNumber: 1,
+        positionColumn: 7,
+      });
+      expect(getSelectionText(ed)).toBe("world");
+    });
+
+    it("cross-line reversed (upward drag) returns the correct text", () => {
+      // Buffer:
+      //   line 1: "alpha"
+      //   line 2: "beta"
+      // Selection: anchor at line 2 col 4 (after "bet"), active at line 1
+      // col 3 (after "al") — an UPWARD drag covering "pha\nbe".
+      const ed = new FakeEditor("alpha\nbeta", {
+        selectionStartLineNumber: 2,
+        selectionStartColumn: 4,
+        positionLineNumber: 1,
+        positionColumn: 3,
+      });
+      // Document-order read: line 1 cols 3..end ("pha") + "\n" + line 2 cols 1..3 ("bet").
+      expect(getSelectionText(ed)).toBe("pha\nbet");
+    });
+  });
 });
 
 // ===========================================================================
