@@ -480,10 +480,10 @@ mod tests {
         // Add a second theme after construction (mimics a watcher fire).
         std::fs::create_dir_all(root.join("second")).unwrap();
         std::fs::write(root.join("second").join("theme.css"), ":root{--b:2}").unwrap();
-        // `list()` = built-ins (6) + user-discovered. Before re-scan the user
-        // cache only knows "first" → list() = 7. `scan()` returns only user
-        // themes (no built-ins), so it's still 1 here.
-        assert_eq!(svc.scan().len(), 1, "pre-rescan user cache only has 'first'");
+        // `list()` reads the in-memory cache (populated at construction), NOT
+        // disk, so it still reflects only "first" before any explicit re-scan.
+        // (Do NOT call `scan()` here — it re-reads disk and would already see
+        // both "first" and "second", defeating the "pre-rescan" check.)
         assert_eq!(
             svc.list().len(),
             BUILT_IN_THEMES.len() + 1,

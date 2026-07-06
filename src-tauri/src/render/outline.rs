@@ -186,7 +186,9 @@ mod tests {
         let doc = doc.unwrap();
         let outline = build_outline(&doc, &w);
         assert_eq!(outline.len(), 1);
-        assert_eq!(outline[0].numbering.as_deref(), Some("1"));
+        // `numbering: "1."` explicitly requests a trailing period, so Typst
+        // synthesizes `numbers == "1."` and we forward it verbatim.
+        assert_eq!(outline[0].numbering.as_deref(), Some("1."));
     }
 
     #[test]

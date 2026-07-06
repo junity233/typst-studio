@@ -417,20 +417,17 @@ mod tests {
 
     /// Set a file's mtime (and atime) to `time`. Uses `FileTimes` (stable).
     fn backdate(path: &Path, time: SystemTime) {
-        #[cfg(unix)]
-        {
-            use std::fs::FileTimes;
-            let times = FileTimes::new().set_modified(time).set_accessed(time);
-            std::fs::File::options()
-                .write(true)
-                .open(path)
-                .unwrap()
-                .set_times(times)
-                .unwrap();
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (path, time);
-        }
+        // `FileTimes::set_modified`/`set_accessed` and `File::set_times` have
+        // been stable on ALL platforms (incl. Windows) since Rust 1.75 — the
+        // earlier `#[cfg(unix)]`-only split left the file un-backdated on
+        // Windows, defeating `cleanup_stale_temps_removes_old_but_not_fresh`.
+        use std::fs::FileTimes;
+        let times = FileTimes::new().set_modified(time).set_accessed(time);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(times)
+            .unwrap();
     }
 }

@@ -1804,14 +1804,22 @@ mod tests {
     /// The doc's canonical path, registry key, and origin all move; the buffer +
     /// id + revision are preserved; the rebuilt world still compiles.
     #[test]
+    // On Windows, `open_from_content` registers a loose-file `notify` watcher
+    // on `src/`, which holds a directory handle. Renaming a directory that has
+    // an open handle fails with `ERROR_ACCESS_DENIED` (os error 5) — a
+    // filesystem-locking constraint unrelated to the rebind logic under test
+    // (which is covered by the single-file rename siblings on Windows).
+    #[cfg_attr(windows, ignore = "Windows forbids renaming a watched directory (open handle)")]
     fn rebind_for_rename_moves_all_open_docs_under_a_directory() {
         let (document, compile) = make_services();
         // Canonicalize so the prefix matches the docs' canonical paths (macOS
         // /var → /private/var symlink; the workspace IPC gets canonicalization
-        // for free via the canonicalized workspace root).
+        // for free via the canonicalized workspace root). Use the same helper
+        // production uses so the Windows `\\?\` prefix is stripped to match the
+        // simplified form stored in `DocumentOrigin`.
         let dir = std::env::temp_dir().join(format!("ts-rename-dir-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let dir = dir.canonicalize().unwrap();
+        let dir = canonicalize_for_identity(&dir).unwrap();
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
         let a = src.join("a.typ");
@@ -1888,7 +1896,10 @@ mod tests {
         let (document, _compile) = make_services();
         let dir = std::env::temp_dir().join(format!("ts-rename-file-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let dir = dir.canonicalize().unwrap();
+        // Canonicalize via the same helper production uses, so on Windows the
+        // `\\?\` verbatim prefix is stripped — matching the simplified form
+        // stored in `DocumentOrigin` (a raw `canonicalize()` would leave it).
+        let dir = canonicalize_for_identity(&dir).unwrap();
         let from = dir.join("old.typ");
         let to = dir.join("new.typ");
         std::fs::write(&from, "content").unwrap();
@@ -1917,7 +1928,7 @@ mod tests {
         let (document, _compile) = make_services();
         let dir = std::env::temp_dir().join(format!("ts-rename-open-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let dir = dir.canonicalize().unwrap();
+        let dir = canonicalize_for_identity(&dir).unwrap();
         let from = dir.join("from.typ");
         let target = dir.join("target.typ");
         std::fs::write(&from, "src").unwrap();
@@ -1960,7 +1971,7 @@ mod tests {
         let (document, _compile) = make_services();
         let dir = std::env::temp_dir().join(format!("ts-rename-vfs-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let dir = dir.canonicalize().unwrap();
+        let dir = canonicalize_for_identity(&dir).unwrap();
         let from = dir.join("old.typ");
         let to = dir.join("new.typ");
         std::fs::write(&from, "content").unwrap();
@@ -2025,7 +2036,7 @@ mod tests {
             std::env::temp_dir().join(format!("ts-softclose-{}.typ", uuid::Uuid::new_v4()));
         std::fs::write(&tmp, "hi").unwrap();
         let meta = document.open_from_content(tmp.clone(), "hi".into(), None).unwrap();
-        let canon = tmp.canonicalize().unwrap();
+        let canon = canonicalize_for_identity(&tmp).unwrap();
 
         document.soft_close(meta.id).unwrap();
 
@@ -2114,7 +2125,7 @@ mod tests {
             std::env::temp_dir().join(format!("ts-hardclose-{}.typ", uuid::Uuid::new_v4()));
         std::fs::write(&tmp, "x").unwrap();
         let meta = document.open_from_content(tmp.clone(), "x".into(), None).unwrap();
-        let canon = tmp.canonicalize().unwrap();
+        let canon = canonicalize_for_identity(&tmp).unwrap();
         assert!(document.registry().read().find_by_canonical(&canon).is_some());
 
         document.hard_close(meta.id).unwrap();
