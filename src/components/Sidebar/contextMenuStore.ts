@@ -2,9 +2,14 @@ import { create } from "zustand";
 import type { ReactNode } from "react";
 
 /**
- * A menu item is either a separator or an action. Actions carry an optional
- * lucide icon (rendered left of the label) and a `danger` flag (delete → red).
- * `disabled` items render greyed out and are not clickable.
+ * A menu item is one of:
+ *   - separator: a hairline divider.
+ *   - action: a clickable row. Carries an optional lucide icon (rendered left
+ *     of the label) and a `danger` flag (delete → red). `disabled` items render
+ *     greyed out and are not clickable.
+ *   - submenu: a row that opens a nested menu on hover/focus. Its children are
+ *     themselves `MenuItem`s. An empty `children` array renders the parent row
+ *     disabled (used for "no recent workspaces" placeholders).
  */
 export type MenuItem =
   | { type: "separator" }
@@ -15,7 +20,8 @@ export type MenuItem =
       danger?: boolean;
       disabled?: boolean;
       onSelect: () => void;
-    };
+    }
+  | { type: "submenu"; label: string; children: MenuItem[] };
 
 /**
  * Pending context-menu request, if any. A caller (e.g. a tree row's

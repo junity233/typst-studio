@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Workbench } from "./components/Shell/Workbench";
-import { CommandBar } from "./components/CommandBar/CommandBar";
+import { TitleBar } from "./components/TitleBar/TitleBar";
 import { StatusBar } from "./components/StatusBar/StatusBar";
 import { StartupProblemsPanel } from "./components/StatusBar/StartupProblemsPanel";
 import { ConfirmDialog } from "./components/Dialogs/ConfirmDialog";
@@ -26,13 +26,14 @@ import {
   onRecoveryAvailable,
   openSettings,
 } from "./lib/tauri";
+import { isWindows } from "./lib/platform";
 import { useStartupProblemsStore } from "./store/startupProblemsStore";
 import { useRecoveryStore } from "./store/recoveryStore";
 
 /**
  * The application shell. Composes three regions:
  *   ┌─────────────────────────────────────────────┐
- *   │ CommandBar  (breadcrumb + overflow menu)    │  ← top
+ *   │ TitleBar  (Windows only: menus + controls)  │  ← top
  *   ├─────────────────────────────────────────────┤
  *   │ Workbench                                   │
  *   │  ┌──────────┬───────────────────────────┐   │
@@ -41,6 +42,9 @@ import { useRecoveryStore } from "./store/recoveryStore";
  *   ├─────────────────────────────────────────────┤
  *   │ StatusBar                                   │  ← bottom
  *   └─────────────────────────────────────────────┘
+ *
+ * The TitleBar renders only on Windows (custom frameless window); macOS/Linux
+ * keep their native OS titlebar and global menu bar.
  *
  * While the standalone Settings window is open, a modal overlay covers the
  * shell: the Settings window floats `always_on_top`, and the overlay blocks
@@ -101,7 +105,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <CommandBar />
+      {isWindows && <TitleBar />}
       <Workbench />
       {/* §6.5: non-modal startup-problems panel. Overlays the workbench's
           bottom-right corner; non-blocking. Renders only when problems exist

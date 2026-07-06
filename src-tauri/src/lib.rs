@@ -418,6 +418,19 @@ pub fn run() {
                 watcher_health,
             });
 
+            // Custom titlebar (Windows only): drop the OS frame so the frontend
+            // can render its own titlebar (logo + File/Edit/View/Help menus +
+            // min/max/close). macOS keeps its native traffic-light decoration;
+            // Linux keeps its WM frame. Done here (not in tauri.conf.json) so a
+            // single config builds identically on all platforms.
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::Manager as _;
+                if let Some(main) = app.get_webview_window("main") {
+                    let _ = main.set_decorations(false);
+                }
+            }
+
             // Emit the recovery-available event (if any) AFTER manage + after a
             // short delay so the frontend's listener (registered on first
             // render) is subscribed. The frontend's useStartupSession waits

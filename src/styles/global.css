@@ -111,7 +111,7 @@
 
   /* ---- Layout heights ---- */
   --toolbar-h: 52px;
-  --commandbar-h: 36px;
+  --titlebar-h: 32px;
   --tabstrip-h: 38px;
   --statusbar-h: 28px;
   --sidebar-w: 220px;
@@ -1095,6 +1095,10 @@ button {
 
 .scm-message {
   width: 100%;
+  /* Grow to fill the commit pane's leftover height (the pane itself is sized
+     by the Allotment sash; the button row below stays fixed). */
+  flex: 1 1 auto;
+  min-height: 30px;
   font: var(--text-caption); /* 14/400 — app chrome pace, matches the sidebar */
   letter-spacing: -0.224px;
   color: var(--color-ink);
@@ -1103,7 +1107,6 @@ button {
   border-radius: var(--radius-sm); /* utility, not pill */
   padding: var(--space-xxs) var(--space-xs);
   resize: none; /* the pane is resizable via the Allotment sash, not the grip */
-  min-height: 30px;
   outline: none;
   transition: border-color 100ms ease, box-shadow 100ms ease;
 }
@@ -1505,61 +1508,124 @@ button {
 }
 
 /* ============================================================================
-   Command bar (top breadcrumb)
-   The frosted toolbar treatment, reused at a slimmer height. Draggable window
-   chrome on macOS.
+   Title bar (Windows-only custom window chrome)
+   Renders only on Windows (the main window has decorations:false there — see
+   src-tauri/src/lib.rs). macOS/Linux keep their native OS frame and global
+   menu bar. The bar is a drag region via [data-tauri-drag-region]; interactive
+   children (buttons) opt out automatically. Same frosted treatment the old
+   command bar used, at a Windows-standard ~32px height.
    ========================================================================= */
-.command-bar {
-  height: var(--commandbar-h);
-  flex: 0 0 var(--commandbar-h);
+.titlebar {
+  height: var(--titlebar-h);
+  flex: 0 0 var(--titlebar-h);
   display: flex;
   align-items: center;
-  padding: 0 var(--space-md);
+  padding: 0;
+  /* Windows-native-titlebar pace: 12px chrome text (denser than the 14px
+     reading-copy default), so the bar reads as compact OS chrome. */
+  font-size: 12px;
   background: var(--color-surface-frost);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 1px solid var(--color-hairline);
-  -webkit-app-region: drag;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-/* ---- Breadcrumb ---------------------------------------------------------- */
-.breadcrumb {
+/* ---- Left: icon + product name ----------------------------------------- */
+.titlebar-title {
   display: flex;
   align-items: center;
-  gap: var(--space-xxs);
-  font: var(--text-fine-print);
+  gap: var(--space-xs);
+  padding: 0 var(--space-sm) 0 var(--space-md);
+  height: 100%;
+}
+.titlebar-logo {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  pointer-events: none;
+}
+.titlebar-product {
+  /* Inherits the 12px bar font; bolded so the product name reads as a title. */
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  color: var(--color-ink);
+  white-space: nowrap;
+}
+
+/* ---- Center-left: top-level menu buttons ------------------------------- */
+.titlebar-menu {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+.titlebar-menu-btn {
+  height: 100%;
+  padding: 0 var(--space-sm);
+  /* Inherits the 12px bar font. */
+  font-family: var(--font-text);
   letter-spacing: 0;
   color: var(--color-ink-muted-80);
-  min-width: 0;
-  overflow: hidden;
+  border-radius: 0;
   white-space: nowrap;
-  /* Breadcrumb text is not a drag target — let it be selectable/no-op. */
-  -webkit-app-region: no-drag;
 }
-.breadcrumb-placeholder {
-  font: var(--text-caption-strong);
+.titlebar-menu-btn:hover {
+  background: var(--color-hover-tint, rgba(0, 0, 0, 0.06));
   color: var(--color-ink);
-  letter-spacing: 0.1px;
 }
-.breadcrumb-crumb {
+/* The open menu's button stays highlighted regardless of pointer position. */
+.titlebar-menu-btn-active {
+  background: var(--color-hover-tint, rgba(0, 0, 0, 0.06));
+  color: var(--color-ink);
+}
+.titlebar-menu-btn-active:hover {
+  background: var(--color-hover-tint, rgba(0, 0, 0, 0.06));
+}
+/* While a menu is open, sibling buttons suppress their hover feedback so they
+   don't look independently interactive — the user switches menus by hovering,
+   not by "activating" each one. Pointer still switches (handled in JS); this
+   just removes the visual flicker. */
+.titlebar-menu-btn-suppressed:hover {
+  background: transparent;
   color: var(--color-ink-muted-80);
 }
-.breadcrumb-workspace {
+
+/* ---- Spacer pushes controls to the right (also a drag region) ---------- */
+.titlebar-spacer {
+  flex: 1 1 auto;
+  height: 100%;
+}
+
+/* ---- Right: window controls -------------------------------------------- */
+.titlebar-controls {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+}
+.titlebar-ctrl {
+  width: 46px;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--color-ink);
-  font-weight: 600;
+  border-radius: 0;
 }
-.breadcrumb-untitled {
-  color: var(--color-ink-muted-48);
-  font-style: italic;
+.titlebar-ctrl:hover {
+  background: var(--color-hover-tint, rgba(0, 0, 0, 0.06));
 }
-.breadcrumb-sep {
-  color: var(--color-ink-muted-48);
-  padding: 0 2px;
+/* Close button follows the Windows convention of a red hover state. */
+.titlebar-ctrl-close:hover {
+  background: #e81123;
+  color: #fff;
 }
-.breadcrumb-dirty {
+
+/* ---- Check mark glyph inside a dropdown item --------------------------- */
+.titlebar-check {
+  display: inline-block;
+  width: 1em;
   color: var(--color-primary);
-  margin-left: var(--space-xs);
-  font-size: 10px;
 }
 
 /* ============================================================================
@@ -1624,7 +1690,7 @@ button {
 }
 /* Format toolbar — the 36px strip of inline/block formatting buttons between
    the tab strip and the editor. Denser than the 52px top toolbar; matches
-   --commandbar-h. Mirrors the .explorer-action icon-button precedent (22px
+   the tabstrip height. Mirrors the .explorer-action icon-button precedent (22px
    → 24px here for a slightly larger hit target). */
 .format-toolbar {
   display: flex;
@@ -2400,12 +2466,12 @@ button {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  animation: context-menu-in 0.1s ease;
+  animation: context-menu-in 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 @keyframes context-menu-in {
   from {
     opacity: 0;
-    transform: scale(0.97);
+    transform: scale(0.96);
   }
   to {
     opacity: 1;
@@ -2416,6 +2482,7 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   padding: 6px 10px;
   font: var(--text-caption);
   color: var(--color-ink);
@@ -2460,6 +2527,36 @@ button {
   height: 1px;
   background: var(--color-hairline);
   margin: 4px 0;
+}
+/* ---- Submenu (nested) rows + panels ------------------------------------- */
+/* The trigger row reuses .context-menu-item; this adds the trailing caret and
+   keeps the label/arrow on one row. The panel is a second .context-menu
+   portaled next to it (no extra chrome needed — same frosted surface). */
+.context-menu-submenu-trigger {
+  position: relative;
+}
+/* The label reserves room on the right so it never underlaps the caret. */
+.context-menu-submenu-trigger .context-menu-label {
+  flex: 1 1 auto;
+  padding-right: 20px;
+}
+/* The caret is pinned to the row's trailing edge (aligned with the row's
+   right padding), independent of label width. */
+.context-menu-submenu-arrow {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-ink-muted-48);
+  font-size: 14px;
+  line-height: 1;
+}
+.context-menu-submenu-trigger[aria-expanded="true"] {
+  background: var(--color-hover-soft);
+}
+.context-menu-submenu-trigger[aria-expanded="true"]
+  .context-menu-submenu-arrow {
+  color: var(--color-ink);
 }
 
 /* ============================================================================
