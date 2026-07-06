@@ -44,6 +44,14 @@ impl HttpClient {
             .expect("reqwest client build");
         Self { client }
     }
+
+    /// Borrow the underlying client for streaming requests (the AI proxy).
+    /// The field is `pub(super)` to keep reqwest out of the public API; this
+    /// accessor is the sanctioned way for sibling modules to issue streaming
+    /// POSTs that `fetch_to_file`/`fetch_bytes` (both GET, both buffered) can't.
+    pub fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
 }
 
 impl Default for HttpClient {

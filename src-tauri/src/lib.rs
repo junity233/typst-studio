@@ -175,6 +175,8 @@ pub fn run() {
             ipc::conflict_commands::clear_conflict,
             // Network: remote image download (paste feature).
             ipc::net_commands::fetch_url_to_file,
+            // AI Assistant proxy (streaming LLM calls; key injected in Rust).
+            ipc::ai_commands::ai_proxy_stream,
         ])
         .setup(|app| {
             use std::sync::Arc;
