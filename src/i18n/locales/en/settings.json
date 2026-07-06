@@ -70,6 +70,7 @@
   "setting.preview.autoRefresh": "Auto refresh",
   "setting.preview.scrollSync": "Sync scroll with editor",
   "setting.preview.zoomLevel": "Zoom level",
+  "setting.preview.padding": "Page padding",
   "setting.preview.background": "Background",
   "setting.appearance.theme": "Theme",
   "settingHelp.appearance.theme": "Custom themes live in <app-data>/themes/. Use 'Open themes folder' below to add one.",

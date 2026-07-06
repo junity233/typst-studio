@@ -50,6 +50,10 @@ export function PreviewPane({
   const [autoRefresh] = useSetting<boolean>("preview.autoRefresh");
   const [zoomLevel] = useSetting<number>("preview.zoomLevel");
   const [background] = useSetting<string>("preview.background");
+  // User-configurable padding around the rendered pages (manifest default 4px —
+  // tighter than the old CSS `var(--space-sm)` 12px so the page nearly fills the
+  // pane without a wide empty border). Applied inline to override the CSS rule.
+  const [padding] = useSetting<number>("preview.padding");
 
   // Bucket rects by page so each SvgPage only hit-tests its own lines.
   const rectsByPage = useMemo(() => {
@@ -67,8 +71,21 @@ export function PreviewPane({
     return buckets;
   }, [lineMap]);
 
-  const surfaceStyle =
-    background === "dark" ? { background: "#1e1e22" } : undefined;
+  // Inline style overrides on the `.preview-pane` container. Both the page-
+  // edge padding (the gap between the page and the pane edges, incl. the
+  // horizontal space on each side of a centered page) AND the vertical flex
+  // `gap` between stacked pages are driven by the single `preview.padding`
+  // setting — the old CSS hardcoded `padding: var(--space-sm)` (12px) and
+  // `gap: var(--space-xs)` (8px), which read as a wide empty border. One
+  // smaller value (default 4px) now controls both, keeping them consistent.
+  // `background` is only set for the dark surface variant — the light
+  // parchment comes from the CSS rule and stays unset here.
+  const padPx = padding ?? 4;
+  const surfaceStyle: React.CSSProperties = {
+    padding: padPx,
+    gap: padPx,
+    ...(background === "dark" ? { background: "#1e1e22" } : undefined),
+  };
   const zoom = zoomLevel ?? 1;
 
   // Stable per-index ref-setters so `SvgPage`'s `memo` isn't defeated by a fresh

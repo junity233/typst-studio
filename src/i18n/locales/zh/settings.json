@@ -70,6 +70,7 @@
   "setting.preview.autoRefresh": "自动刷新",
   "setting.preview.scrollSync": "与编辑器同步滚动",
   "setting.preview.zoomLevel": "缩放级别",
+  "setting.preview.padding": "页面边距",
   "setting.preview.background": "背景",
   "setting.appearance.theme": "主题",
   "settingHelp.appearance.theme": "自定义主题位于 <app-data>/themes/。点击下方的「打开主题文件夹」来添加一个。",
