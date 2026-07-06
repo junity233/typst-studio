@@ -11,6 +11,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
+import { useDebounce } from "../../hooks/useDebounce";
+
+/**
+ * How long the StatusBar holds its previous value before adopting a new one.
+ * Each keystroke resets the active document's compile `status` to "idle", and
+ * the backend pushes `compiling` → `success`/`error` shortly after — so the
+ * raw status oscillates on every keystroke. Debouncing the displayed status /
+ * duration / error count collapses that churn into a single update once typing
+ * pauses, keeping the bar stable while the user is actively editing.
+ */
+const STATUS_DEBOUNCE_MS = 300;
 
 function statusLabel(
   t: TFunction<"statusbar">,
@@ -109,7 +120,13 @@ export function StatusBar() {
   // §13.1: combined diagnostics (compiler + tinymist) for the active doc.
   const diagnostics = useDiagnosticsForDoc(tab?.id ?? null);
   const errorCount = diagnostics.filter((d) => d.severity === "Error").length;
-  const status = tab?.status ?? "idle";
+  // Debounce the compile status, its duration, and the error count: during
+  // active editing each keystroke churns all three (idle → compiling →
+  // success/error and tinymist republishing diagnostics), which flickers the
+  // bar. Settling here keeps the display stable until typing pauses.
+  const status = useDebounce(tab?.status ?? "idle", STATUS_DEBOUNCE_MS);
+  const durationMs = useDebounce(tab?.durationMs ?? null, STATUS_DEBOUNCE_MS);
+  const debouncedErrorCount = useDebounce(errorCount, STATUS_DEBOUNCE_MS);
   const statusClassName = statusClass(status);
 
   const { status: lspStatus } = useLspStatus();
@@ -174,7 +191,7 @@ export function StatusBar() {
   return (
     <footer className="statusbar">
       <span className={"statusbar-section" + (statusClassName ? " " + statusClassName : "")}>
-        {tab !== null ? statusLabel(t, tab.status, tab.durationMs) : t("noDocument")}
+        {tab !== null ? statusLabel(t, status, durationMs) : t("noDocument")}
       </span>
       {isConflicted && tab !== null && (
         <span
@@ -201,10 +218,10 @@ export function StatusBar() {
         </span>
       )}
       <span className="statusbar-section">
-        {errorCount > 0
+        {debouncedErrorCount > 0
           ? (
             <span className="statusbar-badge-error">
-              {t("errors.count", { count: errorCount })}
+              {t("errors.count", { count: debouncedErrorCount })}
             </span>
           )
           : <span className="statusbar-badge">{t("errors.none")}</span>}
