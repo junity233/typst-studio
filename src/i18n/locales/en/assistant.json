@@ -1,0 +1,20 @@
+{
+  "title": "Assistant",
+  "placeholder": "Ask anything about this document, or let me make a change…",
+  "emptyState": "Ask anything about this document, or let me make a change.",
+  "configRequired": "Configure an AI provider first.",
+  "openSettings": "Open Settings",
+  "stop": "Stop",
+  "send": "Send",
+  "clear": "Clear conversation",
+  "retry": "Retry",
+  "apply": "Apply",
+  "reject": "Reject",
+  "applied": "Applied",
+  "rejected": "Rejected",
+  "thinking": "Thinking",
+  "toolRunning": "running",
+  "toolDone": "done",
+  "toolError": "error",
+  "enterToSend": "Enter to send · Shift+Enter for newline"
+}
