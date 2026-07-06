@@ -19,6 +19,7 @@ pub mod editor_service;
 pub mod export_service;
 pub mod file_routing;
 pub mod lsp_service;
+pub mod package_service;
 pub mod save_coordinator;
 pub mod session;
 pub mod tab_state;
