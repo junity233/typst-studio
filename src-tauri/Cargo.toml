@@ -61,7 +61,7 @@ typst-layout = "0.15"
 typst-svg = "0.15"
 typst-pdf = "0.15"
 typst-render = "0.15"
-typst-kit = { version = "0.15", features = ["embedded-fonts", "scan-fonts"] }
+typst-kit = { version = "0.15", features = ["embedded-fonts", "scan-fonts", "system-files"] }
 comemo = "0.4"
 
 # Async / scheduling
@@ -119,8 +119,11 @@ ts-rs = { version = "12", features = ["uuid-impl", "chrono-impl", "no-serde-warn
 # cookie / tauri ships a compatible release.
 time = { version = "=0.3.36", default-features = false, features = ["std", "macros", "parsing"] }
 
-# HTTP client for remote image fetch (paste feature) + future reuse.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# HTTP client for remote image fetch (paste feature) + package downloads
+# (typst-kit Downloader). `blocking` is needed for the synchronous Downloader
+# trait used by typst's package resolver; the async client covers the paste
+# feature. Both share reqwest's core, so the cost is a thin sync adapter.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
 
 # Stable FFI for GetFileInformationByHandle — used by FileIdentity on Windows
 # (std's volume_serial_number/file_index are nightly-only behind windows_by_handle).

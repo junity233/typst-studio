@@ -4,7 +4,9 @@
 //! access for the workspace. It is shared by two consumers:
 //!
 //! - **`typst_engine::EditorWorld`** — to resolve `#include` / `#read` /
-//!   `#image()` of files relative to the workspace root (via [`FileResolver`]).
+//!   `#image()` of files relative to the workspace root (via [`FileResolver`]),
+//!   and external packages (`@preview/...`, `@local/...`) via
+//!   [`packages::system_packages`].
 //! - **`service::WorkspaceService`** — to build the file tree and apply file
 //!   CRUD (create / rename / delete), and to watch for external changes
 //!   (via [`watcher`] / [`tree`]).
@@ -13,6 +15,8 @@
 //! workspace service) gives a single place that owns the "root → vpath ↔ disk"
 //! mapping and the ignore rules.
 
+pub mod downloader;
+pub mod packages;
 pub mod resolver;
 pub mod search;
 pub mod tree;

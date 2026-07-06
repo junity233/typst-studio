@@ -187,7 +187,15 @@ impl EditorWorld {
     /// `None`. Resolves the id → disk path via the resolver; if the id can't be
     /// mapped (no resolver, or the path escapes the root), there is no overlay
     /// entry to find, so `None` lets the caller fall through to disk.
+    ///
+    /// Package-rooted ids never have an overlay entry (external package files
+    /// are never open as editable buffers), so we short-circuit them here — this
+    /// also avoids triggering a network package download just to probe the VFS.
     fn vfs_text_for(&self, id: FileId) -> Option<String> {
+        // Package files are never live-edited; skip the overlay entirely.
+        if matches!(id.get().root(), typst::syntax::VirtualRoot::Package(_)) {
+            return None;
+        }
         let vfs = self.vfs.clone()?;
         let resolver = self.resolver.as_ref()?;
         // disk_path can fail (id outside the resolver root); treat that as a
