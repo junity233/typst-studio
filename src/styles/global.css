@@ -981,16 +981,26 @@ button {
 }
 
 /* The sidebar host already renders a `.sidebar-header` with the view title,
-   so the panel itself doesn't repeat a title bar — its first row is the
-   commit box. --------------------------------------------------------------- */
+   so the panel itself doesn't repeat a title bar — its first pane is the
+   commit box. The three sections (commit / changes / log) live inside a
+   vertical <Allotment>, so the dividers between them are the Allotment
+   sashes — not borders on these elements. ---------------------------------- */
+
+/* Each Allotment pane's inner wrapper: fill the pane and (for the scrollable
+   ones) carry the overflow. The commit box pane is non-scrolling (its
+   textarea + button row fit at any size); the changes + log panes scroll. */
+.scm-pane {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 
 .scm-commit-box {
-  flex: 0 0 auto;
   padding: var(--space-xs);
   display: flex;
   flex-direction: column;
   gap: var(--space-xxs);
-  border-bottom: 1px solid var(--color-hairline);
 }
 
 .scm-commit-row {
@@ -1001,15 +1011,15 @@ button {
 
 .scm-message {
   width: 100%;
-  font: var(--text-body);
-  letter-spacing: -0.374px;
+  font: var(--text-caption); /* 14/400 — app chrome pace, matches the sidebar */
+  letter-spacing: -0.224px;
   color: var(--color-ink);
   background: var(--color-canvas);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-sm); /* utility, not pill */
-  padding: var(--space-xs);
-  resize: vertical;
-  min-height: 36px;
+  padding: var(--space-xxs) var(--space-xs);
+  resize: none; /* the pane is resizable via the Allotment sash, not the grip */
+  min-height: 30px;
   outline: none;
   transition: border-color 100ms ease, box-shadow 100ms ease;
 }
@@ -1025,11 +1035,11 @@ button {
 
 .scm-commit-btn {
   flex: 1 1 auto;
-  padding: 7px var(--space-lg);
+  padding: var(--space-xxs) var(--space-md); /* slim — matches the 14px chrome */
   border: none;
   background: var(--color-primary); /* Action Blue — primary CTA */
   color: var(--color-on-primary);
-  font: var(--text-button-utility); /* 14/400 */
+  font: var(--text-caption); /* 14/400 — sidebar chrome pace */
   letter-spacing: -0.224px;
   border-radius: var(--radius-pill); /* DESIGN.md: primary CTA is a pill */
   cursor: pointer;
@@ -1070,7 +1080,7 @@ button {
 }
 
 .scm-changes {
-  flex: 1 1 auto;
+  /* Pane size is driven by the Allotment; this just scrolls its content. */
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-xxs) 0;
@@ -1137,11 +1147,15 @@ button {
 }
 
 .scm-log {
-  flex: 0 0 auto;
-  border-top: 1px solid var(--color-hairline);
-  padding: var(--space-xxs) 0;
-  max-height: 140px;
+  /* Pane size is driven by the Allotment. The title stays pinned; the list
+     below scrolls so resized panes keep their header visible. */
+  min-height: 0;
+}
+
+.scm-log-list {
+  min-height: 0;
   overflow-y: auto;
+  padding: var(--space-xxs) 0;
 }
 
 .scm-log-row {
@@ -1388,6 +1402,22 @@ button {
 }
 .sash.sash-vertical.sash-active::before {
   width: 3px !important;
+}
+/* Horizontal sashes (drag vertically to resize stacked rows — used by the
+   Source Control panel's commit / changes / log split). Same hairline →
+   Action-Blue treatment as the vertical sashes so all separators in the app
+   read as one grammar. The visible line is the sash's `::before` pseudo,
+   drawn full-width with a 1px height. */
+.sash.sash-horizontal::before {
+  background: var(--color-hairline) !important;
+}
+.sash.sash-horizontal:hover::before,
+.sash.sash-horizontal.sash-hover::before,
+.sash.sash-horizontal.sash-active::before {
+  background: var(--color-primary) !important;
+}
+.sash.sash-horizontal.sash-active::before {
+  height: 3px !important;
 }
 
 /* ============================================================================
