@@ -5,5 +5,8 @@
   "preview": {
     "show": "Show preview",
     "hide": "Hide preview"
+  },
+  "diagnostics": {
+    "resizeLabel": "Resize diagnostics panel"
   }
 }

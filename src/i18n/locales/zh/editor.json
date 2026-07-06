@@ -5,5 +5,8 @@
   "preview": {
     "show": "显示预览",
     "hide": "隐藏预览"
+  },
+  "diagnostics": {
+    "resizeLabel": "调整诊断面板大小"
   }
 }
