@@ -54,6 +54,18 @@ export interface Document {
   /** Monotonic content revision; bumped on every edit (§7). */
   revision: number;
   /**
+   * The revision the LAST APPLIED compile was stamped with (i.e. the revision
+   * whose `svgPages`/`lineMap` are currently shown). Bumped in lockstep with
+   * `revision` at open (`documentFromOpened`); updated to the applied compile's
+   * revision in `setPages`. While `compiledRevision < revision` the buffer has
+   * edits the preview hasn't caught up to — its `lineMap` is stale and scroll-
+   * sync must NOT re-align against it (the target would be wrong). The gap
+   * widens during fast typing (compile results come back stamped with an older
+   * revision and are discarded by the §7 guard) and closes when a fresh
+   * compile lands after typing settles.
+   */
+  compiledRevision: number;
+  /**
    * External-modification conflict state (§5.4 / §8.4). One of
    * "modified"/"missing"/"permission_changed"/"replaced" when the watcher
    * detected a disk change that could not be auto-applied; "none" otherwise.
@@ -93,6 +105,10 @@ export function documentFromOpened(doc: OpenedDocument): Document {
     // The backend seeds revision 0 on open; the first compile carries revision
     // 0 and matches this. Each subsequent edit bumps it.
     revision: 0,
+    // No compile has landed yet at open; `compiledRevision` starts equal to
+    // `revision` so scroll-sync treats the (empty) preview as in-sync until the
+    // first real compile, rather than permanently suppressing alignment.
+    compiledRevision: 0,
     // No external-modification conflict on open (§8.4).
     conflict: "none",
     conflictDiskContent: null,
@@ -293,7 +309,19 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
       // of an older buffer could clobber a newer preview.
       if (revision < doc.revision) return s;
       return {
-        documents: { ...s.documents, [id]: { ...doc, svgPages, lineMap, outline } },
+        documents: {
+          ...s.documents,
+          [id]: {
+            ...doc,
+            svgPages,
+            lineMap,
+            outline,
+            // Record that the shown preview now reflects this revision. While
+            // `revision` (bumped on every keystroke) outruns this, the lineMap
+            // is stale and scroll-sync must suppress re-alignment.
+            compiledRevision: revision,
+          },
+        },
       };
     }),
 

@@ -53,6 +53,7 @@ function doc(overrides: Partial<Document> = {}): Document {
     content: "x",
     origin: { kind: "looseFile", path: "/x.typ", root: "/" },
     revision: 0,
+    compiledRevision: 0,
     conflict: "none",
     conflictDiskContent: null,
     status: "idle",

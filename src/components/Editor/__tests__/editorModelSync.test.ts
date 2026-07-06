@@ -29,6 +29,7 @@ function makeDoc(
     content: `#content ${id}`,
     origin: { kind: "untitled" } as DocumentOrigin,
     revision: 0,
+    compiledRevision: 0,
     conflict: "none",
     conflictDiskContent: null,
     status: "idle",

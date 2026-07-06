@@ -49,6 +49,7 @@ function seedTitledDoc(id: string, path: string, conflict: "none" | "modified"):
     // the parent dir (matches what documentUri.ts would convert to a file: URI).
     origin: { kind: "looseFile", path, root: parentDir(path) },
     revision: 1,
+    compiledRevision: 1,
     conflict,
     conflictDiskContent: conflict === "modified" ? "disk content" : null,
     status: "idle",

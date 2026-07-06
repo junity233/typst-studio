@@ -8,6 +8,7 @@ import { FormatToolbar } from "../FormatToolbar/FormatToolbar";
 import { PreviewPane } from "../Preview/PreviewPane";
 import { DiagnosticsPanel } from "../Diagnostics/DiagnosticsPanel";
 import { useTabsStore, useActiveDocument } from "../../store/tabsStore";
+import { useDocumentsStore } from "../../store/documentsStore";
 import { useUiStore } from "../../store/uiStore";
 import { useSetting } from "../../hooks/useSetting";
 import { updateText } from "../../lib/tauri";
@@ -91,6 +92,10 @@ function detachZoomListener(el: HTMLElement | null): void {
 export function EditorArea() {
   const { t } = useTranslation("editor");
   const activeTab = useActiveDocument();
+  // Live active-tab id for use inside stable/deferred closures (rAF callbacks)
+  // that must read the CURRENT doc without rebuilding on every keystroke.
+  const activeTabIdRef = useRef<string | null>(activeTab?.id ?? null);
+  activeTabIdRef.current = activeTab?.id ?? null;
   const updateContent = useTabsStore((s) => s.updateContent);
   const previewVisible = useUiStore((s) => s.previewVisible);
   const setPreview = useUiStore((s) => s.setPreview);
@@ -118,6 +123,10 @@ export function EditorArea() {
   // pane's top edge. Reading it here keeps the anchor in lockstep with the
   // actual padding so alignment stays exact at any padding value.
   const [previewPadding] = useSetting<number>("preview.padding");
+  // "Compile caught up" (compiledRevision >= revision) is read from the store
+  // at kick time inside the re-align paths below, not computed here — see the
+  // re-align effect / handlePageImgLoad comments for why gating on it prevents
+  // mis-aligning against a stale lineMap during fast typing.
 
   // --- Ctrl/Cmd+wheel zoom (per-pane, persisted via settings) -------------
   // Editor pane: editor.fontSize [8,32] step 1 (manifest default 13).
@@ -500,8 +509,10 @@ export function EditorArea() {
   //      guaranteed-non-zero height, and re-aligns then too.
   // Re-alignment drives from the EDITOR (the authority — the user edits there),
   // so the preview snaps to the editor's current top line under the new layout.
-  // Guarded by `scrollSyncOn` + a live editor API; no-op when sync is off or
-  // the editor isn't mounted yet.
+  // Guarded by `scrollSyncOn` + a live editor API + the compile being caught up
+  // (see `compileCaughtUp`): we read it from the store at kick time (not at
+  // effect-setup time) because the user may type more during the 2-frame rAF
+  // delay, making a previously-fresh lineMap stale again.
   useEffect(() => {
     // Track both rAF ids so cleanup cancels whichever is pending.
     const ids: number[] = [];
@@ -512,7 +523,14 @@ export function EditorArea() {
     schedule(() => {
       schedule(() => {
         refreshPageMetrics();
-        if (scrollSyncOn && editorApiRef.current) {
+        // Only re-align when the shown preview reflects the current buffer;
+        // otherwise the lineMap is stale (edits outpaced the compile) and
+        // snapping would actively MIS-align. Scroll-follow still runs against
+        // whatever lineMap exists when the user scrolls — best effort.
+        const doc = activeTabIdRef.current;
+        const d = doc ? useDocumentsStore.getState().documents[doc] : undefined;
+        const caughtUp = !!d && d.compiledRevision >= d.revision;
+        if (scrollSyncOn && caughtUp && editorApiRef.current) {
           kick("editor");
         }
       });
@@ -594,11 +612,16 @@ export function EditorArea() {
   // reflow the document (the source-line → page-rect map changes entirely) and
   // leave the two panes silently out of sync until the user scrolls. Re-aligning
   // here, with the editor as the driver, makes the preview follow the new layout
-  // immediately. The editor is the authority because the user edits there; the
-  // preview should snap to reflect the editor's current top line.
+  // immediately. Gated on the compile being caught up (see the re-align effect
+  // above): if edits outpaced the compile, the lineMap is stale and snapping
+  // would mis-align; we refresh metrics (cheap, helps the next scroll) but skip
+  // the kick.
   const handlePageImgLoad = useCallback(() => {
     refreshPageMetrics();
-    if (scrollSyncOn && editorApiRef.current) {
+    const id = activeTabIdRef.current;
+    const d = id ? useDocumentsStore.getState().documents[id] : undefined;
+    const caughtUp = !!d && d.compiledRevision >= d.revision;
+    if (scrollSyncOn && caughtUp && editorApiRef.current) {
       kick("editor");
     }
   }, [refreshPageMetrics, scrollSyncOn, kick]);

@@ -46,6 +46,7 @@ function seedActiveTab(revision: number): void {
         // §17 origin mirror: disk-backed test doc → looseFile rooted at /x.
         origin: { kind: "looseFile", path: "/x/main.typ", root: "/x" },
         revision,
+        compiledRevision: revision,
         conflict: "none",
         conflictDiskContent: null,
         status: "idle",

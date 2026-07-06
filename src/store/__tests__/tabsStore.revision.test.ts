@@ -43,6 +43,7 @@ function freshDocument(overrides: Partial<Document> = {}): Document {
     // that need a specific origin pass it via `overrides`).
     origin: { kind: "untitled" },
     revision: 0,
+    compiledRevision: 0,
     conflict: "none",
     conflictDiskContent: null,
     status: "idle",
