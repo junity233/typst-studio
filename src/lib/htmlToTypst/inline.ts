@@ -26,8 +26,19 @@ function inlineNode(node: Node, wctx: WalkCtx): string {
     case "i":
     case "em":
       return `_${inner()}_`;
-    case "code":
-      return "`" + (el.textContent ?? "") + "`";
+    case "code": {
+      // Raw code spans in Typst are delimited by backticks and terminate at the
+      // first run of backticks at least as long as the opener. Emitting raw
+      // `textContent` between single backticks would let an embedded longer
+      // run (e.g. ``` inside pasted code) close the span early and re-inject
+      // the trailing text as markup. Pick a fence strictly longer than the
+      // longest backtick run in the content (the common Markdown/Typst idiom).
+      const text = el.textContent ?? "";
+      const runs = text.match(/`+/g);
+      const longest = runs ? Math.max(...runs.map((r) => r.length)) : 0;
+      const fence = "`".repeat(longest + 1);
+      return fence + text + fence;
+    }
     case "del":
     case "s":
     case "strike":

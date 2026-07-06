@@ -58,11 +58,13 @@ export function usePasteConvert(
         return;
       }
       e.preventDefault();
-      // Capture the selection synchronously before any await: image
-      // resolution can take seconds, during which the user may move the
-      // cursor or switch tabs. Reused below as the edit range.
-      const sel = editor.getSelection();
-      if (!sel) return;
+      // Capture the selection + model identity synchronously before any await:
+      // image resolution can take seconds, during which the user may move the
+      // cursor or switch tabs. We re-validate BOTH after the await — applying
+      // a stale range to a different model would inject the converted paste
+      // into the wrong document, and a stale range to the same model would
+      // corrupt text inserted before the original selection (cursor drift).
+      const startModelUri = editor.getModel()?.uri.toString();
       const finalSrcByIndex: Record<number, string> = {};
       await Promise.all(
         result.pendingImages.map(async (img) => {
@@ -80,7 +82,19 @@ export function usePasteConvert(
         const src = finalSrcByIndex[Number(i)] ?? "";
         return `#image("${escapeTypstStr(src)}")`;
       });
-      editor.executeEdits("paste-convert", [{ range: sel, text: finalText }]);
+      // Re-validate focus + model identity before applying. The seconds-long
+      // image-fetch await above means the user may have switched tabs (model
+      // changed) or clicked away from the editor (lost focus). Applying the
+      // edit blindly in those cases would either inject into the wrong
+      // document or insert at a stale cursor. Bail silently — the user has
+      // clearly moved on, and the converted text is dropped (best-effort).
+      const liveEditor = getEditor();
+      if (!liveEditor || !liveEditor.hasTextFocus()) return;
+      const liveUri = liveEditor.getModel()?.uri.toString();
+      if (liveUri !== startModelUri) return;
+      const sel = liveEditor.getSelection();
+      if (!sel) return;
+      liveEditor.executeEdits("paste-convert", [{ range: sel, text: finalText }]);
       if (result.warnings.length > 0) {
         console.warn(`[paste] ${result.warnings.length} warnings:`, result.warnings);
       }
@@ -125,9 +139,10 @@ async function resolveImage(
     index: img.index,
   });
   // Make the expanded path absolute before writing: for an unsaved tab with
-  // no workspace, `${fileDir}` stays literal, so fall back to tempDir via
-  // ensureAbsolute. Both the on-disk path and the returned `#image()` src
-  // use this absolute value so they always agree.
+  // no workspace, `${fileDir}` stays literal, so `ensureAbsolute` falls back
+  // to a `pasted-images/` dir under the app config dir (which the backend's
+  // fetch_url_to_file containment check admits). Both the on-disk path and
+  // the returned `#image()` src use this absolute value so they always agree.
   const abs = await ensureAbsolute(rel, ctx.workspace);
   if (isRemote) {
     await fetchUrlToFile(img.src, abs);

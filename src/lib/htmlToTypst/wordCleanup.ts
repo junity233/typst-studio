@@ -19,8 +19,11 @@ export function isWordHtml(html: string): boolean {
 export function wordCleanup(html: string): string {
   if (!isWordHtml(html)) return html;
   let out = html;
-  out = out.replace(/<!--\[if\s[^]*?\]>\s*<!\[endif\]-->/gi, "");
-  out = out.replace(/<!\[if\s[^]*?\]>/gi, "");
+  // Bound the `[^]*?` scan so a crafted/truncated conditional-block opener
+  // (no matching `endif` terminator) can't force a multi-second backtrack
+  // across a large paste. 4000 chars is generous for any real Word conditional.
+  out = out.replace(/<!--\[if\s[^]{0,4000}?\]>\s*<!\[endif\]-->/gi, "");
+  out = out.replace(/<!\[if\s[^]{0,4000}?\]>/gi, "");
   out = out.replace(/<!\[endif\]>/gi, "");
   out = out.replace(/<\/?(o:p|w:[\w]+|v:[\w]+|m:[\w]+|st1:[\w]+)[^>]*>/gi, "");
   out = out.replace(/\s*style\s*=\s*"([^"]*)"/gi, (_m, style: string) => {

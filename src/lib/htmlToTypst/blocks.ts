@@ -5,6 +5,19 @@ import { escapeTypst } from "./escape";
 
 const MAX_LIST_DEPTH = 6;
 
+/**
+ * Escape a leading character that Typst would otherwise re-interpret as a
+ * block marker: `=` (heading), `+` / `-` (list), `/` (term list / emphasis
+ * edge). Only the FIRST non-whitespace char matters, and only these specific
+ * triggers — inline markup is already handled by `escapeTypst`. `\=` renders
+ * as a literal `=` in Typst.
+ */
+function escapeLeadingBlockMarker(line: string): string {
+  const m = line.match(/^(\s*)([=+\-/])/);
+  if (!m) return line;
+  return `${m[1]}\\${m[2]}${line.slice(m[0].length)}`;
+}
+
 export function convertBlocks(node: Node, wctx: WalkCtx, depth: number): string {
   const parts: string[] = [];
   node.childNodes.forEach((child) => {
@@ -17,7 +30,10 @@ export function convertBlocks(node: Node, wctx: WalkCtx, depth: number): string 
 function blockNode(node: Node, wctx: WalkCtx, depth: number): string {
   if (node.nodeType === 3 /* TEXT */) {
     const t = (node.textContent ?? "").trim();
-    return t.length ? escapeTypst(node.textContent ?? "") : "";
+    if (!t.length) return "";
+    // A top-level text node becomes its own block line; escape a leading
+    // marker char so it isn't re-parsed as a heading/list by Typst.
+    return escapeLeadingBlockMarker(escapeTypst(node.textContent ?? "").trim());
   }
   if (node.nodeType !== 1) return "";
   const el = node as Element;
@@ -34,7 +50,11 @@ function blockNode(node: Node, wctx: WalkCtx, depth: number): string {
       return "=".repeat(level) + " " + convertInline(el, wctx).trim();
     }
     case "p": {
-      return convertInline(el, wctx).trim();
+      // Escape a leading `=`, `+`, `-`, or `/` so the paragraph isn't
+      // re-interpreted as a Typst heading / list-item / numberless-list
+      // marker. (escapeTypst only covers inline markup chars; block-leading
+      // triggers need a block-level guard.) `\=` etc. render as literal text.
+      return escapeLeadingBlockMarker(convertInline(el, wctx).trim());
     }
     case "div": {
       return convertBlocks(el, wctx, depth).trim();
