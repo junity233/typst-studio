@@ -51,7 +51,6 @@ import type { ToolContext } from "../assistantTools";
 function makeCtx(): ToolContext {
   return {
     requestApproval: vi.fn().mockResolvedValue("Edit applied."),
-    abortSignal: new AbortController().signal,
   };
 }
 

@@ -106,6 +106,14 @@ pub async fn ai_proxy_stream(
 ) -> Result<()> {
     let api_key = read_api_key(&state)?;
 
+    // SECURITY: the webview controls `opts.url`. Enforce http(s)-only so a
+    // compromised/XSSed webview cannot use this command to read local files
+    // (file://) or hit internal/cloud-metadata endpoints (SSRF). This mirrors
+    // the boundary every other net/ entrypoint enforces (fetch.rs). The API
+    // key is injected below; restricting the destination host protects it.
+    crate::net::client::HttpClient::validate_scheme(&opts.url)
+        .map_err(AppError::from)?;
+
     // Forward the pre-serialized JSON body as raw bytes with the right
     // content-type. Rust does not parse or re-serialize the JSON — it is a
     // byte-level forwarder (no reqwest `json` feature needed).

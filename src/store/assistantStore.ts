@@ -171,10 +171,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       initialState: {
         systemPrompt,
         model: buildModel(),
-        tools: buildTools({
-          requestApproval,
-          abortSignal: new AbortController().signal,
-        }),
+        tools: buildTools({ requestApproval }),
       },
       streamFn: makeStreamFn(),
       // Edits block in the tool handler; run tools sequentially so an approval
@@ -278,18 +275,22 @@ async function applyApproval(p: PendingApproval): Promise<void> {
     return;
   }
   if (p.kind === "write_file") {
-    // Create the file via IPC; the workspace watcher + open_file flow handle
-    // the rest. Wrapped in try/catch — a failure here just means the file
-    // wasn't created; the agent will see it via a subsequent read_file.
+    // `create_entry` makes an EMPTY file (it takes no content) and expects a
+    // workspace-RELATIVE path. After creating, open it as a tab and push the
+    // content via updateText so it lands on disk + in the editor. Errors are
+    // surfaced to the agent via the tool result so it can retry with `edit`.
     const { invoke } = await import("@tauri-apps/api/core");
-    try {
-      await invoke("create_entry", {
-        rel: p.path,
-        kind: "file",
-        content: p.after ?? "",
-      });
-    } catch {
-      // Swallow; the agent's next read_file will reveal whether it landed.
+    const root = useWorkspaceStore.getState().rootPath;
+    // Relativize the absolute path against the workspace root.
+    const rel = root && p.path.startsWith(root)
+      ? p.path.slice(root.length).replace(/^[/\\]+/, "")
+      : p.path;
+    await invoke("create_entry", { rel, kind: "file" });
+    // Open the new file as a tab, then set its content via the document pipeline.
+    const { openFileByPath, updateText } = await import("../lib/tauri");
+    const opened = await openFileByPath(p.path);
+    if (p.after) {
+      await updateText(opened.id, p.after, opened.revision);
     }
   }
 }

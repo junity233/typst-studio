@@ -42,11 +42,13 @@ export interface PendingApproval {
  * - `requestApproval` blocks the tool handler until the user clicks Apply /
  *   Reject (Strategy A from the spec). Returns the tool-result string fed back
  *   to the LLM ("Edit applied." / "User rejected the edit.").
- * - `abortSignal` is the current run's signal; long tools should honor it.
+ *
+ * The agent's per-run abort signal is NOT passed here — pi-agent-core forwards
+ * it to each `execute(toolCallId, params, signal)` call, so tools that need to
+ * observe `stop()` read it from that argument.
  */
 export interface ToolContext {
   requestApproval: (p: PendingApproval) => Promise<string>;
-  abortSignal: AbortSignal;
 }
 
 /**
@@ -231,7 +233,7 @@ function compilePreviewTool(_ctx: ToolContext): AgentTool {
     name: "compile_preview",
     label: "Compile preview",
     description:
-      "Trigger a fresh compile of the active document and return success/failure plus any new errors. Use after edits to verify they compile.",
+      "Wait briefly for the editor's debounced compile to settle, then return the current diagnostics for the active document. Use after edits to check for new errors. NOTE: this reads diagnostics after a short delay; if you edited very recently, the compile may not have finished.",
     parameters: Type.Object({}),
     async execute() {
       // The compile pipeline is debounced on content change; settle briefly so

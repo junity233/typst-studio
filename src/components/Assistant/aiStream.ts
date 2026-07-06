@@ -54,6 +54,7 @@ export function buildModel(): Model<any> {
   const provider = readSetting<string>("ai.provider", "openai");
   const baseUrl = readSetting<string>("ai.baseUrl", "");
   const modelId = readSetting<string>("ai.model", "gpt-4o");
+  const maxTokens = readSetting<number>("ai.maxTokens", 4096);
   const api =
     provider === "anthropic" ? "anthropic-messages" : "openai-completions";
   return {
@@ -66,7 +67,7 @@ export function buildModel(): Model<any> {
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 128000,
-    maxTokens: 4096,
+    maxTokens,
   };
 }
 
@@ -100,6 +101,7 @@ async function driveStream(
   const baseUrl = readSetting<string>("ai.baseUrl", "");
   const modelId = readSetting<string>("ai.model", "gpt-4o");
   const temperature = options?.temperature ?? readSetting<number>("ai.temperature", 0.3);
+  const maxTokens = readSetting<number>("ai.maxTokens", 4096);
 
   if (provider === "anthropic") {
     const client = new Anthropic({
@@ -108,7 +110,7 @@ async function driveStream(
       fetch: createTauriFetch("x-api-key", { "anthropic-version": "2023-06-01" }),
       dangerouslyAllowBrowser: true,
     });
-    await driveAnthropic(stream, client, context, modelId, temperature, options?.signal);
+    await driveAnthropic(stream, client, context, modelId, temperature, maxTokens, options?.signal);
     return;
   }
 
@@ -258,8 +260,16 @@ async function driveOpenAIChat(
     stream.push({ type: "toolcall_end", contentIndex: contentIdx, toolCall: block, partial: partial(acc, modelId, provider) });
   }
 
+  // Some OpenAI-compatible endpoints (Ollama, etc.) never emit a non-null
+  // finish_reason. When it's null, derive the stop reason from whether tool
+  // calls were produced, so the loop's recorded stopReason is accurate.
+  const hasTools = acc.toolBlocks.size > 0;
   const reason: AssistantMessage["stopReason"] =
-    finishReason === "tool_calls" ? "toolUse" : finishReason === "length" ? "length" : "stop";
+    finishReason === "tool_calls" || (finishReason == null && hasTools)
+      ? "toolUse"
+      : finishReason === "length"
+        ? "length"
+        : "stop";
   const final = finalMessage(null, reason, acc, modelId, provider);
   stream.push({ type: "done", reason, message: final });
   stream.end();
@@ -310,6 +320,7 @@ async function driveAnthropic(
   context: Context,
   modelId: string,
   temperature: number,
+  maxTokens: number,
   signal?: AbortSignal,
 ): Promise<void> {
   const acc = newAcc();
@@ -327,7 +338,7 @@ async function driveAnthropic(
     model: modelId,
     messages,
     ...(system ? { system } : {}),
-    max_tokens: 4096,
+    max_tokens: maxTokens,
     temperature,
     stream: true,
     ...(tools.length > 0 ? { tools } : {}),
