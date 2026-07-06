@@ -25,6 +25,11 @@ categories: Array<string>,
 latestOnly?: boolean | null, };
 
 /**
+ * The filtered catalog listing payload (camelCase on the wire).
+ */
+export type CatalogListingPayload = { entries: Array<PackageEntry>, fetchedAt: number, stale: boolean, };
+
+/**
  * Result of `compare_recovery`: the snapshot buffer + the current disk content
  * (or `None` if the file is gone).
  */
@@ -321,7 +326,7 @@ export type InstalledPackage = { name: string, version: string,
 /**
  * Fixed `"preview"` in v1.
  */
-namespace: string, sizeBytes: bigint, 
+namespace: string, sizeBytes: number, 
 /**
  * True when the on-disk `typst.toml` has a `[template]` table.
  */
@@ -329,7 +334,7 @@ hasTemplate: boolean,
 /**
  * Dir mtime as Unix seconds (best-effort).
  */
-installedAt: bigint | null, };
+installedAt: number, };
 
 /**
  * Structured IPC error (§5.3: `{ code, message, details?, recoverable }`).
@@ -552,7 +557,7 @@ compiler?: string | null,
 /**
  * Unix seconds (the registry's `updatedAt` field).
  */
-updatedAt: bigint, 
+updatedAt: number, 
 /**
  * `Some` ⇒ this entry is also a template.
  */
@@ -657,6 +662,52 @@ export type SaveState = "idle" | { "saving": { revision: number, } } | { "saved"
  * Payload of the `save_state_changed` event: the new save state for `id`.
  */
 export type SaveStateChangedPayload = { id: DocumentId, state: SaveState, };
+
+/**
+ * One search hit.
+ */
+export type SearchHit = { 
+/**
+ * Path relative to workspace root (forward-slash separators).
+ */
+relative: string, 
+/**
+ * 1-indexed source line.
+ */
+line: number, 
+/**
+ * 1-indexed column (in Unicode scalar values).
+ */
+column: number, 
+/**
+ * The full line text (truncated for display if very long).
+ */
+lineText: string, 
+/**
+ * Char offset of the match start within line_text.
+ */
+matchStart: number, 
+/**
+ * Char offset of the match end within line_text.
+ */
+matchEnd: number, };
+
+/**
+ * Cross-file search request (§Search view).
+ */
+export type SearchQuery = { pattern: string, isRegex: boolean, caseSensitive: boolean, wholeWord: boolean, 
+/**
+ * Optional include glob, e.g. "*.typ". None = all non-ignored files.
+ */
+includeGlob: string | null, 
+/**
+ * Per-file hit cap (explosion guard).
+ */
+maxPerFile: number, 
+/**
+ * Total hit cap.
+ */
+maxTotal: number, };
 
 /**
  * What we remember between launches. All fields default so an OLD session.json
@@ -850,21 +901,12 @@ export type WorkspaceId = string;
 /**
  * The currently open workspace, if any.
  */
-export type WorkspaceMeta = {
+export type WorkspaceMeta = { 
 /**
  * Absolute path to the workspace root.
  */
-root: string,
+root: string, 
 /**
  * Display name (the root folder's basename).
  */
 name: string, };
-
-// --- Hand-written frontend types (NOT ts-rs generated) -----------------------
-
-/** Filtered catalog listing from `package_list_catalog`. */
-export type CatalogListingPayload = {
-  entries: PackageEntry[];
-  fetchedAt: number | null;
-  stale: boolean;
-};

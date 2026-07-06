@@ -62,3 +62,15 @@ pub struct SearchHit {
     /// Char offset of the match end within line_text.
     pub match_end: u32,
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[cfg(feature = "export-types")]
+    fn export_types() {
+        use ts_rs::TS;
+        let cfg = ts_rs::Config::default();
+        super::SearchQuery::export(&cfg).unwrap();
+        super::SearchHit::export(&cfg).unwrap();
+    }
+}

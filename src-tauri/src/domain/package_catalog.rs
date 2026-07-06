@@ -56,6 +56,7 @@ pub struct PackageEntry {
     pub compiler: Option<String>,
     /// Unix seconds (the registry's `updatedAt` field).
     #[serde(rename = "updatedAt", default)]
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub updated_at: i64,
     /// `Some` ⇒ this entry is also a template.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,11 +83,13 @@ pub struct InstalledPackage {
     pub version: String,
     /// Fixed `"preview"` in v1.
     pub namespace: String,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub size_bytes: u64,
     /// True when the on-disk `typst.toml` has a `[template]` table.
     pub has_template: bool,
     /// Dir mtime as Unix seconds (best-effort).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub installed_at: Option<i64>,
 }
 

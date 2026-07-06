@@ -17,8 +17,14 @@ use crate::service::package_service::{CatalogListing, PackageOpError, PackageSer
 /// The filtered catalog listing payload (camelCase on the wire).
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
 pub struct CatalogListingPayload {
     pub entries: Vec<PackageEntry>,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub fetched_at: Option<i64>,
     pub stale: bool,
 }
@@ -169,5 +175,16 @@ fn ipc(
         message: message.to_string(),
         recoverable,
         details,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[cfg(feature = "export-types")]
+    fn export_types() {
+        use ts_rs::TS;
+        let cfg = ts_rs::Config::default();
+        super::CatalogListingPayload::export(&cfg).unwrap();
     }
 }
