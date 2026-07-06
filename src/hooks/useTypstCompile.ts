@@ -3,6 +3,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   onCompiled,
   onConflict,
+  onDiagnostics,
   onDocsRebound,
   onSaveStateChanged,
   onStatus,
@@ -10,18 +11,25 @@ import {
 import { useTabsStore } from "../store/tabsStore";
 import { useDocumentsStore } from "../store/documentsStore";
 import { useSaveStateStore } from "../store/saveStateStore";
+import { useDiagnosticsStore } from "../store/diagnosticsStore";
 
 /**
  * App-level subscription to the typst compile lifecycle. Mount once near the
  * root; it wires `compiled` / `status` events into the stores.
  *
- * Diagnostics are now handled by the LSP server (tinymist) via
- * `publishDiagnostics`, not by the compile pipeline.
+ * Compile-error **reasons**: the backend emits a `diagnostics` event carrying
+ * the full Typst diagnostic list (message + position) on every compile — empty
+ * on success (clears stale errors), populated on failure. We subscribe here and
+ * write it into the `diagnosticsStore` `compiler` slot so the Problems panel
+ * surfaces WHY a compile failed, not just that it did. This complements (and is
+ * deduplicated against) tinymist's LSP `publishDiagnostics` path, which fills
+ * the `tinymist` slot. When the LSP is offline (crash/restart window), the
+ * compiler slot keeps compile errors visible.
  *
  * Preview page updates (potentially large SVG payloads) are wrapped in
  * `startTransition` so React treats them as **low priority** — keystrokes and
- * other urgent updates flush first, and the preview re-render is deferred to
- * a gap in input activity.
+ * other urgent updates flush first, and the preview re-render is deferred to a
+ * gap in input activity.
  *
  * Also subscribes to `save_state_changed` (§5.3) and mirrors each transition
  * into `saveStateStore` so the status bar can show saving / save-failed.
@@ -59,6 +67,23 @@ export function useTypstCompile(): void {
         return;
       }
       unlistens.push(uStatus);
+
+      // Compile diagnostics: the backend emits the Typst diagnostic list on
+      // every compile (empty on success → clears stale errors; populated on
+      // failure → surfaces the error reason). §7 revision guard: drop events
+      // whose revision is strictly older than the doc's current revision so a
+      // slow compile of an older buffer can't clobber newer diagnostics.
+      const uDiag = await onDiagnostics((p) => {
+        const doc = useDocumentsStore.getState().documents[p.id];
+        if (!doc) return;
+        if (p.revision < doc.revision) return;
+        useDiagnosticsStore.getState().set(p.id, "compiler", p.diagnostics);
+      });
+      if (cancelled) {
+        uDiag();
+        return;
+      }
+      unlistens.push(uDiag);
 
       // §5.4 / §8.4: external-modification conflict. Surface the backend's
       // conflict state on the tab and stash the disk content (present on

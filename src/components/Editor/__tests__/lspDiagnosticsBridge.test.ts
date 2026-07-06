@@ -5,7 +5,7 @@ import {
   selectDiagnosticsForDoc,
   getCombined,
 } from "../lspDiagnosticsBridgeHelpers";
-import type { DocDiagnostics } from "../../../store/diagnosticsStore";
+import { makeDoc } from "../../../store/diagnosticsStore";
 import type { Diagnostic } from "../../../lib/types";
 
 /**
@@ -109,8 +109,8 @@ describe("buildDiagnostic (§13.2 marker → Diagnostic)", () => {
 
 describe("re-exported store selectors (§17 single import path)", () => {
   it("selectDiagnosticsForDoc returns the combined view", () => {
-    const slot: DocDiagnostics = {
-      compiler: [
+    const slot = makeDoc(
+      [
         {
           severity: "Error",
           message: "c",
@@ -123,8 +123,8 @@ describe("re-exported store selectors (§17 single import path)", () => {
           },
         },
       ],
-      tinymist: [],
-    };
+      [],
+    );
     expect(selectDiagnosticsForDoc(slot, "compiler")).toBe(slot.compiler);
     expect(getCombined(slot)).toBe(slot.compiler);
   });

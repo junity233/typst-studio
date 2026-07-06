@@ -2,6 +2,7 @@ import type { Diagnostic, Severity } from "../../lib/types";
 import {
   selectDiagnosticsForDoc,
   getCombined,
+  dedupDiagnostics,
 } from "../../store/diagnosticsStore";
 
 /**
@@ -23,7 +24,7 @@ import {
  * helpers. This module imports ONLY from `lib/types` and the (Monaco-free)
  * store, so it is safe under jsdom.
  */
-export { selectDiagnosticsForDoc, getCombined };
+export { selectDiagnosticsForDoc, getCombined, dedupDiagnostics };
 export type { DocDiagnostics, DiagnosticSource } from "../../store/diagnosticsStore";
 
 /**

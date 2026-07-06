@@ -19,29 +19,79 @@ export type DiagnosticSource = "compiler" | "tinymist";
 /**
  * Per-document diagnostics split by source (spec §13.1). Both arrays are held
  * independently so a new tinymist publish does not clobber the compiler set
- * (and vice versa).
+ * (and vice versa). `combined` is the DEDUPLICATED concatenation, recomputed on
+ * every mutation so selectors can return it by reference (zustand v5 requires
+ * `useSyncExternalStore` snapshots to be reference-stable across the same store
+ * state, otherwise React enters an infinite render loop).
  */
 export interface DocDiagnostics {
   compiler: Diagnostic[];
   tinymist: Diagnostic[];
+  /** Dedup'd concatenation of both sources, cached for reference stability. */
+  combined: Diagnostic[];
 }
 
 /** Stable empty array shared by [`getCombined`] / the selectors. */
 const EMPTY: Diagnostic[] = Object.freeze([]) as unknown as Diagnostic[];
 
 /**
- * Read-only combined view: the concatenation of both sources for one document
- * (spec §13.1). UI-layer dedup is optional and left to the consumer. Returns a
- * stable empty array reference when the doc has no diagnostics recorded so
- * reference-equality selectors don't churn on every render.
+ * Build a fresh `DocDiagnostics`, computing the deduplicated `combined` view.
+ * Called by every store mutation so `combined` is always consistent with the
+ * two source arrays AND reference-stable for a given (compiler, tinymist) pair.
+ * Exported so tests can construct `DocDiagnostics` literals without hand-
+ * computing `combined`.
+ */
+export function makeDoc(
+  compiler: Diagnostic[],
+  tinymist: Diagnostic[],
+): DocDiagnostics {
+  const combined =
+    compiler.length === 0
+      ? tinymist
+      : tinymist.length === 0
+        ? compiler
+        : dedupDiagnostics([...compiler, ...tinymist]);
+  return { compiler, tinymist, combined };
+}
+
+/**
+ * Read-only combined view: the cached deduplicated concatenation of both
+ * sources (spec §13.1). Both sources are now populated (the `compiler` slot by
+ * the `diagnostics` compile event; the `tinymist` slot by the LSP bridge), so
+ * the same Typst error — typically reported by BOTH — is collapsed to a single
+ * entry. Returns the stable `EMPTY` reference when the doc has no diagnostics
+ * recorded so referential-equality selectors don't churn on every render.
  */
 export function getCombined(
   doc: DocDiagnostics | undefined,
 ): Diagnostic[] {
   if (doc === undefined) return EMPTY;
-  if (doc.compiler.length === 0) return doc.tinymist;
-  if (doc.tinymist.length === 0) return doc.compiler;
-  return [...doc.compiler, ...doc.tinymist];
+  return doc.combined;
+}
+
+/**
+ * De-duplicate diagnostics by (severity, range, message) — the same Typst
+ * error reported by BOTH the compiler slot and the tinymist slot collapses to a
+ * single entry. PURE + unit-tested. Stable: keeps the FIRST occurrence of each
+ * key, so compiler-sourced diagnostics (authoritative for the native compile)
+ * win over a tinymist duplicate when they precede it in the combined array.
+ *
+ * The range is compared field-for-field (not by reference) so two structurally-
+ * equal ranges from different sources collapse. `code` is intentionally NOT part
+ * of the key — the two sources may phrase the same error with different codes,
+ * and collapsing on code would leave the duplicate visible.
+ */
+export function dedupDiagnostics(diags: readonly Diagnostic[]): Diagnostic[] {
+  if (diags.length < 2) return [...diags];
+  const seen = new Set<string>();
+  const out: Diagnostic[] = [];
+  for (const d of diags) {
+    const key = `${d.severity}|${d.range.start_line}:${d.range.start_column}-${d.range.end_line}:${d.range.end_column}|${d.message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(d);
+  }
+  return out;
 }
 
 /**
@@ -94,16 +144,14 @@ export const useDiagnosticsStore = create<DiagsState>()((set) => ({
   set: (id, source, diags) =>
     set((s) => {
       const prev = s.byDoc[id];
-      // Reuse the other source's array reference when unchanged so
-      // memoized selectors downstream keep their referential stability.
-      const next: DocDiagnostics =
-        prev === undefined
-          ? { compiler: [], tinymist: [] }
-          : prev;
+      // Rebuild via makeDoc so the cached `combined` field stays consistent
+      // with the new source array (and reference-stable for zustand selectors).
+      const compiler = source === "compiler" ? diags : (prev?.compiler ?? []);
+      const tinymist = source === "tinymist" ? diags : (prev?.tinymist ?? []);
       return {
         byDoc: {
           ...s.byDoc,
-          [id]: { ...next, [source]: diags },
+          [id]: makeDoc(compiler, tinymist),
         },
       };
     }),
@@ -111,15 +159,16 @@ export const useDiagnosticsStore = create<DiagsState>()((set) => ({
     set((s) => {
       const prev = s.byDoc[id];
       if (prev === undefined) return s;
-      // If both sources are already empty, drop the entry entirely so the
-      // store doesn't accumulate empty slots for closed docs.
-      const cleared: DocDiagnostics = { ...prev, [source]: [] };
-      if (cleared.compiler.length === 0 && cleared.tinymist.length === 0) {
+      const compiler = source === "compiler" ? [] : prev.compiler;
+      const tinymist = source === "tinymist" ? [] : prev.tinymist;
+      // If both sources are now empty, drop the entry entirely so the store
+      // doesn't accumulate empty slots for closed docs.
+      if (compiler.length === 0 && tinymist.length === 0) {
         const next = { ...s.byDoc };
         delete next[id];
         return { byDoc: next };
       }
-      return { byDoc: { ...s.byDoc, [id]: cleared } };
+      return { byDoc: { ...s.byDoc, [id]: makeDoc(compiler, tinymist) } };
     }),
   clearAll: (id) =>
     set((s) => {
