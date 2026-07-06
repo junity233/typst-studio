@@ -113,6 +113,11 @@ export function EditorArea() {
 
   // --- Scroll-sync & click-to-source wiring -------------------------------
   const [scrollSync] = useSetting<boolean>("preview.scrollSync");
+  // The preview-pane padding (user setting, default 4px) is also the anchor
+  // offset for scroll-sync: the synced line/rect sits this many px below the
+  // pane's top edge. Reading it here keeps the anchor in lockstep with the
+  // actual padding so alignment stays exact at any padding value.
+  const [previewPadding] = useSetting<number>("preview.padding");
 
   // --- Ctrl/Cmd+wheel zoom (per-pane, persisted via settings) -------------
   // Editor pane: editor.fontSize [8,32] step 1 (manifest default 13).
@@ -202,21 +207,35 @@ export function EditorArea() {
   }, []);
 
   // Vertical offset (px) below the pane's top edge where the synced line/rect
-  // is anchored. Matches the preview-pane's top padding (var(--space-sm) = 12px)
-  // so the top line sits just inside the content area, not flush against the
-  // border. Used by BOTH directions so the invariant is symmetric:
+  // is anchored. Equals the preview-pane's top padding so the top line sits
+  // just inside the content area, not flush against the border. Used by BOTH
+  // directions so the invariant is symmetric:
   //   editor-top-line N  ⇄  preview rect for N at paneTop + ANCHOR_PX.
-  const ANCHOR_PX = 12;
+  // Kept in a ref because the scroll-sync mappers are stable `useCallback([])`
+  // closures that must read the LIVE padding (it's user-configurable) without
+  // rebuilding — same pattern as lineMapRef / svgPagesRef above.
+  const anchorPxRef = useRef(previewPadding ?? 4);
+  anchorPxRef.current = previewPadding ?? 4;
   // Per-frame easing factor for the interpolated follow. 0.6 = move 60% of the
   // remaining gap each frame; converges in ~3 frames (~50ms) — fast enough to
   // feel nearly instantaneous, yet eased enough that fast scrolls don't look
   // like hard jumps. (1.0 would snap instantly and feel jittery under rapid
   // input; 0.3 was perceptibly laggy.)
   const EASE = 0.6;
-  // When no user scroll has arrived for this long (ms), force a final absolute
-  // alignment so the two panes are exactly in sync at rest (corrects any drift
-  // accumulated during fast scrolling, where events may coalesce/skip).
+  // When no user scroll has arrived for this long (ms), switch from eased
+  // following to absolute alignment so the two panes are exactly in sync at
+  // rest (corrects any drift accumulated during fast scrolling, where events
+  // may coalesce/skip). This is NOT "the scroll fully stopped" — inertial and
+  // discrete-wheel scrolling can stretch event gaps past this threshold while
+  // the driver is still creeping; the SETTLE_FRAMES check below handles that.
   const IDLE_MS = 150;
+  // After the idle threshold trips, keep the loop alive and re-snap each frame
+  // until the driver-derived target has held steady for this many consecutive
+  // frames. Inertial / slow-mouse-wheel scrolls emit scroll events with growing
+  // gaps near the tail; a single idle frame could land mid-deceleration, snap
+  // the follower to a transient position, and leave a residual offset when the
+  // next delayed event re-kicks. Requiring the target to settle kills that.
+  const SETTLE_FRAMES = 3;
 
   // --- Cross-domain mapping helpers (source line ⇄ preview scrollTop) -----
   // Both helpers work in *logical* scroll coordinates (pane.scrollTop / editor
@@ -257,14 +276,15 @@ export function EditorArea() {
   }, []);
 
   // Given the editor's top visible line, return the preview scrollTop that puts
-  // that line's rect at ANCHOR_PX below the preview's top edge.
+  // that line's rect at `anchorPxRef.current` (= preview padding) below the
+  // preview's top edge.
   const previewScrollTopForLine = useCallback(
     (topLine: number): number | null => {
       const rect = rectAtOrBeforeLine(lineMapRef.current, topLine);
       if (!rect) return null;
       const m = pageMetrics.current[rect.page];
       if (!m) return null;
-      return m.offsetTop + rect.y * m.pxPerPt - ANCHOR_PX;
+      return m.offsetTop + rect.y * m.pxPerPt - anchorPxRef.current;
     },
     [],
   );
@@ -277,9 +297,11 @@ export function EditorArea() {
     const api = editorApiRef.current;
     const pane = previewPaneRef.current;
     if (!api || !pane) return null;
-    // The anchor in content coords = scrollTop + ANCHOR_PX (px from the top of
-    // the scrollable content). Find the page that contains this offset.
-    const anchorContentY = pane.scrollTop + ANCHOR_PX;
+    // The anchor in content coords = scrollTop + anchor (px from the top of
+    // the scrollable content), where `anchor` equals the pane's top padding.
+    // Find the page that contains this offset.
+    const anchor = anchorPxRef.current;
+    const anchorContentY = pane.scrollTop + anchor;
     let leadPage = -1;
     for (let i = 0; i < pageMetrics.current.length; i++) {
       const m = pageMetrics.current[i];
@@ -298,7 +320,7 @@ export function EditorArea() {
     );
     if (!hit) return null;
     // Map the source line into an editor pixel offset.
-    return api.getLineTopOffset(hit.line) - ANCHOR_PX;
+    return api.getLineTopOffset(hit.line) - anchorPxRef.current;
   }, []);
 
   // --- Interpolated sync engine ------------------------------------------
@@ -307,12 +329,26 @@ export function EditorArea() {
   const driverRef = useRef<"editor" | "preview" | null>(null);
   const lastUserScrollAt = useRef(0);
   const animRaf = useRef<number | null>(null);
+  // Settling bookkeeping (see SETTLE_FRAMES). `lastAppliedRef` holds the value
+  // most recently written to the follower, so the ease step has a stable basis
+  // even when the follower's queried position lags a frame (Monaco's
+  // setScrollTop updates its scroll state asynchronously → getScrollTop() can
+  // still read the pre-apply value next frame, inflating `gap` and causing
+  // overshoot oscillation). `settleTargetRef` / `settleCountRef` track how long
+  // the driver-derived target has held still during the post-idle snap phase.
+  const lastAppliedRef = useRef<number | null>(null);
+  const settleTargetRef = useRef<number | null>(null);
+  const settleCountRef = useRef(0);
 
   // Set the driven pane, refresh the target, and start the easing loop if it
   // isn't already running. Called on every user scroll event.
   const kick = useCallback((driver: "editor" | "preview") => {
     driverRef.current = driver;
     lastUserScrollAt.current = performance.now();
+    // A new user event ends any prior settling phase: reset the steady-target
+    // tracker so the loop can re-arm the snap once the driver stops again.
+    settleTargetRef.current = null;
+    settleCountRef.current = 0;
     // Refresh cached page metrics (offsetTop/pxPerPt) so the target math uses
     // the current layout rather than stale geometry from a prior zoom/resize.
     refreshPageMetrics();
@@ -322,7 +358,8 @@ export function EditorArea() {
   }, [refreshPageMetrics]);
 
   // The per-frame step: ease the follower toward its target, then either
-  // schedule another frame or finalize (absolute snap) once idle.
+  // schedule another frame or finalize (absolute snap) once idle AND the
+  // driver-derived target has held steady for SETTLE_FRAMES frames.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const tick = () => {
     animRaf.current = null;
@@ -349,14 +386,16 @@ export function EditorArea() {
     }
     if (target == null) return;
     target = Math.max(0, target);
-    const gap = target - current;
     const idle = performance.now() - lastUserScrollAt.current >= IDLE_MS;
 
     // Wrap the apply so the follower's echo scroll events are ignored (they'd
     // otherwise re-kick the loop in the opposite direction → ping-pong). Both a
     // synchronous flag (covers in-call events) and a timestamp (covers Monaco's
-    // deferred scroll events) are armed.
+    // deferred scroll events) are armed. Also stash the applied value so the
+    // next ease step has a stable basis even when the follower's queried
+    // position lags a frame (Monaco setScrollTop updates asynchronously).
     const apply = (v: number) => {
+      lastAppliedRef.current = v;
       applyingRef.current = true;
       applyingUntil.current = performance.now() + APPLY_GUARD_MS;
       try {
@@ -367,16 +406,39 @@ export function EditorArea() {
     };
 
     if (idle) {
-      // Scroll settled: absolute-align to the driver's final position, killing
-      // any residual drift from eased/inertial scrolling. Always apply (no gap
-      // threshold) so the resting position is exact.
+      // No user event for IDLE_MS: snap the follower to the driver's position.
+      // But this is not necessarily the REST position — inertial and slow
+      // discrete-wheel scrolls can stretch event gaps past IDLE_MS mid-glide.
+      // So instead of snapping once and bailing, keep re-snapping every frame
+      // until the target has held steady for SETTLE_FRAMES consecutive frames
+      // (only then is the driver truly at rest). This absorbs residual inertia
+      // creep that previously left the panes offset after fast scrolling.
       apply(target);
+      if (settleTargetRef.current === target) {
+        settleCountRef.current += 1;
+      } else {
+        settleTargetRef.current = target;
+        settleCountRef.current = 1;
+      }
+      if (settleCountRef.current >= SETTLE_FRAMES) {
+        // Driver genuinely settled: stop the loop. The panes are now exact.
+        settleTargetRef.current = null;
+        settleCountRef.current = 0;
+        return;
+      }
+      animRaf.current = requestAnimationFrame(tick);
       return;
     }
     // Not idle: ease toward the (moving) target. Re-arm every frame while the
     // user is still scrolling so we keep up; convergence isn't the goal here —
-    // the idle branch above does the final exact alignment.
-    const next = current + gap * EASE;
+    // the idle branch above does the final exact alignment. Basis for the ease
+    // is the LAST APPLIED value, not the freshly queried follower position: the
+    // latter can lag a frame after a programmatic scroll (Monaco), and reading
+    // it here would inflate `gap`, overshoot, and oscillate — a drift source at
+    // rest. `lastAppliedRef` falls back to `current` on the very first frame.
+    const basis = lastAppliedRef.current ?? current;
+    const easeGap = target - basis;
+    const next = basis + easeGap * EASE;
     apply(next);
     animRaf.current = requestAnimationFrame(tick);
   };
