@@ -25,6 +25,7 @@ import {
 import {
   applyWrapSelection,
   applyReplaceSelection,
+  applyStrReplace,
   applyToggleLinePrefix,
   applyToggleWrap,
   isInsideWrap as isInsideWrapHelper,
@@ -78,6 +79,13 @@ export interface MonacoEditorApi {
    *  range. Used for snippets where we don't wrap (code block, HR, image,
    *  table produce a block to drop in). */
   replaceSelection: (text: string) => void;
+  /**
+   * Replace the unique first occurrence of `oldString` with `newString` in the
+   * active model. Used by the AI assistant's `edit` tool. Returns false (and
+   * applies nothing) when `oldString` is absent or non-unique; the caller is
+   * responsible for supplying more context to disambiguate. Single undo step.
+   */
+  strReplace: (oldString: string, newString: string) => boolean;
   /** Toggle a line-prefix marker (e.g. `= ` for H1, `- ` for bullet, `+ ` for
    *  numbered). Operates on every line touched by the selection (or the
    *  caret's line if no selection). If the prefix already exists on a line it
@@ -886,6 +894,11 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         const editor = getEditor();
         if (!editor) return;
         applyReplaceSelection(editor, text);
+      },
+      strReplace: (oldString, newString) => {
+        const editor = getEditor();
+        if (!editor) return false;
+        return applyStrReplace(editor, oldString, newString);
       },
       toggleLinePrefix: (prefix) => {
         const editor = getEditor();

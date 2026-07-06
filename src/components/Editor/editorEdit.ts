@@ -205,6 +205,93 @@ export function applyReplaceSelection(
 }
 
 /**
+ * Replace the unique first occurrence of `oldString` with `newString` in the
+ * editor buffer. Used by the AI assistant's `edit` tool.
+ *
+ * - Returns `false` (no-op) when `oldString` is absent from the buffer, or when
+ *   it occurs more than once (the caller — the agent — must supply more context
+ *   to disambiguate). This mirrors the behavior the agent is told about in the
+ *   system prompt and keeps the change deterministic.
+ * - The change is a single undo step: `pushUndoStop` before and after the
+ *   `executeEdits`, matching the {@link applyReplaceSelection} framing.
+ * - Leaves the selection at the end of the inserted text.
+ *
+ * Offset → (line, column) translation walks model lines; offsets are 0-based
+ * character offsets into `model.getValue()` (Monaco uses 1-based line/column).
+ */
+export function applyStrReplace(
+  editor: EditEditor,
+  oldString: string,
+  newString: string,
+): boolean {
+  const model = editor.getModel();
+  if (!model) return false;
+
+  const full = model.getValue();
+  const first = full.indexOf(oldString);
+  if (first === -1) return false;
+  const second = full.indexOf(oldString, first + 1);
+  if (second !== -1) return false; // ambiguous — refuse
+
+  const range = offsetsToRange(model, first, first + oldString.length);
+
+  editor.pushUndoStop();
+  editor.executeEdits("ai-str-replace", [{ range, text: newString }]);
+  const end = computeEndAfterInsert(range.startLineNumber, range.startColumn, newString);
+  editor.setSelection({
+    startLineNumber: end.line,
+    startColumn: end.col,
+    endLineNumber: end.line,
+    endColumn: end.col,
+  });
+  editor.pushUndoStop();
+  editor.focus();
+  return true;
+}
+
+/**
+ * Translate 0-based character offsets into a Monaco `{startLineNumber,
+ * startColumn, endLineNumber, endColumn}` range by walking model lines. Both
+ * offsets must point at valid positions in `model.getValue()`.
+ */
+function offsetsToRange(
+  model: EditModel,
+  startOffset: number,
+  endOffset: number,
+): Monaco.IRange {
+  const value = model.getValue();
+  let line = 1;
+  let lineStart = 0; // 0-based offset of the current line's first char
+  let start: { line: number; col: number } | null = null;
+  let end: { line: number; col: number } | null = null;
+
+  // Walk line boundaries until both offsets are pinned. We re-derive line
+  // starts from `getValue()` (rather than `getLineCount`) so the fake editor
+  // in tests — which may not implement `getLineCount` — still works.
+  const lines = value.split("\n");
+  for (let l = 0; l < lines.length; l++) {
+    const lineEnd = lineStart + lines[l].length; // 0-based, exclusive of newline
+    if (!start && startOffset <= lineEnd) {
+      start = { line: line, col: startOffset - lineStart + 1 };
+    }
+    if (!end && endOffset <= lineEnd + 1) {
+      end = { line: line, col: endOffset - lineStart + 1 };
+    }
+    if (start && end) break;
+    line++;
+    lineStart = lineEnd + 1; // +1 for the `\n`
+  }
+  const s = start ?? { line: 1, col: 1 };
+  const e = end ?? s;
+  return {
+    startLineNumber: s.line,
+    startColumn: s.col,
+    endLineNumber: e.line,
+    endColumn: e.col,
+  };
+}
+
+/**
  * Read the currently-selected text. Returns `""` for a collapsed caret or when
  * there's no model/selection. Used by the format toolbar's link flow (spec
  * §5.3) to pre-fill the link label with the selection and to decide whether to
@@ -630,7 +717,7 @@ function columnAtEnd(sel: Monaco.ISelection, endLine: number): number {
  * `(startLine, startCol)` — i.e. where the cursor lands after typing `text`.
  * Used to build the post-edit selection covering the inserted span.
  */
-function computeEndAfterInsert(
+export function computeEndAfterInsert(
   startLine: number,
   startCol: number,
   text: string,
