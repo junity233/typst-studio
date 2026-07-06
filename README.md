@@ -49,9 +49,6 @@ Its goal is not just to put Typst into a generic code editor, but to offer a des
 - **Themes and language**  
   Offers built-in themes, hot-reloadable custom CSS themes, and English/Simplified Chinese UI.
 
-- **Built-in Git sidebar**  
-  In a workspace repository, you can inspect changes, stage or unstage files, commit, and browse recent history.
-
 ## What You Can Do Today
 
 - Open a single `.typ` file or an entire Typst project folder
@@ -78,7 +75,6 @@ Its goal is not just to put Typst into a generic code editor, but to offer a des
 
 - `Explorer`: browse workspace files
 - `Search`: search across the workspace
-- `Source Control`: inspect Git changes
 - `Outline`: jump by document heading structure
 
 ### 4. Export your final document
@@ -97,7 +93,6 @@ You can export from the native app menu as:
 - `Cmd/Ctrl + Shift + S`: save as
 - `Cmd/Ctrl + B`: toggle sidebar
 - `Cmd/Ctrl + Shift + F`: find in files
-- `Cmd/Ctrl + Shift + G`: open Source Control
 - `Cmd/Ctrl + Shift + O`: open Outline
 
 ## Installation
