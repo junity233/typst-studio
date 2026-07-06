@@ -916,7 +916,10 @@ mod tests {
         // render must differ — proving the include picked up the live buffer.
         let render_main = |svc: &EditorService, id| -> String {
             let doc = svc.last_doc(id).expect("main doc present");
-            crate::render::svg::SvgRenderer::new().render(&doc).join("\n")
+            crate::render::svg::SvgRenderer::new()
+                .render(&doc)
+                .expect("svg render is infallible")
+                .join("\n")
         };
         let svg_before = render_main(&svc, main_meta.id);
 

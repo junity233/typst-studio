@@ -127,7 +127,7 @@ impl ExportService {
     /// Render the tab's document for `revision` to a single PDF byte buffer.
     fn render_pdf_bytes(&self, id: DocumentId, revision: u64) -> Result<Vec<u8>> {
         let doc = self.doc_for_revision(id, revision)?;
-        Ok(self.pdf_renderer.render(&doc))
+        self.pdf_renderer.render(&doc).map_err(AppError::from)
     }
 
     /// Render each page to a PNG byte buffer. Returns `(name, bytes)` pairs
@@ -139,7 +139,7 @@ impl ExportService {
         base_name: &str,
     ) -> Result<Vec<(String, Vec<u8>)>> {
         let doc = self.doc_for_revision(id, revision)?;
-        let pages = self.png_renderer.render(&doc);
+        let pages = self.png_renderer.render(&doc).map_err(AppError::from)?;
         Ok(pages
             .into_iter()
             .enumerate()
@@ -156,7 +156,7 @@ impl ExportService {
         base_name: &str,
     ) -> Result<Vec<(String, Vec<u8>)>> {
         let doc = self.doc_for_revision(id, revision)?;
-        let pages = self.svg_renderer.render(&doc);
+        let pages = self.svg_renderer.render(&doc).map_err(AppError::from)?;
         Ok(pages
             .into_iter()
             .enumerate()

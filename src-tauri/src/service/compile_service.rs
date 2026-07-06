@@ -289,7 +289,12 @@ impl CompileService {
             let text_after = tab.world.text();
             if text_before == text_after {
                 if let Some(doc) = doc {
-                    let pages = SvgRenderer::new().render(&doc);
+                    // SVG rendering is infallible in practice (`typst_svg::svg`
+                    // returns `String`); if it ever errors, degrade to an empty
+                    // page list rather than panicking the compile worker.
+                    let pages = SvgRenderer::new()
+                        .render(&doc)
+                        .unwrap_or_default();
                     // Build the source map from the same compiled document. This
                     // is cheap (one frame walk, KB-scale output) and runs on the
                     // compile thread, so it never blocks the editor. Skipped

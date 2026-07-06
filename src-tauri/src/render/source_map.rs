@@ -376,7 +376,9 @@ mod tests {
         assert!(outcome.success, "demo should compile: {:?}", outcome.errors);
         let doc = doc.expect("doc");
         let map = build_source_map(&doc, &w);
-        let pages = crate::render::svg::SvgRenderer.render(&doc);
+        let pages = crate::render::svg::SvgRenderer
+            .render(&doc)
+            .expect("svg render is infallible");
         // Need the trait in scope for `.render`.
         use crate::render::pipeline::RenderPipeline;
 

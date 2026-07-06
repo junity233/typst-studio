@@ -7,7 +7,7 @@ use typst::utils::Scalar;
 use typst_layout::PagedDocument;
 use typst_render::{RenderOptions, render};
 
-use super::pipeline::RenderPipeline;
+use super::pipeline::{RenderError, RenderPipeline};
 
 /// Renders a Typst document into one PNG byte buffer per page.
 ///
@@ -36,16 +36,21 @@ impl Default for PngRenderer {
 impl RenderPipeline for PngRenderer {
     type Output = Vec<Vec<u8>>;
 
-    fn render(&self, doc: &PagedDocument) -> Self::Output {
+    fn render(&self, doc: &PagedDocument) -> Result<Self::Output, RenderError> {
         let opts = RenderOptions {
             pixel_per_pt: Scalar::new(self.pixel_per_pt),
             render_bleed: false,
         };
+        // `Pixmap::encode_png` is fallible (encoding / OOM failures). Collect
+        // into a `Result<Vec<_>, _>` so the first encoding error short-circuits
+        // into a `RenderError` instead of panicking.
         doc.pages()
             .iter()
             .map(|page| {
                 let pixmap = render(page, &opts);
-                pixmap.encode_png().expect("PNG encoding failed")
+                pixmap
+                    .encode_png()
+                    .map_err(|e| RenderError::new("png", e.to_string()))
             })
             .collect()
     }
@@ -132,7 +137,9 @@ mod tests {
     fn png_renderer_produces_valid_png_per_page() {
         let world = MiniWorld::new("PNG time");
         let doc = world.compile().expect("compile failed");
-        let pages = PngRenderer::default().render(&doc);
+        let pages = PngRenderer::default()
+            .render(&doc)
+            .expect("png render should succeed");
 
         assert!(!pages.is_empty(), "expected at least one page");
         for (i, png) in pages.iter().enumerate() {
@@ -150,8 +157,18 @@ mod tests {
         let world = MiniWorld::new("Scale");
         let doc = world.compile().expect("compile failed");
 
-        let lo = PngRenderer::new(1.0).render(&doc).into_iter().next().unwrap();
-        let hi = PngRenderer::new(3.0).render(&doc).into_iter().next().unwrap();
+        let lo = PngRenderer::new(1.0)
+            .render(&doc)
+            .expect("render lo")
+            .into_iter()
+            .next()
+            .unwrap();
+        let hi = PngRenderer::new(3.0)
+            .render(&doc)
+            .expect("render hi")
+            .into_iter()
+            .next()
+            .unwrap();
         assert!(
             hi.len() > lo.len(),
             "3.0 px/pt ({}) should yield more bytes than 1.0 px/pt ({})",

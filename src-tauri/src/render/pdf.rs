@@ -6,7 +6,7 @@
 use typst_layout::PagedDocument;
 use typst_pdf::{PdfOptions, pdf};
 
-use super::pipeline::RenderPipeline;
+use super::pipeline::{RenderError, RenderPipeline};
 
 /// Renders a Typst document into a single PDF file's raw bytes.
 pub struct PdfRenderer;
@@ -27,12 +27,15 @@ impl Default for PdfRenderer {
 impl RenderPipeline for PdfRenderer {
     type Output = Vec<u8>;
 
-    fn render(&self, doc: &PagedDocument) -> Self::Output {
-        // `typst_pdf::pdf` is infallible for well-formed `PagedDocument`s; it
-        // only fails on internal conversion errors, which are not recoverable
-        // at this layer. We surface them as a panic with full context.
-        pdf(doc, &PdfOptions::default()).unwrap_or_else(|err| {
-            panic!("typst-pdf conversion failed: {err:?}")
+    fn render(&self, doc: &PagedDocument) -> Result<Self::Output, RenderError> {
+        // `typst_pdf::pdf` is fallible: font/image/embedding errors surface as
+        // an `EcoVec<SourceDiagnostic>`. Propagate them so the export command
+        // can render an `AppError::Export` dialog instead of panicking through
+        // the async Tauri command (which would tear down the worker task). The
+        // eco vec isn't `Display`, so join the per-diagnostic messages.
+        pdf(doc, &PdfOptions::default()).map_err(|errs| {
+            let msgs: Vec<&str> = errs.iter().map(|d| d.message.as_str()).collect();
+            RenderError::new("pdf", msgs.join("; "))
         })
     }
 }
@@ -118,7 +121,7 @@ mod tests {
     fn pdf_renderer_emits_valid_pdf_header() {
         let world = MiniWorld::new("Hello, PDF!");
         let doc = world.compile().expect("compile failed");
-        let bytes = PdfRenderer.render(&doc);
+        let bytes = PdfRenderer.render(&doc).expect("pdf render should succeed");
 
         assert!(!bytes.is_empty(), "PDF bytes should be non-empty");
         // Every PDF file starts with `%PDF-`.

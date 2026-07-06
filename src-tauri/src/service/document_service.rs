@@ -1055,7 +1055,11 @@ impl DocumentService {
             (rt.meta.clone(), rt.last_doc.clone(), honest_rev)
         };
         if let Some(doc) = last_doc {
-            let pages = SvgRenderer::new().render(&doc);
+            // SVG rendering is infallible; on the (impossible) error path
+            // degrade to an empty page list instead of panicking the replay.
+            let pages = SvgRenderer::new()
+                .render(&doc)
+                .unwrap_or_default();
             let line_map = build_source_map(&doc, &tab.world);
             let outline = build_outline(&doc, &tab.world);
             self.store.emitter.emit_compiled(

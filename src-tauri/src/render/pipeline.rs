@@ -20,12 +20,49 @@ use typst_layout::PagedDocument;
 /// Implementations live in this module: [`SvgRenderer`](super::svg::SvgRenderer),
 /// [`PdfRenderer`](super::pdf::PdfRenderer) and
 /// [`PngRenderer`](super::png::PngRenderer).
+///
+/// Rendering is fallible: PDF / PNG encoding can fail on font/image/embedding
+/// errors or on OOM. SVG (`typst_svg::svg`) is infallible, so its renderer
+/// always returns `Ok`. The fallible signature lets the export path surface
+/// these as [`AppError::Export`](crate::error::AppError::Export) instead of
+/// panicking through the async Tauri command and tearing down the worker.
 pub trait RenderPipeline {
     /// The format produced for a single document (e.g. `Vec<String>`, `Vec<u8>`).
     type Output;
 
-    /// Render the whole `doc` into [`Output`](Self::Output).
-    fn render(&self, doc: &PagedDocument) -> Self::Output;
+    /// Render the whole `doc` into [`Output`](Self::Output), or return an error
+    /// describing why rendering failed.
+    fn render(&self, doc: &PagedDocument) -> Result<Self::Output, RenderError>;
+}
+
+/// Errors that can occur during rendering. Carries a short kind tag for
+/// logging plus the underlying message.
+#[derive(Debug)]
+pub struct RenderError {
+    /// Pipeline that failed (`"pdf"`, `"png"`, ...).
+    pub kind: &'static str,
+    /// Human-readable failure detail (font/embed/encode error, ...).
+    pub message: String,
+}
+
+impl RenderError {
+    pub fn new(kind: &'static str, message: impl Into<String>) -> Self {
+        Self { kind, message: message.into() }
+    }
+}
+
+impl std::fmt::Display for RenderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} render failed: {}", self.kind, self.message)
+    }
+}
+
+impl std::error::Error for RenderError {}
+
+impl From<RenderError> for crate::error::AppError {
+    fn from(e: RenderError) -> Self {
+        crate::error::AppError::Export(e.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -76,5 +113,14 @@ mod tests {
         accepts_any_pipeline::<SvgRenderer>();
         accepts_any_pipeline::<PdfRenderer>();
         accepts_any_pipeline::<PngRenderer>();
+    }
+
+    /// `RenderError` converts into `AppError::Export`, preserving the message.
+    #[test]
+    fn render_error_maps_to_export_app_error() {
+        let err = crate::error::AppError::from(RenderError::new("pdf", "boom"));
+        let msg = err.to_string();
+        assert!(msg.contains("pdf"), "msg: {msg}");
+        assert!(msg.contains("boom"), "msg: {msg}");
     }
 }

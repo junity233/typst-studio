@@ -6,7 +6,7 @@
 use typst_layout::PagedDocument;
 use typst_svg::{SvgOptions, svg};
 
-use super::pipeline::RenderPipeline;
+use super::pipeline::{RenderError, RenderPipeline};
 
 /// Renders a Typst document into one SVG string per page.
 pub struct SvgRenderer;
@@ -33,9 +33,11 @@ impl Default for SvgRenderer {
 impl RenderPipeline for SvgRenderer {
     type Output = Vec<String>;
 
-    fn render(&self, doc: &PagedDocument) -> Self::Output {
+    fn render(&self, doc: &PagedDocument) -> Result<Self::Output, RenderError> {
         let opts = SvgOptions::default();
-        doc.pages().iter().map(|page| svg(page, &opts)).collect()
+        // `typst_svg::svg` is infallible (returns `String`), so SVG rendering
+        // can never fail — wrap in `Ok` to satisfy the fallible trait.
+        Ok(doc.pages().iter().map(|page| svg(page, &opts)).collect())
     }
 }
 
@@ -129,7 +131,7 @@ mod tests {
     fn svg_renderer_produces_one_svg_per_page() {
         let world = MiniWorld::new("Hello");
         let doc = world.compile().expect("compile failed");
-        let pages = SvgRenderer.render(&doc);
+        let pages = SvgRenderer.render(&doc).expect("svg render is infallible");
 
         assert!(!pages.is_empty(), "expected at least one page");
         for (i, svg) in pages.iter().enumerate() {
