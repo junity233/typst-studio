@@ -117,6 +117,15 @@ pub async fn package_insert_import(name: String, version: String) -> Result<Stri
     Ok(PackageService::import_snippet(&name, &version))
 }
 
+/// The embedded Typst compiler version (e.g. "0.15.0"), for the
+/// compiler-compat warning in the detail view (§4.3). Returns it as a string
+/// so the frontend can compare against `PackageEntry.compiler`.
+#[tauri::command]
+pub async fn package_compiler_version() -> Result<String> {
+    let v = typst::syntax::package::PackageVersion::compiler();
+    Ok(format!("{}.{}.{}", v.major, v.minor, v.patch))
+}
+
 #[tauri::command]
 pub async fn package_get_readme(
     name: String,
@@ -132,10 +141,33 @@ pub async fn package_get_thumbnail(
     version: String,
     state: State<'_, AppState>,
 ) -> Result<Option<String>> {
-    Ok(state
-        .packages
-        .ensure_thumbnail(&name, &version)
-        .map(|p| p.to_string_lossy().into_owned()))
+    let svc = state.packages.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || svc.ensure_thumbnail(&name, &version))
+        .await
+        .map_err(|e| AppError::Other(format!("thumbnail join: {e}")))?;
+    // Return a base64 data URI instead of a bare path. This sidesteps the
+    // Tauri asset-protocol (which needs an explicit scope + platform-specific
+    // URL scheme) and renders directly in an <img src>. Thumbnails are small
+    // (a few hundred KB at most), so the inlining cost is acceptable.
+    Ok(match res {
+        Some(path) => read_data_uri(&path),
+        None => None,
+    })
+}
+
+/// Read `path` into a `data:image/<ext>;base64,...` URI. `None` on read error
+/// or unknown extension (caller falls back to the placeholder).
+fn read_data_uri(path: &std::path::Path) -> Option<String> {
+    let mime = match path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        _ => "image/png", // default; typst thumbnails are PNG per the manifest spec
+    };
+    let bytes = std::fs::read(path).ok()?;
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Some(format!("data:{mime};base64,{b64}"))
 }
 
 fn map_op_err(e: PackageOpError) -> AppError {

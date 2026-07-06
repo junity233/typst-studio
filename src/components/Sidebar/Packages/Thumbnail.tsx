@@ -3,8 +3,10 @@ import { packageGetThumbnail } from "../../../lib/tauri";
 
 /**
  * A template thumbnail. Lazily extracts from the cached package on viewport
- * entry; falls back to a parchment first-letter block when not installed or
- * no thumbnail. The thumbnail is the ONE element allowed `--shadow-product`.
+ * entry (the backend returns a base64 data URI, sidestepping the Tauri
+ * asset-protocol). Falls back to a parchment first-letter block when not
+ * installed, has no thumbnail, or the image fails to load. The thumbnail is
+ * the ONE element allowed `--shadow-product`.
  */
 export function Thumbnail({
   name,
@@ -19,8 +21,9 @@ export function Thumbnail({
   const [seen, setSeen] = useState(false);
   const [ref, setRef] = useState<HTMLDivElement | null>(null);
 
+  // Fetch the data URI once the card scrolls into view.
   useEffect(() => {
-    if (!ref || !seen || !isTemplate) return;
+    if (!seen || !isTemplate) return;
     let cancelled = false;
     void packageGetThumbnail(name, version).then((p) => {
       if (!cancelled && p) setSrc(p);
@@ -28,8 +31,11 @@ export function Thumbnail({
     return () => {
       cancelled = true;
     };
-  }, [ref, seen, name, version, isTemplate]);
+  }, [seen, name, version, isTemplate]);
 
+  // IntersectionObserver drives `seen` — but only the fallback block carries
+  // the ref, so observe the wrapper the caller renders. We observe the
+  // fallback's parent via the closest gallery/body root.
   useEffect(() => {
     if (!ref) return;
     const ob = new IntersectionObserver(
@@ -49,8 +55,9 @@ export function Thumbnail({
     return (
       <img
         className="pkg-thumb-img"
-        src={`asset://${src.replace(/\\/g, "/")}`}
+        src={src}
         alt=""
+        onError={() => setSrc(null)}
       />
     );
   }

@@ -253,6 +253,8 @@ async function browserInvoke<T>(
       return [] as T;
     case "package_init_template":
       return "main.typ" as T;
+    case "package_compiler_version":
+      return "0.15.0" as T;
     case "package_get_readme":
     case "package_get_thumbnail":
       return null as T;
@@ -581,6 +583,11 @@ export async function packageInitTemplate(
 /** Build the `#import "@preview/name:version": *` snippet (pure, no IPC). */
 export function packageImportSnippet(name: string, version: string): string {
   return `#import "@preview/${name}:${version}": *`;
+}
+
+/** The embedded Typst compiler version (e.g. "0.15.0"), for the compat warning. */
+export async function packageCompilerVersion(): Promise<string> {
+  return invoke<string>("package_compiler_version");
 }
 
 /** Read a cached package's README (markdown). */
