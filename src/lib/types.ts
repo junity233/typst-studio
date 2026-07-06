@@ -294,7 +294,7 @@ export type EntryKind = "file" | "dir";
  * as `snake_case` so the wire value (`"permission_denied"`) matches the
  * generated TypeScript literal union.
  */
-export type ErrorCode = "permission_denied" | "read_only" | "disk_full" | "target_missing" | "parent_missing" | "path_occupied" | "external_conflict" | "already_open" | "invalid_path" | "delete_blocked" | "io_transient" | "not_found" | "invalid_input" | "compile" | "export" | "cancelled" | "other";
+export type ErrorCode = "permission_denied" | "read_only" | "disk_full" | "target_missing" | "parent_missing" | "path_occupied" | "external_conflict" | "already_open" | "invalid_path" | "delete_blocked" | "io_transient" | "not_found" | "invalid_input" | "compile" | "export" | "cancelled" | "package_not_found" | "package_install_failed" | "package_uninstall_failed" | "index_fetch_failed" | "template_init_failed" | "other";
 
 /**
  * Payload of the `focus_view` event (§6.1): the frontend activates the tab

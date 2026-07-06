@@ -80,6 +80,16 @@ pub enum ErrorCode {
     /// **not** a failure: the frontend's save-error UI must no-op on this code
     /// (no alert, no failure banner). §5.3 "`Cancelled` 不是错误".
     Cancelled,
+    /// A package was not found in the registry index.
+    PackageNotFound,
+    /// Installing a package failed (network / archive).
+    PackageInstallFailed,
+    /// Uninstalling a package (deleting its cache dir) failed.
+    PackageUninstallFailed,
+    /// Fetching the package index failed.
+    IndexFetchFailed,
+    /// Applying a template failed (disk / path / conflict).
+    TemplateInitFailed,
     /// Anything not covered above.
     Other,
 }

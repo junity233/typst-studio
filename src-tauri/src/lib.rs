@@ -175,6 +175,16 @@ pub fn run() {
             ipc::conflict_commands::clear_conflict,
             // Network: remote image download (paste feature).
             ipc::net_commands::fetch_url_to_file,
+            // Packages & templates (Packages view).
+            ipc::package_commands::package_list_catalog,
+            ipc::package_commands::package_refresh_index,
+            ipc::package_commands::package_install,
+            ipc::package_commands::package_uninstall,
+            ipc::package_commands::package_list_installed,
+            ipc::package_commands::package_init_template,
+            ipc::package_commands::package_insert_import,
+            ipc::package_commands::package_get_readme,
+            ipc::package_commands::package_get_thumbnail,
         ])
         .setup(|app| {
             use std::sync::Arc;
@@ -385,6 +395,22 @@ pub fn run() {
             // Reusable HTTP client shared app-wide via AppState.
             let net = Arc::new(HttpClient::new());
 
+            // Package service (Packages view): index cache + typst-kit handle.
+            // Index/thumbnail caches live under the app config dir (NOT typst's
+            // own dirs) so the two tools never disturb each other's state.
+            let index_path = cfg_dir.join("cache").join("package-index.json");
+            let thumbnail_dir = cfg_dir.join("cache").join("thumbnails");
+            let package_index = std::sync::Arc::new(
+                crate::fs::package_index::PackageIndex::new(net.clone(), index_path),
+            );
+            let packages = std::sync::Arc::new(
+                crate::service::package_service::PackageService::new(
+                    package_index,
+                    crate::fs::packages::system_packages(),
+                    thumbnail_dir,
+                ),
+            );
+
             // User CSS themes (appearance.theme). The themes dir is a sibling of
             // settings.json/session.json under the config dir; the service scans
             // it once at construction and watches it for hot-reload, emitting
@@ -416,6 +442,7 @@ pub fn run() {
                 net,
                 save,
                 watcher_health,
+                packages,
             });
 
             // Custom titlebar (Windows only): drop the OS frame so the frontend
