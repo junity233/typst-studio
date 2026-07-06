@@ -252,6 +252,28 @@ export function paramsEqual(a: StartParams, b: StartParams): boolean {
   );
 }
 
+/**
+ * The generation path segment embedded in a backend LSP `wsUrl` (§6.1:
+ * `ws://127.0.0.1:<port>/lsp/main/<gen>?token=<token>`), or `null` when the
+ * URL does not carry one (legacy/bare endpoints, malformed input).
+ *
+ * PURE — unit-tested directly. The single source of truth for the
+ * "is this wsUrl's generation already superseded?" check in
+ * [`startImpl`](Self.startImpl), so the staleness gate is spec-testable
+ * without a live WebSocket.
+ */
+export function parseGenerationFromWsUrl(wsUrl: string): number | null {
+  // Match the generation segment of `/lsp/main/<gen>`, tolerating whatever
+  // follows (`?token=...`, fragment, etc.). Anchored to the path so a port
+  // like `:8080` is never confused for the generation. The grammar requires a
+  // POSITIVE integer (mirrors the backend §6.1 handshake: gen 0 never appears
+  // on the wire — the manager starts at 1), so `[1-9]\d*` rejects a bare `0`.
+  const m = wsUrl.match(/\/lsp\/main\/([1-9]\d*)(?:[/?#]|$)/);
+  if (m === null) return null;
+  const n = Number(m[1]);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
 /** Extract the basename of a path cross-platform (used for WorkspaceFolder.name). */
 function basename(p: string): string {
   return p.split(/[\\/]/).filter(Boolean).pop() ?? p;
@@ -315,6 +337,50 @@ class AppLanguageClient {
    */
   private selfStopGuard = false;
 
+  /**
+   * Whether ANY client instance has EVER reached `Ready` in this process
+   * lifetime (sticky: never reset to false outside `resetForTest`). Gating the
+   * auto-reconnect on this (rather than `isRunning()`) lets the reconnect hook
+   * fire AFTER a crash: by the time tinymist dies the singleton is no longer
+   * `Running` (so `isRunning()` is false), but it has run before, so a
+   * generation-advancing event (the backend's `childCrash`/`settingsChange`
+   * bump) must still trigger a fresh `start()` against the new endpoint.
+   *
+   * The very FIRST `start()` (the primary one from `MonacoEditor`) is still
+   * owned by `MonacoEditor`: before this flag is set, the reconnect hook stays
+   * inert (mirrors the old Phase-C gate) so it never speculatively opens a
+   * second socket before the editor has wired up the live session.
+   */
+  private everReachedReady = false;
+
+  /**
+   * The highest wsUrl generation ever PASSED to [`startImpl`](Self.startImpl).
+   * When two `start()` calls race on the [`pending`](Self.pending) chain, the
+   * SECOND one (dequeued later) compares its own wsUrl generation against this:
+   * if a newer generation has already been requested, the older queued call is a
+   * no-op. This closes the §6.4 stale-generation hole: a `workspaceChange`
+   * restart bumps gen→N, then a `childCrash` bumps gen→N+1; the frontend queues
+   * `start(wsUrl/N)`, then `start(wsUrl/N+1)`. By the time the N call dequeues,
+   * `maxWsUrlGeneration` is already N+1, so it is dropped instead of connecting
+   * against an endpoint the server has already superseded (which the handshake
+   * would reject with 404 `GenerationPast`, surfacing in the browser as 1006).
+   */
+  private maxWsUrlGeneration: number | null = null;
+
+  /**
+   * The workspace params from the last [`startImpl`](Self.startImpl) that
+   * actually opened a transport (captured right before the WebSocket is
+   * constructed). [`startWithFreshEndpoint`](Self.startWithFreshEndpoint) reads
+   * this to re-initialize against the SAME rooting after a `childCrash` /
+   * `settingsChange` / `manual` bump (where the workspace did NOT change),
+   * rather than forcing the caller to re-derive the workspace params. Survives
+   * a crash because it lives on the singleton, not on the (nulled) `handle`.
+   */
+  private lastWorkspaceParams: {
+    workspaceRootPath: string | null;
+    workspaceName: string | null;
+  } | null = null;
+
   /** Current snapshot (immutable; identity changes on every transition). */
   getSnapshot(): AppLanguageClientSnapshot {
     return this.snapshot;
@@ -356,11 +422,74 @@ class AppLanguageClient {
    * state), so a failed start never poisons the chain for the next caller.
    */
   start(params: StartParams): Promise<void> {
-    this.pending = this.pending.then(() => this.startImpl(params));
+    // §6.4 stale-generation tracking: stamp the wsUrl's generation as the high-
+    // water mark AT ENQUEUE TIME (synchronously), before the call is serialized
+    // behind any in-flight start/stop. This is the critical fix — recording it
+    // inside startImpl would be too late, because startImpl for an EARLIER call
+    // only runs AFTER a LATER call has already enqueued (and by then the later
+    // call's generation is what should win). By recording here, a later
+    // start(wsUrl/N+1) sets maxWsUrlGeneration=N+1 BEFORE the queued
+    // start(wsUrl/N) dequeues; that queued call then sees its own captured gen
+    // (N) is < maxWsUrlGeneration (N+1) and drops itself instead of opening a
+    // socket the server has already superseded (which would 404 → 1006).
+    const enqueuedGen = parseGenerationFromWsUrl(params.wsUrl);
+    if (enqueuedGen !== null) {
+      if (
+        this.maxWsUrlGeneration === null ||
+        enqueuedGen > this.maxWsUrlGeneration
+      ) {
+        this.maxWsUrlGeneration = enqueuedGen;
+      }
+    }
+    this.pending = this.pending.then(() => this.startImpl(params, enqueuedGen));
     return this.pending;
   }
 
-  private async startImpl(params: StartParams): Promise<void> {
+  /**
+   * Reconnect against a fresh backend endpoint (a new `wsUrl` from a generation
+   * bump), reusing the workspace params from the last successful `start()` —
+   * UNLESS `workspaceOverride` is provided, in which case those params win (a
+   * `workspaceChange` bump passes the new root).
+   *
+   * This is the reconnect entry point the auto-reconnect hook uses for
+   * `childCrash` / `settingsChange` / `manual` bumps (workspace unchanged →
+   * reuse prior rooting). It is a thin adapter over [`start`](Self.start): the
+   * heavy lifting (serialization, stale-generation skip, transport open) lives
+   * there. Resolves once the new client reaches Ready/Failed; never rejects.
+   *
+   * Returns false (without enqueueing) when no prior workspace params exist —
+   * the very first connect must go through `start()` explicitly so the rooting
+   * is set deliberately, not inherited from a default.
+   */
+  startWithFreshEndpoint(
+    wsUrl: string,
+    workspaceOverride: {
+      workspaceRootPath: string | null;
+      workspaceName: string | null;
+    } | null,
+  ): Promise<boolean> {
+    const wp =
+      workspaceOverride ??
+      this.lastWorkspaceParams ?? {
+        workspaceRootPath: null,
+        workspaceName: null,
+      };
+    if (workspaceOverride === null && this.lastWorkspaceParams === null) {
+      // No prior start to inherit rooting from; refuse to invent one. The
+      // primary start() must establish the workspace first.
+      return Promise.resolve(false);
+    }
+    return this.start({
+      wsUrl,
+      workspaceRootPath: wp.workspaceRootPath,
+      workspaceName: wp.workspaceName,
+    }).then(() => true);
+  }
+
+  private async startImpl(
+    params: StartParams,
+    enqueuedGen: number | null,
+  ): Promise<void> {
     // Idempotency: already running with identical params → no-op (§9.2).
     if (
       this.handle !== null &&
@@ -376,6 +505,36 @@ class AppLanguageClient {
     ) {
       return;
     }
+
+    // §6.4 stale-generation guard: `enqueuedGen` is this call's wsUrl
+    // generation, captured at ENQUEUE time in `start()`. If the global
+    // maxWsUrlGeneration has since advanced past it (a newer start() enqueued
+    // behind this one), this call's endpoint is already superseded on the
+    // server — the handshake would reject it with 404 `GenerationPast`
+    // (surfacing as a 1006 close). Drop it; the newer call carries the live
+    // endpoint. Only applies when the wsUrl carries a generation (bare
+    // endpoints have no generation to compare).
+    if (
+      enqueuedGen !== null &&
+      this.maxWsUrlGeneration !== null &&
+      enqueuedGen < this.maxWsUrlGeneration
+    ) {
+      // eslint-disable-next-line no-console
+      console.info(
+        "[appLanguageClient] dropping stale-generation start(): wsUrl generation " +
+          `${enqueuedGen} < ${this.maxWsUrlGeneration} already requested`,
+      );
+      return;
+    }
+
+    // Capture the workspace params for this start BEFORE the transport opens,
+    // so a later `childCrash`-driven reconnect (this handle will be nulled by
+    // then) can re-initialize against the SAME rooting via
+    // `startWithFreshEndpoint`.
+    this.lastWorkspaceParams = {
+      workspaceRootPath: params.workspaceRootPath,
+      workspaceName: params.workspaceName,
+    };
 
     // Stop the old client (if any). Generation is bumped BEFORE we touch the
     // new transport so consumers can drop stale data the moment a new client is
@@ -465,7 +624,15 @@ class AppLanguageClient {
                   ? this.snapshot.error ?? "Language client stopped"
                   : null,
             });
-            if (mapped === "Ready" || mapped === "Failed") finish();
+            if (mapped === "Ready") {
+              // Sticky: once any client has reached Ready, auto-reconnect may
+              // fire on a later generation-advancing event even if a crash has
+              // since left isRunning() false (see [`everReachedReady`]).
+              this.everReachedReady = true;
+              finish();
+            } else if (mapped === "Failed") {
+              finish();
+            }
           });
 
           // Set Initializing before start() — the Starting transition will
@@ -610,6 +777,18 @@ class AppLanguageClient {
     return this.handle?.client.isRunning() ?? false;
   }
 
+  /**
+   * Whether any client has EVER reached `Ready` in this process lifetime
+   * (sticky). The reconnect hook uses this instead of [`isRunning`](Self.isRunning)
+   * so a `childCrash`/`settingsChange` generation bump still triggers a
+   * reconnect AFTER a crash left `isRunning()` false. Stays false until the
+   * primary `start()` (from `MonacoEditor`) completes — so the hook never
+   * opens a speculative socket before the editor owns the live session.
+   */
+  everStartedSuccessfully(): boolean {
+    return this.everReachedReady;
+  }
+
   /** Current generation (for diagnostics/event consumers to drop stale data). */
   getGeneration(): number {
     return this.snapshot.generation;
@@ -636,6 +815,9 @@ class AppLanguageClient {
   private async resetForTestImpl(): Promise<void> {
     await this.stopInternal({ bumpGeneration: false });
     this.listeners.clear();
+    this.everReachedReady = false;
+    this.maxWsUrlGeneration = null;
+    this.lastWorkspaceParams = null;
     this.snapshot = { state: "Disabled", generation: 0, error: null };
   }
 

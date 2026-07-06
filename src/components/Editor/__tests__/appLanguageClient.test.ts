@@ -215,6 +215,7 @@ import {
   buildLanguageClientOptions,
   mapStateChange,
   paramsEqual,
+  parseGenerationFromWsUrl,
   appLanguageClient,
   type StartParams,
   type LspClientState,
@@ -666,3 +667,193 @@ describe("appLanguageClient — lifecycle (mocked transports)", () => {
     expect(seen).toContain("Disabled");
   });
 });
+
+describe("parseGenerationFromWsUrl — §6.1 wsUrl generation parsing", () => {
+  it("extracts the generation from a canonical /lsp/main/<gen>?token= URL", () => {
+    expect(
+      parseGenerationFromWsUrl(
+        "ws://127.0.0.1:59780/lsp/main/14?token=a3df078156b3490b8b43388f85a2b9a7",
+      ),
+    ).toBe(14);
+  });
+
+  it("extracts generation 0 is NOT accepted (positive-int rule, §6.1)", () => {
+    // The backend path grammar requires a POSITIVE integer; gen 0 never appears
+    // on the wire (the manager starts at 1). parseGenerationFromWsUrl returns
+    // null for gen 0 so it's never compared as a live generation.
+    expect(parseGenerationFromWsUrl("ws://127.0.0.1:1/lsp/main/0?token=t")).toBeNull();
+  });
+
+  it("extracts the generation when there is no token query", () => {
+    expect(parseGenerationFromWsUrl("ws://h/lsp/main/7")).toBe(7);
+  });
+
+  it("extracts the generation with a trailing slash", () => {
+    expect(parseGenerationFromWsUrl("ws://h/lsp/main/7/")).toBe(7);
+  });
+
+  it("returns null for a bare endpoint with no generation path", () => {
+    expect(parseGenerationFromWsUrl("ws://host/lsp")).toBeNull();
+  });
+
+  it("returns null for a non-matching path", () => {
+    expect(parseGenerationFromWsUrl("ws://host/other/main/14?token=t")).toBeNull();
+  });
+
+  it("does NOT confuse the port for the generation", () => {
+    // Port 59780 must not be matched; only the /lsp/main/<gen> segment counts.
+    expect(
+      parseGenerationFromWsUrl("ws://127.0.0.1:59780/lsp/main/3?token=t"),
+    ).toBe(3);
+  });
+
+  it("returns null for a non-numeric generation segment", () => {
+    expect(parseGenerationFromWsUrl("ws://h/lsp/main/abc?token=t")).toBeNull();
+  });
+});
+
+describe("appLanguageClient — §6.4 stale-generation skip + crash recovery", () => {
+  // Reuse the driveToReady helper from the lifecycle suite.
+  async function driveToReady(params: StartParams, wsIndex: number): Promise<void> {
+    const p = appLanguageClient.start(params);
+    await vi.waitFor(() => expect(webSocketInstances.length).toBe(wsIndex + 1));
+    const ws = webSocketInstances[wsIndex]!;
+    expect(ws.onopen).not.toBeNull();
+    ws.onopen!();
+    await vi.waitFor(() => expect(startedInstances.length).toBe(wsIndex + 1));
+    runStart(startedInstances[wsIndex]!);
+    await p;
+  }
+
+  it("drops a queued start() whose wsUrl generation is OLDER than one already requested", async () => {
+    // The §6.4 hole: workspaceChange bumps gen→14 (frontend queues
+    // start(wsUrl/14)), then childCrash bumps gen→15 (frontend queues
+    // start(wsUrl/15)). By the time the gen-14 call dequeues, maxWsUrlGeneration
+    // is already 15, so it must be DROPPED — otherwise the server (now at 15)
+    // rejects the handshake with 404 GenerationPast, surfacing as 1006.
+    const p14 = appLanguageClient.start({
+      wsUrl: "ws://h/lsp/main/14?token=t",
+      workspaceRootPath: null,
+      workspaceName: null,
+    });
+    const p15 = appLanguageClient.start({
+      wsUrl: "ws://h/lsp/main/15?token=t",
+      workspaceRootPath: null,
+      workspaceName: null,
+    });
+
+    // Wait for exactly ONE WebSocket — the gen-15 one. The gen-14 call was
+    // dropped before opening a socket.
+    await vi.waitFor(() => expect(webSocketInstances).toHaveLength(1));
+    expect(webSocketInstances[0]!.url).toBe("ws://h/lsp/main/15?token=t");
+
+    // Drive gen-15 to Ready.
+    webSocketInstances[0]!.onopen!();
+    await vi.waitFor(() => expect(startedInstances).toHaveLength(1));
+    runStart(startedInstances[0]!);
+    await p15;
+    await p14;
+
+    // Exactly ONE client + ONE WebSocket — the stale gen-14 call opened neither.
+    expect(startedInstances).toHaveLength(1);
+    expect(webSocketInstances).toHaveLength(1);
+    expect(appLanguageClient.getSnapshot().state).toBe("Ready");
+  });
+
+  it("everStartedSuccessfully() is sticky true after the first Ready (survives a Failed)", async () => {
+    await driveToReady(
+      {
+        wsUrl: "ws://h/lsp/main/1?token=t",
+        workspaceRootPath: null,
+        workspaceName: null,
+      },
+      0,
+    );
+    expect(appLanguageClient.everStartedSuccessfully()).toBe(true);
+
+    // Simulate a crash: the live socket errors out.
+    const p2 = appLanguageClient.start({
+      wsUrl: "ws://h/lsp/main/2?token=t",
+      workspaceRootPath: null,
+      workspaceName: null,
+    });
+    await vi.waitFor(() => expect(webSocketInstances).toHaveLength(2));
+    webSocketInstances[1]!.onerror!();
+    await p2;
+    expect(appLanguageClient.getSnapshot().state).toBe("Failed");
+    expect(appLanguageClient.isRunning()).toBe(false);
+    // Sticky: still true even though the client is no longer Running. This is
+    // what lets the reconnect hook fire on a childCrash event.
+    expect(appLanguageClient.everStartedSuccessfully()).toBe(true);
+  });
+
+  it("startWithFreshEndpoint() reuses the prior workspace params (childCrash-style reconnect)", async () => {
+    // Establish a session rooted at /home/me/proj.
+    await driveToReady(
+      {
+        wsUrl: "ws://h/lsp/main/1?token=t",
+        workspaceRootPath: "/home/me/proj",
+        workspaceName: "my-proj",
+      },
+      0,
+    );
+
+    // A childCrash bumps the generation; the reconnect hook calls
+    // startWithFreshEndpoint with NO workspace override → it must reuse the
+    // prior rooting (/home/me/proj), NOT default to null.
+    const okP = appLanguageClient.startWithFreshEndpoint(
+      "ws://h/lsp/main/2?token=t",
+      null,
+    );
+    // Drive the gen-2 handshake: the new client is built from the PRIOR
+    // workspace params (my-proj), captured on the singleton at gen-1 start.
+    await vi.waitFor(() => expect(webSocketInstances).toHaveLength(2));
+    webSocketInstances[1]!.onopen!();
+    await vi.waitFor(() => expect(startedInstances).toHaveLength(2));
+    runStart(startedInstances[1]!);
+    const ok = await okP;
+    expect(ok).toBe(true);
+    const opts = startedInstances[1]!.clientOptions as {
+      workspaceFolder?: { name: string };
+    };
+    expect(opts.workspaceFolder?.name).toBe("my-proj");
+  });
+
+  it("startWithFreshEndpoint() applies a workspace override (workspaceChange-style)", async () => {
+    await driveToReady(
+      {
+        wsUrl: "ws://h/lsp/main/1?token=t",
+        workspaceRootPath: "/home/me/proj",
+        workspaceName: "my-proj",
+      },
+      0,
+    );
+
+    const okP = appLanguageClient.startWithFreshEndpoint(
+      "ws://h/lsp/main/2?token=t",
+      { workspaceRootPath: "/home/me/other", workspaceName: "other" },
+    );
+    await vi.waitFor(() => expect(webSocketInstances).toHaveLength(2));
+    webSocketInstances[1]!.onopen!();
+    await vi.waitFor(() => expect(startedInstances).toHaveLength(2));
+    runStart(startedInstances[1]!);
+    const ok = await okP;
+    expect(ok).toBe(true);
+    const opts = startedInstances[1]!.clientOptions as {
+      workspaceFolder?: { name: string };
+    };
+    expect(opts.workspaceFolder?.name).toBe("other");
+  });
+
+  it("startWithFreshEndpoint() refuses (returns false) when no prior start exists", async () => {
+    // No prior start: refuse to invent a rooting. The primary start() must run
+    // first (MonacoEditor owns it).
+    const ok = await appLanguageClient.startWithFreshEndpoint(
+      "ws://h/lsp/main/1?token=t",
+      null,
+    );
+    expect(ok).toBe(false);
+    expect(webSocketInstances).toHaveLength(0);
+  });
+});
+

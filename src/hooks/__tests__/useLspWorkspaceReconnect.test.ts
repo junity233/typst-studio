@@ -1,24 +1,28 @@
 import { describe, it, expect, vi } from "vitest";
 
 /**
- * Task 8 part C / D — `useLspWorkspaceReconnect` decision helper.
+ * `useLspWorkspaceReconnect` decision helper.
  *
  * The React hook itself drives a live `lspStore` subscription + calls
- * `appLanguageClient.start()`, which transitively pulls Monaco (widget CSS
- * jsdom can't run) and a real WebSocket. The spec-critical decision logic is
- * the PURE helper `shouldReconnectOnStatus`, exercised here directly:
+ * `appLanguageClient.startWithFreshEndpoint()`, which transitively pulls Monaco
+ * (widget CSS jsdom can't run) and a real WebSocket. The spec-critical
+ * decision logic is the PURE helper `shouldReconnectOnStatus`, exercised here
+ * directly.
  *
  * Returns `true` iff:
  *   1. the status object actually transitioned (not the same reference),
- *   2. the new status carries `restartReason === "workspaceChange"`, AND
- *   3. `appLanguageClient.isRunning()` is true (the Phase-C gate — the singleton
- *      is the active client, so reconnecting won't open a second socket against
- *      the wrapper's still-live session).
+ *   2. the new status carries a STRICTLY NEWER generation than the previous
+ *      one (any restart/crash bump that mints a fresh endpoint), AND
+ *   3. `clientEverStarted` is true (the singleton has reached Ready at least
+ *      once — so reconnecting is safe and won't open a second socket before the
+ *      primary start() from MonacoEditor owns the live session).
  *
- * The Phase-C gate (#3) is what keeps this hook inert today: nothing starts
- * `appLanguageClient` yet, so `isRunning()` is false and the helper returns
- * false even on a genuine workspace-change event. The day the rewire lands,
- * the same helper starts returning true and the reconnect just works.
+ * The gate (#3) keeps this hook inert until the primary `start()` completes:
+ * before that, `everStartedSuccessfully()` is false and the helper returns
+ * false even on a genuine generation advance. Once any client has reached
+ * Ready, the same helper starts returning true and the reconnect just works —
+ * including AFTER a `childCrash` (where `isRunning()` is already false but
+ * `everStartedSuccessfully()` stays sticky-true).
  */
 
 // Mock the appLanguageClient module so importing the hook file doesn't pull
@@ -26,7 +30,9 @@ import { describe, it, expect, vi } from "vitest";
 vi.mock("../../components/Editor/appLanguageClient", () => ({
   appLanguageClient: {
     isRunning: () => false,
+    everStartedSuccessfully: () => false,
     start: vi.fn(),
+    startWithFreshEndpoint: vi.fn(),
     subscribe: () => () => {},
     getGeneration: () => 0,
   },
@@ -49,28 +55,61 @@ function status(over: Partial<LspStatus> = {}): LspStatus {
   };
 }
 
-describe("shouldReconnectOnStatus — §14 workspace-change reconnect decision", () => {
-  it("returns true on a WorkspaceChange transition when the client is running", () => {
-    const prev = status({ restartReason: null, statusKind: "running" });
+describe("shouldReconnectOnStatus — generation-advance reconnect decision", () => {
+  it("returns true on a WorkspaceChange generation advance when the client has started", () => {
+    const prev = status({ restartReason: null, statusKind: "running", generation: 1 });
     const current = status({ restartReason: "workspaceChange", generation: 2 });
     expect(shouldReconnectOnStatus(prev, current, true)).toBe(true);
   });
 
-  it("returns false when restartReason is NOT workspaceChange (e.g. childCrash)", () => {
-    const prev = status({ restartReason: null });
-    const current = status({ restartReason: "childCrash", generation: 2 });
-    // Even with the client running, a crash-driven restart is not a workspace
-    // change — the existing client will recover on its own; no workspace-aware
-    // re-initialize is needed.
+  it("returns true on a childCrash generation advance (reconnect after a crash)", () => {
+    // A childCrash bumps the generation and leaves isRunning() false; but the
+    // gate is everStartedSuccessfully (sticky), so the reconnect STILL fires —
+    // this is the fix for "Server will not be restarted" dead-LSP-after-crash.
+    const prev = status({ restartReason: null, statusKind: "running", generation: 2 });
+    const current = status({ restartReason: "childCrash", generation: 3 });
+    expect(shouldReconnectOnStatus(prev, current, true)).toBe(true);
+  });
+
+  it("returns true on a settingsChange generation advance", () => {
+    const prev = status({ restartReason: null, generation: 2 });
+    const current = status({ restartReason: "settingsChange", generation: 3 });
+    expect(shouldReconnectOnStatus(prev, current, true)).toBe(true);
+  });
+
+  it("returns true on a manual-restart generation advance", () => {
+    const prev = status({ restartReason: null, generation: 2 });
+    const current = status({ restartReason: "manual", generation: 3 });
+    expect(shouldReconnectOnStatus(prev, current, true)).toBe(true);
+  });
+
+  it("returns false when the generation did NOT advance (steady-state re-publish)", () => {
+    // A follow-up Running publish carrying the SAME generation is not a new
+    // endpoint — no reconnect.
+    const prev = status({ restartReason: "workspaceChange", generation: 2 });
+    const current = status({
+      restartReason: null,
+      generation: 2,
+      statusKind: "running",
+    });
     expect(shouldReconnectOnStatus(prev, current, true)).toBe(false);
   });
 
-  it("returns false when restartReason is workspaceChange but client is NOT running (Phase-C gate)", () => {
+  it("returns false when the generation went BACKWARDS (stale event)", () => {
+    // Forward-only: a stale event the store already gated out must also be
+    // ignored here (defensive — shouldAcceptStatusEvent already drops it, but
+    // this helper must not act on a regression even if it slipped through).
+    const prev = status({ restartReason: "workspaceChange", generation: 5 });
+    const current = status({ restartReason: "childCrash", generation: 4 });
+    expect(shouldReconnectOnStatus(prev, current, true)).toBe(false);
+  });
+
+  it("returns false when clientEverStarted is false (gate: primary start not done yet)", () => {
+    // Before the first Ready, the hook must stay inert — MonacoEditor owns the
+    // primary start(), and a speculative second socket would lose the
+    // single-generation-single-connection race.
     const prev = status({ restartReason: null });
     const current = status({ restartReason: "workspaceChange", generation: 2 });
-    // This is the INERT-today case: the singleton isn't the active client yet,
-    // so we must NOT speculatively start it (would open a second socket against
-    // the wrapper's live session). The hook logs the intent but no-ops.
     expect(shouldReconnectOnStatus(prev, current, false)).toBe(false);
   });
 
@@ -81,27 +120,19 @@ describe("shouldReconnectOnStatus — §14 workspace-change reconnect decision",
     expect(shouldReconnectOnStatus(s, s, true)).toBe(false);
   });
 
-  it("returns false on the very first run (prev === null), even for a workspaceChange status", () => {
-    // On mount, prev is null. A workspaceChange status already in the store at
+  it("returns false on the very first run (prev === null)", () => {
+    // On mount, prev is null. A generation advance already in the store at
     // mount is NOT a fresh transition we should react to — we only reconnect on
-    // a transition INTO the reason, which can't have happened before mount.
+    // an advance we actually witness.
     const current = status({ restartReason: "workspaceChange" });
     expect(shouldReconnectOnStatus(null, current, true)).toBe(false);
   });
 
-  it("returns false when current.restartReason is null (steady-state status)", () => {
+  it("returns true for consecutive generation advances (rapid restarts)", () => {
+    // Two bumps back-to-back (e.g. workspaceChange then childCrash) each mint a
+    // fresh endpoint and each warrant their own reconnect.
     const prev = status({ restartReason: "workspaceChange", generation: 2 });
-    const current = status({ restartReason: null, generation: 2, statusKind: "running" });
-    // The follow-up Running publish after the restart carries no reason — not a
-    // new workspace change. (The reconnect already happened on the Restarting
-    // publish that carried the reason.)
-    expect(shouldReconnectOnStatus(prev, current, true)).toBe(false);
-  });
-
-  it("returns true for consecutive WorkspaceChange transitions (rapid open+switch)", () => {
-    // Two workspace changes back-to-back each warrant their own reconnect.
-    const prev = status({ restartReason: "workspaceChange", generation: 2 });
-    const current = status({ restartReason: "workspaceChange", generation: 3 });
+    const current = status({ restartReason: "childCrash", generation: 3 });
     expect(shouldReconnectOnStatus(prev, current, true)).toBe(true);
   });
 });
