@@ -10,9 +10,10 @@ use crate::error::{AppError, Result};
 use crate::ipc::state::AppState;
 use crate::service::theme_service::ThemeInfo;
 
-/// List discovered user themes (folder name + metadata). Always includes at
-/// least the implicit built-in `default` on the frontend side; the backend
-/// returns only on-disk themes.
+/// List the available themes: compiled-in built-ins first (in their defined
+/// order), then any user themes on disk that don't shadow a built-in. A user
+/// theme with the same id as a built-in overrides the built-in's metadata. The
+/// implicit built-in `default` is prepended on the frontend side only.
 #[tauri::command]
 pub async fn list_themes(state: State<'_, AppState>) -> Result<Vec<ThemeInfo>> {
     Ok(state.themes.list())

@@ -1,7 +1,13 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { LineRect } from "../../lib/types";
-import { clientToPagePt, lineFromPoint, parseViewBoxPt } from "./previewMapping";
+import {
+  clientToPagePt,
+  lineFromPoint,
+  lineRectBounds,
+  parseViewBoxPt,
+  rectsForLine,
+} from "./previewMapping";
 
 // `navigator.platform` reliably reports "MacIntel" / "iPhone" on Apple
 // platforms in Tauri's WKWebView/WebView2; used only to pick the right
@@ -19,6 +25,7 @@ interface SvgPageProps {
    * jump-to-source; empty if the page has no mapped text.
    */
   lineRects?: LineRect[];
+  activeLine?: number | null;
   /** Invoked with a 1-indexed source line on double-click. */
   onJumpToLine?: (line: number) => void;
   /**
@@ -61,6 +68,7 @@ export const SvgPage = memo(function SvgPage({
   pageNumber,
   zoom = 1,
   lineRects,
+  activeLine,
   onJumpToLine,
   onImgLoad,
   pageRef,
@@ -74,6 +82,33 @@ export const SvgPage = memo(function SvgPage({
   // (pt × 96/72), which would inflate pt coordinates by ~1.333×. See
   // previewMapping.ts's coordinate-model doc for details.
   const ptSize = useMemo(() => parseViewBoxPt(svg), [svg]);
+  const activeLineRects = useMemo(
+    () =>
+      activeLine == null || !lineRects
+        ? []
+        : rectsForLine(lineRects, activeLine),
+    [activeLine, lineRects],
+  );
+  const activeBounds = useMemo(
+    () => lineRectBounds(activeLineRects),
+    [activeLineRects],
+  );
+  const activeRail = useMemo(() => {
+    if (!ptSize || !activeBounds) return null;
+    const railWidth = 3;
+    const railGap = 6;
+    const inset = 2;
+    const x = Math.max(
+      inset,
+      Math.min(activeBounds.x - railGap, ptSize.width - railWidth - inset),
+    );
+    return {
+      x,
+      y: activeBounds.y,
+      w: railWidth,
+      h: activeBounds.h,
+    };
+  }, [activeBounds, ptSize]);
 
   useEffect(() => {
     const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
@@ -125,6 +160,35 @@ export const SvgPage = memo(function SvgPage({
               : undefined
           }
         />
+      )}
+      {url && ptSize && activeLineRects.length > 0 && (
+        <svg
+          className="svg-page-overlay"
+          viewBox={`0 0 ${ptSize.width} ${ptSize.height}`}
+          aria-hidden="true"
+        >
+          {activeRail && (
+            <rect
+              className="svg-page-highlight-rail"
+              x={activeRail.x}
+              y={activeRail.y}
+              width={activeRail.w}
+              height={activeRail.h}
+              rx={activeRail.w / 2}
+            />
+          )}
+          {activeLineRects.map((r, i) => (
+            <rect
+              key={`${r.line}:${r.x}:${r.y}:${i}`}
+              className="svg-page-highlight-rect"
+              x={r.x}
+              y={r.y}
+              width={r.w}
+              height={r.h}
+              rx={1.5}
+            />
+          ))}
+        </svg>
       )}
     </div>
   );

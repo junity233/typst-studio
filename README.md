@@ -1,227 +1,232 @@
 # Typst Studio
 
-> A native desktop Typst editor with live SVG preview — Tauri 2 + React + Rust, embedding the official typst compiler.
+> A native desktop editor for Typst, focused on local-first workflows, live preview, and smooth writing.
+
+[简体中文](README_zh.md)
 
 ![status](https://img.shields.io/badge/status-WIP-yellow)
 ![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
 ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 
-<!-- ![screenshot](docs/screenshot.png) -->
+![Typst Studio icon](app-icon.png)
 
-## What it is
+## Overview
 
-Typst Studio is a visual editor for [Typst](https://typst.app), the modern, markup-based typesetting
-system. The window is split in two: a [Monaco](https://microsoft.github.io/monaco-editor/) code editor on
-the left and a real-time SVG preview on the right. The Typst compiler is embedded directly in the Rust
-backend via the official crates (`typst`, `typst-svg`, `typst-pdf`, `typst-render`, `typst-kit`), so the
-`EditorWorld` instance stays alive across keystrokes and incremental compilation (via `comemo`) yields
-millisecond-level responses — 100% consistent with the official Typst toolchain.
+**Typst Studio** is a cross-platform desktop editor built specifically for [Typst](https://typst.app). It uses `Tauri 2 + React + Rust` and embeds the official Typst compiler directly, so you can edit, preview, and export documents without relying on a separate Typst CLI install.
 
-## Features
+Its goal is not just to put Typst into a generic code editor, but to offer a desktop experience that feels better for writing, typesetting, and document organization: code on the left, real-time multi-page preview on the right, plus workspace, search, outline, export, recovery, and theming support.
 
-- **Real-time preview** — ~150 ms edit-to-preview latency. A per-tab compile worker (single-threaded, 128 MB stack) compiles on every edit via typst's incremental evaluator; SVG pages render as blob-URL images for off-main-thread decoding.
-- **Multi-tab editing** — each tab owns an independent `EditorWorld` + `CompileWorker`.
-- **PDF export** — one-shot export via `typst-pdf`.
-- **PNG export** — per-page raster export via `typst-render`.
-- **Monaco editor** — Typst syntax highlighting via Monarch tokenizer + light theme.
-- **Diagnostics** — Typst errors surface as Monaco squiggles plus a clickable problems panel.
-- **System fonts** — automatic loading via `typst-kit` (embedded + scanned fonts).
-- **Resizable split** — drag the divider (Allotment).
+## Who It Is For
 
-## Architecture
+- People who want a desktop Typst app instead of a browser-only or CLI-only workflow
+- People who want to write source and watch the rendered result side by side
+- People who need local folders, document search, outline navigation, and export tools
+- People who prefer a local-first workflow and do not want to depend on cloud sync
 
-```
-┌─ Webview (React) ─────────────────────────────────────────┐
-│  Monaco onChange → debounce 100ms → invoke(update_text)    │
-│       ▲                                                    │
-│       │ listen("compiled", pages[]) → blob-URL <img>       │
-│       │ listen("diagnostics", errs[])  → Monaco markers    │
-│       │ listen("status", state)        → status bar        │
-│       │ (preview updates wrapped in startTransition)        │
-└───────┼────────────────────────────────────────────────────┘
-        │  Tauri IPC (all async; spawn_blocking for IO/dialogs)
-┌───────┴────────────────────────────────────────────────────┐
-│  Rust backend                                               │
-│  EditorService                                              │
-│   ├─ tabs: HashMap<Id, Arc<TabState>>                       │
-│   │    TabState { world: EditorWorld (no Mutex!)            │
-│   │               state: Mutex<TabRuntime> }                │
-│   ├─ workers: HashMap<Id, CompileWorker>                    │
-│   │    CompileWorker: 1 thread/tab, 128MB stack, channel    │
-│   │    ├─ coalesces N keystrokes → 1 compile                │
-│   │    └─ skips SVG render if text changed mid-compile      │
-│   └─ ExportService → render_pdf/png (IO in command layer)   │
-└─────────────────────────────────────────────────────────────┘
-```
+## Highlights
 
-The backend is layered `domain → typst_engine → service → ipc`, with each extension point
-(`SourceProvider`, `RenderPipeline`, `LanguageService`, `Project`, `ConfigStore`) behind a trait.
-See the full design doc: [`docs/superpowers/specs/2026-06-30-typst-studio-design.md`](docs/superpowers/specs/2026-06-30-typst-studio-design.md).
+- **Embedded official Typst compiler**  
+  You can compile, preview, and export Typst documents out of the box, without first installing the Typst CLI.
 
-## Prerequisites
+- **Live multi-page preview**  
+  The preview refreshes automatically as you edit and supports multi-page SVG rendering.
 
-- **Node.js** 20+
-- **Rust** 1.92+ (Typst 0.15 raises the MSRV to 1.92)
-- **Platform-specific Tauri dependencies** — see the
-  [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/).
+- **Preview-to-source mapping**  
+  Editor and preview can scroll together, and double-clicking the preview jumps back to the corresponding source line.
 
-<details>
-<summary>macOS</summary>
+- **Workspace workflow**  
+  You can open a full folder workspace, browse files in the explorer, create, rename, or delete entries, and reopen recent workspaces.
 
-```bash
-# Xcode command-line tools provide everything Tauri needs.
-xcode-select --install
-brew install rustup-init
-```
-</details>
+- **Writing navigation**  
+  Built-in outline view lets you navigate by headings, and workspace-wide search helps you find content across files.
 
-<details>
-<summary>Linux (Debian/Ubuntu)</summary>
+- **Export options**  
+  Supports export to `PDF`, `PNG`, and `SVG`.
 
-```bash
-sudo apt update
-sudo apt install -y \
-  libwebkit2gtk-4.1-dev \
-  build-essential \
-  curl \
-  wget \
-  file \
-  libxdo-dev \
-  libssl-dev \
-  libayatana-appindicator3-dev \
-  librsvg2-dev
-```
-</details>
+- **Safer saving and recovery**  
+  Includes autosave modes, session restore, crash recovery, and conflict handling when files change outside the app.
 
-<details>
-<summary>Windows</summary>
+- **Themes and language**  
+  Offers built-in themes, hot-reloadable custom CSS themes, and English/Simplified Chinese UI.
 
-Install the [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-(needed for the Rust `msvc` toolchain) and [Rust](https://www.rust-lang.org/tools/install).
-WebView2 is preinstalled on Windows 10/11.
-</details>
+- **Built-in Git sidebar**  
+  In a workspace repository, you can inspect changes, stage or unstage files, commit, and browse recent history.
 
-## Development
+## What You Can Do Today
+
+- Open a single `.typ` file or an entire Typst project folder
+- Edit multiple documents in tabs
+- Use the format toolbar to quickly insert headings, lists, tables, links, and images
+- Convert pasted rich text into Typst markup
+- Inspect diagnostics and jump to problem locations
+- Reuse the running app instance when opening `.typ` files, instead of spawning duplicate windows
+
+## Quick Start
+
+### 1. Open a file or folder
+
+- If you only want to edit one document, just open a `.typ` file
+- If you are working on a full project, opening the whole folder is recommended
+
+### 2. Edit on the left, preview on the right
+
+- The left side is a Monaco editor
+- The right side is a multi-page preview pane
+- You can hide or show the sidebar and preview pane as needed
+
+### 3. Use the sidebar for navigation
+
+- `Explorer`: browse workspace files
+- `Search`: search across the workspace
+- `Source Control`: inspect Git changes
+- `Outline`: jump by document heading structure
+
+### 4. Export your final document
+
+You can export from the native app menu as:
+
+- `PDF`
+- `PNG`
+- `SVG`
+
+## Useful Shortcuts
+
+> Shortcuts use `Cmd` on macOS and `Ctrl` on Windows/Linux.
+
+- `Cmd/Ctrl + S`: save the current document
+- `Cmd/Ctrl + Shift + S`: save as
+- `Cmd/Ctrl + B`: toggle sidebar
+- `Cmd/Ctrl + Shift + F`: find in files
+- `Cmd/Ctrl + Shift + G`: open Source Control
+- `Cmd/Ctrl + Shift + O`: open Outline
+
+## Installation
+
+### Option 1: Use a packaged release
+
+When packaged builds are available on the [Releases](../../releases) page, download the one for your platform.
+
+Supported target platforms:
+
+- macOS
+- Windows
+- Linux
+
+> The repository already includes a cross-platform release workflow. If no downloadable build is currently published, use the source-based setup below.
+
+### Option 2: Run from source
+
+#### Requirements
+
+- `Node.js 20+`
+- `Rust 1.92+`
+- Platform-specific Tauri prerequisites
+
+Please check the official Tauri prerequisites first:
+
+- [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
+
+#### Development run
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
-The first build downloads and compiles the Typst crates (`typst`, `typst-svg`, `typst-pdf`,
-`typst-render`, `typst-kit`) — expect roughly 2–3 minutes for the initial compile. Subsequent
-dev builds are fast thanks to incremental compilation.
-
-## Production build
+#### Production build
 
 ```bash
 npm run tauri build
 ```
 
-Artifacts are written to `src-tauri/target/release/bundle/`:
+Build artifacts are written to `src-tauri/target/release/bundle/`.
 
-| Platform | Output |
-|---|---|
-| macOS | `Typst Studio.app` + `Typst Studio_0.1.0_aarch64.dmg` / `_x64.dmg` |
-| Windows | `Typst Studio_0.1.0_x64-setup.exe` (NSIS, user-scope) + `.msi` |
-| Linux | `typst-studio_0.1.0_amd64.deb` + `typst-studio_0.1.0_amd64.AppImage` |
+## Optional Components
 
-The macOS DMG targets `minimumSystemVersion` 10.15. The Windows installer uses NSIS in
-`currentUser` mode (no administrator elevation required). The Linux AppImage does not bundle
-the media framework by default.
+### Tinymist language service
 
-## Type generation (for developers)
+Typst Studio includes integration for the Tinymist language server, but Tinymist itself is not bundled with the app.
 
-The Rust ↔ TypeScript IPC types are generated with [`ts-rs`](https://crates.io/crates/ts-rs) behind
-the `export-types` feature and are checked into [`src/lib/types.ts`](src/lib/types.ts). Regenerate
-after changing command signatures or domain models:
+If you want richer language-service behavior, install `tinymist` separately and make sure it is available on your system `PATH`.
 
-```bash
-cd src-tauri && cargo test --features export-types
-```
+## Personalization
 
-## Project layout
+### Themes
 
-```
-typst-studio/
-├── src/                          # React + TypeScript frontend
-│   ├── App.tsx                   # root layout: SplitPane + title bar + status bar
-│   ├── main.tsx
-│   ├── components/
-│   │   ├── SplitPane/            # draggable left/right divider (allotment)
-│   │   ├── Editor/               # Monaco + Typst grammar + diagnostics markers
-│   │   ├── Preview/              # blob-URL <img> preview (per-page SvgPage, memoized)
-│   │   ├── Diagnostics/          # collapsible problems panel (click to jump)
-│   │   ├── StatusBar/            # compile status: idle / Xms / N errors
-│   │   └── TitleBar/             # top bar + menu actions
-│   ├── store/                    # zustand stores (tabs, diagnostics)
-│   ├── hooks/                    # useTypstCompile, useDebounce, ...
-│   ├── lib/                      # tauri.ts (invoke/listen), types.ts (ts-rs), ui-types.ts
-│   └── styles/
-├── src-tauri/                    # Rust backend
-│   ├── tauri.conf.json           # Tauri 2 bundle config (3 platforms)
-│   ├── capabilities/default.json # window permissions + fs/dialog scopes
-│   └── src/
-│       ├── main.rs               # bootstrap: build app, register commands, mount State
-│       ├── lib.rs                # library entry (integration tests)
-│       ├── domain/               # domain models (Document, Diagnostics, CompileResult) — no IO
-│       ├── typst_engine/         # EditorWorld (impl typst::World), compiler, source/font loading
-│       ├── render/               # RenderPipeline trait: Svg / Pdf / Png renderers
-│       ├── service/              # EditorService + ExportService + CompileWorker (per-tab thread)
-│       ├── ipc/                  # #[tauri::command] wrappers, events, AppState
-│       ├── project/              # Project + VirtualFs traits (MVP: single file)
-│       ├── languageserver/       # LanguageService trait (MVP: NoopLs)
-│       └── settings/             # AppConfig + ConfigStore
-├── docs/superpowers/specs/       # design spec + IPC contract
-└── .github/workflows/release.yml # 3-platform CI release pipeline
-```
+The app ships with multiple built-in themes and also supports user-authored themes. Custom themes hot-reload after saving, with no app restart required.
 
-## Security
+Theme documentation:
 
-`src-tauri/capabilities/default.json` scopes the filesystem plugin commands
-(`fs:allow-read-text-file`, `fs:allow-write-text-file`, `fs:allow-write-file`,
-`fs:allow-mkdir`, `fs:allow-exists`) to `$HOME/**`, so the frontend-exposed fs
-plugin can read/write within the user's home directory (Tauri's `deny-default`
-protections, e.g. the webview data folder on Windows/Linux, still take
-precedence). Note: the app's core file I/O (open/save/save-as) goes through
-**Rust IPC commands using `std::fs` directly**, which bypass the plugin's
-permission scope — so the capability glob is cosmetic for those paths but still
-correct practice for any frontend-exposed fs API. Tightening to user-chosen
-paths only requires deeper integration (a per-action grant model) and is tracked
-as a future production gate. `app.security.csp` is set to a production policy
-(see `tauri.conf.json`): `default-src 'self'`, with `img-src` allowing the
-`blob:`/`data:` preview SVGs and `worker-src 'self'` for Monaco's workers.
+- [docs/themes.md](docs/themes.md)
 
-### Recovery data & uninstall
+### Language
 
-Crash-recovery snapshots of unsaved edits are written to the app's private data
-directory under `<app-data>/recovery/`:
+Currently supported UI languages:
 
-- **macOS**: `~/Library/Application Support/com.typststudio.app/recovery/`
-- **Linux**: `~/.local/share/com.typststudio.app/recovery/`
-- **Windows**: `%APPDATA%\com.typststudio.app\recovery\`
+- English
+- Simplified Chinese
 
-These are NOT deleted on uninstall — uninstalling the app leaves recovery data
-in place so a reinstall can still offer to restore unsaved work. To remove them,
-use **Settings → Data & Privacy → Clear recovery data**, or delete the
-`recovery/` folder above manually.
+### Configurable settings
 
-## Roadmap
+Things you can configure in the Settings window include:
 
-See the [design spec](docs/superpowers/specs/2026-06-30-typst-studio-design.md) for the full plan.
-Deliberately **out of scope for the MVP**:
+- Editor font, font size, line height, wrapping, minimap, and whitespace rendering
+- Compile and editor debounce
+- Autosave behavior
+- Preview zoom, background, and padding
+- Search result limits
+- PNG export resolution
+- Extra font directories
 
-- Multi-file project management UI (the `World` already handles `#include`; only the UI is missing)
-- Language-server features — completion / go-to-definition (LSP; `typst-ide` / tinymist)
-- Custom package / font management UI
-- Incremental SVG diff for very large documents (would require `typst-ts` / reflexo)
+## Data and Privacy
+
+Typst Studio is local-first. Your documents remain on your local file system.
+
+The app also stores a small amount of local support data to improve resilience and usability, such as:
+
+- Settings
+- Recent workspaces
+- Last session state
+- Crash-recovery snapshots
+- User themes
+
+### Crash-recovery locations
+
+Recovery snapshots are stored under the app's private data directory in a `recovery/` subfolder:
+
+| Platform | Path |
+| --- | --- |
+| macOS | `~/Library/Application Support/com.typststudio.app/recovery/` |
+| Windows | `%APPDATA%\com.typststudio.app\recovery\` |
+| Linux | `~/.local/share/com.typststudio.app/recovery/` |
+
+These recovery files are not automatically deleted on uninstall. You can clear them manually from Settings.
+
+## Current Status
+
+Typst Studio is still an actively evolving project and is best suited for users who are comfortable trying an early-stage app.
+
+The local editing experience is already substantial, but this is not yet a fully polished, everything-included Typst IDE.
+
+## Known Limitations
+
+- Language-service behavior depends on whether external `tinymist` is available
+- Custom themes currently focus on the app chrome; Monaco and preview theme linkage is not yet fully unified
+- Project-level workflows are already present, but the overall experience is still being refined
+- This is not a cloud collaboration tool; it is currently positioned as a local desktop editor
+
+## Direction
+
+The project is moving toward feeling more like a dedicated Typst workstation than a generic code editor.
+
+Key directions include stronger project workflows, richer language-service support, a better theming system, and continued refinement of the desktop writing experience.
 
 ## License
 
-Dual-licensed under **MIT OR Apache-2.0**, matching the Typst project itself.
+This project is dual-licensed under **MIT OR Apache-2.0**, matching the Typst project itself.
 
 ## Acknowledgments
 
-- [Typst](https://github.com/typst/typst) — the typesetting system this editor is built around.
-- [Tauri](https://tauri.app) — the cross-platform application framework.
-- [Monaco Editor](https://microsoft.github.io/monaco-editor/) — the editor component.
+- [Typst](https://github.com/typst/typst)
+- [Tauri](https://tauri.app)
+- [Monaco Editor](https://microsoft.github.io/monaco-editor/)

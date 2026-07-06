@@ -32,6 +32,12 @@ const THEME_STYLE_ID = "user-theme";
 export interface ThemeState {
   /** Discovered user themes, sorted by display name. Empty until hydrated. */
   themes: ThemeInfo[];
+  /** The active theme's `base` (light/dark hint). Drives Monaco editor chrome
+   *  + token theme and the preview desk background. `"light"` until `useTheme`
+   *  resolves it from the current theme's `ThemeInfo.base` (default/unknown →
+   *  light). NOT owned here — `useTheme` sets it via `setState` to avoid a
+   *  circular dependency on the settings layer. */
+  currentBase: "light" | "dark";
   /** Load the theme list once and subscribe to `themes_changed` for hot reload.
    *  Idempotent per window. */
   hydrate: () => Promise<void>;
@@ -42,6 +48,7 @@ let subscribed = false;
 
 export const useThemeStore = create<ThemeState>()(() => ({
   themes: [],
+  currentBase: "light",
 
   hydrate: async () => {
     // Fetch the current list; degrade gracefully so a transient IPC failure

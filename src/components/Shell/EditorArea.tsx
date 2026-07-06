@@ -92,6 +92,10 @@ function detachZoomListener(el: HTMLElement | null): void {
 export function EditorArea() {
   const { t } = useTranslation("editor");
   const activeTab = useActiveDocument();
+  const [cursorPreviewState, setCursorPreviewState] = useState<{
+    tabId: string;
+    line: number;
+  } | null>(null);
   // Live active-tab id for use inside stable/deferred closures (rAF callbacks)
   // that must read the CURRENT doc without rebuilding on every keystroke.
   const activeTabIdRef = useRef<string | null>(activeTab?.id ?? null);
@@ -565,6 +569,29 @@ export function EditorArea() {
     prevPreviewVisible.current = previewVisible;
   }, [previewVisible, activeTab]);
 
+  useEffect(() => {
+    const api = editorApiRef.current;
+    if (!api || !activeTab) {
+      setCursorPreviewState(null);
+      return;
+    }
+    const sync = () => {
+      setCursorPreviewState({
+        tabId: activeTab.id,
+        line: api.getCurrentLine(),
+      });
+    };
+    sync();
+    return api.onDidChangeCursorPosition(sync);
+  }, [editorReadyTick, activeTab?.id]);
+
+  const activePreviewLine =
+    activeTab &&
+    activeTab.compiledRevision >= activeTab.revision &&
+    cursorPreviewState?.tabId === activeTab.id
+      ? cursorPreviewState.line
+      : null;
+
   // Drag the sash: preview width = container right edge - pointer X. Uses
   // window-level pointer events so the drag survives the cursor leaving the
   // sash. Width persists to localStorage on pointerup.
@@ -684,6 +711,7 @@ export function EditorArea() {
               <PreviewPane
                 svgPages={activeTab.svgPages}
                 lineMap={activeTab.lineMap}
+                activeLine={activePreviewLine}
                 onRefresh={handleRefresh}
                 onJumpToLine={handleJumpToLine}
                 onScroll={handlePreviewScroll}

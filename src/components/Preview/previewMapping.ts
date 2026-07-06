@@ -143,3 +143,45 @@ export function rectAtOrBeforeLine(
   }
   return candidate;
 }
+
+/**
+ * Return every preview rect that belongs to a given 1-indexed source line.
+ *
+ * A single source line can map to multiple preview fragments (wrapped text,
+ * separate inline boxes, etc.), so callers that want to visually mark "the
+ * current line" should operate on the full set rather than a single rect.
+ */
+export function rectsForLine(
+  rects: readonly LineRect[],
+  line: number,
+): LineRect[] {
+  return rects.filter((r) => r.line === line);
+}
+
+/**
+ * Return the union bounds of a set of preview rects, or `null` when empty.
+ *
+ * Used by the preview overlay's page-edge marker so multiple fragments of the
+ * same source line can share one quiet vertical rail.
+ */
+export function lineRectBounds(
+  rects: readonly LineRect[],
+): { x: number; y: number; w: number; h: number } | null {
+  if (rects.length === 0) return null;
+  let minX = rects[0].x;
+  let minY = rects[0].y;
+  let maxX = rects[0].x + rects[0].w;
+  let maxY = rects[0].y + rects[0].h;
+  for (const r of rects) {
+    minX = Math.min(minX, r.x);
+    minY = Math.min(minY, r.y);
+    maxX = Math.max(maxX, r.x + r.w);
+    maxY = Math.max(maxY, r.y + r.h);
+  }
+  return {
+    x: minX,
+    y: minY,
+    w: maxX - minX,
+    h: maxY - minY,
+  };
+}

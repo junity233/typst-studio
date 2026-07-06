@@ -1,0 +1,26 @@
+/* Carbon Dark — true-black dark chrome. The page paper stays white
+   (--color-canvas); only the desk / app canvas go dark. Mirrors VS Code
+   Dark+ conventions: muted blue accent on a neutral graphite surface. */
+:root {
+  --color-primary: #0a84ff;
+  --color-primary-focus: #1f8fff;
+  --color-primary-on-dark: #2997ff;
+  --color-ink: #e6e6e6;
+  --color-body: #e6e6e6;
+  --color-body-muted: #9a9a9e;
+  --color-ink-muted-80: #b0b0b5;
+  --color-ink-muted-48: #6a6a6e;
+  --color-divider-soft: #2a2a2c;
+  --color-hairline: #3a3a3c;
+  --color-canvas: #232326;            /* editor / panels / cards */
+  --color-paper: #ffffff;             /* rendered page paper */
+  --color-canvas-parchment: #1e1e20;  /* desk / status / outer workbench */
+  --color-surface-pearl: #2a2a2c;
+  --color-surface-chip-translucent: #3a3a3c;
+  --color-surface-alt: #2a2a2c;
+  --color-on-primary: #ffffff;
+  --color-error: #ff453a;
+  --color-warning: #ff9f0a;
+  --color-success: #30d158;
+  --shadow-product: rgba(0, 0, 0, 0.5) 3px 5px 30px 0;
+}

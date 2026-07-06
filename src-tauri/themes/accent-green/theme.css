@@ -1,0 +1,6 @@
+/* Accent Green — identical to Default; only the primary accent shifts to green. */
+:root {
+  --color-primary: #1a7f37;
+  --color-primary-focus: #2a8f47;
+  --color-primary-on-dark: #2da44e;
+}

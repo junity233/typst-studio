@@ -1,5 +1,18 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
+import settingsManifestJson from "../../src-tauri/settings/manifest.json";
+import accentGreenMeta from "../../src-tauri/themes/accent-green/theme.json";
+import accentGreenCss from "../../src-tauri/themes/accent-green/theme.css?raw";
+import accentIndigoMeta from "../../src-tauri/themes/accent-indigo/theme.json";
+import accentIndigoCss from "../../src-tauri/themes/accent-indigo/theme.css?raw";
+import accentPurpleMeta from "../../src-tauri/themes/accent-purple/theme.json";
+import accentPurpleCss from "../../src-tauri/themes/accent-purple/theme.css?raw";
+import carbonDarkMeta from "../../src-tauri/themes/carbon-dark/theme.json";
+import carbonDarkCss from "../../src-tauri/themes/carbon-dark/theme.css?raw";
+import graphiteMeta from "../../src-tauri/themes/graphite/theme.json";
+import graphiteCss from "../../src-tauri/themes/graphite/theme.css?raw";
+import sepiaMeta from "../../src-tauri/themes/sepia/theme.json";
+import sepiaCss from "../../src-tauri/themes/sepia/theme.css?raw";
 import type {
   ConflictPayload,
   CommitLog,
@@ -42,6 +55,245 @@ import type {
   LspStatusPayload,
 } from "./ui-types";
 import type { Manifest } from "./settings-types";
+
+const BROWSER_SETTINGS_STORAGE_KEY = "typst-studio.browser-settings";
+const browserManifest = settingsManifestJson as Manifest;
+const browserThemes: Array<{ info: ThemeInfo; css: string }> = [
+  { info: { id: "accent-green", ...(accentGreenMeta as Omit<ThemeInfo, "id">) }, css: accentGreenCss },
+  { info: { id: "accent-indigo", ...(accentIndigoMeta as Omit<ThemeInfo, "id">) }, css: accentIndigoCss },
+  { info: { id: "accent-purple", ...(accentPurpleMeta as Omit<ThemeInfo, "id">) }, css: accentPurpleCss },
+  { info: { id: "carbon-dark", ...(carbonDarkMeta as Omit<ThemeInfo, "id">) }, css: carbonDarkCss },
+  { info: { id: "graphite", ...(graphiteMeta as Omit<ThemeInfo, "id">) }, css: graphiteCss },
+  { info: { id: "sepia", ...(sepiaMeta as Omit<ThemeInfo, "id">) }, css: sepiaCss },
+];
+const browserThemeMap = new Map(browserThemes.map((theme) => [theme.info.id, theme]));
+const browserListeners = new Map<string, Set<(event: { payload: unknown }) => void>>();
+let browserDocCounter = 0;
+
+function setByPath(target: Record<string, unknown>, path: string, value: unknown): void {
+  const parts = path.split(".");
+  let cur: Record<string, unknown> = target;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const key = parts[i];
+    const next = cur[key];
+    if (next === null || typeof next !== "object" || Array.isArray(next)) {
+      cur[key] = {};
+    }
+    cur = cur[key] as Record<string, unknown>;
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function buildBrowserDefaultSettings(): Record<string, unknown> {
+  const data: Record<string, unknown> = {};
+  for (const category of browserManifest.categories) {
+    for (const setting of category.settings) {
+      setByPath(data, setting.key, clone(setting.default));
+    }
+  }
+  return data;
+}
+
+function getBrowserSettings(): Record<string, unknown> {
+  const defaults = buildBrowserDefaultSettings();
+  if (typeof window === "undefined") return defaults;
+  const raw = window.localStorage.getItem(BROWSER_SETTINGS_STORAGE_KEY);
+  const themeOverride = new URLSearchParams(window.location.search).get("theme");
+  const applyThemeOverride = (settings: Record<string, unknown>) => {
+    if (themeOverride && themeOverride.length > 0) {
+      setByPath(settings, "appearance.theme", themeOverride);
+    }
+    return settings;
+  };
+  if (!raw) return applyThemeOverride(defaults);
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return applyThemeOverride({ ...defaults, ...parsed });
+  } catch {
+    return applyThemeOverride(defaults);
+  }
+}
+
+function saveBrowserSettings(data: Record<string, unknown>): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(BROWSER_SETTINGS_STORAGE_KEY, JSON.stringify(data));
+}
+
+function emitBrowserEvent<T>(eventName: string, payload: T): void {
+  const listeners = browserListeners.get(eventName);
+  if (!listeners) return;
+  for (const listener of listeners) {
+    listener({ payload });
+  }
+}
+
+function browserListen<T>(
+  eventName: string,
+  handler: (event: { payload: T }) => void,
+): Promise<UnlistenFn> {
+  const listeners = browserListeners.get(eventName) ?? new Set();
+  browserListeners.set(eventName, listeners);
+  listeners.add(handler as (event: { payload: unknown }) => void);
+  return Promise.resolve(() => {
+    listeners.delete(handler as (event: { payload: unknown }) => void);
+    if (listeners.size === 0) {
+      browserListeners.delete(eventName);
+    }
+  });
+}
+
+function createBrowserSession(): Session {
+  return {
+    schemaVersion: 2,
+    lastWorkspace: "",
+    lastFile: "",
+    openDocuments: [],
+    activeDocumentId: null,
+    recentWorkspaces: [],
+  };
+}
+
+function createBrowserUntitled(content?: string): OpenedDocument {
+  const settings = getBrowserSettings();
+  const defaultTemplate =
+    ((settings.document as Record<string, unknown> | undefined)?.defaultTemplate as string | undefined)
+      ?? "#set page(width: 21cm, height: 29.7cm)\n\nHello, Typst!\n";
+  browserDocCounter += 1;
+  return {
+    id: `browser-doc-${browserDocCounter}`,
+    title: "Untitled.typ",
+    path: null,
+    content: content ?? defaultTemplate,
+    dirty: false,
+    origin: { kind: "untitled" },
+    revision: 0,
+    conflict: "none",
+    hidden: false,
+  };
+}
+
+async function browserInvoke<T>(
+  command: string,
+  args: Record<string, unknown> = {},
+): Promise<T> {
+  switch (command) {
+    case "new_tab":
+      return createBrowserUntitled(args.content as string | undefined) as T;
+    case "close_tab":
+    case "soft_close_tab":
+    case "hard_close_tab":
+    case "update_text":
+    case "save_file":
+    case "set_dirty":
+    case "mark_clean_shutdown":
+    case "discard_all_recovery":
+    case "clear_conflict":
+    case "open_devtools":
+      return undefined as T;
+    case "reactivate_tab":
+      return { id: String(args.id ?? ""), title: "Untitled.typ", path: null, dirty: false, origin: { kind: "untitled" }, hidden: false } as T;
+    case "get_workspace":
+    case "open_workspace":
+    case "open_default_workspace":
+    case "open_workspace_by_path":
+      return null as T;
+    case "read_dir":
+      return [] as T;
+    case "get_all_settings":
+      return getBrowserSettings() as T;
+    case "set_setting": {
+      const next = getBrowserSettings();
+      setByPath(next, String(args.path), clone(args.value));
+      saveBrowserSettings(next);
+      emitBrowserEvent("settings_changed", next);
+      return undefined as T;
+    }
+    case "get_settings_manifest":
+      return clone(browserManifest) as T;
+    case "list_themes":
+      return browserThemes.map((theme) => clone(theme.info)) as T;
+    case "get_theme_css": {
+      const id = String(args.id ?? "default");
+      return (browserThemeMap.get(id)?.css ?? null) as T;
+    }
+    case "get_lsp_status":
+      return {
+        available: false,
+        enabled: false,
+        status: "disabled",
+        generation: 0,
+        wsUrl: "",
+        restartReason: null,
+        message: null,
+      } as T;
+    case "get_session":
+    case "save_session":
+    case "record_workspace":
+    case "clear_recent_workspaces":
+      return createBrowserSession() as T;
+    case "list_recovery":
+      return [] as T;
+    case "open_themes_dir":
+      return "src-tauri/themes" as T;
+    case "open_log_dir":
+      return "logs" as T;
+    case "git_status":
+      return null as T;
+    default:
+      throw new Error(`[tauri] command "${command}" is unavailable in browser mode`);
+  }
+}
+
+async function invoke<T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  try {
+    return tauriInvoke<T>(command, args).catch((error) => {
+      if (typeof window === "undefined" || !isMissingTauriRuntimeError(error)) {
+        throw error;
+      }
+      return browserInvoke<T>(command, args);
+    });
+  } catch (error) {
+    if (typeof window === "undefined" || !isMissingTauriRuntimeError(error)) {
+      throw error;
+    }
+  }
+  return browserInvoke<T>(command, args);
+}
+
+async function listen<T>(
+  eventName: string,
+  handler: (event: { payload: T }) => void,
+): Promise<UnlistenFn> {
+  try {
+    return tauriListen<T>(eventName, handler).catch((error) => {
+      if (typeof window === "undefined" || !isMissingTauriRuntimeError(error)) {
+        throw error;
+      }
+      return browserListen<T>(eventName, handler);
+    });
+  } catch (error) {
+    if (typeof window === "undefined" || !isMissingTauriRuntimeError(error)) {
+      throw error;
+    }
+  }
+  return browserListen<T>(eventName, handler);
+}
+
+function isMissingTauriRuntimeError(error: unknown): boolean {
+  const message =
+    error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return (
+    /reading 'invoke'/i.test(message) ||
+    /reading 'transformCallback'/i.test(message)
+  );
+}
 
 /**
  * Create an untitled document on the backend.

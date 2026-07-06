@@ -23,6 +23,13 @@ function normalizeError(error: unknown): Error {
   }
 }
 
+function applyEditorTheme(
+  theme: Monaco.editor.IStandaloneEditorConstructionOptions["theme"] | undefined,
+): void {
+  if (!theme) return;
+  Monaco.editor.setTheme(theme);
+}
+
 export function DirectMonacoEditor({
   style,
   className,
@@ -55,11 +62,13 @@ export function DirectMonacoEditor({
         "typst",
         Uri.parse(`inmemory://typst-studio/bootstrap-${Date.now()}.typ`),
       );
+      applyEditorTheme(editorOptions?.theme);
       const editor = Monaco.editor.create(containerRef.current, {
         ...editorOptions,
         model: bootstrapModel,
       });
       editorRef.current = editor;
+      applyEditorTheme(editorOptions?.theme);
       contentListener = editor.onDidChangeModelContent(() => {
         const model = editor.getModel();
         onTextChangedRef.current?.({ modified: model?.getValue() ?? "" });
@@ -97,6 +106,7 @@ export function DirectMonacoEditor({
 
   useEffect(() => {
     if (editorOptions) {
+      applyEditorTheme(editorOptions.theme);
       editorRef.current?.updateOptions(editorOptions);
     }
   }, [editorOptions]);

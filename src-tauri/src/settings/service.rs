@@ -206,6 +206,24 @@ fn validate(def: &SettingDef, value: &Value) -> Result<()> {
             let s = value
                 .as_str()
                 .ok_or_else(|| AppError::InvalidInput(format!("{key} expects a string")))?;
+            // `dynamicOptions` marks selects whose valid value set is defined
+            // elsewhere at runtime (e.g. `appearance.theme`, whose ids come from
+            // ThemeService — built-ins + disk discovery — not this manifest
+            // list). For those we skip the static options whitelist (still
+            // requiring a non-empty string); the runtime source is authoritative.
+            if def
+                .extra
+                .get("dynamicOptions")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                if s.is_empty() {
+                    return Err(AppError::InvalidInput(format!(
+                        "{key} expects a non-empty string"
+                    )));
+                }
+                return Ok(());
+            }
             let opts = def.extra.get("options").and_then(|v| v.as_array()).ok_or_else(
                 || AppError::InvalidInput(format!("{key} has no options defined")),
             )?;
@@ -339,6 +357,22 @@ mod tests {
         let svc = make_service();
         assert!(svc.set("preview.background", json!("purple")).is_err());
         assert!(svc.set("preview.background", json!("light")).is_ok());
+    }
+
+    /// `appearance.theme` is a `dynamicOptions` select: its valid value set is
+    /// defined at runtime by ThemeService (built-ins + disk discovery), not the
+    /// manifest's static `options`. The whitelist must NOT reject ids that only
+    /// appear there (built-ins like "carbon-dark", or any user theme), but a
+    /// non-string / empty value still fails type validation.
+    #[test]
+    fn dynamic_options_select_accepts_runtime_ids() {
+        let svc = make_service();
+        assert!(svc.set("appearance.theme", json!("carbon-dark")).is_ok());
+        assert!(svc.set("appearance.theme", json!("my-own-user-theme")).is_ok());
+        assert!(svc.set("appearance.theme", json!("default")).is_ok());
+        // Type + non-empty checks still apply.
+        assert!(svc.set("appearance.theme", json!(5)).is_err());
+        assert!(svc.set("appearance.theme", json!("")).is_err());
     }
 
     #[test]

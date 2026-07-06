@@ -17,13 +17,48 @@
   --color-ink-muted-48: #7a7a7a; /* disabled / fine-print */
   --color-divider-soft: #f0f0f0;
   --color-hairline: #e0e0e0; /* 1px borders */
-  --color-canvas: #ffffff; /* editor + svg paper */
-  --color-canvas-parchment: #f5f5f7; /* default app canvas, preview, status */
+  --color-canvas: #ffffff; /* editor + panels + cards */
+  --color-paper: #ffffff; /* rendered document page */
+  --color-canvas-parchment: #f5f5f7; /* workbench backdrop, preview desk, status */
   --color-surface-pearl: #fafafc; /* active tab, secondary surfaces */
+  --color-surface-alt: #f0f0f0; /* compare panes, soft badges, read-only chips */
   --color-surface-tile-1: #272729;
   --color-surface-black: #000000;
   --color-surface-chip-translucent: #d2d2d7;
   --color-on-primary: #ffffff;
+  --color-on-ink: #ffffff;
+  /* ---- Derived semantic surfaces. Theme authors may override these, but most
+     can stay derived so accents / dark themes stay coherent automatically. ---- */
+  --color-primary-soft: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  --color-primary-softer: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  --color-primary-focus-ring: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  --color-hover: color-mix(in srgb, var(--color-ink) 6%, transparent);
+  --color-hover-soft: color-mix(in srgb, var(--color-ink) 4%, transparent);
+  --color-surface-frost: color-mix(in srgb, var(--color-canvas-parchment) 80%, transparent);
+  --color-scrim: color-mix(in srgb, var(--color-surface-black) 25%, transparent);
+  --color-danger-soft: color-mix(in srgb, var(--color-error) 8%, transparent);
+  --color-scrollbar-track: color-mix(
+    in srgb,
+    var(--color-canvas-parchment) 88%,
+    var(--color-surface-black) 12%
+  );
+  --color-scrollbar-thumb: color-mix(
+    in srgb,
+    var(--color-ink-muted-48) 72%,
+    transparent
+  );
+  --color-scrollbar-thumb-hover: color-mix(
+    in srgb,
+    var(--color-ink-muted-80) 80%,
+    transparent
+  );
+  --color-on-primary-soft: color-mix(in srgb, var(--color-on-primary) 18%, transparent);
+  --color-on-primary-soft-strong: color-mix(
+    in srgb,
+    var(--color-on-primary) 30%,
+    transparent
+  );
+  --color-on-primary-stroke: color-mix(in srgb, var(--color-on-primary) 40%, transparent);
 
   /* ---- Severity colors (the one documented exception to "single accent"):
      Apple marketing never needs error cues. A code editor does. We reuse
@@ -70,6 +105,9 @@
 
   /* ---- The ONE shadow — applied ONLY to `.svg-page` ---- */
   --shadow-product: rgba(0, 0, 0, 0.22) 3px 5px 30px 0;
+  --shadow-panel: 0 4px 16px rgba(0, 0, 0, 0.12);
+  --shadow-elevated: 0 10px 40px rgba(0, 0, 0, 0.18);
+  --shadow-control: 0 1px 2px rgba(0, 0, 0, 0.2);
 
   /* ---- Layout heights ---- */
   --toolbar-h: 52px;
@@ -275,6 +313,36 @@ button {
   height: 100%;
 }
 
+.editor-pane .monaco-editor,
+.editor-pane .monaco-editor .margin,
+.editor-pane .monaco-editor .monaco-editor-background,
+.editor-pane .monaco-editor .inputarea.ime-input {
+  background: var(--color-canvas) !important;
+  color: var(--color-ink) !important;
+}
+
+.editor-pane .monaco-editor .line-numbers {
+  color: var(--color-ink-muted-48) !important;
+}
+
+.editor-pane .monaco-editor .line-numbers.active-line-number {
+  color: var(--color-ink) !important;
+}
+
+.editor-pane .monaco-editor .mtk1 {
+  color: var(--color-ink) !important;
+}
+
+.editor-pane .monaco-editor .current-line,
+.editor-pane .monaco-editor .current-line-margin {
+  border-color: var(--color-hairline) !important;
+}
+
+.editor-pane .monaco-editor .cursor {
+  background-color: var(--color-primary) !important;
+  border-left-color: var(--color-primary) !important;
+}
+
 /* ---- Preview pane (parchment surface; the SVG page rests on it) ---- */
 .preview-pane {
   flex: 1 1 auto;
@@ -318,8 +386,9 @@ button {
   background: var(--color-canvas);
 }
 .svg-page {
+  position: relative;
   width: 100%;
-  background: var(--color-canvas);
+  background: var(--color-paper);
   /* THE ONE SHADOW — gives the rendered document weight on the parchment
      surface. The only box-shadow in the entire app. */
   box-shadow: var(--shadow-product);
@@ -333,6 +402,21 @@ button {
 /* When the page supports Cmd/Ctrl-click jump-to-source, hint an interactive cursor. */
 .svg-page-img.is-jumpable {
   cursor: text;
+}
+.svg-page svg.svg-page-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.svg-page-highlight-rect {
+  fill: var(--color-primary-softer);
+  transition: opacity 120ms ease;
+}
+.svg-page-highlight-rail {
+  fill: var(--color-primary);
+  transition: opacity 120ms ease;
 }
 
 /* ============================================================================
@@ -659,7 +743,7 @@ button {
 }
 
 .search-hit-text mark {
-  background: rgba(0, 102, 204, 0.14); /* Action Blue @ 14% — no second color */
+  background: var(--color-primary-soft);
   color: inherit;
   border-radius: 2px;
   padding: 0 1px;
@@ -1256,7 +1340,7 @@ button {
   background: var(--color-canvas-parchment, #fff);
   border: 1px solid var(--color-warning, #c47b00);
   border-radius: var(--radius-md, 11px);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-panel);
   font: var(--text-fine-print);
   color: var(--color-ink, #222);
   overflow: hidden;
@@ -1268,7 +1352,7 @@ button {
   gap: var(--space-sm, 12px);
   padding: var(--space-sm, 12px) var(--space-md, 17px);
   background: var(--color-warning, #c47b00);
-  color: #fff;
+  color: var(--color-on-primary);
 }
 .startup-problems-panel-title {
   font-weight: 600;
@@ -1280,16 +1364,16 @@ button {
 }
 .startup-problems-panel-btn {
   font: inherit;
-  color: #fff;
-  background: rgba(255, 255, 255, 0.18);
-  border: 1px solid rgba(255, 255, 255, 0.4);
+  color: var(--color-on-primary);
+  background: var(--color-on-primary-soft);
+  border: 1px solid var(--color-on-primary-stroke);
   border-radius: var(--radius-pill, 9999px);
   padding: 1px var(--space-xs, 8px);
   cursor: pointer;
   line-height: 1.4;
 }
 .startup-problems-panel-btn:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: var(--color-on-primary-soft-strong);
 }
 .startup-problems-panel-list {
   margin: 0;
@@ -1341,7 +1425,7 @@ button {
 
 .btn-utility {
   background: var(--color-ink);
-  color: var(--color-canvas);
+  color: var(--color-on-ink);
   font: var(--text-button-utility);
   letter-spacing: -0.224px;
   border: none;
@@ -1373,7 +1457,7 @@ button {
   transition: transform 0.1s ease, background 0.1s ease;
 }
 .btn-ghost:hover {
-  background: rgba(0, 102, 204, 0.08);
+  background: var(--color-primary-softer);
 }
 .btn-ghost:active {
   transform: scale(0.95);
@@ -1431,7 +1515,7 @@ button {
   display: flex;
   align-items: center;
   padding: 0 var(--space-md);
-  background: rgba(245, 245, 247, 0.8);
+  background: var(--color-surface-frost);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 1px solid var(--color-hairline);
@@ -1574,8 +1658,52 @@ button {
   transition: transform 0.1s ease, background 0.1s ease, color 0.1s ease;
 }
 .format-toolbar-button:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--color-hover);
   color: var(--color-ink);
+}
+
+.app *,
+.settings-window * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
+}
+
+.app *::-webkit-scrollbar,
+.settings-window *::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.app *::-webkit-scrollbar-track,
+.settings-window *::-webkit-scrollbar-track {
+  background: var(--color-scrollbar-track);
+}
+
+.app *::-webkit-scrollbar-thumb,
+.settings-window *::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar-thumb);
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--color-scrollbar-track);
+}
+
+.app *::-webkit-scrollbar-thumb:hover,
+.settings-window *::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-thumb-hover);
+}
+
+.monaco-scrollable-element > .scrollbar.vertical,
+.monaco-scrollable-element > .scrollbar.horizontal {
+  background: var(--color-scrollbar-track) !important;
+}
+
+.monaco-scrollable-element > .scrollbar > .slider {
+  background: var(--color-scrollbar-thumb) !important;
+  border-radius: var(--radius-pill);
+}
+
+.monaco-scrollable-element > .scrollbar > .slider:hover,
+.monaco-scrollable-element > .scrollbar > .slider.active {
+  background: var(--color-scrollbar-thumb-hover) !important;
 }
 .format-toolbar-button:active {
   transform: scale(0.95);
@@ -1683,7 +1811,7 @@ button {
 }
 
 .activity-item:hover:not(:disabled) {
-  background: var(--color-canvas); /* white chip on parchment = subtle lift */
+  background: var(--color-canvas); /* lift the chip onto the content surface */
   color: var(--color-ink);
 }
 
@@ -1726,7 +1854,7 @@ button {
   display: flex;
   align-items: center;
   padding: 0 var(--space-md);
-  background: rgba(245, 245, 247, 0.8);
+  background: var(--color-surface-frost);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 1px solid var(--color-hairline);
@@ -2029,7 +2157,7 @@ button {
 .dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--color-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2038,7 +2166,7 @@ button {
 .settings-modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--color-scrim);
   /* Above dialogs (1000) and context menus (1100): blocks ALL main-window
      input while the Settings window is open. */
   z-index: 2000;
@@ -2047,7 +2175,7 @@ button {
 .dialog {
   background: var(--color-canvas);
   border-radius: var(--radius-lg);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-elevated);
   padding: var(--space-lg);
   width: min(360px, 90vw);
   display: flex;
@@ -2111,7 +2239,7 @@ button {
 .link-modal-input:focus {
   outline: none;
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.12);
+  box-shadow: 0 0 0 3px var(--color-primary-focus-ring);
 }
 
 /* ============================================================================
@@ -2150,7 +2278,7 @@ button {
 .recovery-flag {
   font: var(--text-caption);
   color: var(--color-ink-muted-80);
-  background: var(--color-surface-alt, #f0f0f0);
+  background: var(--color-surface-alt);
   border-radius: 999px;
   padding: 1px 8px;
 }
@@ -2169,7 +2297,7 @@ button {
 }
 .recovery-error {
   font: var(--text-caption);
-  color: #c0392b;
+  color: var(--color-error);
 }
 /* Side-by-side compare (§5.1.3): two read-only <pre> panes. Minimal — no
    inline diff highlighting yet. */
@@ -2191,7 +2319,7 @@ button {
   color: var(--color-ink-muted-80);
   padding: 2px var(--space-xs);
   border-bottom: 1px solid var(--color-hairline);
-  background: var(--color-surface-alt, #fafafa);
+  background: var(--color-surface-alt);
 }
 .recovery-compare-pane pre {
   margin: 0;
@@ -2221,7 +2349,7 @@ button {
   justify-content: flex-end;
 }
 .conflict-error {
-  color: #c0392b;
+  color: var(--color-error);
   font: var(--text-caption);
   margin-top: var(--space-xs);
 }
@@ -2244,7 +2372,7 @@ button {
   color: var(--color-ink-muted-80);
   padding: 2px var(--space-xs);
   border-bottom: 1px solid var(--color-hairline);
-  background: var(--color-surface-alt, #fafafa);
+  background: var(--color-surface-alt);
 }
 .conflict-compare-pane pre {
   margin: 0;
@@ -2268,7 +2396,7 @@ button {
   background: var(--color-canvas);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-sm);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-elevated);
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -2299,7 +2427,7 @@ button {
   transition: background 0.1s ease, color 0.1s ease;
 }
 .context-menu-item:hover:not(:disabled) {
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--color-hover-soft);
 }
 .context-menu-item:active:not(:disabled) {
   transform: scale(0.98);
@@ -2312,7 +2440,7 @@ button {
   color: var(--color-error);
 }
 .context-menu-item-danger:hover:not(:disabled) {
-  background: rgba(255, 59, 48, 0.08);
+  background: var(--color-danger-soft);
 }
 .context-menu-icon {
   display: flex;
@@ -2396,11 +2524,11 @@ button {
   transition: background 0.12s ease, color 0.12s ease;
 }
 .settings-category:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--color-hover-soft);
 }
 .settings-category-active {
   background: var(--color-primary);
-  color: var(--color-canvas);
+  color: var(--color-on-primary);
 }
 .settings-category-active:hover {
   background: var(--color-primary);
@@ -2545,7 +2673,12 @@ button {
 .setting-input:focus {
   outline: none;
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.12);
+  box-shadow: 0 0 0 3px var(--color-primary-focus-ring);
+}
+.setting-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
 }
 .setting-input-number {
   width: 100px;
@@ -2553,11 +2686,14 @@ button {
 }
 .setting-input-select {
   cursor: pointer;
-  padding-right: 28px;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%237a7a7a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
+  padding-right: 34px;
   appearance: none;
+}
+.setting-select-icon {
+  position: absolute;
+  right: 10px;
+  color: var(--color-ink-muted-48);
+  pointer-events: none;
 }
 
 /* ---- Action button (Open / Export / Clear / Open themes) ----
@@ -2588,7 +2724,7 @@ button {
 .setting-action-btn:focus-visible {
   outline: none;
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.12);
+  box-shadow: 0 0 0 3px var(--color-primary-focus-ring);
 }
 .setting-action-btn:active {
   transform: scale(0.95); /* DESIGN.md system-wide press micro-interaction */
@@ -2633,7 +2769,7 @@ button {
   height: 18px;
   border-radius: var(--radius-pill);
   background: var(--color-canvas);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-control);
   transition: transform 0.15s ease;
 }
 .toggle[aria-pressed="true"] .toggle-knob {
@@ -2689,7 +2825,7 @@ button {
   transition: background 0.1s ease, color 0.1s ease, transform 0.1s ease;
 }
 .path-chip-remove:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--color-hover);
   color: var(--color-ink);
 }
 .path-chip-remove:active {
@@ -2712,7 +2848,7 @@ button {
   padding: 7px 12px;
   border-radius: var(--radius-sm);
   background: var(--color-ink);
-  color: var(--color-canvas);
+  color: var(--color-on-ink);
   font-size: 13px;
   font-weight: 500;
   letter-spacing: -0.1px;
@@ -2737,7 +2873,7 @@ button {
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-sm);
   padding: var(--space-xs);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.18); /* match .context-menu */
+  box-shadow: var(--shadow-elevated); /* match .context-menu */
   display: flex;
   flex-direction: column;
   gap: var(--space-xxs);

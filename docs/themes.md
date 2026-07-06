@@ -99,6 +99,7 @@ UI consistently. You may also add any extra selectors for deeper customization.
 
   /* Surfaces */
   --color-canvas: #1c1c1e;
+  --color-paper: #ffffff;
   --color-canvas-parchment: #161617;
   --color-surface-pearl: #242426;
   --color-divider-soft: #2a2a2c;
@@ -141,5 +142,10 @@ UI consistently. You may also add any extra selectors for deeper customization.
 - Theme CSS is applied as-is (no sandboxing). You can override any token and
   add arbitrary selectors, but a broken stylesheet can affect layout — delete
   or fix the `theme.css` to recover.
-- Monaco editor syntax-highlighting and the preview background are **not** yet
-  linked to the theme (the `base` field is recorded for future use).
+- The active theme's `base` (`light` / `dark`) also drives Monaco's chrome +
+  token palette and the preview desk surface, so dark themes now recolor those
+  areas as well.
+- `--color-canvas` is the app's content-surface color (editor pane, tabs,
+  cards, menus). `--color-paper` is the rendered document page color inside the
+  preview. Dark themes usually want a dark `--color-canvas` and a light
+  `--color-paper`.

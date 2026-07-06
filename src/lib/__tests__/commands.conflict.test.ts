@@ -67,6 +67,14 @@ function parentDir(p: string): string {
   return idx > 0 ? p.slice(0, idx) : p;
 }
 
+async function waitForDialogRequest(): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    if (useDialogStore.getState().current !== null) return;
+    await Promise.resolve();
+  }
+  throw new Error("dialog request was never registered");
+}
+
 describe("saveTab opens the conflict dialog on ExternalConflict (§5.4)", () => {
   beforeEach(() => {
     reset();
@@ -112,11 +120,11 @@ describe("saveTab opens the conflict dialog on ExternalConflict (§5.4)", () => 
 
     // permission_denied takes the Save-As-recovery branch, which awaits a
     // confirm() choice. Resolve it as cancel so saveTab settles — we're only
-    // asserting the conflict dialog never opened for this code. Yield a tick
-    // first so saveTab reaches the confirm() call and registers the request.
+    // asserting the conflict dialog never opened for this code. Wait until the
+    // request is actually registered instead of assuming a fixed microtask
+    // budget (the tauri wrapper may add an extra async hop).
     const saving = saveTab("doc-p");
-    await Promise.resolve();
-    await Promise.resolve();
+    await waitForDialogRequest();
     useDialogStore.getState().resolve("cancel");
     const ok = await saving;
 

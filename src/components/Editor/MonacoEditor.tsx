@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type * as Monaco from "@codingame/monaco-vscode-editor-api";
+import * as Monaco from "@codingame/monaco-vscode-editor-api";
+import { getService, IWorkbenchThemeService } from "@codingame/monaco-vscode-api/services";
 import type { TextContents, EditorAppConfig } from "monaco-languageclient/editorApp";
 import { updateText } from "../../lib/tauri";
 import type { Tab } from "../../store/tabsStore";
@@ -30,7 +31,8 @@ import {
   isLinePrefixActive as isLinePrefixActiveHelper,
   getSelectionText,
 } from "./editorEdit";
-import { registerTypstHighlighting } from "./typstHighlighting";
+import { registerTypstHighlighting, applyTypstTokenTheme } from "./typstHighlighting";
+import { useThemeStore } from "../../store/themeStore";
 import { usePasteConvert } from "./usePasteConvert";
 import type { DocumentOrigin } from "../../lib/types";
 import { DirectMonacoEditor } from "./DirectMonacoEditor";
@@ -51,6 +53,8 @@ export interface MonacoEditorApi {
   getScrollTop: () => number;
   /** Set the scroll offset in px (for interpolated scroll-sync). */
   setScrollTop: (top: number) => void;
+  /** Current caret line (1-indexed). Used by preview line-marking. */
+  getCurrentLine: () => number;
   /**
    * Pixel offset of a line from the top of the scrollable content (for
    * interpolated scroll-sync mapping source-line → editor pixel position).
@@ -105,6 +109,38 @@ export interface MonacoEditorApi {
  * a literal because `Monaco` is imported as a type-only namespace.
  */
 const SCROLL_IMMEDIATE = 1;
+
+function parseRgbChannel(input: string): number | null {
+  const value = Number.parseInt(input.trim(), 10);
+  return Number.isFinite(value) ? value : null;
+}
+
+function inferBaseFromCss(): "light" | "dark" | null {
+  if (typeof window === "undefined") return null;
+  const canvas = window
+    .getComputedStyle(document.documentElement)
+    .getPropertyValue("--color-canvas")
+    .trim();
+  let r: number | null = null;
+  let g: number | null = null;
+  let b: number | null = null;
+  const rgbMatch = /^rgb\(\s*([0-9]+),\s*([0-9]+),\s*([0-9]+)\s*\)$/i.exec(canvas);
+  if (rgbMatch) {
+    r = parseRgbChannel(rgbMatch[1]);
+    g = parseRgbChannel(rgbMatch[2]);
+    b = parseRgbChannel(rgbMatch[3]);
+  } else {
+    const hexMatch = /^#([0-9a-f]{6})$/i.exec(canvas);
+    if (hexMatch) {
+      r = Number.parseInt(hexMatch[1].slice(0, 2), 16);
+      g = Number.parseInt(hexMatch[1].slice(2, 4), 16);
+      b = Number.parseInt(hexMatch[1].slice(4, 6), 16);
+    }
+  }
+  if (r === null || g === null || b === null) return null;
+  const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return luminance < 0.5 ? "dark" : "light";
+}
 
 interface MonacoEditorProps {
   tab: Tab;
@@ -211,6 +247,7 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   const [lineNumbers] = useSetting<boolean>("editor.lineNumbers");
   const [minimap] = useSetting<boolean>("editor.minimap");
   const [fontLigatures] = useSetting<boolean>("editor.fontLigatures");
+  const [themeId] = useSetting<string>("appearance.theme");
   const [renderWhitespace] = useSetting<
     "none" | "all" | "boundary" | "selection" | "trailing"
   >("editor.renderWhitespace");
@@ -248,6 +285,29 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   const activeOriginKind = useDocumentsStore(
     (s) => s.documents[tab.id]?.origin.kind ?? "untitled",
   );
+
+  const themes = useThemeStore((s) => s.themes);
+  const currentBase = useThemeStore((s) => s.currentBase);
+  const [resolvedBase, setResolvedBase] = useState<"light" | "dark">(() => {
+    const inferred = inferBaseFromCss();
+    return inferred ?? currentBase;
+  });
+  useEffect(() => {
+    const resolvedThemeId = themeId && themeId.length > 0 ? themeId : "default";
+    const matchedTheme =
+      resolvedThemeId === "default"
+        ? undefined
+        : themes.find((theme) => theme.id === resolvedThemeId);
+    const nextBase =
+      matchedTheme?.base === "dark"
+        ? "dark"
+        : matchedTheme?.base === "light"
+          ? "light"
+          : inferBaseFromCss() ?? currentBase;
+    setResolvedBase(nextBase);
+  }, [themeId, themes, currentBase]);
+  const isDark = resolvedBase === "dark";
+  const monacoTheme = isDark ? "vs-dark" : "vs";
 
   // Settings-derived editor options. Only keys that are actually set are
   // overridden; everything else falls through to the built-in defaults below.
@@ -322,13 +382,16 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         // the top of the document. The app exposes export through the native menu
         // instead, so hide the lens.
         codeLens: false,
+        // Seed Monaco with the correct chrome theme at creation time so dark
+        // UI themes never flash or stick on the light standalone palette.
+        theme: monacoTheme,
         // Tighten the vertical air around the text so the editor reads edge-to-edge
         // within its pane instead of floating in wide whitespace.
         padding: { top: 6, bottom: 6 },
         ...settingsOptions,
       },
     }),
-    [settingsOptions],
+    [settingsOptions, monacoTheme],
   );
   // CRITICAL — frozen after first render. The wrapper has an effect keyed on
   // `editorAppConfig` that calls `performGlobalInit`; a new object identity
@@ -423,6 +486,41 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   useEffect(() => {
     getEditor()?.updateOptions(settingsOptions);
   }, [settingsOptions, getEditor]);
+
+  // Drive the editor's theme from the active UI theme's `base`. Two layers move
+  // together: (1) Monaco's chrome theme (`vs` light / `vs-dark` dark) via
+  // `updateOptions`, and (2) the TextMate token palette (Light+ / Dark+) via
+  // `applyTypstTokenTheme`, which rewrites the `.mtk{i}` CSS. `currentBase`
+  // comes from the theme store and is resolved in `useTheme` from the current
+  // theme's `ThemeInfo.base`.
+  useEffect(() => {
+    if (!vscodeApiReady || !editorRuntimeReady) return;
+    const workbenchTheme = isDark ? "Default Dark Modern" : "Default Light Modern";
+    let cancelled = false;
+    const applyMonacoTheme = () => {
+      Monaco.editor.setTheme(monacoTheme);
+      getEditor()?.updateOptions({ theme: monacoTheme });
+    };
+    applyMonacoTheme();
+    void getService(IWorkbenchThemeService)
+      .then((themeService) => themeService.setColorTheme(workbenchTheme, "auto"))
+      .then(() => {
+        if (!cancelled) {
+          applyMonacoTheme();
+        }
+      })
+      .catch((error) => {
+        console.warn("[MonacoEditor] workbench theme sync failed:", error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isDark, monacoTheme, vscodeApiReady, editorRuntimeReady, getEditor]);
+
+  useEffect(() => {
+    if (!typstHighlightingReady) return;
+    void applyTypstTokenTheme(isDark ? "dark" : "light");
+  }, [isDark, typstHighlightingReady]);
 
   // The model-sync effect (spec §8.3 / §10.1 / §10.4 / §10.5): on every render
   // where the SET of open documents OR the active tab changes, compute a plan
@@ -724,6 +822,10 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
       setScrollTop: (top) => {
         const editor = getEditor();
         editor?.setScrollTop(top);
+      },
+      getCurrentLine: () => {
+        const editor = getEditor();
+        return editor?.getPosition()?.lineNumber ?? 1;
       },
       getLineTopOffset: (line) => {
         const editor = getEditor();

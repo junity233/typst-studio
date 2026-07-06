@@ -61,7 +61,7 @@
     ]},
     { "id": "appearance", "label": "Appearance", "settings": [
         { "key": "appearance.theme", "type": "select", "label": "Theme",
-          "default": "default", "options": ["default"],
+          "default": "default", "options": ["default"], "dynamicOptions": true,
           "optionLabels": { "default": "Default" },
           "help": "Custom themes live in <app-data>/themes/. Use 'Open themes folder' below to add one." },
         { "key": "appearance.language", "type": "select", "label": "Language",

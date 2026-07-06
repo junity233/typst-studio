@@ -6,6 +6,7 @@ import {
 import { Uri } from "vscode";
 import baseServiceOverride from "@codingame/monaco-vscode-base-service-override";
 import filesServiceOverride from "@codingame/monaco-vscode-files-service-override";
+import themeServiceOverride from "@codingame/monaco-vscode-theme-service-override";
 import { servicesInitialized } from "@codingame/monaco-vscode-api/lifecycle";
 import { configureDefaultWorkerFactory } from "monaco-languageclient/workerFactory";
 
@@ -60,6 +61,7 @@ export function buildVscodeApiConfig(): MonacoVscodeApiConfig {
     serviceOverrides: {
       ...baseServiceOverride(),
       ...filesServiceOverride(),
+      ...themeServiceOverride(),
     },
     // Force-on semantic highlighting regardless of any user config; tinymist's
     // grammar is wired for it, and the configurationDefaults in the manifest
@@ -122,10 +124,10 @@ export function buildVscodeApiConfig(): MonacoVscodeApiConfig {
       },
     },
     userConfiguration: {
-      // NOTE: In monaco-vscode-api v25, the workbench theme service never
-      // actually loads this theme from the bundled extension. The real theme
-      // + token CSS is applied manually by typstHighlighting.ts. This entry
-      // is kept for forward compatibility (v34+ loads it properly).
+      // The workbench theme service now drives editor chrome/background colors,
+      // while typstHighlighting.ts still owns the TextMate token CSS for Typst
+      // scopes. Keep the default here light; MonacoEditor.tsx switches the live
+      // workbench theme to dark/light based on the active app theme.
       //
       // Secondary defense against the workbench's own startup editor flow (see
       // the `workspaceConfig` comment above for the primary fix). These do not

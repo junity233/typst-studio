@@ -1,0 +1,26 @@
+/* Graphite — low-contrast warm dark chrome. Desaturated grey-browns ease eye
+   strain over long sessions; the accent is a muted brass that reads as a
+   highlight without the glare of pure blue. Page paper stays white. */
+:root {
+  --color-primary: #c8a87c;
+  --color-primary-focus: #d4b88c;
+  --color-primary-on-dark: #c8a87c;
+  --color-ink: #d8d3ca;
+  --color-body: #d8d3ca;
+  --color-body-muted: #948e83;
+  --color-ink-muted-80: #b8b0a0;
+  --color-ink-muted-48: #6e685e;
+  --color-divider-soft: #34322e;
+  --color-hairline: #44423d;
+  --color-canvas: #302f2b;
+  --color-paper: #ffffff;
+  --color-canvas-parchment: #2b2a27;
+  --color-surface-pearl: #34322e;
+  --color-surface-chip-translucent: #44423d;
+  --color-surface-alt: #34322e;
+  --color-on-primary: #2b2a27;
+  --color-error: #e57373;
+  --color-warning: #e8a85c;
+  --color-success: #8fbf7a;
+  --shadow-product: rgba(0, 0, 0, 0.45) 3px 5px 30px 0;
+}

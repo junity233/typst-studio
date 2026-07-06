@@ -1,0 +1,22 @@
+/* Sepia — warm light chrome. Cream surfaces with brown ink, tuned for long-form
+   reading like an e-reader palette. The page paper warms to a faint cream too
+   (rather than stark white) to complete the book feel. */
+:root {
+  --color-primary: #a8541b;
+  --color-primary-focus: #c0651f;
+  --color-primary-on-dark: #d4823a;
+  --color-ink: #5b4636;
+  --color-body: #5b4636;
+  --color-body-muted: #9a8466;
+  --color-ink-muted-80: #6e5640;
+  --color-ink-muted-48: #9a8466;
+  --color-divider-soft: #e8dcc0;
+  --color-hairline: #ddd0b0;
+  --color-canvas: #fbf5e6;
+  --color-paper: #fbf5e6;
+  --color-canvas-parchment: #f4ecd8;
+  --color-surface-pearl: #efe6cf;
+  --color-surface-chip-translucent: #ddd0b0;
+  --color-surface-alt: #efe6cf;
+  --color-on-primary: #ffffff;
+}

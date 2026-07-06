@@ -39,9 +39,29 @@ import typstCodeGrammar from "../../assets/grammar/typst-code.tmLanguage.json";
 const ONIG_WASM_URL = "/vendor/vscode-oniguruma/onig.wasm";
 const LIGHT_VS_THEME_URL = "/vendor/themes/light_vs.json";
 const LIGHT_PLUS_THEME_URL = "/vendor/themes/light_plus.json";
+const DARK_VS_THEME_URL = "/vendor/themes/dark_vs.json";
+const DARK_PLUS_THEME_URL = "/vendor/themes/dark_plus.json";
+
+/** The two monaco token-theme palettes we ship: light = Light+, dark = Dark+. */
+export type MonacoTokenBase = "light" | "dark";
 
 // Idempotency guard — register only once per page load.
 let registrationPromise: Promise<void> | null = null;
+
+/**
+ * The shared TextMate Registry, captured during `doInit` so that later calls to
+ * `applyTypstTokenTheme` can re-apply a different token palette (light/dark)
+ * without rebuilding the registry (which reloads WASM + grammar). `null` until
+ * the first `registerTypstHighlighting` completes its init.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let sharedRegistry: any = null;
+
+/**
+ * The token-theme base currently applied to the registry. Avoids re-applying
+ * the same palette (a no-op fetch + CSS rewrite) on every theme-store tick.
+ */
+let appliedTokenBase: MonacoTokenBase | null = null;
 
 /**
  * Register the Typst language + TextMate tokenizer + theme CSS.
@@ -104,6 +124,88 @@ async function createTokenizationSupport(): Promise<unknown> {
 }
 
 /**
+ * Apply a monaco token theme (light = Light+, dark = Dark+) to a registry and
+ * (re)write the `.mtk{i}` CSS that colors token spans. Idempotent: rewrites the
+ * same `<style class="typst-tokens-styles">` element in place, so it is safe to
+ * call on every theme switch.
+ *
+ * v25's theme service never loads "Default Light/Dark Modern", so we fetch the
+ * bundled theme JSONs directly. `plus` includes `vs`, so both token-color lists
+ * are merged: base first, plus overrides second. Split out of `doInit` so it
+ * can be re-entered to switch palettes (light ↔ dark) at runtime.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function applyTokenTheme(registry: any, base: MonacoTokenBase): Promise<void> {
+  const vsUrl = base === "dark" ? DARK_VS_THEME_URL : LIGHT_VS_THEME_URL;
+  const plusUrl = base === "dark" ? DARK_PLUS_THEME_URL : LIGHT_PLUS_THEME_URL;
+  const themeName = base === "dark" ? "dark_plus" : "light_plus";
+
+  const [vsResp, plusResp] = await Promise.all([fetch(vsUrl), fetch(plusUrl)]);
+  if (!vsResp.ok || !plusResp.ok) {
+    throw new Error(`theme fetch failed (${base}): vs=${vsResp.status} plus=${plusResp.status}`);
+  }
+  const [vsJson, plusJson] = await Promise.all([vsResp.json(), plusResp.json()]);
+  const tokenColors = [
+    ...(vsJson.tokenColors ?? []),
+    ...(plusJson.tokenColors ?? []),
+  ];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  registry.setTheme({ name: themeName, settings: tokenColors } as any);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const colorMap = (registry as any).getColorMap() as string[];
+
+  // Generate `.mtk{i}` CSS. Monaco's TextMate service normally generates these
+  // from the workbench theme; since that doesn't work in v25, we emit them
+  // ourselves. The indices match because grammar and CSS share the same
+  // color-map source. Rewrite the same element if it exists (theme switch).
+  let css = "";
+  for (let i = 1; i < colorMap.length; i++) {
+    css += `.mtk${i} { color: ${colorMap[i]}; }\n`;
+  }
+  css += ".mtki { font-style: italic; }\n";
+  css += ".mtkb { font-weight: bold; }\n";
+  css += ".mtku { text-decoration: underline; text-underline-position: under; }\n";
+  css += ".mtks { text-decoration: line-through; }\n";
+  const existing = document.querySelector("style.typst-tokens-styles");
+  if (existing) {
+    existing.textContent = css;
+  } else {
+    const styleEl = document.createElement("style");
+    styleEl.className = "typst-tokens-styles";
+    styleEl.textContent = css;
+    document.head.appendChild(styleEl);
+  }
+}
+
+/**
+ * Switch the Typst editor's token theme to `base` (light/dark). A no-op if
+ * registration hasn't completed yet (the editor still renders with a plain-text
+ * fallback, then colors in once init finishes), or if `base` is already applied.
+ *
+ * Waits for `registrationPromise` so the shared registry exists before
+ * re-applying. Safe to call before first init — `registrationPromise` is set on
+ * the first `registerTypstHighlighting` call, and `doInit` captures the same
+ * registry into `sharedRegistry`.
+ */
+export async function applyTypstTokenTheme(base: MonacoTokenBase): Promise<void> {
+  // Skip if already applied (avoids a redundant fetch + CSS rewrite on every
+  // theme-store tick).
+  if (appliedTokenBase === base) return;
+  // Wait for the registry to exist. If registration hasn't started, there's
+  // nothing to re-theme yet — `doInit` will apply the initial palette itself.
+  if (registrationPromise) {
+    try {
+      await registrationPromise;
+    } catch {
+      return; // init failed; nothing to re-theme (doInit reports the error).
+    }
+  }
+  if (!sharedRegistry) return;
+  await applyTokenTheme(sharedRegistry, base);
+  appliedTokenBase = base;
+}
+
+/**
  * The actual initialization: loads WASM, theme, grammar, generates CSS,
  * and returns a TokenizationSupport object compatible with Monaco.
  */
@@ -151,44 +253,13 @@ async function doInit(): Promise<unknown> {
       return null;
     },
   });
+  // Cache the registry so `applyTypstTokenTheme` can re-apply a different
+  // palette (light/dark) later without rebuilding it.
+  sharedRegistry = registry;
 
-  // ── Apply theme (scope→color rules) to the Registry ───────────────────
-  // v25's theme service never loads "Default Light Modern", so we load the
-  // bundled Light theme JSONs directly. Light+ includes Light, so we merge
-  // both token-color lists: base first, plus overrides second.
-  const [vsResp, plusResp] = await Promise.all([
-    fetch(LIGHT_VS_THEME_URL),
-    fetch(LIGHT_PLUS_THEME_URL),
-  ]);
-  if (!vsResp.ok || !plusResp.ok) {
-    throw new Error(`theme fetch failed: vs=${vsResp.status} plus=${plusResp.status}`);
-  }
-  const [vsJson, plusJson] = await Promise.all([vsResp.json(), plusResp.json()]);
-  const tokenColors = [
-    ...(vsJson.tokenColors ?? []),
-    ...(plusJson.tokenColors ?? []),
-  ];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  registry.setTheme({ name: "light_plus", settings: tokenColors } as any);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const colorMap = (registry as any).getColorMap() as string[];
-
-  // ── Generate `.mtk{i}` CSS ────────────────────────────────────────────
-  // Monaco's TextMate service normally generates these from the workbench
-  // theme; since that doesn't work in v25, we emit them ourselves. The
-  // indices match because grammar and CSS share the same color-map source.
-  let css = "";
-  for (let i = 1; i < colorMap.length; i++) {
-    css += `.mtk${i} { color: ${colorMap[i]}; }\n`;
-  }
-  css += ".mtki { font-style: italic; }\n";
-  css += ".mtkb { font-weight: bold; }\n";
-  css += ".mtku { text-decoration: underline; text-underline-position: under; }\n";
-  css += ".mtks { text-decoration: line-through; }\n";
-  const styleEl = document.createElement("style");
-  styleEl.className = "typst-tokens-styles";
-  styleEl.textContent = css;
-  document.head.appendChild(styleEl);
+  // ── Apply the initial token theme (light) ─────────────────────────────
+  await applyTokenTheme(registry, "light");
+  appliedTokenBase = "light";
 
   // ── Load the grammar ──────────────────────────────────────────────────
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

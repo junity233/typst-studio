@@ -21,5 +21,12 @@ export function useTheme(): void {
     // `themes` is a dependency so that editing a theme's CSS on disk triggers
     // a re-apply (the catalog reference changes on `themes_changed`).
     void applyTheme(themeId);
+    // Resolve the active theme's `base` (light/dark) for Monaco + preview.
+    // default / unknown / "all" → light (conservative default; "all" themes
+    // don't opt into dark chrome).
+    const resolved = themeId && themeId.length > 0 ? themeId : "default";
+    const info = resolved === "default" ? undefined : themes.find((t) => t.id === resolved);
+    const base: "light" | "dark" = info?.base === "dark" ? "dark" : "light";
+    useThemeStore.setState({ currentBase: base });
   }, [themeId, themes]);
 }

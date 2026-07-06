@@ -1,0 +1,6 @@
+/* Accent Purple — identical to Default; only the primary accent shifts to purple. */
+:root {
+  --color-primary: #7c3aed;
+  --color-primary-focus: #8c4afd;
+  --color-primary-on-dark: #a855f7;
+}

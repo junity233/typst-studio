@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * Copy runtime resource files (oniguruma WASM + VS Code Light theme JSONs)
+ * Copy runtime resource files (oniguruma WASM + VS Code Light/Dark theme JSONs)
  * out of `@codingame/monaco-vscode-*` packages into `public/vendor/`.
  *
  * `typstHighlighting.ts` fetches these by URL from the served site root
@@ -43,6 +43,14 @@ const ASSETS = [
   [
     "node_modules/@codingame/monaco-vscode-theme-defaults-default-extension/resources/light_plus.json",
     "public/vendor/themes/light_plus.json",
+  ],
+  [
+    "node_modules/@codingame/monaco-vscode-theme-defaults-default-extension/resources/dark_vs.json",
+    "public/vendor/themes/dark_vs.json",
+  ],
+  [
+    "node_modules/@codingame/monaco-vscode-theme-defaults-default-extension/resources/dark_plus.json",
+    "public/vendor/themes/dark_plus.json",
   ],
 ];
 

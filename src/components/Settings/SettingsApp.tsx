@@ -16,6 +16,7 @@ import {
   GitBranch,
   PanelsTopLeft,
   Stethoscope,
+  ChevronDown,
   type LucideIcon,
 } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
@@ -369,18 +370,21 @@ function SelectControl({ def }: { def: SettingDef }) {
     return localizedOptionLabel(def, opt, theme?.name);
   };
   return (
-    <select
-      id={SETTING_ID(def.key)}
-      className="setting-input setting-input-select"
-      value={current}
-      onChange={(e) => setValue(e.target.value)}
-    >
-      {options.map((opt) => (
-        <option key={opt} value={opt}>
-          {labelFor(opt)}
-        </option>
-      ))}
-    </select>
+    <span className="setting-select-wrap">
+      <select
+        id={SETTING_ID(def.key)}
+        className="setting-input setting-input-select"
+        value={current}
+        onChange={(e) => setValue(e.target.value)}
+      >
+        {options.map((opt) => (
+          <option key={opt} value={opt}>
+            {labelFor(opt)}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="setting-select-icon" size={14} aria-hidden="true" />
+    </span>
   );
 }
 

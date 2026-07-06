@@ -1,0 +1,6 @@
+/* Accent Indigo — identical to Default; only the primary accent shifts to indigo. */
+:root {
+  --color-primary: #4338ca;
+  --color-primary-focus: #5348da;
+  --color-primary-on-dark: #6366f1;
+}
