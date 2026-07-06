@@ -850,12 +850,21 @@ export type WorkspaceId = string;
 /**
  * The currently open workspace, if any.
  */
-export type WorkspaceMeta = { 
+export type WorkspaceMeta = {
 /**
  * Absolute path to the workspace root.
  */
-root: string, 
+root: string,
 /**
  * Display name (the root folder's basename).
  */
 name: string, };
+
+// --- Hand-written frontend types (NOT ts-rs generated) -----------------------
+
+/** Filtered catalog listing from `package_list_catalog`. */
+export type CatalogListingPayload = {
+  entries: PackageEntry[];
+  fetchedAt: number | null;
+  stale: boolean;
+};
