@@ -68,6 +68,11 @@
   --color-warning: #ff9500; /* system orange — warning dot only */
   --color-success: #34c759; /* system green — SCM "added" badge (editor semantic exception) */
 
+  /* ---- Platform chrome colors (Windows titlebar) ----
+     The custom Windows titlebar's close-button hover red is a Windows platform
+     convention, not a brand accent — kept here as a token so no hex is inlined. */
+  --color-window-close-hover: #e81123;
+
   /* ---- Typography (SF Pro stack) ---- */
   --font-display: "SF Pro Display", system-ui, -apple-system,
     BlinkMacSystemFont, sans-serif;
@@ -1547,9 +1552,9 @@ button {
   pointer-events: none;
 }
 .titlebar-product {
-  /* Inherits the 12px bar font; bolded so the product name reads as a title. */
-  font-weight: 600;
-  letter-spacing: 0.1px;
+  /* 12px chrome text via the fine-print token (no 12px/600 token exists in the
+     system; the logo carries the brand, the wordmark stays as quiet chrome). */
+  font: var(--text-fine-print);
   color: var(--color-ink);
   white-space: nowrap;
 }
@@ -1563,24 +1568,23 @@ button {
 .titlebar-menu-btn {
   height: 100%;
   padding: 0 var(--space-sm);
-  /* Inherits the 12px bar font. */
-  font-family: var(--font-text);
-  letter-spacing: 0;
+  /* nav-link token: 12px/400/−0.12px — the system's native nav-menu weight. */
+  font: var(--text-nav-link);
   color: var(--color-ink-muted-80);
   border-radius: 0;
   white-space: nowrap;
 }
 .titlebar-menu-btn:hover {
-  background: var(--color-hover-tint, rgba(0, 0, 0, 0.06));
+  background: var(--color-hover-soft);
   color: var(--color-ink);
 }
 /* The open menu's button stays highlighted regardless of pointer position. */
 .titlebar-menu-btn-active {
-  background: var(--color-hover-tint, rgba(0, 0, 0, 0.06));
+  background: var(--color-hover-soft);
   color: var(--color-ink);
 }
 .titlebar-menu-btn-active:hover {
-  background: var(--color-hover-tint, rgba(0, 0, 0, 0.06));
+  background: var(--color-hover-soft);
 }
 /* While a menu is open, sibling buttons suppress their hover feedback so they
    don't look independently interactive — the user switches menus by hovering,
@@ -1613,12 +1617,12 @@ button {
   border-radius: 0;
 }
 .titlebar-ctrl:hover {
-  background: var(--color-hover-tint, rgba(0, 0, 0, 0.06));
+  background: var(--color-hover-soft);
 }
 /* Close button follows the Windows convention of a red hover state. */
 .titlebar-ctrl-close:hover {
-  background: #e81123;
-  color: #fff;
+  background: var(--color-window-close-hover);
+  color: var(--color-on-ink);
 }
 
 /* ---- Check mark glyph inside a dropdown item --------------------------- */

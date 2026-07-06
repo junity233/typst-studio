@@ -310,9 +310,15 @@ function buildFileMenu(t: T): MenuItem[] {
     sep(),
     action(t("closeTab"), "close-tab"),
     sep(),
-    action(t("exportPdf"), "export-pdf"),
-    action(t("exportPng"), "export-png"),
-    action(t("exportSvg"), "export-svg"),
+    {
+      type: "submenu",
+      label: t("export"),
+      children: [
+        action(t("exportPdf"), "export-pdf"),
+        action(t("exportPng"), "export-png"),
+        action(t("exportSvg"), "export-svg"),
+      ],
+    },
   ];
 }
 
