@@ -43,3 +43,7 @@ public/vendor/
 .codex-temp/
 .playwright-cli/
 .playwright-mcp/
+
+# Agent-generated session state, plans, and design notes — local-only.
+.omc/
+docs/superpowers/
