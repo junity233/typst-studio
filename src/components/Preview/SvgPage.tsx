@@ -96,14 +96,13 @@ export const SvgPage = memo(function SvgPage({
   const activeRail = useMemo(() => {
     if (!ptSize || !activeBounds) return null;
     const railWidth = 3;
-    const railGap = 6;
+    // Keep the rail pinned to the page's far-left edge so it never sits on top
+    // of the rendered text itself. A tiny inset avoids clipping against the
+    // page boundary while still reading as an edge marker rather than a body
+    // annotation.
     const inset = 2;
-    const x = Math.max(
-      inset,
-      Math.min(activeBounds.x - railGap, ptSize.width - railWidth - inset),
-    );
     return {
-      x,
+      x: inset,
       y: activeBounds.y,
       w: railWidth,
       h: activeBounds.h,
