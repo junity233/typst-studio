@@ -78,8 +78,6 @@ pub struct EditorWorld {
     vfs: Option<Arc<MemoryVfs>>,
     /// Font book + lazy font loader.
     fonts: SystemFontLoader,
-    /// "Today" frozen at construction. Typst's `datetime` functions read this.
-    today: chrono::DateTime<chrono::Utc>,
 }
 
 impl EditorWorld {
@@ -102,7 +100,6 @@ impl EditorWorld {
             resolver: None,
             vfs: None,
             fonts,
-            today: chrono::Utc::now(),
         }
     }
 
@@ -135,7 +132,6 @@ impl EditorWorld {
             resolver: Some(resolver),
             vfs,
             fonts,
-            today: chrono::Utc::now(),
         })
     }
 
@@ -269,17 +265,34 @@ impl World for EditorWorld {
         self.fonts.font(index)
     }
 
-    fn today(&self, _offset: Option<Duration>) -> Option<Datetime> {
-        // The offset would select a timezone; for the MVP we always report the
-        // UTC timestamp captured at construction.
-        let now = self.today;
+    fn today(&self, offset: Option<Duration>) -> Option<Datetime> {
+        // Read the wall clock at call time (once per compile, negligible cost
+        // against the ~150ms budget) so a long-lived world reports the CURRENT
+        // date, not the tab-open timestamp. When an offset is supplied, shift
+        // the reported time by it so `datetime.today(offset: ..)` honors the
+        // requested timezone instead of always returning UTC.
+        let now = chrono::Utc::now();
+        let shifted = match offset {
+            Some(d) => {
+                // `Duration::decompose` → [weeks, days, hours, minutes, seconds]
+                // as whole-unit i64s. Recompose into a single chrono Duration.
+                let [w, d, h, m, s] = d.decompose();
+                let delta = chrono::Duration::weeks(w)
+                    + chrono::Duration::days(d)
+                    + chrono::Duration::hours(h)
+                    + chrono::Duration::minutes(m)
+                    + chrono::Duration::seconds(s);
+                now + delta
+            }
+            None => now,
+        };
         Datetime::from_ymd_hms(
-            now.year(),
-            now.month() as u8,
-            now.day() as u8,
-            now.hour() as u8,
-            now.minute() as u8,
-            now.second() as u8,
+            shifted.year(),
+            shifted.month() as u8,
+            shifted.day() as u8,
+            shifted.hour() as u8,
+            shifted.minute() as u8,
+            shifted.second() as u8,
         )
     }
 }

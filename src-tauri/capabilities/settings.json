@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "Capability for the SETTINGS window only. Grants just the core APIs the settings UI needs (events to broadcast visibility, window controls for the modal). DELIBERATELY grants NO filesystem plugin permissions — a settings dialog reads/writes its config through Rust IPC commands (which use std::fs directly, bypassing the plugin), so it has no legitimate need for frontend-exposed fs access. This contains the blast radius of a compromised settings page: even if XSSed, it cannot write arbitrary files via the fs plugin.",
+  "windows": ["settings"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    "core:window:allow-destroy",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position"
+  ]
+}

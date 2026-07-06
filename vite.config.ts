@@ -37,6 +37,14 @@ export default defineConfig({
           port: 1421,
         }
       : undefined,
+    // Restrict which on-disk files the dev server will serve. When
+    // `TAURI_DEV_HOST` is set the server binds to a (possibly LAN-reachable)
+    // interface; without this allow-list the entire repo + node_modules would
+    // be servable to anyone on the network. Restricting to the workspace root
+    // keeps the surface to the app's own sources + dependencies.
+    fs: {
+      allow: [".."],
+    },
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
