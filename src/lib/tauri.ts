@@ -255,6 +255,8 @@ async function browserInvoke<T>(
       return "main.typ" as T;
     case "package_compiler_version":
       return "0.15.0" as T;
+    case "package_dir_is_empty":
+      return true as T;
     case "package_get_readme":
     case "package_get_thumbnail":
       return null as T;
@@ -588,6 +590,11 @@ export function packageImportSnippet(name: string, version: string): string {
 /** The embedded Typst compiler version (e.g. "0.15.0"), for the compat warning. */
 export async function packageCompilerVersion(): Promise<string> {
   return invoke<string>("package_compiler_version");
+}
+
+/** Whether the absolute `path` directory is empty (Rust-backed; no fs-plugin scope). */
+export async function packageDirIsEmpty(path: string): Promise<boolean> {
+  return invoke<boolean>("package_dir_is_empty", { path });
 }
 
 /** Read a cached package's README (markdown). */

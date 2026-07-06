@@ -184,6 +184,7 @@ pub fn run() {
             ipc::package_commands::package_init_template,
             ipc::package_commands::package_insert_import,
             ipc::package_commands::package_compiler_version,
+            ipc::package_commands::package_dir_is_empty,
             ipc::package_commands::package_get_readme,
             ipc::package_commands::package_get_thumbnail,
         ])

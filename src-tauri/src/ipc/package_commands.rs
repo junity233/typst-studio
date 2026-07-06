@@ -117,6 +117,23 @@ pub async fn package_insert_import(name: String, version: String) -> Result<Stri
     Ok(PackageService::import_snippet(&name, &version))
 }
 
+/// Whether the absolute `path` directory is empty (no entries). Used by the
+/// template-apply flow to warn before writing into a non-empty folder (§4.1).
+/// Uses `std::fs` directly (NOT the fs-plugin), so it works on any absolute
+/// path the user picks in the dialog. Returns an error for a non-directory or
+/// unreadable path so the caller can fall back to "proceed and let init
+/// surface the error".
+#[tauri::command]
+pub async fn package_dir_is_empty(path: String) -> Result<bool> {
+    let p = PathBuf::from(&path);
+    if !p.is_absolute() {
+        return Err(AppError::InvalidInput("path must be absolute".into()));
+    }
+    let read = std::fs::read_dir(&p)
+        .map_err(|e| AppError::Other(format!("read_dir {}: {e}", p.display())))?;
+    Ok(read.take(1).next().is_none())
+}
+
 /// The embedded Typst compiler version (e.g. "0.15.0"), for the
 /// compiler-compat warning in the detail view (§4.3). Returns it as a string
 /// so the frontend can compare against `PackageEntry.compiler`.

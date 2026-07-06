@@ -5,6 +5,7 @@ import { usePackagesStore } from "../../../store/packagesStore";
 import { useWorkspaceStore } from "../../../store/workspaceStore";
 import {
   packageCompilerVersion,
+  packageDirIsEmpty,
   packageGetReadme,
   packageImportSnippet,
   packageInitTemplate,
@@ -85,13 +86,13 @@ export function PackageDetail() {
     const destStr = String(dest);
     // §4.1: if the chosen folder is non-empty, confirm before proceeding — the
     // backend aborts on the first existing-file conflict, so a pre-confirm
-    // avoids a partial-copy cleanup modal.
+    // avoids a partial-copy cleanup modal. Uses the Rust-backed
+    // packageDirIsEmpty (NOT the fs-plugin, which is scoped and would throw).
     let isEmpty = true;
     try {
-      const entries = await (await import("@tauri-apps/plugin-fs")).readDir(destStr);
-      isEmpty = entries.length === 0;
+      isEmpty = await packageDirIsEmpty(destStr);
     } catch {
-      // If we can't read the dir, proceed and let the backend surface the error.
+      // If we can't read the dir, proceed and let init surface the error.
     }
     if (!isEmpty) {
       if (!confirm(t("confirmNonEmptyDest"))) return;
