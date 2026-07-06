@@ -1,25 +1,21 @@
 {
   "version": 1,
   "categories": [
-    { "id": "compiler", "label": "Compiler", "settings": [
-        { "key": "compiler.extraFontDirs", "type": "paths",   "label": "Extra font directories", "default": [] },
-        { "key": "compiler.debounceMs",    "type": "integer", "label": "Compile debounce (ms)",  "default": 300, "min": 0, "max": 5000 }
-    ]},
     { "id": "editor", "label": "Editor", "settings": [
         { "key": "editor.fontSize",   "type": "number",  "label": "Font size",    "default": 14, "min": 8, "max": 32 },
         { "key": "editor.fontFamily", "type": "string",  "label": "Font family",  "default": "" },
         { "key": "editor.lineHeight", "type": "number",  "label": "Line height",  "default": 0, "min": 0, "max": 3,
           "help": "Use 0 for the editor default." },
+        { "key": "editor.fontLigatures",  "type": "boolean", "label": "Font ligatures",     "default": true },
         { "key": "editor.tabSize",    "type": "integer", "label": "Tab size",     "default": 2, "min": 1, "max": 16 },
         { "key": "editor.wordWrap",   "type": "boolean", "label": "Word wrap",    "default": false },
         { "key": "editor.lineNumbers","type": "boolean", "label": "Line numbers", "default": true },
         { "key": "editor.minimap",    "type": "boolean", "label": "Minimap",      "default": false },
         { "key": "editor.folding",        "type": "boolean", "label": "Code folding",       "default": false },
-        { "key": "editor.fontLigatures",  "type": "boolean", "label": "Font ligatures",     "default": true },
-        { "key": "editor.scrollBeyondLastLine", "type": "boolean", "label": "Scroll beyond last line", "default": false },
         { "key": "editor.renderWhitespace", "type": "select", "label": "Render whitespace",
           "default": "selection", "options": ["none", "selection", "trailing", "all"],
           "optionLabels": { "none": "None", "selection": "Selection", "trailing": "Trailing", "all": "All" } },
+        { "key": "editor.scrollBeyondLastLine", "type": "boolean", "label": "Scroll beyond last line", "default": false },
         { "key": "editor.updateDebounceMs", "type": "integer", "label": "Editor push debounce (ms)", "default": 100, "min": 0, "max": 2000,
           "help": "How long the editor waits after the last keystroke before pushing text to the compile pipeline." },
         { "key": "editor.pasteConvertRichText",  "type": "boolean", "label": "Paste rich text as Typst", "default": true },
@@ -27,30 +23,16 @@
         { "key": "editor.pasteImageFetchRemote", "type": "boolean", "label": "Download remote images on paste", "default": true },
         { "key": "editor.insertImagePath",       "type": "string",  "label": "Inserted image path",
           "default": "${fileDir}/assets/${fileName}",
-          "help": "Where toolbar-inserted images are copied. Macros: ${fileDir}, ${fileName}, ${workspace}, ${ext}, ${timestamp}." }
-    ]},
-    { "id": "search", "label": "Search", "settings": [
+          "help": "Where toolbar-inserted images are copied. Macros: ${fileDir}, ${fileName}, ${workspace}, ${ext}, ${timestamp}." },
         { "key": "search.debounceMs", "type": "integer", "label": "Search debounce (ms)", "default": 300, "min": 0, "max": 2000 },
         { "key": "search.maxPerFile", "type": "integer", "label": "Max results per file", "default": 200, "min": 1, "max": 10000 },
-        { "key": "search.maxTotal",   "type": "integer", "label": "Max results total",   "default": 2000, "min": 1, "max": 100000 }
-    ]},
-    { "id": "export", "label": "Export", "settings": [
-        { "key": "export.pngPixelPerPt", "type": "number", "label": "PNG resolution (px/pt)", "default": 2.0, "min": 0.5, "max": 8.0, "step": 0.5,
-          "help": "Raster resolution for PNG export. 2.0 ≈ retina; 1.0 = one pixel per point." },
-        { "key": "export.revisionWaitMs", "type": "integer", "label": "Export compile wait (ms)", "default": 10000, "min": 1000, "max": 60000,
-          "help": "How long export waits for a pending compile to finish before giving up." }
-    ]},
-    { "id": "document", "label": "Document", "settings": [
+        { "key": "search.maxTotal",   "type": "integer", "label": "Max results total",   "default": 2000, "min": 1, "max": 100000 },
         { "key": "document.defaultTemplate", "type": "string", "label": "New document template",
           "default": "#set page(width: 21cm, height: 29.7cm)\n\nHello, Typst!\n",
-          "help": "Initial content of a fresh untitled document." }
-    ]},
-    { "id": "git", "label": "Source Control", "settings": [
-        { "key": "git.defaultLogLimit", "type": "integer", "label": "Default commit history", "default": 5, "min": 1, "max": 500 }
-    ]},
-    { "id": "tabs", "label": "Tabs", "settings": [
+          "help": "Initial content of a fresh untitled document." },
         { "key": "tabs.maxHidden", "type": "integer", "label": "Max background tabs", "default": 10, "min": 0, "max": 100,
-          "help": "Soft-closed (background) documents kept for instant reactivation. Oldest is hard-closed past this limit." }
+          "help": "Soft-closed (background) documents kept for instant reactivation. Oldest is hard-closed past this limit." },
+        { "key": "git.defaultLogLimit", "type": "integer", "label": "Default commit history", "default": 5, "min": 1, "max": 500 }
     ]},
     { "id": "preview", "label": "Preview", "settings": [
         { "key": "preview.autoRefresh", "type": "boolean", "label": "Auto refresh", "default": true },
@@ -59,7 +41,15 @@
         { "key": "preview.padding",     "type": "number",  "label": "Page padding", "default": 4,   "min": 0,    "max": 64,   "step": 1 },
         { "key": "preview.background",  "type": "select",  "label": "Background",   "default": "light", "options": ["light", "dark"] }
     ]},
-    { "id": "appearance", "label": "Appearance", "settings": [
+    { "id": "compiler", "label": "Compiler & Export", "settings": [
+        { "key": "compiler.extraFontDirs", "type": "paths",   "label": "Extra font directories", "default": [] },
+        { "key": "compiler.debounceMs",    "type": "integer", "label": "Compile debounce (ms)",  "default": 300, "min": 0, "max": 5000 },
+        { "key": "export.pngPixelPerPt", "type": "number", "label": "PNG resolution (px/pt)", "default": 2.0, "min": 0.5, "max": 8.0, "step": 0.5,
+          "help": "Raster resolution for PNG export. 2.0 ≈ retina; 1.0 = one pixel per point." },
+        { "key": "export.revisionWaitMs", "type": "integer", "label": "Export compile wait (ms)", "default": 10000, "min": 1000, "max": 60000,
+          "help": "How long export waits for a pending compile to finish before giving up." }
+    ]},
+    { "id": "appearance", "label": "Appearance & Window", "settings": [
         { "key": "appearance.theme", "type": "select", "label": "Theme",
           "default": "default", "options": ["default"], "dynamicOptions": true,
           "optionLabels": { "default": "Default" },
@@ -67,9 +57,7 @@
         { "key": "appearance.language", "type": "select", "label": "Language",
           "default": "auto", "options": ["auto", "en", "zh"],
           "optionLabels": { "auto": "Auto (system)", "en": "English", "zh": "简体中文" },
-          "help": "Choose the UI language. Auto follows your system locale." }
-    ]},
-    { "id": "window", "label": "Window", "settings": [
+          "help": "Choose the UI language. Auto follows your system locale." },
         { "key": "window.sidebarVisible",   "type": "boolean", "label": "Show sidebar on startup", "default": true },
         { "key": "window.previewVisible",   "type": "boolean", "label": "Show preview on startup", "default": true },
         { "key": "window.recentWorkspaces", "type": "paths",   "label": "Recent workspaces",       "default": [], "readonly": true }
@@ -79,13 +67,11 @@
           "optionLabels": { "off": "Off", "afterDelay": "After delay", "onFocusChange": "On focus change" } },
         { "key": "autosave.delayMs",    "type": "integer", "label": "Autosave delay (ms)", "default": 3000, "min": 500, "max": 30000 }
     ]},
-    { "id": "data", "label": "Data & Privacy", "settings": [
+    { "id": "data", "label": "Data & Diagnostics", "settings": [
         { "key": "action.clearRecentWorkspaces", "type": "string", "label": "Clear recent workspaces", "default": "", "readonly": true, "action": "clearRecentWorkspaces",
           "help": "Remove the list of recently-opened workspace folders." },
         { "key": "action.clearRecoveryData",     "type": "string", "label": "Clear recovery data",     "default": "", "readonly": true, "action": "clearRecoveryData",
-          "help": "Delete all crash-recovery snapshots from <app-data>/recovery/." }
-    ]},
-    { "id": "diagnostics", "label": "Diagnostics", "settings": [
+          "help": "Delete all crash-recovery snapshots from <app-data>/recovery/." },
         { "key": "action.openLogDir",       "type": "string", "label": "Open log directory", "default": "", "readonly": true, "action": "openLogDir" },
         { "key": "action.openDevtools",     "type": "string", "label": "Open developer tools", "default": "", "readonly": true, "action": "openDevtools",
           "help": "Open the WebView console (F12) on the main window to inspect rendering and IPC errors." },
@@ -93,3 +79,4 @@
     ]}
   ]
 }
+

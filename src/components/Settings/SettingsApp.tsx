@@ -5,17 +5,10 @@ import {
   Hammer,
   Type,
   Eye,
-  Monitor,
   Save,
   Database,
   Palette,
   FolderOpen,
-  Search,
-  Download,
-  FileText,
-  GitBranch,
-  PanelsTopLeft,
-  Stethoscope,
   ChevronDown,
   type LucideIcon,
 } from "lucide-react";
@@ -42,19 +35,12 @@ import { Toggle } from "./Toggle";
 
 /** Icon + accent hue per category id. Falls back to a gear. */
 const CATEGORY_ICON: Record<string, LucideIcon> = {
-  compiler: Hammer,
   editor: Type,
   preview: Eye,
-  window: Monitor,
+  compiler: Hammer,
+  appearance: Palette,
   saving: Save,
   data: Database,
-  appearance: Palette,
-  search: Search,
-  export: Download,
-  document: FileText,
-  git: GitBranch,
-  tabs: PanelsTopLeft,
-  diagnostics: Stethoscope,
 };
 
 /**
