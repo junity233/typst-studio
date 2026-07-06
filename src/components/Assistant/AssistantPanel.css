@@ -1,0 +1,328 @@
+/* AI Assistant panel — visual language follows DESIGN.md via the project's
+   --color-* CSS variables (auto-adapts to every theme + dark mode). Pill
+   CTAs, hairline borders, no chrome shadows, scale(0.95) press. */
+
+.assistant-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--color-canvas-parchment);
+  color: var(--color-body);
+  font-size: 14px;
+  line-height: 1.47;
+  min-height: 0;
+}
+
+.assistant-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-hairline);
+  flex-shrink: 0;
+}
+.assistant-panel__title {
+  font-weight: 600;
+  color: var(--color-ink);
+  font-size: 14px;
+}
+.assistant-icon-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 9999px;
+  color: var(--color-body-muted);
+  font-size: 13px;
+  line-height: 1;
+}
+.assistant-icon-btn:hover {
+  background: var(--color-hover-soft);
+}
+.assistant-icon-btn:active {
+  transform: scale(0.95);
+}
+
+.assistant-panel__scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.assistant-empty {
+  color: var(--color-body-muted);
+  font-style: italic;
+  padding: 8px 4px;
+}
+
+.assistant-msg {
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: 11px;
+  border: 1px solid var(--color-hairline);
+  background: var(--color-canvas);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+.assistant-msg--user {
+  align-self: flex-end;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  border-color: transparent;
+}
+.assistant-msg--assistant {
+  align-self: flex-start;
+}
+.assistant-streaming::after {
+  content: "▍";
+  animation: assistant-blink 1s steps(2) infinite;
+  color: var(--color-body-muted);
+}
+@keyframes assistant-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.assistant-tool {
+  align-self: flex-start;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--color-hairline);
+  border-radius: 8px;
+  background: var(--color-canvas);
+  font-size: 12px;
+}
+.assistant-tool__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--color-body-muted);
+  margin-bottom: 4px;
+}
+.assistant-tool__name {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+.assistant-tool__status {
+  font-weight: 600;
+}
+.assistant-tool__status--error {
+  color: var(--color-error);
+}
+.assistant-tool__status--ok {
+  color: var(--color-success);
+}
+.assistant-tool__result {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  background: var(--color-canvas-parchment);
+  border-radius: 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+  color: var(--color-body-muted);
+}
+
+.assistant-diff-card {
+  margin-top: 6px;
+  border: 1px solid var(--color-hairline);
+  border-radius: 11px;
+  overflow: hidden;
+}
+.assistant-diff-card__header {
+  padding: 4px 8px;
+  background: color-mix(in srgb, var(--color-canvas-parchment) 60%, transparent);
+  font-size: 11px;
+  color: var(--color-body-muted);
+  border-bottom: 1px solid var(--color-hairline);
+}
+.assistant-diff-card__tool {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.assistant-diff-card__body {
+  margin: 0;
+  padding: 4px 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  overflow-x: auto;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.assistant-diff-line {
+  display: flex;
+  padding: 0 8px;
+  white-space: pre;
+}
+.assistant-diff-line__sign {
+  width: 1.4em;
+  color: var(--color-body-muted);
+  flex-shrink: 0;
+}
+.assistant-diff-line__text {
+  flex: 1;
+}
+.assistant-diff-line--del {
+  background: color-mix(in srgb, var(--color-error) 10%, transparent);
+}
+.assistant-diff-line--add {
+  background: color-mix(in srgb, var(--color-success) 10%, transparent);
+}
+.assistant-diff-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--color-hairline);
+}
+.assistant-diff-card__verdict {
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--color-body-muted);
+  border-top: 1px solid var(--color-hairline);
+  font-style: italic;
+}
+
+.assistant-btn {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 9999px;
+  cursor: pointer;
+  border: none;
+}
+.assistant-btn:active {
+  transform: scale(0.95);
+}
+.assistant-btn--primary {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+.assistant-btn--primary:focus-visible {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: 2px;
+}
+.assistant-btn--ghost {
+  background: transparent;
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary);
+}
+
+.assistant-panel__input {
+  border-top: 1px solid var(--color-hairline);
+  padding: 8px;
+  flex-shrink: 0;
+}
+.assistant-input {
+  width: 100%;
+  resize: none;
+  font: inherit;
+  font-size: 14px;
+  padding: 8px 14px;
+  border: 1px solid var(--color-hairline);
+  border-radius: 9999px;
+  background: var(--color-canvas);
+  color: var(--color-body);
+  outline: none;
+  box-sizing: border-box;
+}
+.assistant-input:focus {
+  border-color: var(--color-primary);
+}
+.assistant-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.assistant-panel__actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  margin-top: 6px;
+  min-height: 24px;
+}
+.assistant-hint {
+  font-size: 11px;
+  color: var(--color-body-muted);
+}
+
+.assistant-error {
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 8%, transparent);
+  border-radius: 11px;
+  padding: 8px 12px;
+  font-size: 12px;
+  align-self: flex-start;
+  max-width: 90%;
+  word-break: break-word;
+}
+
+.assistant-unconfigured {
+  padding: 12px;
+  text-align: center;
+  color: var(--color-body-muted);
+  border-top: 1px solid var(--color-hairline);
+  flex-shrink: 0;
+}
+.assistant-unconfigured p {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+/* Markdown inside assistant messages. */
+.assistant-markdown p {
+  margin: 0 0 8px;
+}
+.assistant-markdown p:last-child {
+  margin-bottom: 0;
+}
+.assistant-markdown code {
+  background: var(--color-canvas-parchment);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.9em;
+}
+.assistant-markdown pre {
+  background: var(--color-canvas-parchment);
+  border: 1px solid var(--color-hairline);
+  border-radius: 8px;
+  padding: 8px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.assistant-markdown pre code {
+  background: transparent;
+  padding: 0;
+}
+.assistant-markdown a {
+  color: var(--color-primary);
+}
+.assistant-markdown ul,
+.assistant-markdown ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+.assistant-markdown h1,
+.assistant-markdown h2,
+.assistant-markdown h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 8px 0 4px;
+  color: var(--color-ink);
+}
+.assistant-thinking {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--color-body-muted);
+}
+.assistant-thinking summary {
+  cursor: pointer;
+  font-style: italic;
+}
