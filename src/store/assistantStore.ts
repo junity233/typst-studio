@@ -203,7 +203,10 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           : s.messages;
         return {
           messages: msgs,
-          status: s.status === "error" ? s.status : "idle",
+          // Preserve terminal states set by stop()/error paths; only fall back
+          // to "idle" when the run completed without being interrupted.
+          status:
+            s.status === "error" || s.status === "stopped" ? s.status : "idle",
           streamingText: "",
         };
       });
