@@ -49,8 +49,17 @@ export interface ToolContext {
   abortSignal: AbortSignal;
 }
 
+/**
+ * Narrow an `unknown` tool-params payload to a typed record. The agent's args
+ * are validated against the TypeBox schema by pi-agent-core before `execute`
+ * runs, so we treat the shape as authoritative here.
+ */
+function paramsAs<T extends Record<string, unknown>>(p: unknown): T {
+  return (p ?? {}) as T;
+}
+
 /** Build the agent's tool set. Called once per agent run. */
-export function buildTools(ctx: ToolContext): AgentTool<never, void>[] {
+export function buildTools(ctx: ToolContext): AgentTool[] {
   return [
     readFileTool(ctx),
     listDirTool(ctx),
@@ -103,17 +112,18 @@ function textResult(text: string) {
 
 // --- read-only tools ------------------------------------------------------
 
-function readFileTool(_ctx: ToolContext): AgentTool<never, void> {
+function readFileTool(_ctx: ToolContext): AgentTool {
   return {
     name: "read_file",
     label: "Read file",
     description:
       "Read a file's content. `path` is relative to the workspace root (or absolute within it).",
     parameters: Type.Object({ path: Type.String() }),
-    async execute(_id, params) {
+    async execute(_id, rawParams) {
+      const { path } = paramsAs<{ path: string }>(rawParams);
       const abs = resolveWorkspacePath(
         useWorkspaceStore.getState().rootPath,
-        params.path,
+        path,
         activeDocPath(),
       );
       const content = await readForContent(abs);
@@ -122,17 +132,18 @@ function readFileTool(_ctx: ToolContext): AgentTool<never, void> {
   };
 }
 
-function listDirTool(_ctx: ToolContext): AgentTool<never, void> {
+function listDirTool(_ctx: ToolContext): AgentTool {
   return {
     name: "list_dir",
     label: "List directory",
     description:
       "List entries in a directory. Defaults to the workspace root. Returns one path per line; directories end with `/`.",
     parameters: Type.Object({ path: Type.Optional(Type.String()) }),
-    async execute(_id, params) {
+    async execute(_id, rawParams) {
+      const { path } = paramsAs<{ path?: string }>(rawParams);
       const root = useWorkspaceStore.getState().rootPath;
-      const target = params.path
-        ? resolveWorkspacePath(root, params.path, activeDocPath())
+      const target = path
+        ? resolveWorkspacePath(root, path, activeDocPath())
         : (root ?? activeDocPath() ?? "");
       if (!target) return textResult("No workspace and no active file.");
       const entries = await invoke<DirEntry[]>("read_dir", { rel: target });
@@ -144,16 +155,17 @@ function listDirTool(_ctx: ToolContext): AgentTool<never, void> {
   };
 }
 
-function searchFilesTool(_ctx: ToolContext): AgentTool<never, void> {
+function searchFilesTool(_ctx: ToolContext): AgentTool {
   return {
     name: "search_files",
     label: "Search files",
     description:
       "Cross-file full-text search across the workspace. Returns matching file:line: text entries.",
     parameters: Type.Object({ query: Type.String() }),
-    async execute(_id, params) {
+    async execute(_id, rawParams) {
+      const { query } = paramsAs<{ query: string }>(rawParams);
       const hits = await searchWorkspace({
-        pattern: params.query,
+        pattern: query,
         isRegex: false,
         caseSensitive: false,
         wholeWord: false,
@@ -163,14 +175,14 @@ function searchFilesTool(_ctx: ToolContext): AgentTool<never, void> {
       });
       if (hits.length === 0) return textResult("No matches.");
       const lines = hits.map(
-        (h) => `${h.path}:${h.lineNumber}: ${h.lineText.trim()}`,
+        (h) => `${h.relative}:${h.line}: ${h.lineText.trim()}`,
       );
       return textResult(lines.join("\n"));
     },
   };
 }
 
-function getActiveFileTool(_ctx: ToolContext): AgentTool<never, void> {
+function getActiveFileTool(_ctx: ToolContext): AgentTool {
   return {
     name: "get_active_file",
     label: "Get active file",
@@ -194,7 +206,7 @@ function getActiveFileTool(_ctx: ToolContext): AgentTool<never, void> {
   };
 }
 
-function getDiagnosticsTool(_ctx: ToolContext): AgentTool<never, void> {
+function getDiagnosticsTool(_ctx: ToolContext): AgentTool {
   return {
     name: "get_diagnostics",
     label: "Get diagnostics",
@@ -214,7 +226,7 @@ function getDiagnosticsTool(_ctx: ToolContext): AgentTool<never, void> {
   };
 }
 
-function compilePreviewTool(_ctx: ToolContext): AgentTool<never, void> {
+function compilePreviewTool(_ctx: ToolContext): AgentTool {
   return {
     name: "compile_preview",
     label: "Compile preview",
@@ -223,14 +235,13 @@ function compilePreviewTool(_ctx: ToolContext): AgentTool<never, void> {
     parameters: Type.Object({}),
     async execute() {
       // The compile pipeline is debounced on content change; settle briefly so
-      // diagnostics reflect the latest buffer. 400ms matches editor.updateDebounceMs
-      // + compiler.debounceMs defaults.
+      // diagnostics reflect the latest buffer.
       await new Promise((r) => setTimeout(r, 500));
       const { activeId } = useTabsStore.getState();
       if (!activeId) return textResult('{"ok":false,"errors":["No active file."]}');
       const doc = useDiagnosticsStore.getState().byDoc[activeId];
       const diags = selectDiagnosticsForDoc(doc);
-      const errors = diags.filter((d) => d.severity === "error");
+      const errors = diags.filter((d) => d.severity === "Error");
       if (errors.length === 0) return textResult('{"ok":true}');
       return textResult(JSON.stringify({ ok: false, errors }));
     },
@@ -239,7 +250,7 @@ function compilePreviewTool(_ctx: ToolContext): AgentTool<never, void> {
 
 // --- edit tools (require approval) ---------------------------------------
 
-function editTool(ctx: ToolContext): AgentTool<never, void> {
+function editTool(ctx: ToolContext): AgentTool {
   return {
     name: "edit",
     label: "Edit file",
@@ -254,16 +265,21 @@ function editTool(ctx: ToolContext): AgentTool<never, void> {
       old_string: Type.String(),
       new_string: Type.String(),
     }),
-    async execute(_id, params) {
+    async execute(_id, rawParams) {
+      const { path, old_string, new_string } = paramsAs<{
+        path?: string;
+        old_string: string;
+        new_string: string;
+      }>(rawParams);
       const root = useWorkspaceStore.getState().rootPath;
-      const absPath = params.path
-        ? resolveWorkspacePath(root, params.path, activeDocPath())
+      const absPath = path
+        ? resolveWorkspacePath(root, path, activeDocPath())
         : (activeDocPath() ??
           (() => {
             throw new ToolError("No active file; pass an explicit `path`.");
           })());
       const before = await readForContent(absPath);
-      const occurrences = countOccurrences(before, params.old_string);
+      const occurrences = countOccurrences(before, old_string);
       if (occurrences === 0) {
         throw new ToolError(
           "old_string not found — copy it verbatim from read_file output.",
@@ -277,8 +293,8 @@ function editTool(ctx: ToolContext): AgentTool<never, void> {
       const result = await ctx.requestApproval({
         kind: "edit",
         path: absPath,
-        old_string: params.old_string,
-        new_string: params.new_string,
+        old_string,
+        new_string,
         before,
       });
       return textResult(result);
@@ -286,7 +302,7 @@ function editTool(ctx: ToolContext): AgentTool<never, void> {
   };
 }
 
-function writeFileTool(ctx: ToolContext): AgentTool<never, void> {
+function writeFileTool(ctx: ToolContext): AgentTool {
   return {
     name: "write_file",
     label: "Write new file",
@@ -296,20 +312,21 @@ function writeFileTool(ctx: ToolContext): AgentTool<never, void> {
       path: Type.String(),
       content: Type.String(),
     }),
-    async execute(_id, params) {
+    async execute(_id, rawParams) {
+      const { path, content } = paramsAs<{ path: string; content: string }>(rawParams);
       const root = useWorkspaceStore.getState().rootPath;
-      const absPath = resolveWorkspacePath(root, params.path, activeDocPath());
+      const absPath = resolveWorkspacePath(root, path, activeDocPath());
       if (pathHasOpenTab(absPath)) {
         throw new ToolError("File exists — use `edit` to modify it.");
       }
       // NOTE: a file may exist on disk without an open tab. We can't cheaply
-      // probe disk from here, so the create_entry backend call (wired in
-      // applyApproval, Task 8) will surface a "file exists" error if so — the
-      // agent then retries with `edit`.
+      // probe disk from here; the create_entry backend call (wired in
+      // applyApproval, Task 8) surfaces a "file exists" error if so, and the
+      // agent retries with `edit`.
       const result = await ctx.requestApproval({
         kind: "write_file",
         path: absPath,
-        after: params.content,
+        after: content,
       });
       return textResult(result);
     },

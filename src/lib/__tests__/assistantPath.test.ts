@@ -7,39 +7,39 @@ import {
 
 describe("resolveWorkspacePath", () => {
   it("joins a relative path under a workspace root (posix)", () => {
-    expect(resolveWorkspacePath("/workspace", "src/main.typ")).toBe(
+    expect(resolveWorkspacePath("/workspace", "src/main.typ", null)).toBe(
       "/workspace/src/main.typ",
     );
   });
 
   it("normalizes `.` and rejects `..` that escapes the root", () => {
-    expect(resolveWorkspacePath("/workspace", "src/../main.typ")).toBe(
+    expect(resolveWorkspacePath("/workspace", "src/../main.typ", null)).toBe(
       "/workspace/main.typ",
     );
-    expect(() => resolveWorkspacePath("/workspace", "../etc/passwd")).toThrow(
+    expect(() => resolveWorkspacePath("/workspace", "../etc/passwd", null)).toThrow(
       /outside/i,
     );
-    expect(() => resolveWorkspacePath("/workspace", "a/../../etc")).toThrow(
+    expect(() => resolveWorkspacePath("/workspace", "a/../../etc", null)).toThrow(
       /outside/i,
     );
   });
 
   it("accepts an absolute path inside the workspace", () => {
-    expect(resolveWorkspacePath("/workspace", "/workspace/x.typ")).toBe(
+    expect(resolveWorkspacePath("/workspace", "/workspace/x.typ", null)).toBe(
       "/workspace/x.typ",
     );
   });
 
   it("rejects an absolute path outside the workspace", () => {
-    expect(() => resolveWorkspacePath("/workspace", "/etc/passwd")).toThrow(
+    expect(() => resolveWorkspacePath("/workspace", "/etc/passwd", null)).toThrow(
       /outside/i,
     );
   });
 
   it("handles Windows drive-letter roots", () => {
-    expect(resolveWorkspacePath("C:/ws", "src/a.typ")).toBe("C:/ws/src/a.typ");
-    expect(resolveWorkspacePath("C:\\ws", "src\\a.typ")).toBe("C:/ws/src/a.typ");
-    expect(() => resolveWorkspacePath("C:/ws", "D:/evil.typ")).toThrow(/outside/i);
+    expect(resolveWorkspacePath("C:/ws", "src/a.typ", null)).toBe("C:/ws/src/a.typ");
+    expect(resolveWorkspacePath("C:\\ws", "src\\a.typ", null)).toBe("C:/ws/src/a.typ");
+    expect(() => resolveWorkspacePath("C:/ws", "D:/evil.typ", null)).toThrow(/outside/i);
   });
 
   it("returns the single-file path when no workspace is set (basename or abs)", () => {

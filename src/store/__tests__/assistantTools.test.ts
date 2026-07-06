@@ -221,7 +221,7 @@ describe("assistantTools", () => {
 
   it("search_files forwards a SearchQuery to searchWorkspace", async () => {
     (searchWorkspace as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { path: "/ws/a.typ", lineNumber: 4, lineText: "  hello world" },
+      { relative: "a.typ", line: 4, lineText: "  hello world" },
     ]);
     const tools = buildToolsReal(makeCtx());
     const sf = tools.find((t) => t.name === "search_files")!;

@@ -79,7 +79,7 @@ class FakeEditor implements EditEditor {
       const endLine = lines[range.endLineNumber - 1] ?? "";
       const prefix = startLine.slice(0, range.startColumn - 1);
       const suffix = endLine.slice(range.endColumn - 1);
-      const middle = text.split("\n");
+      const middle = (text ?? "").split("\n");
       const rebuilt = [prefix + middle[0]];
       for (let i = 1; i < middle.length; i++) rebuilt.push(middle[i]);
       rebuilt[rebuilt.length - 1] = rebuilt[rebuilt.length - 1] + suffix;
