@@ -106,7 +106,7 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
         // write disk), so the authoritative origin is `untitled`.
         origin: { kind: "untitled" },
         revision: 0,
-        compiledRevision: 0,
+        compiledRevision: -1,
         conflict: "none",
         conflictDiskContent: null,
         status: "idle",

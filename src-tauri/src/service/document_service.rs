@@ -1074,14 +1074,42 @@ impl DocumentService {
         Ok(meta)
     }
 
-    /// Update a tab's source text and signal its worker to recompile. Returns
-    /// instantly — `set_text` writes directly to the world's interior RwLock,
-    /// and `recompile` is a non-blocking channel send.
+    /// Update text for an internal caller, allocating the next revision.
     ///
-    /// Bumps the document `revision` atomically with the dirty flag (§7), so
-    /// every emitted compile/diagnostic/status event can carry the revision it
-    /// corresponds to and stale results can be discarded.
+    /// The IPC path uses [`Self::update_text_at_revision`] instead because the
+    /// frontend revision must survive debounce coalescing unchanged.
     pub fn update_text(&self, id: DocumentId, content: String) -> Result<()> {
+        self.apply_text(id, content, None).map(|_| ())
+    }
+
+    /// Apply a frontend-versioned text snapshot.
+    ///
+    /// Newer revisions replace the buffer and are adopted verbatim. Older
+    /// revisions are harmless no-ops, which makes concurrently completing IPC
+    /// calls order-independent. An equal revision with equal content is a
+    /// deliberate refresh. Equal revision with different content is the
+    /// well-defined editor-wins resolution for a concurrent clean disk reload.
+    pub fn update_text_at_revision(
+        &self,
+        id: DocumentId,
+        content: String,
+        revision: u64,
+    ) -> Result<u64> {
+        self.apply_text(id, content, Some(revision))
+    }
+
+    /// Shared mutation path for internal edits and frontend-versioned edits.
+    ///
+    /// The state lock covers both the revision decision and the world's short
+    /// text replacement. Compile snapshots take the same state→world lock
+    /// order, so a compile can never observe new text stamped with an old
+    /// revision (or vice versa).
+    fn apply_text(
+        &self,
+        id: DocumentId,
+        content: String,
+        requested_revision: Option<u64>,
+    ) -> Result<u64> {
         let tab = {
             let tabs = self.store.tabs.read();
             tabs.get(&id)
@@ -1089,26 +1117,69 @@ impl DocumentService {
                 .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
         };
 
-        // A refresh/replay may submit the text already held by the world.
-        // Recompile it, but do not manufacture an edit: revision, dirty state,
-        // VFS state, and recovery snapshots must remain unchanged.
-        if tab.world.text() == content {
-            if let Some(worker) = self.store.workers.read().get(&id) {
-                worker.recompile();
+        let mut should_recompile = false;
+        let mut replace_same_revision = false;
+        let mut applied = None;
+
+        let authoritative_revision = {
+            let mut rt = tab.state.lock();
+            let current_revision = rt.meta.revision;
+            let current_text = tab.world.text();
+
+            let target_revision = match requested_revision {
+                Some(incoming) if incoming < current_revision => {
+                    tracing::debug!(
+                        "stale update_text ignored for {id}: incoming revision \
+                         {incoming}, current revision {current_revision}"
+                    );
+                    return Ok(current_revision);
+                }
+                Some(incoming) if incoming == current_revision => {
+                    if current_text == content {
+                        should_recompile = true;
+                    } else {
+                        // A clean disk reload can win the backend revision race
+                        // after Monaco has already allocated the same next
+                        // revision locally. The editor buffer is authoritative
+                        // for an explicit update_text, so adopt it at the same
+                        // revision and mark the document dirty.
+                        replace_same_revision = true;
+                    }
+                    current_revision
+                }
+                Some(incoming) => incoming,
+                None if current_text == content => {
+                    should_recompile = true;
+                    current_revision
+                }
+                None => current_revision.saturating_add(1),
+            };
+
+            if target_revision > current_revision || replace_same_revision {
+                // Keep text + revision one atomic logical snapshot for compile.
+                tab.world.set_text(content.clone());
+                rt.meta.revision = target_revision;
+                rt.meta.dirty = true;
+                let canon = rt.meta.origin.canonical_path().map(|p| p.to_path_buf());
+                applied = Some((rt.meta.clone(), canon));
+                should_recompile = true;
             }
-            return Ok(());
+
+            target_revision
+        };
+
+        // A refresh/replay may submit the exact snapshot already held by the
+        // world. Recompile it, but do not manufacture an edit or recovery item.
+        if applied.is_none() {
+            if should_recompile {
+                if let Some(worker) = self.store.workers.read().get(&id) {
+                    worker.recompile();
+                }
+            }
+            return Ok(authoritative_revision);
         }
 
-        tab.world.set_text(content.clone());
-        // Atomically bump revision + set dirty under one lock.
-        let (meta_snapshot, canon) = {
-            let mut rt = tab.state.lock();
-            rt.meta.revision = rt.meta.revision.saturating_add(1);
-            rt.meta.dirty = true;
-            let canon = rt.meta.origin.canonical_path().map(|p| p.to_path_buf());
-            // Snapshot the meta (post-revision-bump) for the recovery schedule.
-            (rt.meta.clone(), canon)
-        };
+        let (meta_snapshot, canon) = applied.expect("checked above");
         // Publish the edited buffer into the shared VFS (§5 end): another tab
         // that #includes / #reads this file must compile against the live edit,
         // not the stale disk copy. Only for documents with a canonical path.
@@ -1117,8 +1188,10 @@ impl DocumentService {
         }
         // Signal the worker. If it's busy compiling, the message queues; the
         // worker picks up the latest text when it finishes.
-        if let Some(worker) = self.store.workers.read().get(&id) {
-            worker.recompile();
+        if should_recompile {
+            if let Some(worker) = self.store.workers.read().get(&id) {
+                worker.recompile();
+            }
         }
         // Schedule a debounced recovery snapshot (§5.1.2). Best-effort: if no
         // recovery service is wired (tests / disabled), this is a no-op. The
@@ -1130,7 +1203,7 @@ impl DocumentService {
                 .and_then(|p| DiskVersion::from_path(p).ok());
             recovery.schedule_snapshot(meta_snapshot, content, disk_version);
         }
-        Ok(())
+        Ok(authoritative_revision)
     }
 
     /// Prepare data needed to save a tab: returns `(path, current_text)`. The
@@ -1444,6 +1517,79 @@ mod tests {
         document.update_text(meta.id, "b".into()).unwrap();
         let r2 = document.tab_revision(meta.id).unwrap();
         assert!(r2 > r1, "revision must be strictly monotonic");
+    }
+
+    #[test]
+    fn versioned_update_adopts_debounced_frontend_revision_exactly() {
+        let (document, compile) = make_services();
+        let meta = document.new_tab(Some("".into()));
+
+        // Three Monaco edits may be coalesced into one IPC. The surviving
+        // snapshot is revision 3, not "one backend call" revision 1.
+        let acknowledged = document
+            .update_text_at_revision(meta.id, "abc".into(), 3)
+            .unwrap();
+
+        assert_eq!(acknowledged, 3);
+        assert_eq!(document.tab_revision(meta.id), Some(3));
+        assert_eq!(document.tab_text(meta.id).as_deref(), Some("abc"));
+
+        // The compiler must stamp the same end-to-end version on its result.
+        compile.compile_now(meta.id);
+        assert_eq!(
+            compile
+                .last_compile_state(meta.id)
+                .and_then(|state| state.last_compiled_revision),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn versioned_update_ignores_late_older_snapshot() {
+        let (document, _compile) = make_services();
+        let meta = document.new_tab(Some("initial".into()));
+
+        document
+            .update_text_at_revision(meta.id, "newest".into(), 5)
+            .unwrap();
+        let acknowledged = document
+            .update_text_at_revision(meta.id, "late stale value".into(), 4)
+            .unwrap();
+
+        assert_eq!(acknowledged, 5);
+        assert_eq!(document.tab_revision(meta.id), Some(5));
+        assert_eq!(document.tab_text(meta.id).as_deref(), Some("newest"));
+    }
+
+    #[test]
+    fn equal_revision_refresh_and_disk_reload_collision_are_safe() {
+        let (document, _compile) = make_services();
+        let meta = document.new_tab(Some("initial".into()));
+        document
+            .update_text_at_revision(meta.id, "current".into(), 7)
+            .unwrap();
+
+        // Manual refresh: same version + same content is a recompile request,
+        // not a new edit.
+        assert_eq!(
+            document
+                .update_text_at_revision(meta.id, "current".into(), 7)
+                .unwrap(),
+            7
+        );
+
+        // A backend disk reload may have independently allocated the same
+        // revision after Monaco's edit. The explicit editor snapshot wins and
+        // becomes dirty without creating yet another revision.
+        assert_eq!(
+            document
+                .update_text_at_revision(meta.id, "conflict".into(), 7)
+                .unwrap(),
+            7
+        );
+        assert_eq!(document.tab_revision(meta.id), Some(7));
+        assert_eq!(document.tab_text(meta.id).as_deref(), Some("conflict"));
+        assert!(document.tab_meta(meta.id).unwrap().dirty);
     }
 
     #[test]

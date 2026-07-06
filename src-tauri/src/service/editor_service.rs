@@ -230,6 +230,19 @@ impl EditorService {
         self.document.update_text(id, content)
     }
 
+    /// Apply a frontend-versioned snapshot without collapsing its revision.
+    ///
+    /// Used by the IPC boundary; internal service callers retain
+    /// [`Self::update_text`] and its automatic single-step revision.
+    pub fn update_text_at_revision(
+        &self,
+        id: DocumentId,
+        content: String,
+        revision: u64,
+    ) -> Result<u64> {
+        self.document.update_text_at_revision(id, content, revision)
+    }
+
     /// Delegates to [`DocumentService::prepare_save`].
     pub fn prepare_save(&self, id: DocumentId) -> Result<(PathBuf, String)> {
         self.document.prepare_save(id)

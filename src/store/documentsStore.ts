@@ -56,8 +56,9 @@ export interface Document {
   /**
    * The revision the LAST APPLIED compile was stamped with (i.e. the revision
    * whose `svgPages`/`lineMap` are currently shown). Bumped in lockstep with
-   * `revision` at open (`documentFromOpened`); updated to the applied compile's
-   * revision in `setPages`. While `compiledRevision < revision` the buffer has
+   * one less than `revision` at open (no preview has landed yet); updated to
+   * the applied compile's revision in `setPages`. While
+   * `compiledRevision < revision` the buffer has
    * edits the preview hasn't caught up to — its `lineMap` is stale and scroll-
    * sync must NOT re-align against it (the target would be wrong). The gap
    * widens during fast typing (compile results come back stamped with an older
@@ -102,13 +103,13 @@ export function documentFromOpened(doc: OpenedDocument): Document {
     // is the source of truth; this mirror lets documentUri.ts derive the URI
     // without a round-trip.
     origin: doc.origin,
-    // The backend seeds revision 0 on open; the first compile carries revision
-    // 0 and matches this. Each subsequent edit bumps it.
-    revision: 0,
-    // No compile has landed yet at open; `compiledRevision` starts equal to
-    // `revision` so scroll-sync treats the (empty) preview as in-sync until the
-    // first real compile, rather than permanently suppressing alignment.
-    compiledRevision: 0,
+    // Preserve the backend's authoritative revision (reactivated/session docs
+    // are not necessarily revision zero).
+    revision: doc.revision,
+    // No compile payload has landed in this frontend instance yet. Using the
+    // predecessor revision lets reconciliation detect a lost initial event,
+    // including for a valid empty document whose rendered page list is empty.
+    compiledRevision: doc.revision - 1,
     // No external-modification conflict on open (§8.4).
     conflict: "none",
     conflictDiskContent: null,
@@ -281,6 +282,10 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
             content,
             dirty: true,
             revision: doc.revision + 1,
+            // The previous status belongs to the previous content revision.
+            // Reset it so preview reconciliation can distinguish "the current
+            // revision failed" from an error left over from an older buffer.
+            status: "idle",
           },
         },
       };

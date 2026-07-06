@@ -215,8 +215,12 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // Debounced backend push for the compile pipeline (SVG preview). The window
   // is the `editor.updateDebounceMs` setting; rebuilding on its change is
   // intended (useDebouncedCallback keys its stable callback on `delay`).
-  const pushToBackend = useDebouncedCallback((id: string, value: string) => {
-    void updateText(id, value).catch((e) =>
+  const pushToBackend = useDebouncedCallback((
+    id: string,
+    value: string,
+    revision: number,
+  ) => {
+    void updateText(id, value, revision).catch((e) =>
       console.warn("[MonacoEditor] updateText failed:", e),
     );
   }, updateDebounceMs ?? 100);
@@ -736,9 +740,17 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     if (monacoModelRegistry.isSuppressingForward(tabIdRef.current)) return;
     // Always keep the local tab content current so a manual refresh can push
     // it; only gate the backend compile push on `preview.autoRefresh`.
+    const id = tabIdRef.current;
     onChangeRef.current(next);
+    // Zustand mutations are synchronous. Read the revision AFTER updateContent
+    // so the version attached to this snapshot is the exact Monaco content
+    // version, even when debounce coalesces many keystrokes into one IPC.
+    const revision =
+      useDocumentsStore.getState().documents[id]?.revision;
     if (autoRefreshRef.current !== false && previewVisibleRef.current) {
-      pushToBackend(tabIdRef.current, next);
+      if (revision !== undefined) {
+        pushToBackend(id, next, revision);
+      }
     }
   };
 
@@ -785,7 +797,7 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
       previewVisibleRef.current &&
       model !== null
     ) {
-      void updateText(doc.id, model.getValue()).catch((error) =>
+      void updateText(doc.id, model.getValue(), doc.revision).catch((error) =>
         console.warn("[MonacoEditor] initial preview compile failed:", error),
       );
     }

@@ -89,6 +89,20 @@ describe("documentsStore revision guard (§7)", () => {
     expect(doc.dirty).toBe(true);
   });
 
+  it("clears a previous revision's compile status on edit", () => {
+    useDocumentsStore.setState({
+      documents: {
+        "tab-1": freshDocument({ status: "error", revision: 4 }),
+      },
+    });
+
+    useDocumentsStore.getState().updateContent("tab-1", "new content");
+
+    const doc = useDocumentsStore.getState().documents["tab-1"];
+    expect(doc.revision).toBe(5);
+    expect(doc.status).toBe("idle");
+  });
+
   it("does not bump revision when content is unchanged", () => {
     const store = useDocumentsStore.getState();
     store.updateContent("tab-1", "old"); // same as initial content
@@ -239,6 +253,7 @@ describe("documentsStore open/close lifecycle", () => {
     const doc = useDocumentsStore.getState().documents["d1"];
     expect(doc).toBeDefined();
     expect(doc.revision).toBe(0);
+    expect(doc.compiledRevision).toBe(-1);
     expect(doc.svgPages).toEqual([]);
     expect(doc.status).toBe("idle");
   });
@@ -259,7 +274,14 @@ describe("documentsStore open/close lifecycle", () => {
     expect(doc.id).toBe("x");
     expect(doc.title).toBe("t.typ");
     expect(doc.revision).toBe(0);
+    expect(doc.compiledRevision).toBe(-1);
     expect(doc.dirty).toBe(false);
+  });
+
+  it("preserves a nonzero backend revision and awaits its first preview", () => {
+    const doc = documentFromOpened(openedDoc({ revision: 7 }));
+    expect(doc.revision).toBe(7);
+    expect(doc.compiledRevision).toBe(6);
   });
 });
 

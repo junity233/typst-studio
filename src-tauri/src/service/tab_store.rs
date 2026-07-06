@@ -557,27 +557,16 @@ fn handle_version_change(
         set_conflict(tab, id, emitter, ConflictState::Missing, None);
         return;
     };
-    // Snapshot the revision BEFORE the disk read's result is applied, so the
-    // CAS below can detect any `update_text` that lands in between (those bump
-    // the revision, failing the CAS and routing us to the conflict path
-    // instead of clobbering the edit). `update_text` does `set_text` THEN
-    // `revision+1` under `tab.state`; we mirror that ordering (set_text first,
-    // then lock) to avoid an ABA / lock-order hazard.
-    let expected_revision = tab.state.lock().meta.revision;
-    // Apply the reloaded buffer to the world. If an `update_text` races us,
-    // whichever `set_text` runs last wins on the buffer — but the CAS below
-    // guarantees we only commit the bookkeeping (dirty=false, new version) if
-    // NO edit arrived, so a racing edit is never silently dropped.
-    tab.world.set_text(content.clone());
+    // Commit text + metadata under the same state lock used by `update_text`.
+    // Whichever side acquires it first creates one coherent snapshot:
+    // - an editor update first makes the document dirty, routing us to conflict;
+    // - a clean reload first completes atomically, after which the editor's
+    //   versioned update safely replaces it and becomes dirty.
     let (revision, canon) = {
         let mut rt = tab.state.lock();
-        if rt.meta.revision != expected_revision || rt.meta.dirty {
-            // An edit landed between the snapshot and this commit. Don't
-            // clobber it — surface Modified carrying the new disk_version +
-            // disk content (the compare view needs the latter). The world
-            // buffer may now hold either the edit or our reload (last-writer
-            // on `set_text`), but the dirty flag + revision reflect the edit,
-            // so the user keeps control and is prompted to resolve.
+        if rt.meta.dirty {
+            // An edit landed while the disk content was being read. Don't
+            // clobber it; surface Modified with the disk bytes for comparison.
             drop(rt);
             set_conflict(
                 tab,
@@ -590,6 +579,7 @@ fn handle_version_change(
             );
             return;
         }
+        tab.world.set_text(content.clone());
         rt.meta.revision = rt.meta.revision.saturating_add(1);
         rt.meta.dirty = false;
         rt.meta.conflict = ConflictState::None;

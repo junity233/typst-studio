@@ -157,14 +157,21 @@ pub async fn hard_close_tab(state: State<'_, AppState>, id: DocumentId) -> Resul
     state.editor.hard_close(id)
 }
 
-/// Update a tab's source text and schedule a 300ms debounced compile.
+/// Apply a versioned source snapshot and schedule a compile.
+///
+/// `revision` is allocated by the frontend before debounce. The service adopts
+/// that exact value and ignores older snapshots, so coalescing several Monaco
+/// changes into one IPC does not make the frontend and backend clocks diverge.
+/// Returns the backend's authoritative revision after applying (or ignoring)
+/// the request.
 #[tauri::command]
 pub async fn update_text(
     state: State<'_, AppState>,
     id: DocumentId,
     content: String,
-) -> Result<()> {
-    state.editor.update_text(id, content)
+    revision: u64,
+) -> Result<u64> {
+    state.editor.update_text_at_revision(id, content, revision)
 }
 
 /// Write a tab's source back to its on-disk path (errors for untitled tabs).

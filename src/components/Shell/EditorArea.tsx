@@ -127,6 +127,7 @@ export function EditorArea() {
   // pane's top edge. Reading it here keeps the anchor in lockstep with the
   // actual padding so alignment stays exact at any padding value.
   const [previewPadding] = useSetting<number>("preview.padding");
+  const [autoRefresh] = useSetting<boolean>("preview.autoRefresh");
   // "Compile caught up" (compiledRevision >= revision) is read from the store
   // at kick time inside the re-align paths below, not computed here — see the
   // re-align effect / handlePageImgLoad comments for why gating on it prevents
@@ -562,12 +563,78 @@ export function EditorArea() {
 
   useEffect(() => {
     if (!prevPreviewVisible.current && previewVisible && activeTab) {
-      void updateText(activeTab.id, activeTab.content).catch((e) =>
+      void updateText(
+        activeTab.id,
+        activeTab.content,
+        activeTab.revision,
+      ).catch((e) =>
         console.warn("[EditorArea] preview-open recompile failed:", e),
       );
     }
     prevPreviewVisible.current = previewVisible;
   }, [previewVisible, activeTab]);
+
+  // Event delivery is intentionally best-effort in the Tauri emitter. Heal a
+  // missed `compiled` event by replaying the SAME versioned snapshot until the
+  // preview catches up. The backend treats equal revision + equal content as a
+  // recompile, while its stale guard makes an old retry harmless after a newer
+  // edit. Compile errors stop retries because retaining the last good preview
+  // is the intended error behavior.
+  useEffect(() => {
+    if (
+      !previewVisible ||
+      autoRefresh === false ||
+      !activeTab ||
+      activeTab.status === "error" ||
+      activeTab.compiledRevision >= activeTab.revision
+    ) {
+      return;
+    }
+
+    const { id, content, revision } = activeTab;
+    let cancelled = false;
+    let timer: number | null = null;
+    let delay = 1_000;
+
+    const schedule = () => {
+      timer = window.setTimeout(async () => {
+        if (cancelled) return;
+        const live = useDocumentsStore.getState().documents[id];
+        if (
+          !live ||
+          live.revision !== revision ||
+          live.content !== content ||
+          live.status === "error" ||
+          live.compiledRevision >= revision
+        ) {
+          return;
+        }
+        try {
+          await updateText(id, content, revision);
+        } catch (error) {
+          console.warn("[EditorArea] preview reconciliation failed:", error);
+        }
+        if (!cancelled) {
+          delay = Math.min(delay * 2, 5_000);
+          schedule();
+        }
+      }, delay);
+    };
+
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [
+    previewVisible,
+    autoRefresh,
+    activeTab?.id,
+    activeTab?.content,
+    activeTab?.revision,
+    activeTab?.compiledRevision,
+    activeTab?.status,
+  ]);
 
   useEffect(() => {
     const api = editorApiRef.current;
@@ -627,7 +694,11 @@ export function EditorArea() {
 
   const handleRefresh = () => {
     if (activeTab === null) return;
-    void updateText(activeTab.id, activeTab.content).catch((e) =>
+    void updateText(
+      activeTab.id,
+      activeTab.content,
+      activeTab.revision,
+    ).catch((e) =>
       console.warn("[EditorArea] manual refresh failed:", e),
     );
   };
