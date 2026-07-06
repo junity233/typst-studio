@@ -234,6 +234,21 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   const previewVisibleRef = useRef(previewVisible);
   previewVisibleRef.current = previewVisible;
 
+  // Whether the ACTIVE document is untitled. The "highlight all occurrences of
+  // the word under the cursor" feature (wordHighlighter) resolves the current
+  // model via the workbench's TextModelResolverService on every cursor move,
+  // which tries to READ the model's resource from disk. For an untitled doc
+  // whose model URI the workbench classifies as a `file:` path
+  // (Documents/typst/Untitled.typ), that read throws "Unable to resolve
+  // nonexistent file" — a noisy, recurring uncaught-promise error. Disk files
+  // resolve fine, so we keep the feature ON for them (Monaco default
+  // 'singleFile') and disable it ONLY for untitled docs. Subscribing to the
+  // active doc's origin signature means the option re-applies on tab switch and
+  // on Save As (untitled → looseFile turns it back on).
+  const activeOriginKind = useDocumentsStore(
+    (s) => s.documents[tab.id]?.origin.kind ?? "untitled",
+  );
+
   // Settings-derived editor options. Only keys that are actually set are
   // overridden; everything else falls through to the built-in defaults below.
   // `editor.fontFamily` is applied only when non-empty so an unset value keeps
@@ -258,6 +273,9 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
       if (scrollBeyondLastLine !== undefined)
         opts.scrollBeyondLastLine = scrollBeyondLastLine;
       if (lineHeight !== undefined && lineHeight > 0) opts.lineHeight = lineHeight;
+      // Disable occurrence highlighting only for untitled docs (see
+      // `activeOriginKind` above for why). Disk files keep Monaco's default.
+      if (activeOriginKind === "untitled") opts.occurrencesHighlight = "off";
       return opts;
     }, [
       fontSize,
@@ -271,6 +289,7 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
       folding,
       scrollBeyondLastLine,
       lineHeight,
+      activeOriginKind,
     ]);
 
   // Phase A (spec §8.3 / §10.5): models are owned by `monacoModelRegistry`,
@@ -303,18 +322,6 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         // the top of the document. The app exposes export through the native menu
         // instead, so hide the lens.
         codeLens: false,
-        // Disable occurrence highlighting (the "highlight all occurrences of the
-        // word under the cursor" feature). Its implementation
-        // (wordHighlighter) resolves the current model via the workbench's
-        // TextModelResolverService on every cursor move, which tries to READ
-        // the model's resource from disk. For an untitled doc whose model URI
-        // the workbench classifies as a `file:` path (Documents/typst/Untitled.typ),
-        // that read throws "Unable to resolve nonexistent file" on every cursor
-        // move / focus / edit — a noisy, recurring uncaught-promise error that
-        // can destabilize the editor's event dispatch. Typst Studio doesn't need
-        // cross-document occurrence highlighting, so disabling it kills the
-        // failing model-resolution path at its source.
-        occurrencesHighlight: "off",
         // Tighten the vertical air around the text so the editor reads edge-to-edge
         // within its pane instead of floating in wide whitespace.
         padding: { top: 6, bottom: 6 },
