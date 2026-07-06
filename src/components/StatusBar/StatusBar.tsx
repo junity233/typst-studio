@@ -37,6 +37,22 @@ function statusLabel(
 }
 
 /**
+ * CSS class for the compile-status section. Compiling/slow get the
+ * compiling tint, error gets the error tint, everything else is unstyled.
+ */
+function statusClass(status: CompileStatus): string {
+  switch (status) {
+    case "compiling":
+    case "slow":
+      return "statusbar-status--compiling";
+    case "error":
+      return "statusbar-status--error";
+    default:
+      return "";
+  }
+}
+
+/**
  * §6.4: LSP status label reflecting the lifecycle kind. Maps each
  * `LspStatusKind` to a short StatusBar string; surfaces the optional
  * `message` hint (e.g. the `Failed` "manual restart required" text) and the
@@ -94,12 +110,7 @@ export function StatusBar() {
   const diagnostics = useDiagnosticsForDoc(tab?.id ?? null);
   const errorCount = diagnostics.filter((d) => d.severity === "Error").length;
   const status = tab?.status ?? "idle";
-  const statusClass =
-    status === "compiling" || status === "slow"
-      ? "statusbar-status--compiling"
-      : status === "error"
-        ? "statusbar-status--error"
-        : "";
+  const statusClassName = statusClass(status);
 
   const { status: lspStatus } = useLspStatus();
 
@@ -162,7 +173,7 @@ export function StatusBar() {
 
   return (
     <footer className="statusbar">
-      <span className={"statusbar-section" + (statusClass ? " " + statusClass : "")}>
+      <span className={"statusbar-section" + (statusClassName ? " " + statusClassName : "")}>
         {tab !== null ? statusLabel(t, tab.status, tab.durationMs) : t("noDocument")}
       </span>
       {isConflicted && tab !== null && (

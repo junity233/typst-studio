@@ -84,15 +84,17 @@ export function DiagnosticsPanel({
               </tr>
             </thead>
             <tbody>
-              {sorted.map((d, i) => (
+              {sorted.map((d, i) => {
+                const sevClass = severityClass(d.severity);
+                return (
                 <tr
                   key={i}
-                  className={`diag-row ${severityClass(d.severity)}`}
+                  className={`diag-row ${sevClass}`}
                   onDoubleClick={() => onGoto(d.range)}
                   title={t("row.jumpTitle")}
                 >
                   <td className="diag-col-sev">
-                    <span className={`diag-sev-text ${severityClass(d.severity)}`}>
+                    <span className={`diag-sev-text ${sevClass}`}>
                       {t(severityLabelKey(d.severity))}
                     </span>
                   </td>
@@ -102,7 +104,8 @@ export function DiagnosticsPanel({
                   </td>
                   <td className="diag-col-msg">{d.message}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         )}

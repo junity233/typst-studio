@@ -16,6 +16,7 @@ import {
   parseViewBoxPt,
   rectAtOrBeforeLine,
 } from "../Preview/previewMapping";
+import { isZoomWheel, nextZoomStep } from "../../hooks/useWheelZoom";
 
 const PREVIEW_WIDTH_KEY = "ts-preview-width";
 const PREVIEW_WIDTH_DEFAULT = 480;
@@ -32,6 +33,50 @@ function loadPreviewWidth(): number {
     // ignore
   }
   return PREVIEW_WIDTH_DEFAULT;
+}
+
+const ZOOM_CLEANUP_KEY = "_zoomCleanup" as keyof HTMLElement;
+
+/**
+ * Attach a capture-phase Ctrl/Cmd+wheel zoom listener to an element, mirroring
+ * the per-pane zoom behavior. Shared by the editor-font-size and preview-zoom
+ * panes. `get` reads the live value, `set` persists it, and `min`/`max`/`step`
+ * /`fallback` configure the clamp — the value math delegates to the tested
+ * {@link nextZoomStep} so it stays in one place.
+ *
+ * The listener is attached in the capture phase so it intercepts the wheel
+ * event before Monaco (which installs its own) or the preview's scroll
+ * container can consume it. The cleanup fn is stashed on the element so React's
+ * callback ref can detach it on unmount/re-bind (React calls the ref with null
+ * on the old node before the new one).
+ */
+function attachZoomListener(
+  el: HTMLDivElement,
+  get: () => number | undefined,
+  set: (next: number) => void,
+  opts: { min: number; max: number; step: number; fallback: number },
+): void {
+  const onWheel = (e: globalThis.WheelEvent) => {
+    if (!isZoomWheel(e)) return;
+    const current = get() ?? opts.fallback;
+    const next = nextZoomStep(current, e.deltaY, opts);
+    if (next === current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    set(next);
+  };
+  el.addEventListener("wheel", onWheel, { passive: false, capture: true });
+  (el as unknown as Record<string, unknown>)[ZOOM_CLEANUP_KEY] = () => {
+    el.removeEventListener("wheel", onWheel, { capture: true });
+  };
+}
+
+/** Detach any listener previously attached via {@link attachZoomListener}. */
+function detachZoomListener(el: HTMLElement | null): void {
+  if (el && typeof el[ZOOM_CLEANUP_KEY] === "function") {
+    (el[ZOOM_CLEANUP_KEY] as unknown as () => void)();
+    delete el[ZOOM_CLEANUP_KEY];
+  }
 }
 
 /**
@@ -87,31 +132,22 @@ export function EditorArea() {
   // React bubble-phase onWheel fires). Live value via ref.
   const previewZoomLevelRef = useRef(previewZoomLevel);
   previewZoomLevelRef.current = previewZoomLevel;
+  // Keep live value in a ref so the native capture-phase wheel listener (which
+  // can't be a React synthetic handler) always reads the latest setting.
+  // Like the editor pane, attach a capture-phase native wheel listener so
+  // Ctrl+wheel is intercepted before the `.preview-pane` scroll container
+  // starts scrolling (its overflow-y:auto can consume the event before the
+  // React bubble-phase onWheel fires). Live value via ref.
   const previewPaneZoomRef = useCallback(
     (el: HTMLDivElement | null) => {
-      const key = "_zoomCleanup" as keyof HTMLElement;
-      const prev = (el ?? (null as unknown)) as HTMLElement | null;
-      if (prev && typeof prev[key] === "function") {
-        (prev[key] as unknown as () => void)();
-        delete prev[key];
-      }
+      detachZoomListener(el);
       if (el === null) return;
-      const onWheel = (e: globalThis.WheelEvent) => {
-        if (!(e.metaKey || e.ctrlKey)) return;
-        const current = previewZoomLevelRef.current ?? 1;
-        const direction = e.deltaY < 0 ? 1 : -1;
-        const raw = current + direction * 0.1;
-        const rounded = Math.round(raw * 1e6) / 1e6;
-        const next = Math.min(4, Math.max(0.25, rounded));
-        if (next === current) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setPreviewZoomLevel(next);
-      };
-      el.addEventListener("wheel", onWheel, { passive: false, capture: true });
-      (el as unknown as Record<string, unknown>)[key] = () => {
-        el.removeEventListener("wheel", onWheel, { capture: true });
-      };
+      attachZoomListener(
+        el,
+        () => previewZoomLevelRef.current,
+        setPreviewZoomLevel,
+        { min: 0.25, max: 4, step: 0.1, fallback: 1 },
+      );
     },
     [setPreviewZoomLevel],
   );
@@ -129,33 +165,18 @@ export function EditorArea() {
   // ref with null), the stashed cleanup detaches the listener.
   const editorPaneRef = useCallback(
     (el: HTMLDivElement | null) => {
-      const key = "_zoomCleanup" as keyof HTMLElement;
-      // Cleanup the previous element's listener (React calls null on the old
-      // node before calling with the new one).
-      const prev = (el ?? (null as unknown)) as HTMLElement | null;
-      if (prev && typeof prev[key] === "function") {
-        (prev[key] as unknown as () => void)();
-        delete prev[key];
-      }
+      detachZoomListener(el);
       if (el === null) return;
-      const onWheel = (e: globalThis.WheelEvent) => {
-        if (!(e.metaKey || e.ctrlKey)) return;
-        const current = editorFontSizeRef.current ?? 13;
-        const direction = e.deltaY < 0 ? 1 : -1;
-        const raw = current + direction * 1;
-        const next = Math.min(32, Math.max(8, raw));
-        if (next === current) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setEditorFontSize(next);
-      };
-      el.addEventListener("wheel", onWheel, { passive: false, capture: true });
-      (el as unknown as Record<string, unknown>)[key] = () => {
-        el.removeEventListener("wheel", onWheel, { capture: true });
-      };
+      attachZoomListener(
+        el,
+        () => editorFontSizeRef.current,
+        setEditorFontSize,
+        { min: 8, max: 32, step: 1, fallback: 13 },
+      );
     },
     [setEditorFontSize],
   );
+
   // Scroll-sync reads/writes `scrollTop` on this ref, so it MUST point at the
   // actual scroll container (`.preview-pane`, `overflow: auto`). It is therefore
   // populated SOLELY by `PreviewPane`'s `paneRef` prop — NOT by the `.pane-preview`

@@ -170,25 +170,10 @@ export function FormatToolbar({
     }
   };
 
-  // Build the FormatApi lazily per click rather than memoizing on `api` — the
-  // object is tiny (3 method refs) and memoizing on a ref-backed api that
-  // doesn't change identity after mount would just add a useMemo for nothing.
+  // `api` is already the narrow FormatApi (the prop type), so dispatch reads it
+  // directly — no need to rebuild a wrapper object per click.
   const handleAction = (action: FormatAction) => {
     if (api === null || tab === null) return;
-    const formatApi: FormatApi = {
-      wrapSelection: api.wrapSelection,
-      replaceSelection: api.replaceSelection,
-      toggleLinePrefix: api.toggleLinePrefix,
-      getSelectionText: api.getSelectionText,
-      // State-aware seam (T2): thread the four new methods through so this
-      // object satisfies the now-wider FormatApi. The toolbar's aria-pressed
-      // computation + dispatchAction toggle (T3) consume them; T2 only needs
-      // them present so the type checks.
-      toggleWrap: api.toggleWrap,
-      isInsideWrap: api.isInsideWrap,
-      isLinePrefixActive: api.isLinePrefixActive,
-      onDidChangeCursorPosition: api.onDidChangeCursorPosition,
-    };
     const actionCtx: ActionContext = {
       tab,
       workspace,
@@ -196,7 +181,7 @@ export function FormatToolbar({
       openModal,
       insertImage,
     };
-    dispatchAction(action, formatApi, actionCtx);
+    dispatchAction(action, api, actionCtx);
   };
 
   // Link confirm: per spec §5.3, wrap the current selection as the link label

@@ -230,13 +230,13 @@ impl WorkspaceService {
         let path = self.resolve_rel(rel)?;
         match kind {
             EntryKind::Dir => {
-                std::fs::create_dir_all(&path).map_err(|e| AppError::Io(e))?;
+                std::fs::create_dir_all(&path).map_err(AppError::Io)?;
             }
             EntryKind::File => {
                 if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| AppError::Io(e))?;
+                    std::fs::create_dir_all(parent).map_err(AppError::Io)?;
                 }
-                std::fs::write(&path, "").map_err(|e| AppError::Io(e))?;
+                std::fs::write(&path, "").map_err(AppError::Io)?;
             }
         }
         Ok(())
@@ -248,9 +248,9 @@ impl WorkspaceService {
         let from = self.resolve_rel(from_rel)?;
         let to = self.resolve_rel(to_rel)?;
         if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| AppError::Io(e))?;
+            std::fs::create_dir_all(parent).map_err(AppError::Io)?;
         }
-        std::fs::rename(&from, &to).map_err(|e| AppError::Io(e))?;
+        std::fs::rename(&from, &to).map_err(AppError::Io)?;
         Ok(())
     }
 
@@ -283,7 +283,7 @@ impl WorkspaceService {
     /// The command layer pairs this with the resolver to open a workspace-backed
     /// tab.
     pub fn read_file_text(&self, abs_path: &Path) -> Result<String> {
-        std::fs::read_to_string(abs_path).map_err(|e| AppError::Io(e))
+        std::fs::read_to_string(abs_path).map_err(AppError::Io)
     }
 }
 

@@ -280,14 +280,7 @@ fn build_open_recent_submenu<R: Runtime>(
 /// Tauri would compute. (Using `app.path()` here panics with
 /// `state() called before manage() for PathResolver`.)
 fn read_recent_workspaces<R: Runtime>(_app: &AppHandle<R>) -> Vec<String> {
-    let Some(cfg_dir) = crate::paths::app_config_dir() else {
-        return Vec::new();
-    };
-    let path = cfg_dir.join("session.json");
-    let Ok(raw) = std::fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+    let Some(v) = read_config_json("session.json") else {
         return Vec::new();
     };
     v.get("recentWorkspaces")
@@ -324,11 +317,20 @@ fn short_label(path: &str) -> String {
 /// A first-launch user with no `settings.json` yet therefore gets a menu in
 /// the OS language (or English), which is the right default.
 fn read_language_setting() -> Option<String> {
-    let cfg_dir = crate::paths::app_config_dir()?;
-    let raw = std::fs::read_to_string(cfg_dir.join("settings.json")).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let v = read_config_json("settings.json")?;
     v.get("appearance")?.get("language")?.as_str().map(String::from)
 }
+/// Read and parse a JSON file from the app config dir at `.build()` time
+/// (before `.setup`). Shared by [`read_recent_workspaces`] and
+/// [`read_language_setting`]; both are best-effort, so any failure (no config
+/// dir, missing/corrupt file) → `None`. See those functions for why `app.path()`
+/// is unusable here.
+fn read_config_json(file: &str) -> Option<serde_json::Value> {
+    let cfg_dir = crate::paths::app_config_dir()?;
+    let raw = std::fs::read_to_string(cfg_dir.join(file)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
 /// The macOS app-name submenu: About / Services / Hide / Hide Others / Quit.
 /// Quit (Cmd+Q) is a predefined item whose accelerator + behavior are baked in.
 #[cfg(target_os = "macos")]

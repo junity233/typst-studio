@@ -107,7 +107,9 @@ const ALL_KEYS: &[Key] = &[
 ];
 
 /// The `appearance.language` value indicating "follow the OS locale". Mirrors
-/// the frontend `AUTO_LANGUAGE` constant.
+/// the frontend `AUTO_LANGUAGE` constant. Test-only: the `resolve()` match
+/// folds "auto" into its catch-all arm, so only the tests name it explicitly.
+#[cfg(test)]
 const AUTO_LANGUAGE: &str = "auto";
 
 /// Resolve the persisted `appearance.language` value into a concrete
@@ -125,10 +127,9 @@ pub fn resolve(setting: Option<&str>) -> Language {
     match setting {
         Some("en") => Language::En,
         Some("zh") => Language::Zh,
-        // "auto", None, or unknown → system locale. Unknown explicit values
-        // (e.g. a future language persisted before this build knows it) fall
-        // back to English rather than the system locale, matching the frontend.
-        Some(s) if s != AUTO_LANGUAGE && s.is_empty() => system_language(),
+        // "auto", None, empty, or any unrecognized value → resolve from the
+        // system locale (mirrors `resolveLanguage` in `src/i18n/index.ts`, so
+        // both layers agree on what "auto" means).
         _ => system_language(),
     }
 }

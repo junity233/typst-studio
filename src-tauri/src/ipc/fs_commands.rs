@@ -175,8 +175,7 @@ pub async fn open_default_workspace(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Option<WorkspaceMeta>> {
-    let cwd = std::env::current_dir()
-        .map_err(|e| AppError::Io(e))?;
+    let cwd = std::env::current_dir().map_err(AppError::Io)?;
     if !cwd.is_dir() {
         return Ok(None);
     }

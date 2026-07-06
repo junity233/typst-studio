@@ -464,7 +464,7 @@ pub fn run() {
 fn compute_recovery_payload(
     recovery: &crate::persistence::recovery::RecoveryService,
 ) -> Option<crate::ipc::events::RecoveryAvailablePayload> {
-    use crate::ipc::events::{RecoveryAvailablePayload};
+    use crate::ipc::events::RecoveryAvailablePayload;
     use crate::ipc::recovery_commands::summarize_recoverable;
 
     let snapshots = recovery.list_recoverable();
