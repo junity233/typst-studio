@@ -1,10 +1,35 @@
 import { Suspense, lazy, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useViews } from "../../extensions/hooks";
+import type { ViewContribution } from "../../extensions/registry";
 import { useUiStore } from "../../store/uiStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { onFsChanged } from "../../lib/tauri";
 import { EmptyWorkspace } from "./EmptyWorkspace";
+
+/**
+ * Stable lazy-component cache, keyed by view id. Each call to `lazy()` returns
+ * a NEW wrapper component type; if we called it inside the render `.map()` the
+ * way the keep-alive design used to, every Sidebar re-render would produce a
+ * fresh `<ViewComponent>` type for React to reconcile. React treats a changed
+ * component type as "different component" and UNMOUNTS the old subtree —
+ * wiping each view's internal state and re-running its effects (Source
+ * Control's IPC refresh, Search's collapse set, etc.), defeating the entire
+ * `hidden`-based keep-alive. Caching one lazy wrapper per view id keeps the
+ * type referentially stable across renders, so React reuses the subtree and
+ * the CSS show/hide toggle is what actually controls visibility.
+ */
+const lazyViewCache = new Map<string, ReturnType<typeof lazy>>();
+
+/** Get (or first-time create) the stable lazy component for a view. */
+function getLazyView(view: ViewContribution) {
+  let Component = lazyViewCache.get(view.id);
+  if (!Component) {
+    Component = lazy(view.component);
+    lazyViewCache.set(view.id, Component);
+  }
+  return Component;
+}
 
 /**
  * Built-in sidebar view ids → translation keys. View titles themselves are
@@ -30,7 +55,10 @@ const VIEW_TITLE_KEYS: Record<string, string> = {
  * that on every tab switch and forced a re-load (re-search, re-fetch, lost
  * cursor in the commit box). Rendering every view once and showing/hiding
  * via `hidden` preserves each view's component tree across switches (the
- * VSCode sidebar model).
+ * VSCode sidebar model). This only holds because each view's lazy wrapper is
+ * memoized in `lazyViewCache` — recreating `lazy()` per render would change
+ * each view's component type and force React to unmount it regardless of
+ * `hidden`.
  *
  * With no workspace open, the EmptyWorkspace prompt shows as a stacked layer
  * on top of the (idle) views, so re-opening a workspace restores whatever
@@ -90,7 +118,7 @@ export function Sidebar() {
             when the user switches tabs — its internal state, scroll position,
             and lazy-loaded chunk all survive. */}
         {views.map((v) => {
-          const ViewComponent = lazy(v.component);
+          const ViewComponent = getLazyView(v);
           const isActive = v.id === activeViewId;
           // When no workspace is open, hide ALL views (EmptyWorkspace covers
           // the body). When a workspace is open, show only the active one.
