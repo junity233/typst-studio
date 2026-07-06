@@ -111,7 +111,7 @@ export interface TabsState {
     diskContent?: string | null,
   ) => void;
   /** Clear dirty + rebind path on save. Delegates to documentsStore. */
-  markSaved: (id: string, path: string) => void;
+  markSaved: (id: string, path: string, savedRevision?: number) => void;
 }
 
 export const DEFAULT_CONTENT =
@@ -261,8 +261,8 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
   setConflict: (id, conflict, diskContent) =>
     useDocumentsStore.getState().setConflict(id, conflict, diskContent),
 
-  markSaved: (id, path) => {
-    useDocumentsStore.getState().markSaved(id, path);
+  markSaved: (id, path, savedRevision) => {
+    useDocumentsStore.getState().markSaved(id, path, savedRevision);
     // Refresh the session's last-file hint on every save (covers Save, Save
     // As, and the close-guard Save-All), so relaunch reopens the latest file.
     recordFile(path);

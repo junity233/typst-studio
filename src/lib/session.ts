@@ -108,9 +108,21 @@ export async function captureSession(
     openDocuments: OpenDocRecord[];
     activeDocumentId: string | null;
   }) => Promise<unknown>,
+  discardedIds: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   const { tabs, activeId } = readState();
-  const { openDocuments, activeDocumentId } = buildOpenDocuments(tabs, activeId);
+  // "Don't Save" means an untitled buffer must disappear, while a disk-backed
+  // document may still be reopened from disk but must no longer be marked
+  // dirty. The final close capture is authoritative over earlier best-effort
+  // captures that may still contain the discarded in-memory text.
+  const capturedTabs = tabs.flatMap((tab) => {
+    if (!discardedIds.has(tab.id)) return [tab];
+    return tab.path === null ? [] : [{ ...tab, dirty: false }];
+  });
+  const { openDocuments, activeDocumentId } = buildOpenDocuments(
+    capturedTabs,
+    activeId,
+  );
   await save({ openDocuments, activeDocumentId });
 }
 
@@ -121,7 +133,9 @@ export async function captureSession(
  * tabs store (which imports `recordFile` from here). The core work is delegated
  * to the injectable [`captureSession`] so it can be unit-tested directly.
  */
-export async function captureAndSaveSession(): Promise<void> {
+export async function captureAndSaveSession(
+  discardedIds: ReadonlySet<string> = new Set(),
+): Promise<void> {
   try {
     // Read the live view order + domain state. The tabs store is now a views
     // store (ids only); the domain fields come from documentsStore via
@@ -134,6 +148,7 @@ export async function captureAndSaveSession(): Promise<void> {
     await captureSession(
       () => ({ tabs: readOrderedDocuments(), activeId: useTabsStore.getState().activeId }),
       saveSession,
+      discardedIds,
     );
   } catch (e) {
     // Never surface: losing one capture is harmless (the next change

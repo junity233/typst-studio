@@ -198,13 +198,7 @@ impl WorkspaceService {
         // Lexically normalize the joined path (resolving `..`/`.` without hitting
         // the filesystem, since the target may not exist yet), then enforce
         // containment under the root. This blocks `../escape.typ`.
-        let joined = normalize_lexically(&root.join(rel));
-        if !joined.starts_with(&root) {
-            return Err(AppError::InvalidInput(format!(
-                "{rel} escapes the workspace root"
-            )));
-        }
-        Ok(joined)
+        crate::domain::path::ensure_contained_path(&root, &root.join(rel))
     }
 
     /// List the immediate children of a workspace-relative directory.
@@ -242,7 +236,11 @@ impl WorkspaceService {
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent).map_err(AppError::Io)?;
                 }
-                std::fs::write(&path, "").map_err(AppError::Io)?;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .map_err(AppError::Io)?;
             }
         }
         Ok(())
@@ -297,31 +295,6 @@ impl Default for WorkspaceService {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Lexically normalize a path: resolve `.` and `..` components without touching
-/// the filesystem (so it works for not-yet-existing paths). Used to make the
-/// workspace-containment check robust against `..` escapes.
-fn normalize_lexically(path: &Path) -> PathBuf {
-    use std::path::Component;
-    let mut out: Vec<Component> = Vec::new();
-    for comp in path.components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                // Pop the last normal component if any; leave `..` only at the
-                // root (which would escape — that's caught by the caller).
-                match out.last() {
-                    Some(Component::Normal(_)) => {
-                        out.pop();
-                    }
-                    _ => out.push(comp),
-                }
-            }
-            other => out.push(other),
-        }
-    }
-    out.iter().map(|c| c.as_os_str()).collect()
 }
 
 #[cfg(test)]
@@ -383,6 +356,18 @@ mod tests {
         ws.create_entry("newdir", EntryKind::Dir).unwrap();
         assert!(dir.join("new.typ").exists());
         assert!(dir.join("newdir").is_dir());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_entry_never_truncates_an_existing_file() {
+        let dir = tmp_dir();
+        std::fs::write(dir.join("existing.typ"), "keep me").unwrap();
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+
+        assert!(ws.create_entry("existing.typ", EntryKind::File).is_err());
+        assert_eq!(std::fs::read_to_string(dir.join("existing.typ")).unwrap(), "keep me");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

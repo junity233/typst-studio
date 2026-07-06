@@ -22,6 +22,8 @@ export interface SearchState {
   setQuery: (q: string) => void;
   setOption: (key: "isRegex" | "caseSensitive" | "wholeWord", v: boolean) => void;
   run: () => Promise<void>;
+  /** Discard in-flight/results without changing the query or options. */
+  invalidateResults: () => void;
   clear: () => void;
 }
 
@@ -70,6 +72,11 @@ export const useSearchStore = create<SearchState>((set, get) => ({
         error: e instanceof Error ? e.message : String(e),
       });
     }
+  },
+
+  invalidateResults: () => {
+    ++runSeq;
+    set({ results: [], error: null, searching: false });
   },
 
   clear: () => {

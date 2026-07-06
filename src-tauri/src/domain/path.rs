@@ -71,6 +71,57 @@ pub fn canonicalize_target(parent: &Path, file_name: &str) -> Result<PathBuf> {
     Ok(canon_parent.join(file_name))
 }
 
+/// Resolve enough of `candidate` to prove it remains under `base`, including
+/// symlinks in any existing path component. Missing trailing components are
+/// allowed so callers can validate create/write destinations before they
+/// exist. The lexically normalized candidate is returned for the actual I/O.
+pub fn ensure_contained_path(base: &Path, candidate: &Path) -> Result<PathBuf> {
+    let lexical = normalize_lexical(candidate)
+        .ok_or_else(|| AppError::InvalidInput(format!("invalid path: {candidate:?}")))?;
+    let resolved_base = canonicalize_with_missing(base)?;
+    let resolved_candidate = canonicalize_with_missing(&lexical)?;
+    if !resolved_candidate.starts_with(&resolved_base) {
+        return Err(AppError::InvalidInput(format!(
+            "{candidate:?} escapes allowed root {base:?}"
+        )));
+    }
+    Ok(lexical)
+}
+
+/// Canonicalize the deepest existing ancestor, then append any missing tail.
+/// This exposes symlink escapes without requiring the final target to exist.
+fn canonicalize_with_missing(path: &Path) -> Result<PathBuf> {
+    let lexical = normalize_lexical(path)
+        .ok_or_else(|| AppError::InvalidInput(format!("invalid path: {path:?}")))?;
+    let mut existing = lexical.as_path();
+    let mut missing = Vec::new();
+
+    loop {
+        match std::fs::symlink_metadata(existing) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let name = existing.file_name().ok_or_else(|| {
+                    AppError::InvalidInput(format!("no existing ancestor for {path:?}"))
+                })?;
+                missing.push(name.to_os_string());
+                existing = existing.parent().ok_or_else(|| {
+                    AppError::InvalidInput(format!("no existing ancestor for {path:?}"))
+                })?;
+            }
+            Err(error) => return Err(AppError::Io(error)),
+        }
+    }
+
+    let mut resolved = normalize_platform(
+        std::fs::canonicalize(existing)
+            .map_err(|error| AppError::InvalidInput(format!("canonicalize {existing:?}: {error}")))?,
+    );
+    for component in missing.iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
 /// Lexically normalize `.`/`..` without touching the filesystem. Returns
 /// `None` for a relative path with `..` that would escape above the root.
 fn normalize_lexical(path: &Path) -> Option<PathBuf> {
@@ -201,5 +252,38 @@ mod tests {
         // Relative path that escapes above its (relative) root: no absolute
         // anchor to absorb the `..`.
         assert!(normalize_lexical(Path::new("../x")).is_none());
+    }
+
+    #[test]
+    fn containment_allows_missing_descendant_but_rejects_lexical_escape() {
+        let root = std::env::temp_dir().join(format!("ts-contained-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let nested = root.join("new").join("image.png");
+        assert_eq!(ensure_contained_path(&root, &nested).unwrap(), nested);
+        assert!(ensure_contained_path(&root, &root.join("..").join("escape.png")).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn containment_rejects_existing_symlink_to_outside() {
+        let root = std::env::temp_dir().join(format!("ts-contained-root-{}", uuid::Uuid::new_v4()));
+        let outside =
+            std::env::temp_dir().join(format!("ts-contained-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = root.join("link");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&outside, &link).is_err() {
+            let _ = std::fs::remove_dir_all(&root);
+            let _ = std::fs::remove_dir_all(&outside);
+            return;
+        }
+
+        assert!(ensure_contained_path(&root, &link.join("escape.png")).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 }

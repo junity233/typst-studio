@@ -17,7 +17,7 @@ export default function activate(ctx: HostApi): void {
       import("../../components/Outline/OutlinePanel").then((m) => ({
         default: m.OutlinePanel,
       })),
-    order: 30,
+    order: 10,
     when: "always",
   });
 

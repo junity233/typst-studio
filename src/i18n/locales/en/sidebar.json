@@ -29,9 +29,6 @@
   "search": {
     "title": "Search"
   },
-  "sourceControl": {
-    "title": "Source Control"
-  },
   "emptyWorkspace": {
     "title": "No folder open",
     "body": "Open a folder to browse its files as a workspace tree, with <code>#include</code> and <code>#image()</code> resolution.",

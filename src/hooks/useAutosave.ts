@@ -2,8 +2,8 @@ import { useEffect, useRef } from "react";
 import { useSetting } from "./useSetting";
 import { useDocumentsStore } from "../store/documentsStore";
 import { useSaveStateStore } from "../store/saveStateStore";
-import { saveFile } from "../lib/tauri";
 import { toIpcError } from "../lib/ipc-error";
+import { flushAndSaveInPlace } from "../lib/saveDocument";
 
 /**
  * Autosave (§7.1). Three modes, driven by the `autosave.mode` setting:
@@ -149,12 +149,11 @@ export async function autosaveDirtyDiskDocs(): Promise<void> {
   await Promise.all(
     ids.map(async (id) => {
       try {
-        await saveFile(id);
-        const path = useDocumentsStore.getState().documents[id]?.path;
-        if (path) {
-          // Mirror the saved state locally (the store action clears dirty).
-          useDocumentsStore.getState().markSaved(id, path);
-        }
+        const saved = await flushAndSaveInPlace(id);
+        // Revision-CAS preserves dirty if another edit landed during the write.
+        useDocumentsStore
+          .getState()
+          .markSaved(id, saved.path, saved.revision);
       } catch (e) {
         const ipc = toIpcError(e);
         // external_conflict: the doc is conflicted — skip silently (suspension

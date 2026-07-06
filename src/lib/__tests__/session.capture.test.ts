@@ -60,6 +60,29 @@ describe("captureSession (§13)", () => {
     const save = vi.fn().mockRejectedValue(new Error("disk full"));
     await expect(captureSession(readState, save)).rejects.toThrow("disk full");
   });
+
+  it("does not persist discarded untitled content and reopens discarded disk docs clean", async () => {
+    const readState = () =>
+      tabsState(
+        [
+          { id: "disk", path: "/x.typ", content: "unsaved disk edit", dirty: true },
+          { id: "draft", path: null, content: "discarded secret", dirty: true },
+          { id: "clean", path: "/clean.typ", content: "", dirty: false },
+        ],
+        "draft",
+      );
+    const save = vi.fn().mockResolvedValue(undefined);
+
+    await captureSession(readState, save, new Set(["disk", "draft"]));
+
+    expect(save).toHaveBeenCalledWith({
+      openDocuments: [
+        { kind: "disk", path: "/x.typ", dirty: false },
+        { kind: "disk", path: "/clean.typ", dirty: false },
+      ],
+      activeDocumentId: null,
+    });
+  });
 });
 
 describe("captureAndSaveSession (§13, best-effort wrapper)", () => {

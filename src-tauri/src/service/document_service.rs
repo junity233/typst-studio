@@ -560,6 +560,26 @@ impl DocumentService {
     /// Task A always reclassifies as `LooseFile`; Task B will pick
     /// `WorkspaceFile` when the target is inside the active workspace.
     pub fn rebind_path(&self, id: DocumentId, target_path: PathBuf) -> Result<()> {
+        self.rebind_path_inner(id, target_path, None)
+    }
+
+    /// Rebind after a successful Save As write. The tab is clean only when the
+    /// buffer revision still matches the snapshot that was written.
+    pub fn rebind_path_after_save(
+        &self,
+        id: DocumentId,
+        target_path: PathBuf,
+        saved_revision: u64,
+    ) -> Result<()> {
+        self.rebind_path_inner(id, target_path, Some(saved_revision))
+    }
+
+    fn rebind_path_inner(
+        &self,
+        id: DocumentId,
+        target_path: PathBuf,
+        saved_revision: Option<u64>,
+    ) -> Result<()> {
         let canon = canonicalize_for_identity(&target_path)?;
         let root = canon
             .parent()
@@ -582,9 +602,11 @@ impl DocumentService {
             )
         };
 
-        // New metadata: loose file at the target, clean, revision carried over.
+        // New metadata: loose file at the target, revision carried over. Save
+        // As keeps a racing newer edit dirty; generic rebinds retain the prior
+        // clean behavior.
         let new_meta = DocumentMeta {
-            dirty: false,
+            dirty: saved_revision.is_some_and(|saved| saved != revision),
             revision,
             ..DocumentMeta::with_loose_path(id, canon.clone(), root.clone())
         };
@@ -621,6 +643,34 @@ impl DocumentService {
         // future external changes (§4.2).
         self.set_disk_version_from_path(id, Some(&canon));
         loose_watcher_for(&self.store, &root);
+        Ok(())
+    }
+
+    /// Snapshot revision and text under the same state -> world lock order used
+    /// by edits and compiles.
+    pub fn snapshot_for_save(&self, id: DocumentId) -> Result<(u64, String)> {
+        let tab = {
+            let tabs = self.store.tabs.read();
+            tabs.get(&id)
+                .cloned()
+                .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
+        };
+        let rt = tab.state.lock();
+        Ok((rt.meta.revision, tab.world.text()))
+    }
+
+    /// Reject a Save As target owned by another open document before touching
+    /// the target on disk.
+    pub fn ensure_rebind_target_available(&self, id: DocumentId, target: &Path) -> Result<()> {
+        let canon = canonicalize_for_identity(target)?;
+        if let Some(existing_id) = self.store.registry.read().find_by_canonical(&canon) {
+            if existing_id != id {
+                return Err(AppError::AlreadyOpen {
+                    existing_id,
+                    path: canon.to_string_lossy().into_owned(),
+                });
+            }
+        }
         Ok(())
     }
 

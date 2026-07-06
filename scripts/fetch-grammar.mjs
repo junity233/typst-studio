@@ -6,8 +6,9 @@
  * The grammar JSONs are build artifacts inside the published VSIX (not committed
  * upstream), so this script:
  *   1. Downloads the universal VSIX (2.5 MB, CORS-enabled) from OpenVSX.
- *   2. Streams the zip and extracts only the files we need.
- *   3. Slices tinymist's package.json contributes block into a minimal manifest
+ *   2. Streams the zip and extracts only the files we need, including the
+ *      extension's package.json.
+ *   3. Slices that package.json's contributes block into a minimal manifest
  *      we register as a web extension (this carries semanticTokenScopes, the
  *      crucial bridge from LSP semantic tokens → TextMate scopes → theme colors).
  *
@@ -37,10 +38,9 @@ const ROOT = resolve(__dirname, "..");
 const TINYMIST_VERSION = "0.15.2";
 
 const OPENVSX_VSIX_URL = `https://open-vsx.org/api/myriad-dreamin/tinymist/${TINYMIST_VERSION}/file/myriad-dreamin.tinymist-${TINYMIST_VERSION}.vsix`;
-const OPENVSX_MANIFEST_URL = `https://open-vsx.org/api/myriad-dreamin/tinymist/${TINYMIST_VERSION}/file/package.json`;
-
 const CACHE_DIR = resolve(ROOT, "node_modules/.cache/grammar");
 const CACHE_VSIX = resolve(CACHE_DIR, `tinymist-${TINYMIST_VERSION}.vsix`);
+const CACHE_MANIFEST = resolve(CACHE_DIR, `tinymist-${TINYMIST_VERSION}-package.json`);
 
 const OUT_DIR = resolve(ROOT, "src/assets/grammar");
 const OUT = {
@@ -55,6 +55,7 @@ const ZIP_ENTRIES = {
   "extension/out/typst.tmLanguage.json": OUT.typstGrammar,
   "extension/out/typst-code.tmLanguage.json": OUT.typstCodeGrammar,
   "extension/syntaxes/language-configuration.json": OUT.languageConfiguration,
+  "extension/package.json": CACHE_MANIFEST,
 };
 
 // ---------------------------------------------------------------------------
@@ -139,8 +140,10 @@ function extractEntries() {
 }
 
 /**
- * Fetch tinymist's package.json and slice out the contributes keys relevant to
- * highlighting, sanitizing references we can't or don't want to satisfy.
+ * Slice the package.json extracted from the pinned VSIX into the contributes
+ * keys relevant to highlighting, sanitizing references we can't or don't want
+ * to satisfy. Reading it from the VSIX keeps the grammar and manifest versions
+ * atomic and means cached builds require no network access.
  *
  * Sanitization rules:
  *   - Drop the `typst-markdown-injection` language + its grammar — we don't
@@ -155,16 +158,11 @@ function extractEntries() {
  * Everything else (grammars, semanticTokenScopes, configurationDefaults) is
  * kept verbatim from upstream so semantic highlighting stays in sync with the
  * grammar version.
- * @returns {Promise<void>}
+ * @returns {void}
  */
-async function writeManifestSlice() {
-  console.log(`[fetch-grammar] fetching manifest ${OPENVSX_MANIFEST_URL}`);
-  const res = await fetch(OPENVSX_MANIFEST_URL, { redirect: "follow" });
-  if (!res.ok) {
-    throw new Error(`manifest fetch failed: HTTP ${res.status} ${res.statusText}`);
-  }
+function writeManifestSlice() {
   /** @type {any} */
-  const pkg = await res.json();
+  const pkg = JSON.parse(readFileSync(CACHE_MANIFEST, "utf8"));
   const upstream = pkg.contributes ?? {};
 
   // Keep only Typst + Typst-code languages (drop toml + markdown-injection).
@@ -242,7 +240,7 @@ async function main() {
 
   await ensureVsixCached();
   await extractEntries();
-  await writeManifestSlice();
+  writeManifestSlice();
   verify();
 
   console.log(`[fetch-grammar] done (tinymist v${TINYMIST_VERSION})`);

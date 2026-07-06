@@ -23,6 +23,10 @@ import { toIpcError } from "../../lib/ipc-error";
 import i18n from "../../i18n";
 import { useContextMenuStore } from "./contextMenuStore";
 import type { TFunction } from "i18next";
+import {
+  joinWorkspacePath,
+  workspacePathsEqual,
+} from "../../lib/workspacePath";
 
 const ICON_SIZE = 14;
 
@@ -187,7 +191,10 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
     !isDir &&
     rootPath !== null &&
     activeId !== null &&
-    documents[activeId]?.path === `${rootPath}/${entry.relative}`;
+    workspacePathsEqual(
+      documents[activeId]?.path ?? null,
+      joinWorkspacePath(rootPath, entry.relative),
+    );
 
   // Folders expand/collapse on single click (standard tree behavior); files
   // open on DOUBLE click so a single click just selects/focuses the row,
@@ -206,8 +213,10 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
     if (rootPath === null) return;
     try {
       setLoading(true);
-      const abs = `${rootPath}/${entry.relative}`;
-      const existing = readAllDocuments().find((t) => t.path === abs);
+      const abs = joinWorkspacePath(rootPath, entry.relative);
+      const existing = readAllDocuments().find((t) =>
+        workspacePathsEqual(t.path, abs),
+      );
       if (existing) {
         // Phase B2: a soft-closed file re-activates instead of opening a dup.
         if (existing.hidden) {

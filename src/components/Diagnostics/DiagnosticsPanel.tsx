@@ -6,6 +6,11 @@ import type { Diagnostic, Range } from "../../lib/types";
 interface DiagnosticsPanelProps {
   tabId?: string;
   collapsed: boolean;
+  /** Resizable body height in px (managed by the parent's drag sash). */
+  bodyHeight?: number;
+  /** True while the resize sash is being dragged — disables the body's height
+   *  transition so it tracks the cursor 1:1 instead of lagging. */
+  dragging?: boolean;
   onToggle: () => void;
   /** Called with the diagnostic's range when a row is clicked. */
   onGoto: (range: Range) => void;
@@ -38,6 +43,8 @@ function severityLabelKey(severity: Diagnostic["severity"]): string {
 export function DiagnosticsPanel({
   tabId,
   collapsed,
+  bodyHeight,
+  dragging,
   onToggle,
   onGoto,
 }: DiagnosticsPanelProps) {
@@ -71,7 +78,14 @@ export function DiagnosticsPanel({
           )}
         </button>
       </div>
-      <div className="diagnostics-body">
+      <div
+        className={"diagnostics-body" + (dragging ? " dragging" : "")}
+        style={
+          bodyHeight != null
+            ? { maxHeight: bodyHeight, height: bodyHeight }
+            : undefined
+        }
+      >
         {sorted.length === 0 ? (
           <div className="diag-empty">{t("empty")}</div>
         ) : (

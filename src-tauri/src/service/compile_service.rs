@@ -30,7 +30,7 @@
 
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use typst_layout::PagedDocument;
@@ -143,6 +143,12 @@ impl CompileService {
         tabs: &super::tab_store::Tabs,
         id: DocumentId,
     ) {
+        // A Save As / workspace reclassification can replace the TabState
+        // while the old worker is still alive. Identity, not just DocumentId,
+        // distinguishes the current generation.
+        if !is_current_tab(tabs, id, tab) {
+            return;
+        }
         // --- §6.2 panic backoff: skip while cooling off ----------------------
         // A doc that panicked N times in a row is given a rest so it can't spin
         // the worker. We re-check the deadline each loop iteration; once it
@@ -180,7 +186,14 @@ impl CompileService {
         // The watchdog uses its OWN atomic flag (not the supervisor's) so each
         // compile's flag is independent.
         let slow_flag = Arc::new(AtomicBool::new(true)); // true = compile still running
-        spawn_slow_watchdog(slow_flag.clone(), emitter.clone(), id, revision);
+        spawn_slow_watchdog(
+            slow_flag.clone(),
+            emitter.clone(),
+            tabs.clone(),
+            Arc::downgrade(tab),
+            id,
+            revision,
+        );
 
         // --- §6.2 concurrency cap --------------------------------------------
         // Acquire a permit before compile; release after. A worker blocked here
@@ -200,8 +213,8 @@ impl CompileService {
         // --- §6.2 closed-doc guard: don't publish if the doc closed ----------
         // A close mid-compile drops the worker + tab; the compile still ran to
         // completion. Re-check the doc is still open before emitting anything.
-        if !tabs.read().contains_key(&id) {
-            tracing::debug!("compile result for {id} dropped: tab closed mid-compile");
+        if !is_current_tab(tabs, id, tab) {
+            tracing::debug!("compile result for {id} dropped: tab closed or replaced mid-compile");
             return;
         }
         // Also suppress all emits during shutdown drain.
@@ -367,6 +380,16 @@ impl CompileService {
     }
 }
 
+fn is_current_tab(
+    tabs: &super::tab_store::Tabs,
+    id: DocumentId,
+    candidate: &Arc<TabState>,
+) -> bool {
+    tabs.read()
+        .get(&id)
+        .is_some_and(|current| Arc::ptr_eq(current, candidate))
+}
+
 /// Spawn the slow-compile watchdog (§6.2 "编译超过 2 秒显示编译时间较长").
 ///
 /// A detached short-lived thread sleeps [`SLOW_COMPILE_THRESHOLD`], then checks
@@ -389,6 +412,8 @@ impl CompileService {
 fn spawn_slow_watchdog(
     still_running: Arc<AtomicBool>,
     emitter: Arc<dyn Emitter>,
+    tabs: super::tab_store::Tabs,
+    tab: Weak<TabState>,
     id: DocumentId,
     revision: u64,
 ) {
@@ -400,7 +425,10 @@ fn spawn_slow_watchdog(
         .spawn(move || {
             std::thread::sleep(SLOW_COMPILE_THRESHOLD);
             // Double-check: the compile may have finished during the sleep.
-            if still_running.load(Ordering::SeqCst) {
+            let current = tab
+                .upgrade()
+                .is_some_and(|candidate| is_current_tab(&tabs, id, &candidate));
+            if still_running.load(Ordering::SeqCst) && current {
                 emitter.emit_status(id, revision, CompileStatus::Slow, None);
             }
         });
@@ -526,11 +554,38 @@ mod tests {
         tabs.write().remove(&id);
         CompileService::do_compile_for_tab(&tab, &emitter_dyn, &supervisor, &tabs, id);
         let statuses = emitter_typed.statuses.lock().clone();
-        // Only the initial Compiling is emitted (it fires before the guard); the
-        // terminal Success must be suppressed.
+        assert!(statuses.is_empty(), "closed doc must not emit, got {statuses:?}");
+    }
+
+    #[test]
+    fn replaced_tab_generation_drops_old_worker_result() {
+        let (old_tab, emitter_typed, emitter_dyn, supervisor, tabs, id) = fixtures(2);
+        let replacement_meta = crate::domain::document::DocumentMeta {
+            id,
+            path: None,
+            title: "replacement".into(),
+            dirty: false,
+            origin: crate::domain::document::DocumentOrigin::Untitled,
+            revision: 1,
+            conflict: ConflictState::None,
+            hidden: false,
+        };
+        tabs.write().insert(
+            id,
+            Arc::new(TabState::with_meta(replacement_meta, "new world".into())),
+        );
+
+        CompileService::do_compile_for_tab(
+            &old_tab,
+            &emitter_dyn,
+            &supervisor,
+            &tabs,
+            id,
+        );
+
         assert!(
-            !statuses.iter().any(|(_, _, s, _)| *s == CompileStatus::Success),
-            "closed doc must not publish Success, got {statuses:?}"
+            emitter_typed.statuses.lock().is_empty(),
+            "an old worker must not emit after TabState replacement"
         );
     }
 

@@ -263,18 +263,12 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     "editor.scrollBeyondLastLine",
   );
   const [lineHeight] = useSetting<number>("editor.lineHeight");
-  const [autoRefresh] = useSetting<boolean>("preview.autoRefresh");
-  // When the preview pane is hidden there's no point compiling; the gate is
-  // OR'd with `preview.autoRefresh` below. Read via the store directly (not a
-  // prop) so a toggle re-renders EditorArea — not this editor — yet the
-  // debounced push callback still sees the live value through `previewVisibleRef`.
+  // Preview visibility still controls the initial replay compile below, but
+  // ordinary buffer synchronization is unconditional: saves and recovery need
+  // the backend to own the latest text even while the preview is hidden.
   const previewVisible = useUiStore((s) => s.previewVisible);
 
-  // `preview.autoRefresh` AND preview visibility gate the compile-pipeline push.
-  // Read through refs so the (once-created) debounced callback always sees the
-  // live values without being rebuilt on every toggle.
-  const autoRefreshRef = useRef(autoRefresh);
-  autoRefreshRef.current = autoRefresh;
+  // Read through a ref so the initial replay sees the live visibility value.
   const previewVisibleRef = useRef(previewVisible);
   previewVisibleRef.current = previewVisible;
 
@@ -750,10 +744,11 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     // version, even when debounce coalesces many keystrokes into one IPC.
     const revision =
       useDocumentsStore.getState().documents[id]?.revision;
-    if (autoRefreshRef.current !== false && previewVisibleRef.current) {
-      if (revision !== undefined) {
-        pushToBackend(id, next, revision);
-      }
+    // Buffer synchronization is authoritative document state, so it must not
+    // depend on whether the preview is visible or auto-refresh is enabled.
+    // Preview settings only control reconciliation/rendering downstream.
+    if (revision !== undefined) {
+      pushToBackend(id, next, revision);
     }
   };
 

@@ -52,6 +52,8 @@ export interface RecoveryState {
   dialogOpen: boolean;
   /** Snapshot ids the user has already decided on (recover / discard). */
   decidedIds: Set<string>;
+  /** Snapshot ids that were actually recovered (discarded ids are excluded). */
+  recoveredIds: Set<string>;
   /**
    * Snapshot ids the user has already Compare'd (§5.1.3). A disk-changed doc's
    * Recover button is disabled until the user has viewed both versions; once an
@@ -64,6 +66,8 @@ export interface RecoveryState {
   offerRecovery: (snapshots: RecoverableInfo[]) => void;
   /** Mark a snapshot decided (removes it from the "remaining" count). */
   markDecided: (id: string) => void;
+  /** Record that a snapshot was recovered rather than discarded. */
+  markRecovered: (id: string) => void;
   /** Mark a snapshot compared (enables Recover for disk-changed docs). */
   markCompared: (id: string) => void;
   /** Whether `id` has been compared (Recover-enablement for disk-changed docs). */
@@ -80,6 +84,7 @@ export const useRecoveryStore = create<RecoveryState>()((set, get) => ({
   recoverable: [],
   dialogOpen: false,
   decidedIds: new Set(),
+  recoveredIds: new Set(),
   comparedIds: new Set(),
 
   offerRecovery: (snapshots) =>
@@ -87,6 +92,7 @@ export const useRecoveryStore = create<RecoveryState>()((set, get) => ({
       recoverable: snapshots,
       dialogOpen: snapshots.length > 0,
       decidedIds: new Set(),
+      recoveredIds: new Set(),
       comparedIds: new Set(),
     }),
 
@@ -108,6 +114,14 @@ export const useRecoveryStore = create<RecoveryState>()((set, get) => ({
     });
   },
 
+  markRecovered: (id) => {
+    set((s) => {
+      const next = new Set(s.recoveredIds);
+      next.add(id);
+      return { recoveredIds: next };
+    });
+  },
+
   hasCompared: (id) => get().comparedIds.has(id),
 
   closeIfAllDecided: () => {
@@ -124,6 +138,7 @@ export const useRecoveryStore = create<RecoveryState>()((set, get) => ({
       recoverable: [],
       dialogOpen: false,
       decidedIds: new Set(),
+      recoveredIds: new Set(),
       comparedIds: new Set(),
     }),
 }));

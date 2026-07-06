@@ -3,8 +3,11 @@ import { useTranslation } from "react-i18next";
 import {
   resolveConflictUseDisk,
   resolveConflictOverwrite,
-  saveAs as saveAsBE,
 } from "../../lib/tauri";
+import {
+  flushAndSaveAs,
+  flushDocumentSnapshot,
+} from "../../lib/saveDocument";
 import { useConflictDialogStore } from "../../store/conflictDialogStore";
 import { useDocumentsStore, type Document } from "../../store/documentsStore";
 import { useTabsStore } from "../../store/tabsStore";
@@ -94,21 +97,13 @@ export function ConflictDialog() {
     setBusy(true);
     setError(null);
     try {
+      const snapshot = await flushDocumentSnapshot(openForId);
       await resolveConflictOverwrite(openForId);
       // Overwrite succeeded → conflict + dirty cleared by the backend. Mirror.
-      useDocumentsStore.setState((s) => ({
-        documents: {
-          ...s.documents,
-          [openForId]: {
-            ...s.documents[openForId],
-            dirty: false,
-            conflict: "none",
-            conflictDiskContent: null,
-          },
-        },
-      }));
       if (doc.path !== null) {
-        useTabsStore.getState().markSaved(openForId, doc.path);
+        useTabsStore
+          .getState()
+          .markSaved(openForId, doc.path, snapshot.revision);
       }
       close();
     } catch (e) {
@@ -124,11 +119,13 @@ export function ConflictDialog() {
     setBusy(true);
     setError(null);
     try {
-      const path = await saveAsBE(openForId);
+      const saved = await flushAndSaveAs(openForId);
       // Save As rebinds the doc to the new path and clears dirty; it also
       // resolves the conflict on the original (the buffer is now saved
       // elsewhere). markSaved mirrors path/dirty/conflict in one shot.
-      useTabsStore.getState().markSaved(openForId, path);
+      useTabsStore
+        .getState()
+        .markSaved(openForId, saved.path, saved.revision);
       close();
     } catch (e) {
       if (!isCancelled(e)) {

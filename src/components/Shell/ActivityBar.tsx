@@ -3,6 +3,13 @@ import { useViews } from "../../extensions/hooks";
 import { useUiStore } from "../../store/uiStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 
+const VIEW_TITLE_KEYS: Record<string, string> = {
+  "workbench.explorer": "sidebar:explorer.title",
+  "workbench.outline": "sidebar:outline.title",
+  "workbench.search": "sidebar:search.title",
+  "workbench.scm": "sidebar:sourceControl.title",
+};
+
 /**
  * The Activity Bar: a narrow vertical strip of icon buttons on the far left of
  * the workbench, one per registered view. Clicking an icon toggles that view
@@ -10,7 +17,7 @@ import { useWorkspaceStore } from "../../store/workspaceStore";
  * sidebar). Views gated `when: "workspace"` are disabled until a folder opens.
  */
 export function ActivityBar() {
-  const { t } = useTranslation("commandBar");
+  const { t } = useTranslation(["commandBar", "sidebar"]);
   const views = useViews();
   const activeViewId = useUiStore((s) => s.activeViewId);
   const toggleView = useUiStore((s) => s.toggleView);
@@ -21,12 +28,16 @@ export function ActivityBar() {
       {views.map((v) => {
         const disabled = v.when === "workspace" && !hasWorkspace;
         const isActive = activeViewId === v.id;
+        const titleKey = VIEW_TITLE_KEYS[v.id];
+        const title = titleKey ? t(titleKey) : v.title;
         const Icon = v.icon;
         return (
           <button
             key={v.id}
+            id={`activity-item-${v.id}`}
             className={`activity-item${isActive ? " active" : ""}`}
-            title={v.title}
+            title={title}
+            aria-label={title}
             disabled={disabled}
             aria-pressed={isActive}
             onClick={() => toggleView(v.id)}

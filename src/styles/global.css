@@ -231,6 +231,19 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.tab-select {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  min-width: 0;
+  color: inherit;
+  background: transparent;
+}
+.tab-select:focus-visible {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: 1px;
+  border-radius: var(--radius-xs);
+}
 .tab-dirty {
   width: 6px;
   height: 6px;
@@ -435,6 +448,31 @@ button {
   background: var(--color-surface-pearl);
   border-top: 1px solid var(--color-hairline);
 }
+/* Draggable divider between the editor area and the diagnostics panel. Mirrors
+   the editor|preview `.editor-sash` (1px line, wider hit area via ::after,
+   primary-color hover) but is horizontal. Lives OUTSIDE the panel in the DOM
+   (between <main> and <DiagnosticsPanel> in EditorArea) so dragging it never
+   selects the panel's contents. */
+.diagnostics-sash {
+  flex: 0 0 1px;
+  background: var(--color-hairline);
+  cursor: row-resize;
+  position: relative;
+}
+.diagnostics-sash::after {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
+}
+.diagnostics-sash:hover,
+.diagnostics-sash:active {
+  background: var(--color-primary);
+}
+/* Hide the sash when the panel is collapsed — there's nothing to resize and
+   we don't want a stray drag to open it. */
+.editor-area.diags-collapsed .diagnostics-sash {
+  display: none;
+}
 .diagnostics-header {
   display: flex;
   align-items: center;
@@ -466,12 +504,22 @@ button {
   line-height: 1;
 }
 .diagnostics-body {
+  /* Fallback height; the parent's resize sash overrides this inline. Kept so
+     the panel has a sensible size before the JS-applied height lands. */
   max-height: 160px;
   overflow-y: auto;
+  /* Eases the collapse/expand toggle. Suppressed during a live drag via the
+     `.dragging` modifier below so the body tracks the cursor 1:1. */
   transition: max-height 0.2s ease;
+}
+/* While the sash is actively dragged, disable the transition — otherwise the
+   body lags behind the cursor and feels rubbery. */
+.diagnostics-body.dragging {
+  transition: none;
 }
 .diagnostics.collapsed .diagnostics-body {
   max-height: 0;
+  height: auto;
   overflow: hidden;
 }
 .diag-empty {

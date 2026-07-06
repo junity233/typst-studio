@@ -20,11 +20,12 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter as _};
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::spawn_blocking;
 
 use crate::domain::document::DocumentId;
@@ -129,6 +130,7 @@ pub struct SaveStateChangedPayload {
 pub struct SaveCoordinator {
     document: Arc<DocumentService>,
     states: RwLock<HashMap<DocumentId, SaveState>>,
+    save_locks: RwLock<HashMap<DocumentId, Weak<AsyncMutex<()>>>>,
     /// Optional Tauri handle for emitting `save_state_changed`. `None` in tests
     /// (or before the app handle exists); transitions still update the in-memory
     /// state map and are queryable via [`save_state`](Self::save_state).
@@ -142,6 +144,7 @@ impl SaveCoordinator {
         Self {
             document,
             states: RwLock::new(HashMap::new()),
+            save_locks: RwLock::new(HashMap::new()),
             app,
         }
     }
@@ -180,6 +183,8 @@ impl SaveCoordinator {
     ///    only clears after the atomic replace succeeds); set
     ///    `SaveState::Failed{revision, code, message}`; return `Err`.
     pub async fn save(&self, id: DocumentId) -> Result<(), IpcError> {
+        let save_lock = self.save_lock(id);
+        let _save_guard = save_lock.lock().await;
         // §5.4 conflict gate (before any state mutation): a conflicted doc's
         // in-place save is blocked. `dirty` stays true; the frontend opens the
         // conflict UI on the ExternalConflict code. Only an EXPLICIT overwrite
@@ -210,6 +215,8 @@ impl SaveCoordinator {
     /// from the conflict-resolution UI. On success the conflict is cleared
     /// (via `mark_saved`) and `dirty` becomes false. Returns the written path.
     pub async fn save_overwrite(&self, id: DocumentId) -> Result<(), IpcError> {
+        let save_lock = self.save_lock(id);
+        let _save_guard = save_lock.lock().await;
         // Same §5.2 write as `save`, but NO conflict gate (this IS the
         // resolution). The post-write `mark_saved` clears conflict + dirty +
         // recomputes the disk version so the imminent self-save watcher event
@@ -223,13 +230,13 @@ impl SaveCoordinator {
     async fn save_core(&self, id: DocumentId) -> Result<(), IpcError> {
         // 1. Read the revision (best-effort tag — if the tab vanished, surface
         //    NotFound).
-        let revision = self
+        let (revision, text) = self
             .document
-            .tab_revision(id)
-            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, format!("tab {id} not found"), false))?;
+            .snapshot_for_save(id)
+            .map_err(|e| IpcError::from(&e))?;
 
         // 2. Prepare (path, text). InvalidInput → InvalidPath.
-        let (path, text) = self
+        let (path, _) = self
             .document
             .prepare_save(id)
             .map_err(|e| IpcError::from(&e))?;
@@ -285,24 +292,29 @@ impl SaveCoordinator {
         }
     }
 
-    /// Save As: atomically write `text` to `target`, then — only on write
+    /// Save As: snapshot the current buffer, atomically write it to `target`,
+    /// then — only on write
     /// SUCCESS — rebind the document to the new path (§5.2 / §11.2: path /
     /// registry / resolver / watcher / LSP URI must NOT change before the
     /// replace succeeds). Returns the new canonical path on success.
     ///
     /// The dialog is the IPC layer's job (it needs the AppHandle); this method
-    /// takes the already-picked `target` and the buffer `text` so it stays
-    /// testable without a dialog.
+    /// takes the already-picked `target`; the buffer snapshot is captured here
+    /// after the dialog returns.
     pub async fn save_as(
         &self,
         id: DocumentId,
         target: PathBuf,
-        text: String,
     ) -> Result<PathBuf, IpcError> {
-        let revision = self
+        let save_lock = self.save_lock(id);
+        let _save_guard = save_lock.lock().await;
+        let (revision, text) = self
             .document
-            .tab_revision(id)
-            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, format!("tab {id} not found"), false))?;
+            .snapshot_for_save(id)
+            .map_err(|e| IpcError::from(&e))?;
+        self.document
+            .ensure_rebind_target_available(id, &target)
+            .map_err(|e| IpcError::from(&e))?;
 
         self.set_state(id, SaveState::Saving { revision });
 
@@ -319,9 +331,21 @@ impl SaveCoordinator {
                 // / resolver / watcher / LSP URI. rebind_path also re-seeds the
                 // disk version so the watcher event for our own write is
                 // recognized as self-induced.
-                self.document
-                    .rebind_path(id, target.clone())
-                    .map_err(|e| IpcError::from(&e))?;
+                if let Err(e) =
+                    self.document
+                        .rebind_path_after_save(id, target.clone(), revision)
+                {
+                    let ipc = IpcError::from(&e);
+                    self.set_state(
+                        id,
+                        SaveState::Failed {
+                            revision,
+                            code: ipc.code,
+                            message: ipc.message.clone(),
+                        },
+                    );
+                    return Err(ipc);
+                }
                 self.set_state(id, SaveState::Saved { revision });
                 Ok(target)
             }
@@ -382,6 +406,20 @@ impl SaveCoordinator {
     }
 
     // --- internals ------------------------------------------------------------
+
+    fn save_lock(&self, id: DocumentId) -> Arc<AsyncMutex<()>> {
+        if let Some(lock) = self.save_locks.read().get(&id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let mut locks = self.save_locks.write();
+        if let Some(lock) = locks.get(&id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        locks.retain(|_, weak| weak.strong_count() > 0);
+        let lock = Arc::new(AsyncMutex::new(()));
+        locks.insert(id, Arc::downgrade(&lock));
+        lock
+    }
 
     /// Set the state for `id` and emit `save_state_changed` if an `AppHandle`
     /// is wired. Emits are best-effort (no webview → silently dropped).
@@ -600,7 +638,7 @@ mod tests {
         assert!(document.tab_meta(meta.id).unwrap().dirty);
 
         let err = coord
-            .save_as(meta.id, bad_target.clone(), "Edited".to_string())
+            .save_as(meta.id, bad_target.clone())
             .await
             .unwrap_err();
         assert!(
@@ -635,7 +673,7 @@ mod tests {
         std::fs::write(&blocker, "blocker").unwrap();
         let bad_target = blocker.join("b.typ");
         let err = coord
-            .save_as(meta.id, bad_target, "new content".to_string())
+            .save_as(meta.id, bad_target)
             .await
             .unwrap_err();
         assert!(err.code != ErrorCode::AlreadyOpen);
@@ -664,10 +702,13 @@ mod tests {
         let meta = document.open_from_content(src.clone(), "x".into(), None).unwrap();
         wait_compiled(&document, meta.id);
         let id_before = meta.id;
+        document
+            .update_text(meta.id, "#set page(width: 10cm)\n\nB".to_string())
+            .unwrap();
 
         let dst = dir.join("b.typ");
         let returned = coord
-            .save_as(meta.id, dst.clone(), "#set page(width: 10cm)\n\nB".to_string())
+            .save_as(meta.id, dst.clone())
             .await
             .expect("save_as should succeed");
         assert_eq!(returned, dst);
@@ -682,6 +723,78 @@ mod tests {
             SaveState::Saved { .. } => {}
             other => panic!("expected Saved, got {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn save_as_rejects_open_target_before_overwriting_it() {
+        let dir =
+            std::env::temp_dir().join(format!("ts-svc-saoccupied-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.typ");
+        let b = dir.join("b.typ");
+        std::fs::write(&a, "A on disk").unwrap();
+        std::fs::write(&b, "B on disk").unwrap();
+
+        let (document, coord) = make_coordinator();
+        let meta_a = document
+            .open_from_content(a.clone(), "A on disk".into(), None)
+            .unwrap();
+        let meta_b = document
+            .open_from_content(b.clone(), "B on disk".into(), None)
+            .unwrap();
+        wait_compiled(&document, meta_a.id);
+        wait_compiled(&document, meta_b.id);
+        document
+            .update_text(meta_b.id, "B unsaved edit".into())
+            .unwrap();
+
+        let err = coord.save_as(meta_b.id, a.clone()).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::AlreadyOpen);
+        assert_eq!(
+            std::fs::read_to_string(&a).unwrap(),
+            "A on disk",
+            "preflight must reject before replacing the occupied target"
+        );
+        assert_eq!(
+            document.tab_meta(meta_b.id).unwrap().path.as_deref(),
+            Some(b.as_path())
+        );
+        assert!(document.tab_meta(meta_b.id).unwrap().dirty);
+        assert!(!coord.save_state(meta_b.id).is_saving());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn per_document_save_lock_delays_snapshot_until_the_save_can_run() {
+        let dir = std::env::temp_dir().join(format!("ts-svc-serial-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.typ");
+        std::fs::write(&path, "initial").unwrap();
+
+        let (document, coord) = make_coordinator();
+        let meta = document
+            .open_from_content(path.clone(), "initial".into(), None)
+            .unwrap();
+        wait_compiled(&document, meta.id);
+        document.update_text(meta.id, "first edit".into()).unwrap();
+
+        let gate = coord.save_lock(meta.id);
+        let gate_guard = gate.lock().await;
+        let save = coord.save(meta.id);
+        tokio::pin!(save);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut save)
+                .await
+                .is_err(),
+            "save must wait behind the per-document serialization lock"
+        );
+
+        document.update_text(meta.id, "latest edit".into()).unwrap();
+        drop(gate_guard);
+        save.await.unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "latest edit");
+        assert!(!document.tab_meta(meta.id).unwrap().dirty);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

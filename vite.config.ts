@@ -1,7 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const host = process.env.TAURI_DEV_HOST;
+const projectRoot = dirname(fileURLToPath(import.meta.url));
 
 // @codingame/monaco-vscode-* packages register their resources (grammars,
 // theme JSONs, NLS files) via `new URL('./resources/...json', import.meta.url)`.
@@ -43,7 +46,7 @@ export default defineConfig({
     // be servable to anyone on the network. Restricting to the workspace root
     // keeps the surface to the app's own sources + dependencies.
     fs: {
-      allow: [".."],
+      allow: [projectRoot],
     },
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`

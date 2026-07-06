@@ -36,6 +36,31 @@ function loadPreviewWidth(): number {
   return PREVIEW_WIDTH_DEFAULT;
 }
 
+// Diagnostics-panel body height (the resizable region below the header). Like
+// the preview width, it persists to localStorage and is clamped on read so a
+// stale value can't shrink the panel to nothing or swallow the editor.
+const DIAG_HEIGHT_KEY = "ts-diags-height";
+const DIAG_HEIGHT_DEFAULT = 160; // matches the previous fixed max-height
+const DIAG_HEIGHT_MIN = 40;
+// Height of the diagnostics header (32px) + its top border (1px). The resize
+// math measures from the editor-area's bottom to the pointer, then subtracts
+// this offset to land on the BODY height (the resizable region excludes the
+// header, which is fixed chrome above the sash).
+const DIAG_HEADER_OFFSET = 33;
+
+function loadDiagHeight(): number {
+  try {
+    const raw = localStorage.getItem(DIAG_HEIGHT_KEY);
+    if (raw) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= DIAG_HEIGHT_MIN) return n;
+    }
+  } catch {
+    // ignore
+  }
+  return DIAG_HEIGHT_DEFAULT;
+}
+
 const ZOOM_CLEANUP_KEY = "_zoomCleanup" as keyof HTMLElement;
 
 /**
@@ -119,6 +144,14 @@ export function EditorArea() {
   // Latest width for the drag closure to read without going stale / rebuilding.
   const previewWidthRef = useRef(previewWidth);
   previewWidthRef.current = previewWidth;
+
+  // Height of the diagnostics body (the resizable region). `dragging` toggles
+  // the body's height transition off during a resize so the panel tracks the
+  // cursor 1:1 (the transition would otherwise lag and feel rubbery).
+  const [diagsHeight, setDiagsHeight] = useState<number>(loadDiagHeight);
+  const [diagsDragging, setDiagsDragging] = useState(false);
+  const diagsHeightRef = useRef(diagsHeight);
+  diagsHeightRef.current = diagsHeight;
 
   // --- Scroll-sync & click-to-source wiring -------------------------------
   const [scrollSync] = useSetting<boolean>("preview.scrollSync");
@@ -693,6 +726,55 @@ export function EditorArea() {
     document.body.style.cursor = "col-resize";
   }, []);;
 
+  // Drag the diagnostics sash: body height = editor-area bottom - pointer Y.
+  // Mirrors the preview sash above (window-level pointer events, clamp to a
+  // min, persist on pointerup) so the two resizers behave identically. The
+  // clamp's upper bound is read live from the container each move so the panel
+  // can never outgrow the available space (window resize, collapsed preview).
+  const diagContainerRef = useRef<HTMLDivElement | null>(null);
+  const startDiagResize = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      const container = diagContainerRef.current;
+      if (!container) return;
+      setDiagsDragging(true);
+      const onMove = (ev: PointerEvent) => {
+        const rect = container.getBoundingClientRect();
+        // Available height = editor-area height minus the non-resizable chrome
+        // above the body (header, sash). Clamp so the panel never crowds out
+        // the editor entirely (leave at least ~120px for it).
+        const above = DIAG_HEADER_OFFSET;
+        const maxBody = Math.max(DIAG_HEIGHT_MIN, rect.height - above - 120);
+        const h = rect.bottom - ev.clientY - above;
+        const clamped = Math.max(
+          DIAG_HEIGHT_MIN,
+          Math.min(h, maxBody),
+        );
+        setDiagsHeight(clamped);
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+        setDiagsDragging(false);
+        try {
+          localStorage.setItem(
+            DIAG_HEIGHT_KEY,
+            String(diagsHeightRef.current),
+          );
+        } catch {
+          // ignore
+        }
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "row-resize";
+    },
+    [],
+  );
+
   const handleRefresh = () => {
     if (activeTab === null) return;
     void updateText(
@@ -726,7 +808,10 @@ export function EditorArea() {
   }, [refreshPageMetrics, scrollSyncOn, kick]);
 
   return (
-    <div className="editor-area">
+    <div
+      className={"editor-area" + (diagsCollapsed ? " diags-collapsed" : "")}
+      ref={diagContainerRef}
+    >
       <div className="editor-area-header">
         <TabStrip />
         <button
@@ -795,9 +880,24 @@ export function EditorArea() {
           </div>
         )}
       </main>
+      {/*
+        Diagnostics panel is resizable: a draggable sash sits between the editor
+        main area and the panel. The sash is hidden when the panel is collapsed
+        (CSS `.editor-area.diags-collapsed .diagnostics-sash`) so a collapsed
+        panel can't be accidentally dragged open. Mirrors the editor|preview sash.
+      */}
+      <div
+        className="diagnostics-sash"
+        onPointerDown={startDiagResize}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label={t("diagnostics.resizeLabel", { defaultValue: "Resize diagnostics panel" })}
+      />
       <DiagnosticsPanel
         tabId={activeTab?.id}
         collapsed={diagsCollapsed}
+        bodyHeight={diagsHeight}
+        dragging={diagsDragging}
         onToggle={() => setDiagsCollapsed((c) => !c)}
         onGoto={(range) =>
           editorApiRef.current?.revealLine(range.start_line, range.start_column)

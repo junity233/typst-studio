@@ -3,8 +3,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { onMenuEvent, onCloseRequested } from "../lib/tauri";
 import {
   openFile,
-  saveAs as saveAsBE,
-  saveFile,
   markCleanShutdown,
   saveSession,
   discardRecovery,
@@ -14,6 +12,7 @@ import { useWorkspaceStore } from "../store/workspaceStore";
 import { useUiStore } from "../store/uiStore";
 import { useDialogStore } from "../store/dialogStore";
 import { saveTab } from "../lib/commands";
+import { flushAndSaveAs, flushAndSaveInPlace } from "../lib/saveDocument";
 import { captureAndSaveSession } from "../lib/session";
 import { captureWindowBounds } from "../lib/windowState";
 import { captureLayout } from "../lib/layoutState";
@@ -74,13 +73,6 @@ export function useAppCommands(): void {
         e.preventDefault();
         e.stopPropagation();
         void dispatch("workbench.action.findInFiles");
-      }
-      // Cmd/Ctrl+Shift+G → Show Source Control (§Source Control). Same
-      // capture-phase rationale as the other Shift shortcuts.
-      if (mod && e.shiftKey && e.key.toLowerCase() === "g") {
-        e.preventDefault();
-        e.stopPropagation();
-        void dispatch("workbench.view.scm");
       }
       // Cmd/Ctrl+Shift+O → Show Outline (§Outline). Same capture-phase
       // rationale as the other Shift shortcuts: Monaco can swallow the
@@ -249,7 +241,7 @@ async function handleCloseRequested(): Promise<void> {
     // explicit "Don't Save" isn't re-offered next launch. The per-tab close
     // path (closeTabWithConfirm) does this per doc; the app-wide path must too.
     await Promise.all(dirty.map((t) => discardRecovery(t.id).catch(() => {})));
-    await captureAndSaveSession();
+    await captureAndSaveSession(new Set(dirty.map((t) => t.id)));
     await captureAndSaveWindowState();
     await markCleanShutdown();
     await getCurrentWindow().destroy();
@@ -339,15 +331,15 @@ export async function handleSave(
     await handleSaveAs(activeId);
     return;
   }
-  await saveFile(activeId);
-  useTabsStore.getState().markSaved(activeId, activeTab.path);
+  const saved = await flushAndSaveInPlace(activeId);
+  useTabsStore.getState().markSaved(activeId, saved.path, saved.revision);
 }
 
 /** Save As: write to a new file and rebind the tab to it. */
 export async function handleSaveAs(activeId: string | null): Promise<void> {
   if (activeId === null) return;
-  const path = await saveAsBE(activeId);
-  useTabsStore.getState().markSaved(activeId, path);
+  const saved = await flushAndSaveAs(activeId);
+  useTabsStore.getState().markSaved(activeId, saved.path, saved.revision);
 }
 
 /** Human label for an alert, given a menu id. */

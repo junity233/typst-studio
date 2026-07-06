@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useViews } from "../../extensions/hooks";
 import type { ViewContribution } from "../../extensions/registry";
@@ -41,12 +41,42 @@ const VIEW_TITLE_KEYS: Record<string, string> = {
   "workbench.explorer": "sidebar:explorer.title",
   "workbench.outline": "sidebar:outline.title",
   "workbench.search": "sidebar:search.title",
-  "workbench.scm": "sidebar:sourceControl.title",
 };
 
+/** Whether a contributed view may be shown in the current host state. */
+export function isSidebarViewVisible(
+  view: Pick<ViewContribution, "id" | "when">,
+  activeViewId: string | null,
+  rootPath: string | null,
+): boolean {
+  return (
+    view.id === activeViewId &&
+    (view.when !== "workspace" || rootPath !== null)
+  );
+}
+
+/** The workspace prompt must not cover views that explicitly work untitled. */
+export function shouldShowEmptyWorkspace(
+  activeView: Pick<ViewContribution, "when"> | undefined,
+  rootPath: string | null,
+): boolean {
+  return rootPath === null && activeView?.when !== "always";
+}
+
+/** Mount a view on first activation, then keep its subtree alive. */
+export function shouldMountSidebarView(
+  view: Pick<ViewContribution, "id" | "when">,
+  activeViewId: string | null,
+  visitedViewIds: ReadonlySet<string>,
+  rootPath: string | null,
+): boolean {
+  if (view.when === "workspace" && rootPath === null) return false;
+  return view.id === activeViewId || visitedViewIds.has(view.id);
+}
+
 /**
- * The left sidebar: a host for every registered view, kept alive
- * simultaneously and toggled by CSS so switching tabs never unmounts a view.
+ * The left sidebar: views mount lazily on first activation, then stay alive
+ * and are toggled by CSS so switching tabs preserves their local state.
  *
  * Why keep-alive: each view owns ephemeral state (Explorer's inline-rename
  * buffer, Search's results + per-file collapse set, Source Control's commit
@@ -70,6 +100,19 @@ export function Sidebar() {
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const refreshAll = useWorkspaceStore((s) => s.refreshAll);
   const views = useViews();
+  const [visitedViewIds, setVisitedViewIds] = useState<ReadonlySet<string>>(
+    () => new Set(activeViewId === null ? [] : [activeViewId]),
+  );
+
+  useEffect(() => {
+    if (activeViewId === null) return;
+    setVisitedViewIds((previous) => {
+      if (previous.has(activeViewId)) return previous;
+      const next = new Set(previous);
+      next.add(activeViewId);
+      return next;
+    });
+  }, [activeViewId]);
 
   // Live-refresh the tree on external filesystem changes.
   useEffect(() => {
@@ -111,18 +154,26 @@ export function Sidebar() {
         {/* EmptyWorkspace sits as a sibling layer; visible only when no
             workspace is open. The views below stay mounted underneath it,
             idle, so reopening a workspace restores their state instantly. */}
-        {rootPath === null && <EmptyWorkspace />}
+        {shouldShowEmptyWorkspace(activeView, rootPath) && <EmptyWorkspace />}
 
-        {/* Every registered view is mounted once and kept alive. Visibility
-            is CSS-driven (`hidden` attribute) so React never unmounts a view
-            when the user switches tabs — its internal state, scroll position,
-            and lazy-loaded chunk all survive. */}
+        {/* A view mounts on first activation and is then kept alive. Visibility
+            is CSS-driven (`hidden` attribute), preserving its local state and
+            scroll position without eagerly loading every extension chunk. */}
         {views.map((v) => {
+          if (
+            !shouldMountSidebarView(
+              v,
+              activeViewId,
+              visitedViewIds,
+              rootPath,
+            )
+          ) {
+            return null;
+          }
           const ViewComponent = getLazyView(v);
-          const isActive = v.id === activeViewId;
-          // When no workspace is open, hide ALL views (EmptyWorkspace covers
-          // the body). When a workspace is open, show only the active one.
-          const visible = rootPath !== null && isActive;
+          // Workspace-gated views stay behind EmptyWorkspace without a root;
+          // "always" views (notably Outline) remain usable for untitled docs.
+          const visible = isSidebarViewVisible(v, activeViewId, rootPath);
           return (
             <div
               key={v.id}

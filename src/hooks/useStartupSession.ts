@@ -80,8 +80,10 @@ export function useStartupSession(): void {
         // disk-reopen for any path that a recovered snapshot already covered.
         // The recovered docs are already open as dirty in-memory tabs; reusing
         // the session entry would reopen the (possibly stale) disk file.
+        const recoveryState = useRecoveryStore.getState();
         const recoveredPaths = new Set(
-          useRecoveryStore.getState().recoverable
+          recoveryState.recoverable
+            .filter((s) => recoveryState.recoveredIds.has(s.documentId))
             .map((s) => s.canonicalPath)
             .filter((p): p is string => typeof p === "string"),
         );

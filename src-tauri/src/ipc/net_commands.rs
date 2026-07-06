@@ -4,7 +4,7 @@
 //! argument conversion + a containment guard on `dest`, then delegation to the
 //! shared [`AppState`](crate::ipc::state::AppState) client.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use tauri::State;
 
@@ -12,34 +12,11 @@ use crate::error::{AppError, Result};
 use crate::ipc::state::AppState;
 use crate::net::client::FetchOptions;
 
-/// Lexically normalize `path` (resolving `..`/`.` without touching the
-/// filesystem, since the target may not exist yet) and return `true` if the
-/// result is contained within `base`. Symlinks are NOT followed: a pasted
-/// image's destination is always a freshly-invented path under a known root,
-/// so lexical containment is both sufficient and safe (no TOCTOU).
+/// Return whether `path` is contained within `base`, resolving every existing
+/// ancestor so a symlinked directory cannot redirect the write outside the
+/// allow-listed root. Missing trailing components remain supported.
 fn is_contained(path: &Path, base: &Path) -> bool {
-    let normalized = normalize_lexically(path);
-    normalized.starts_with(base)
-}
-
-/// Lexical normalization (`./` and `../` collapsed) without filesystem access.
-/// Mirrors the helper in `workspace_service`; duplicated here to keep the net
-/// layer dependency-free.
-fn normalize_lexically(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for comp in path.components() {
-        use std::path::Component;
-        match comp {
-            Component::ParentDir => {
-                if !out.pop() {
-                    out.push("..");
-                }
-            }
-            Component::CurDir => {}
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
+    crate::domain::path::ensure_contained_path(base, path).is_ok()
 }
 
 /// Download `url` to `dest` (an absolute filesystem path). Returns the number

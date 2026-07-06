@@ -7,6 +7,7 @@ import { useSetting } from "../../hooks/useSetting";
 import { openFile } from "../../lib/openFile";
 import { editorApiRef } from "../Editor/editorApiRef";
 import type { SearchHit } from "../../lib/types";
+import { joinWorkspacePath } from "../../lib/workspacePath";
 
 /**
  * The Search view (§Search view), rendered inside the sidebar body. A query box
@@ -36,6 +37,7 @@ export function SearchPanel(_props: { viewId?: string }) {
   const setQuery = useSearchStore((s) => s.setQuery);
   const setOption = useSearchStore((s) => s.setOption);
   const run = useSearchStore((s) => s.run);
+  const invalidateResults = useSearchStore((s) => s.invalidateResults);
   const clear = useSearchStore((s) => s.clear);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const [debounceMs] = useSetting<number>("search.debounceMs");
@@ -48,9 +50,14 @@ export function SearchPanel(_props: { viewId?: string }) {
       clear(); // empty query → clear results + error
       return;
     }
+    if (rootPath === null) return;
     const t = setTimeout(() => void run(), debounceMs ?? 300);
     return () => clearTimeout(t);
-  }, [query, isRegex, caseSensitive, wholeWord, run, clear, debounceMs]);
+  }, [query, isRegex, caseSensitive, wholeWord, rootPath, run, clear, debounceMs]);
+
+  useEffect(() => {
+    invalidateResults();
+  }, [rootPath, invalidateResults]);
 
   // Group hits by file path (preserves first-seen order, which is the walkdir
   // traversal order — stable across re-runs of the same query).
@@ -262,17 +269,7 @@ async function handleHitClick(
   column: number,
 ): Promise<void> {
   if (!rootPath) return;
-  const abs = joinPath(rootPath, relative);
+  const abs = joinWorkspacePath(rootPath, relative);
   await openFile(abs);
   editorApiRef.current?.revealLine(line, column);
-}
-
-/**
- * Join a workspace root + a forward-slash relative path. Uses backslash on
- * Windows roots (which carry backslashes after canonicalization), forward slash
- * elsewhere — matching how the Explorer builds its absolute paths.
- */
-function joinPath(root: string, rel: string): string {
-  const sep = root.includes("\\") && !root.includes("/") ? "\\" : "/";
-  return root + sep + rel.replace(/\//g, sep);
 }

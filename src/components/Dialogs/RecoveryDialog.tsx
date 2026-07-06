@@ -69,6 +69,7 @@ export function RecoveryDialog() {
 function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
   const { t } = useTranslation("dialog");
   const markDecided = useRecoveryStore((s) => s.markDecided);
+  const markRecovered = useRecoveryStore((s) => s.markRecovered);
   const markCompared = useRecoveryStore((s) => s.markCompared);
   // §5.1.3: a disk-changed doc's Recover is disabled until the user has
   // Compare'd it. `comparedIds` is lifted into the store so the enablement
@@ -115,6 +116,7 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
         lineMap: [],
         outline: [],
       });
+      markRecovered(snap.documentId);
       markDecided(snap.documentId);
     } catch (e) {
       setError(toIpcError(e).message);

@@ -22,6 +22,8 @@ export type ConfirmResult = "confirm" | "discard" | "cancel";
 
 export interface DialogState {
   current: ConfirmRequest | null;
+  /** Requests waiting behind the currently visible confirmation. */
+  queue: ConfirmRequest[];
   /** Show a confirmation and await the user's choice. */
   confirm: (req: Omit<ConfirmRequest, "resolve">) => Promise<ConfirmResult>;
   /** Resolve the pending request (called by the dialog). */
@@ -30,15 +32,22 @@ export interface DialogState {
 
 export const useDialogStore = create<DialogState>()((set, get) => ({
   current: null,
+  queue: [],
   confirm: (req) =>
     new Promise<ConfirmResult>((resolve) => {
-      set({ current: { ...req, resolve } });
+      const request = { ...req, resolve };
+      set((state) =>
+        state.current === null
+          ? { current: request }
+          : { queue: [...state.queue, request] },
+      );
     }),
   resolve: (result) => {
-    const req = get().current;
-    if (req) {
-      req.resolve(result);
-      set({ current: null });
-    }
+    const current = get().current;
+    if (current === null) return;
+
+    const [next, ...remaining] = get().queue;
+    set({ current: next ?? null, queue: remaining });
+    current.resolve(result);
   },
 }));

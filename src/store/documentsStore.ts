@@ -225,8 +225,11 @@ export interface DocumentsState {
     conflict: ConflictState,
     diskContent?: string | null,
   ) => void;
-  /** Clear dirty + (re)bind path on a successful save (also clears conflict). */
-  markSaved: (id: string, path: string) => void;
+  /**
+   * Mirror a successful save and (re)bind its path. When `savedRevision` is
+   * supplied, dirty is cleared only if no newer edit has landed.
+   */
+  markSaved: (id: string, path: string, savedRevision?: number) => void;
   /** Re-mark a document dirty (session-restore path). */
   reMarkDirty: (id: string) => void;
   /**
@@ -348,7 +351,7 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
       };
     }),
 
-  markSaved: (id, path) =>
+  markSaved: (id, path, savedRevision) =>
     set((s) => {
       const doc = s.documents[id];
       if (!doc) return s;
@@ -359,7 +362,12 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
             ...doc,
             path,
             title: path.split(/[\\/]/).pop() ?? doc.title,
-            dirty: false,
+            // Revision-CAS: the backend saved the captured revision, not any
+            // edit that landed while its atomic write was in flight.
+            dirty:
+              savedRevision === undefined || doc.revision === savedRevision
+                ? false
+                : true,
             // §17 origin coherence: the backend is authoritative, but the
             // frontend mirror must stay coherent so the model registry can
             // derive the new URI without a round-trip. On a Save As (path

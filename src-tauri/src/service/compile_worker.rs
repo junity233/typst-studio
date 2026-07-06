@@ -71,11 +71,22 @@ impl CompileWorker {
     /// The worker loop: block on the channel, coalesce pending signals, then
     /// run the compile closure. Repeats until `Shutdown` is received.
     fn run(rx: Receiver<Msg>, compile_fn: Arc<dyn Fn() + Send + Sync>) {
-        while let Ok(Msg::Recompile) = rx.recv() {
+        while let Ok(message) = rx.recv() {
+            if matches!(message, Msg::Shutdown) {
+                break;
+            }
             // Coalesce: drain any additional Recompile signals that queued
             // during the previous compile. They all want the same thing
             // (recompile with the latest text), so one run suffices.
-            while rx.try_recv().is_ok() {}
+            let mut shutdown = false;
+            while let Ok(pending) = rx.try_recv() {
+                if matches!(pending, Msg::Shutdown) {
+                    shutdown = true;
+                }
+            }
+            if shutdown {
+                break;
+            }
 
             // Run the compile. Panics are caught by the caller's
             // `catch_unwind` inside the closure.
@@ -186,5 +197,36 @@ mod tests {
         // tried — which is correct behaviour.)
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(count.load(Ordering::SeqCst), before);
+    }
+
+    #[test]
+    fn shutdown_during_compile_discards_queued_recompile() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let cf = {
+            let count = count.clone();
+            Arc::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+                let _ = started_tx.send(());
+                let _ = release_rx.lock().unwrap().recv();
+            }) as Arc<dyn Fn() + Send + Sync>
+        };
+        let worker = CompileWorker::spawn(cf);
+        worker.recompile();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        worker.recompile();
+
+        let join = std::thread::spawn(move || worker.shutdown());
+        std::thread::sleep(Duration::from_millis(20));
+        release_tx.send(()).unwrap();
+        join.join().unwrap();
+
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "Shutdown queued behind an in-flight compile must suppress another run"
+        );
     }
 }

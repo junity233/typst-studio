@@ -68,6 +68,21 @@ describe("recoveryStore (§5.1.3)", () => {
     expect(s.recoverable).toEqual([]);
     expect(s.dialogOpen).toBe(false);
     expect(s.decidedIds.size).toBe(0);
+    expect(s.recoveredIds.size).toBe(0);
+  });
+
+  it("tracks only snapshots that were actually recovered", () => {
+    useRecoveryStore.getState().offerRecovery([
+      snap({ documentId: "recovered" }),
+      snap({ documentId: "discarded" }),
+    ]);
+    useRecoveryStore.getState().markRecovered("recovered");
+    useRecoveryStore.getState().markDecided("recovered");
+    useRecoveryStore.getState().markDecided("discarded");
+
+    expect(useRecoveryStore.getState().recoveredIds).toEqual(
+      new Set(["recovered"]),
+    );
   });
 
   // --- Issue 1: disk-changed docs are unrecoverable until compared (§5.1.3) -

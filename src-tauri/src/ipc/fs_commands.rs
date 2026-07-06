@@ -491,9 +491,6 @@ pub async fn save_as(
     id: crate::domain::document::DocumentId,
 ) -> Result<String> {
     let editor = state.editor.clone();
-    let text = editor.tab_text(id).ok_or_else(|| {
-        AppError::NotFound(format!("tab {id} not found"))
-    })?;
     // Default the save dialog to the tab's current name (or "Untitled").
     let default_name = editor
         .tab_meta(id)
@@ -532,7 +529,7 @@ pub async fn save_as(
     // rebind only after the replace succeeds).
     state
         .save
-        .save_as(id, path.clone(), text)
+        .save_as(id, path.clone())
         .await
         .map_err(|ipc| match ipc.code {
             crate::ipc::error::ErrorCode::NotFound => AppError::NotFound(ipc.message),

@@ -867,32 +867,3 @@ root: string,
  * Display name (the root folder's basename).
  */
 name: string, };
-
-/**
- * Git status classification for one side (staged or unstaged) of a file
- * (§Source Control). Serialized as kebab-case to match the Rust enum's
- * `#[serde(rename_all = "kebab-case")]`.
- *
- * NOTE: hand-written here because `cargo test --features export-types` cannot
- * run on Windows (pre-existing Tauri test-binary loader crash).
- */
-export type GitStatusKind = "unchanged" | "modified" | "added" | "deleted" | "untracked" | "renamed" | "type-changed";
-
-/**
- * One file's git status (§Source Control). `staged` is head↔index, `unstaged`
- * is index↔worktree (matching `git status --porcelain` XY format).
- *
- * NOTE: hand-written here because `cargo test --features export-types` cannot
- * run on Windows (pre-existing Tauri test-binary loader crash). Field casing
- * matches the Rust struct's `#[serde(rename_all = "camelCase")]` wire format.
- */
-export type GitFileStatus = { path: string, staged: GitStatusKind, unstaged: GitStatusKind, };
-
-/**
- * One commit in the recent log (§Source Control).
- *
- * NOTE: hand-written here because `cargo test --features export-types` cannot
- * run on Windows (pre-existing Tauri test-binary loader crash). Field casing
- * matches the Rust struct's `#[serde(rename_all = "camelCase")]` wire format.
- */
-export type CommitLog = { id: string, message: string, author: string, time: number, };

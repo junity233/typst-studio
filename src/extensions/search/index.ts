@@ -15,7 +15,7 @@ export default function activate(ctx: HostApi): void {
     icon: Search,
     component: () =>
       import("../../components/Search/SearchPanel").then((m) => ({ default: m.SearchPanel })),
-    order: 10,
+    order: 20,
     when: "workspace",
   });
 

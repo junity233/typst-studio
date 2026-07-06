@@ -362,7 +362,6 @@ function buildViewMenu(t: T): MenuItem[] {
   const ui = useUiStore.getState();
   return [
     action(t("findInFiles"), "workbench.action.findInFiles"),
-    action(t("sourceControl"), "workbench.view.scm"),
     action(t("outline"), "workbench.view.outline"),
     sep(),
     check(t("toggleSidebar"), "toggle-sidebar", ui.sidebarVisible),

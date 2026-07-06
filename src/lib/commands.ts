@@ -1,4 +1,5 @@
-import { saveFile, saveAs as saveAsBE, discardRecovery } from "./tauri";
+import { discardRecovery } from "./tauri";
+import { flushAndSaveAs, flushAndSaveInPlace } from "./saveDocument";
 import { useTabsStore } from "../store/tabsStore";
 import { useDocumentsStore } from "../store/documentsStore";
 import { useDialogStore } from "../store/dialogStore";
@@ -26,11 +27,11 @@ export async function saveTab(id: string): Promise<boolean> {
   if (tab === null) return false;
   try {
     if (tab.path === null) {
-      const path = await saveAsBE(id);
-      useTabsStore.getState().markSaved(id, path);
+      const saved = await flushAndSaveAs(id);
+      useTabsStore.getState().markSaved(id, saved.path, saved.revision);
     } else {
-      await saveFile(id);
-      useTabsStore.getState().markSaved(id, tab.path);
+      const saved = await flushAndSaveInPlace(id);
+      useTabsStore.getState().markSaved(id, saved.path, saved.revision);
     }
     return true;
   } catch (e) {
@@ -62,8 +63,8 @@ export async function saveTab(id: string): Promise<boolean> {
       });
       if (choice === "confirm") {
         try {
-          const path = await saveAsBE(id);
-          useTabsStore.getState().markSaved(id, path);
+          const saved = await flushAndSaveAs(id);
+          useTabsStore.getState().markSaved(id, saved.path, saved.revision);
           return true;
         } catch (e2) {
           if (!isCancelled(e2)) {

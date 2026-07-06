@@ -15,7 +15,6 @@ import sepiaMeta from "../../src-tauri/themes/sepia/theme.json";
 import sepiaCss from "../../src-tauri/themes/sepia/theme.css?raw";
 import type {
   ConflictPayload,
-  CommitLog,
   DeleteResult,
   DirEntry,
   DocsReboundPayload,
@@ -24,7 +23,6 @@ import type {
   EntryKind,
   FocusViewPayload,
   FsChangedPayload,
-  GitFileStatus,
   LayoutState,
   OpenExternalFilePayload,
   OpenedDocument,
@@ -242,8 +240,6 @@ async function browserInvoke<T>(
       return "src-tauri/themes" as T;
     case "open_log_dir":
       return "logs" as T;
-    case "git_status":
-      return null as T;
     default:
       throw new Error(`[tauri] command "${command}" is unavailable in browser mode`);
   }
@@ -483,34 +479,6 @@ export async function readDir(rel?: string): Promise<DirEntry[]> {
  */
 export async function searchWorkspace(query: SearchQuery): Promise<SearchHit[]> {
   return invoke<SearchHit[]>("search_workspace", { query });
-}
-
-/**
- * Collect the workspace's git status (§Source Control). Returns `null` when the
- * workspace is not inside a git repository (the UI shows an empty state).
- */
-export async function gitStatus(): Promise<GitFileStatus[] | null> {
-  return invoke<GitFileStatus[] | null>("git_status");
-}
-
-/** Stage a single file (`git add <path>`). §Source Control. */
-export async function gitStage(path: string): Promise<void> {
-  await invoke<void>("git_stage", { path });
-}
-
-/** Unstage a single file (`git reset HEAD <path>`). §Source Control. */
-export async function gitUnstage(path: string): Promise<void> {
-  await invoke<void>("git_unstage", { path });
-}
-
-/** Create a commit with `message`; returns the new commit's hex id. §Source Control. */
-export async function gitCommit(message: string): Promise<string> {
-  return invoke<string>("git_commit", { message });
-}
-
-/** Recent commit log (first-parent walk from HEAD). §Source Control. */
-export async function gitLog(limit?: number): Promise<CommitLog[]> {
-  return invoke<CommitLog[]>("git_log", { limit: limit ?? null });
 }
 
 /** Create a file or directory at a workspace-relative path. */
