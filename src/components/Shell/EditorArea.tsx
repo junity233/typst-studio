@@ -92,9 +92,9 @@ function detachZoomListener(el: HTMLElement | null): void {
 export function EditorArea() {
   const { t } = useTranslation("editor");
   const activeTab = useActiveDocument();
-  const [cursorPreviewState, setCursorPreviewState] = useState<{
+  const [previewHighlightState, setPreviewHighlightState] = useState<{
     tabId: string;
-    line: number;
+    lines: number[];
   } | null>(null);
   // Live active-tab id for use inside stable/deferred closures (rAF callbacks)
   // that must read the CURRENT doc without rebuilding on every keystroke.
@@ -639,25 +639,26 @@ export function EditorArea() {
   useEffect(() => {
     const api = editorApiRef.current;
     if (!api || !activeTab) {
-      setCursorPreviewState(null);
+      setPreviewHighlightState(null);
       return;
     }
     const sync = () => {
-      setCursorPreviewState({
+      const selectedLines = api.getSelectedLines();
+      setPreviewHighlightState({
         tabId: activeTab.id,
-        line: api.getCurrentLine(),
+        lines: selectedLines.length > 0 ? selectedLines : [api.getCurrentLine()],
       });
     };
     sync();
     return api.onDidChangeCursorPosition(sync);
   }, [editorReadyTick, activeTab?.id]);
 
-  const activePreviewLine =
+  const activePreviewLines =
     activeTab &&
     activeTab.compiledRevision >= activeTab.revision &&
-    cursorPreviewState?.tabId === activeTab.id
-      ? cursorPreviewState.line
-      : null;
+    previewHighlightState?.tabId === activeTab.id
+      ? previewHighlightState.lines
+      : [];
 
   // Drag the sash: preview width = container right edge - pointer X. Uses
   // window-level pointer events so the drag survives the cursor leaving the
@@ -782,7 +783,7 @@ export function EditorArea() {
               <PreviewPane
                 svgPages={activeTab.svgPages}
                 lineMap={activeTab.lineMap}
-                activeLine={activePreviewLine}
+                activeLines={activePreviewLines}
                 onRefresh={handleRefresh}
                 onJumpToLine={handleJumpToLine}
                 onScroll={handlePreviewScroll}

@@ -7,6 +7,7 @@ import {
   applyToggleWrap,
   isInsideWrap,
   isLinePrefixActive,
+  getSelectedLines,
   getSelectionText,
 } from "../editorEdit";
 import type { EditEditor, EditModel } from "../editorEdit";
@@ -634,6 +635,52 @@ describe("getSelectionText", () => {
       // Document-order read: line 1 cols 3..end ("pha") + "\n" + line 2 cols 1..3 ("bet").
       expect(getSelectionText(ed)).toBe("pha\nbet");
     });
+  });
+});
+
+// ===========================================================================
+// getSelectedLines
+// ===========================================================================
+
+describe("getSelectedLines", () => {
+  it("returns [] for a collapsed caret", () => {
+    const ed = caret("Hello world", 6);
+    expect(getSelectedLines(ed)).toEqual([]);
+  });
+
+  it("returns the touched line for a partial same-line selection", () => {
+    const ed = sel(7, 12, "Hello world");
+    expect(getSelectedLines(ed)).toEqual([1]);
+  });
+
+  it("returns every covered line for a forward multi-line selection", () => {
+    const ed = new FakeEditor("alpha\nbeta\ngamma", {
+      selectionStartLineNumber: 1,
+      selectionStartColumn: 3,
+      positionLineNumber: 3,
+      positionColumn: 4,
+    });
+    expect(getSelectedLines(ed)).toEqual([1, 2, 3]);
+  });
+
+  it("does not include the final line when the selection ends at column 1", () => {
+    const ed = new FakeEditor("alpha\nbeta\ngamma", {
+      selectionStartLineNumber: 1,
+      selectionStartColumn: 3,
+      positionLineNumber: 3,
+      positionColumn: 1,
+    });
+    expect(getSelectedLines(ed)).toEqual([1, 2]);
+  });
+
+  it("normalizes a reversed multi-line selection before deriving lines", () => {
+    const ed = new FakeEditor("alpha\nbeta\ngamma", {
+      selectionStartLineNumber: 3,
+      selectionStartColumn: 4,
+      positionLineNumber: 1,
+      positionColumn: 3,
+    });
+    expect(getSelectedLines(ed)).toEqual([1, 2, 3]);
   });
 });
 

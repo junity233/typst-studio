@@ -25,7 +25,7 @@ interface SvgPageProps {
    * jump-to-source; empty if the page has no mapped text.
    */
   lineRects?: LineRect[];
-  activeLine?: number | null;
+  activeLines?: number[];
   /** Invoked with a 1-indexed source line on double-click. */
   onJumpToLine?: (line: number) => void;
   /**
@@ -68,7 +68,7 @@ export const SvgPage = memo(function SvgPage({
   pageNumber,
   zoom = 1,
   lineRects,
-  activeLine,
+  activeLines,
   onJumpToLine,
   onImgLoad,
   pageRef,
@@ -83,11 +83,13 @@ export const SvgPage = memo(function SvgPage({
   // previewMapping.ts's coordinate-model doc for details.
   const ptSize = useMemo(() => parseViewBoxPt(svg), [svg]);
   const activeLineRects = useMemo(
-    () =>
-      activeLine == null || !lineRects
-        ? []
-        : rectsForLine(lineRects, activeLine),
-    [activeLine, lineRects],
+    () => {
+      if (!lineRects || !activeLines || activeLines.length === 0) return [];
+      const rects: LineRect[] = [];
+      for (const line of activeLines) rects.push(...rectsForLine(lineRects, line));
+      return rects;
+    },
+    [activeLines, lineRects],
   );
   const activeBounds = useMemo(
     () => lineRectBounds(activeLineRects),

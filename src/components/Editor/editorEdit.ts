@@ -236,6 +236,35 @@ export function getSelectionText(editor: EditEditor): string {
 }
 
 /**
+ * Return the 1-indexed source lines actually covered by the current selection,
+ * in document order. A collapsed caret returns `[]`.
+ *
+ * Monaco selections are half-open, so a cross-line selection that ends at
+ * column 1 of the next line does NOT count that final line as selected.
+ */
+export function getSelectedLines(
+  editor: Pick<EditEditor, "getSelection">,
+): number[] {
+  const sel = editor.getSelection();
+  if (!sel) return [];
+
+  const startLine = Math.min(sel.selectionStartLineNumber, sel.positionLineNumber);
+  const startCol = columnAtStart(sel, startLine);
+  const endLine = Math.max(sel.selectionStartLineNumber, sel.positionLineNumber);
+  const endCol = columnAtEnd(sel, endLine);
+
+  if (startLine === endLine && startCol === endCol) return [];
+
+  const inclusiveEndLine =
+    startLine !== endLine && endCol === 1 ? endLine - 1 : endLine;
+  const lines: number[] = [];
+  for (let line = startLine; line <= inclusiveEndLine; line++) {
+    lines.push(line);
+  }
+  return lines;
+}
+
+/**
  * Idempotent wrap toggle: if the selection/caret already sits inside a
  * `prefix…suffix` region, **unwrap** it (replace the full `prefix…suffix` span
  * with the inner text and select the inner text); otherwise **wrap** it

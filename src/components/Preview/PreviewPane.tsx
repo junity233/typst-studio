@@ -9,7 +9,7 @@ interface PreviewPaneProps {
   svgPages: string[];
   /** Source line → page-rect map, from the last `compiled` event. */
   lineMap?: LineRect[];
-  activeLine?: number | null;
+  activeLines?: number[];
   /** Manual recompile trigger; shown only while `preview.autoRefresh` is off. */
   onRefresh?: () => void;
   /** Double-click a rendered line → jump editor cursor to that source line. */
@@ -45,7 +45,7 @@ interface PreviewPaneProps {
 export function PreviewPane({
   svgPages,
   lineMap,
-  activeLine,
+  activeLines,
   onRefresh,
   onJumpToLine,
   onScroll,
@@ -157,7 +157,7 @@ export function PreviewPane({
             pageNumber={i + 1}
             zoom={zoom}
             lineRects={rectsByPage.get(i)}
-            activeLine={activeLine}
+            activeLines={activeLines}
             onJumpToLine={onJumpToLine}
             onImgLoad={onPageImgLoad ? () => onPageImgLoad(i) : undefined}
             pageRef={refForPage(i)}

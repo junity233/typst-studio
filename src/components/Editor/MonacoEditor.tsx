@@ -30,6 +30,7 @@ import {
   isInsideWrap as isInsideWrapHelper,
   isLinePrefixActive as isLinePrefixActiveHelper,
   getSelectionText,
+  getSelectedLines as getSelectedLinesHelper,
 } from "./editorEdit";
 import { registerTypstHighlighting, applyTypstTokenTheme } from "./typstHighlighting";
 import { useThemeStore } from "../../store/themeStore";
@@ -55,6 +56,8 @@ export interface MonacoEditorApi {
   setScrollTop: (top: number) => void;
   /** Current caret line (1-indexed). Used by preview line-marking. */
   getCurrentLine: () => number;
+  /** Current selection's covered source lines; empty when the caret is collapsed. */
+  getSelectedLines: () => number[];
   /**
    * Pixel offset of a line from the top of the scrollable content (for
    * interpolated scroll-sync mapping source-line → editor pixel position).
@@ -838,6 +841,10 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
       getCurrentLine: () => {
         const editor = getEditor();
         return editor?.getPosition()?.lineNumber ?? 1;
+      },
+      getSelectedLines: () => {
+        const editor = getEditor();
+        return editor ? getSelectedLinesHelper(editor) : [];
       },
       getLineTopOffset: (line) => {
         const editor = getEditor();
