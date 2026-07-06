@@ -250,7 +250,7 @@ pub struct RecoveryService {
     /// The lock is held for the full read-modify-write, which is fast (single
     /// JSON file). This fixes the manifest-mirror divergence where a sync op
     /// persisted a stale in-memory copy and clobbered worker-added entries.
-    manifest: Mutex<()>,
+    manifest: Arc<Mutex<()>>,
     /// Document ids discarded since they were last queued for a snapshot
     /// (§5.1.4). `discard_snapshot` inserts here; `flush_pending` checks and
     /// removes entries before writing each pending snapshot, skipping any id in
@@ -299,6 +299,14 @@ impl RecoveryService {
         let debounce_for_thread = debounce;
         let discarded_since_queued = Arc::new(Mutex::new(HashSet::<DocumentId>::new()));
         let worker_discarded = discarded_since_queued.clone();
+        // The manifest lock is shared between the debounce worker's
+        // `flush_pending` and the synchronous ops (`snapshot_dirty_documents`,
+        // `discard_snapshot`, `clear_all`). Cloning the `Arc` here lets the
+        // worker acquire it so its read-modify-write of the on-disk manifest
+        // is mutually exclusive with the sync path — closing the race where a
+        // worker flush resurrected an entry a concurrent discard just removed.
+        let manifest_lock = Arc::new(Mutex::new(()));
+        let worker_manifest_lock = manifest_lock.clone();
         let handle = std::thread::Builder::new()
             .name("typst-recovery".into())
             .spawn(move || {
@@ -362,7 +370,7 @@ impl RecoveryService {
                             }
                         }
                         Ok(Msg::FlushNow) => {
-                            Self::flush_pending(&dir, &mpath, &mut pending, &discarded_since_queued);
+                            Self::flush_pending(&dir, &mpath, &mut pending, &discarded_since_queued, &worker_manifest_lock);
                             deadline = None;
                         }
                         Ok(Msg::Clear) => {
@@ -374,14 +382,14 @@ impl RecoveryService {
                             // Best-effort final flush on shutdown so a graceful
                             // drop doesn't lose pending edits. Errors are
                             // swallowed: shutdown must not panic.
-                            Self::flush_pending(&dir, &mpath, &mut pending, &discarded_since_queued);
+                            Self::flush_pending(&dir, &mpath, &mut pending, &discarded_since_queued, &worker_manifest_lock);
                             break;
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                             // Deadline reached (or the long idle poll elapsed)
                             // → flush if there's anything pending.
                             if !pending.is_empty() {
-                                Self::flush_pending(&dir, &mpath, &mut pending, &discarded_since_queued);
+                                Self::flush_pending(&dir, &mpath, &mut pending, &discarded_since_queued, &worker_manifest_lock);
                             }
                             deadline = None;
                         }
@@ -393,7 +401,7 @@ impl RecoveryService {
             recovery_dir,
             documents_dir,
             manifest_path,
-            manifest: Mutex::new(()),
+            manifest: manifest_lock,
             discarded_since_queued,
             worker: Mutex::new(Some(handle)),
             sender,
@@ -689,6 +697,13 @@ impl RecoveryService {
     /// synchronous path. The manifest is re-read first so concurrent
     /// synchronous discards aren't clobbered.
     ///
+    /// `manifest_lock` is the SAME `Arc<Mutex<()>>` the synchronous ops
+    /// (`snapshot_dirty_documents`, `discard_snapshot`, `clear_all`) acquire,
+    /// so holding it for the full read-modify-write here serializes the
+    /// worker's manifest mutation against theirs — closing the race where a
+    /// worker flush resurrected a manifest entry a concurrent discard just
+    /// removed (or vice versa).
+    ///
     /// §5.1.4 discard race: before writing each pending snapshot, the id is
     /// checked against `discarded_since_queued`. An id present there was
     /// discarded after it was queued but before this flush drained `pending`;
@@ -699,10 +714,16 @@ impl RecoveryService {
         manifest_path: &Path,
         pending: &mut HashMap<DocumentId, Pending>,
         discarded_since_queued: &Mutex<HashSet<DocumentId>>,
+        manifest_lock: &Mutex<()>,
     ) {
         if pending.is_empty() {
             return;
         }
+        // Hold the shared manifest lock for the entire read-modify-write so a
+        // synchronous discard / clear can't interleave. The lock guards no
+        // data (it's `()`) — it's a pure coordination token over the on-disk
+        // manifest file.
+        let _guard = manifest_lock.lock();
         // Re-load the manifest fresh (a synchronous discard may have mutated
         // the on-disk file between our last write and this flush). Falls back
         // to empty on any error — never block a flush on a manifest read.

@@ -543,16 +543,53 @@ fn handle_version_change(
         return;
     }
 
-    // Clean buffer + external change → auto-reload. Read the new text and
-    // reload without marking dirty.
+    // Clean buffer + external change → auto-reload. Read the new text, then
+    // re-check `dirty` BEFORE committing the reload: the disk read above ran
+    // outside any lock, and a `DocumentService::update_text` (the user's first
+    // keystroke) could have landed in that window. Applying the reload
+    // unconditionally would either overwrite that edit on the world buffer
+    // (last `set_text` wins) or — worse — leave it in the buffer while marking
+    // it clean (`dirty = false`), silently dropping it on close. Re-checking
+    // `dirty` under the commit lock converts this into the Modified-conflict
+    // path, which is the safe non-destructive branch.
     let Ok(content) = std::fs::read_to_string(live_path) else {
         // File vanished between the version read and the content read.
         set_conflict(tab, id, emitter, ConflictState::Missing, None);
         return;
     };
+    // Snapshot the revision BEFORE the disk read's result is applied, so the
+    // CAS below can detect any `update_text` that lands in between (those bump
+    // the revision, failing the CAS and routing us to the conflict path
+    // instead of clobbering the edit). `update_text` does `set_text` THEN
+    // `revision+1` under `tab.state`; we mirror that ordering (set_text first,
+    // then lock) to avoid an ABA / lock-order hazard.
+    let expected_revision = tab.state.lock().meta.revision;
+    // Apply the reloaded buffer to the world. If an `update_text` races us,
+    // whichever `set_text` runs last wins on the buffer — but the CAS below
+    // guarantees we only commit the bookkeeping (dirty=false, new version) if
+    // NO edit arrived, so a racing edit is never silently dropped.
     tab.world.set_text(content.clone());
     let (revision, canon) = {
         let mut rt = tab.state.lock();
+        if rt.meta.revision != expected_revision || rt.meta.dirty {
+            // An edit landed between the snapshot and this commit. Don't
+            // clobber it — surface Modified carrying the new disk_version +
+            // disk content (the compare view needs the latter). The world
+            // buffer may now hold either the edit or our reload (last-writer
+            // on `set_text`), but the dirty flag + revision reflect the edit,
+            // so the user keeps control and is prompted to resolve.
+            drop(rt);
+            set_conflict(
+                tab,
+                id,
+                emitter,
+                ConflictState::Modified {
+                    disk_version: Some(new_version),
+                },
+                Some(content),
+            );
+            return;
+        }
         rt.meta.revision = rt.meta.revision.saturating_add(1);
         rt.meta.dirty = false;
         rt.meta.conflict = ConflictState::None;
