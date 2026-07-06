@@ -8,8 +8,9 @@
 //! Uses `notify` directly (rather than `notify-debouncer-mini`, whose version
 //! matrix against `notify` is fragile). Debouncing is a small coalescing loop:
 //! the watcher pushes paths into a buffer; a timer thread flushes it every
-//! [`DEBOUNCE`] and invokes `on_change` with the deduplicated batch. A burst of
-//! edits (e.g. a build writing many files) thus collapses into one notification.
+//! `debounce` window and invokes `on_change` with the deduplicated batch. A
+//! burst of edits (e.g. a build writing many files) thus collapses into one
+//! notification.
 //!
 //! The watcher runs until the returned [`WatcherGuard`] is dropped.
 
@@ -25,8 +26,11 @@ use crate::error::{AppError, Result};
 // `.watch()` is a trait method on `notify::Watcher`; bring the trait into scope.
 use notify::Watcher as _;
 
-/// How long the watcher waits for a quiet period before flushing a batch.
-const DEBOUNCE: Duration = Duration::from_millis(300);
+/// A reasonable debounce window for INTERNAL watchers that are not surfaced as
+/// a user setting (e.g. the themes-dir hot-reload watcher, the loose-file
+/// watcher). The user-tunable workspace watcher reads `compiler.debounceMs`
+/// from settings instead. Kept here so internal call sites share one value.
+pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Callback invoked (on the flush thread) with the deduplicated paths that
 /// changed. Wrapped in `Arc` so it can be shared into the watcher thread.
@@ -49,16 +53,19 @@ impl Drop for WatcherGuard {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         // Unwatch isn't necessary; dropping the watcher stops it. The flush
-        // thread notices `stop` within one DEBOUNCE window and exits.
+        // thread notices `stop` within one debounce window and exits.
     }
 }
 
 /// Start watching `root` recursively. `on_change` is called on the flush thread
-/// with the changed paths whenever a debounced batch arrives.
+/// with the changed paths whenever a debounced batch arrives. `debounce` is the
+/// quiet-period window the flush thread waits before delivering a batch; a
+/// smaller value yields fresher notifications (at the cost of more batches under
+/// a burst), a larger value coalesces more aggressively.
 ///
 /// Errors if the platform watcher could not be initialized or `root` could not
 /// be watched.
-pub fn watch(root: &Path, on_change: OnChange) -> Result<WatcherGuard> {
+pub fn watch(root: &Path, debounce: Duration, on_change: OnChange) -> Result<WatcherGuard> {
     // Shared, deduplicated buffer of paths changed since the last flush.
     let pending: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
     let pending_for_cb = Arc::clone(&pending);
@@ -91,7 +98,7 @@ pub fn watch(root: &Path, on_change: OnChange) -> Result<WatcherGuard> {
         .watch(root, notify::RecursiveMode::Recursive)
         .map_err(|e| AppError::Other(format!("failed to watch {root:?}: {e}")))?;
 
-    // Flush thread: every DEBOUNCE, if there are pending paths, drain and
+    // Flush thread: every `debounce`, if there are pending paths, drain and
     // deliver them. Exits when `stop` is set (checked once per window).
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = Arc::clone(&stop);
@@ -100,7 +107,7 @@ pub fn watch(root: &Path, on_change: OnChange) -> Result<WatcherGuard> {
     let flush_thread = std::thread::Builder::new()
         .name("typst-fs-watcher".into())
         .spawn(move || {
-            let mut next_flush = Instant::now() + DEBOUNCE;
+            let mut next_flush = Instant::now() + debounce;
             loop {
                 let now = Instant::now();
                 if now < next_flush {
@@ -112,7 +119,7 @@ pub fn watch(root: &Path, on_change: OnChange) -> Result<WatcherGuard> {
                 let batch: Vec<PathBuf> = {
                     let mut buf = pending_for_flush.lock();
                     if buf.is_empty() {
-                        next_flush = Instant::now() + DEBOUNCE;
+                        next_flush = Instant::now() + debounce;
                         continue;
                     }
                     std::mem::take(&mut *buf)
@@ -120,7 +127,7 @@ pub fn watch(root: &Path, on_change: OnChange) -> Result<WatcherGuard> {
                 if !batch.is_empty() {
                     on_change_flush(&batch);
                 }
-                next_flush = Instant::now() + DEBOUNCE;
+                next_flush = Instant::now() + debounce;
             }
         })
         .map_err(|e| AppError::Other(format!("failed to spawn fs watcher thread: {e}")))?;
@@ -150,7 +157,7 @@ mod tests {
             received_cb.lock().unwrap().extend_from_slice(paths);
         });
 
-        let guard = watch(&root, on_change).expect("watcher should start");
+        let guard = watch(&root, Duration::from_millis(300), on_change).expect("watcher should start");
         // Mutate a file; the watcher should surface it within a few debounce windows.
         std::fs::write(root.join("changed.typ"), "y").unwrap();
         for _ in 0..30 {

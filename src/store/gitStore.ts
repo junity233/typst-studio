@@ -8,6 +8,7 @@ import {
   gitLog,
   onFsChanged,
 } from "../lib/tauri";
+import { readSetting } from "../hooks/useSetting";
 
 /**
  * Source Control view state (§Source Control). Backed by the gix 0.85 IPC
@@ -44,7 +45,9 @@ export const useGitStore = create<GitState>((set, get) => ({
       // empty list, and any backend error just hides the log.
       const [statusResult, recentLog] = await Promise.all([
         gitStatus(),
-        gitLog(5).catch(() => [] as CommitLog[]),
+        gitLog(readSetting<number>("git.defaultLogLimit", 5)).catch(
+          () => [] as CommitLog[],
+        ),
       ]);
       if (statusResult === null) {
         // Not a git repository — clear out and show the empty state.

@@ -40,6 +40,13 @@ use std::time::Duration;
 /// Hard ceiling on concurrent compiles regardless of CPU count (§6.2 "与 4 的
 /// 较小值"). A 16-core machine still caps at 4 — typst compiles are bursty and
 /// memory-heavy, and the editor's own main thread + LSP need headroom.
+///
+/// NOTE: this is intentionally NOT a user setting. The semaphore is built once
+/// at app startup deep inside `EditorService`/`TabStore` construction, before
+/// the settings service exists; making it live-configurable would require
+/// either reordering startup or a process-global settings handle, plus the
+/// runtime semantics of resizing a semaphore mid-flight are unclear. Kept as a
+/// constant for now; revisit if a real need surfaces.
 pub const MAX_CONCURRENT_COMPILES: usize = 4;
 
 /// After this many consecutive panics on a single document, enter backoff so a

@@ -146,7 +146,7 @@ export function EditorArea() {
         el,
         () => previewZoomLevelRef.current,
         setPreviewZoomLevel,
-        { min: 0.25, max: 4, step: 0.1, fallback: 1 },
+        { min: 0.25, max: 4, step: 0.25, fallback: 1 },
       );
     },
     [setPreviewZoomLevel],
@@ -171,7 +171,7 @@ export function EditorArea() {
         el,
         () => editorFontSizeRef.current,
         setEditorFontSize,
-        { min: 8, max: 32, step: 1, fallback: 13 },
+        { min: 8, max: 32, step: 1, fallback: 14 },
       );
     },
     [setEditorFontSize],
@@ -246,6 +246,7 @@ export function EditorArea() {
       const ptSize = parseViewBoxPt(svgPagesRef.current[i] ?? "");
       if (!img || !ptSize || ptSize.height === 0) continue;
       const imgRect = img.getBoundingClientRect();
+      if (imgRect.height === 0) continue;
       out.push({
         offsetTop: el.offsetTop,
         pxPerPt: imgRect.height / ptSize.height,
@@ -422,25 +423,41 @@ export function EditorArea() {
     kick("preview");
   }, [scrollSyncOn, kick, isApplying]);
 
-  // Keep `pageMetrics` fresh without requiring a user scroll. `refreshPageMetrics`
-  // only runs inside `kick()` otherwise, so a recompile / zoom change / tab switch
-  // (which reflow the pages) would leave the cached offsetTop/pxPerPt stale until
-  // the next scroll — and worse, a fresh compile's <img> hasn't decoded yet at
-  // kick time, so the cache ends up sparse/empty and both mappers return null →
-  // `tick` early-exits → sync silently drops until the user scrolls again.
+  // Keep `pageMetrics` fresh AND re-align after geometry changes. A recompile,
+  // zoom change, or tab switch reflows the preview pages, which (a) invalidates
+  // the cached offsetTop/pxPerPt and (b) — for recompiles — changes the source-
+  // line → page-rect map entirely, leaving the two panes silently out of sync
+  // until the user scrolls. We close both:
   //
-  // Two layers:
-  //  (1) This effect re-runs on every geometry-changing input (compile output,
-  //      lineMap, zoom, visibility, active tab) and defers the refresh one
-  //      rAF so the just-rendered <img> has had a frame to decode.
-  //  (2) SvgPage's <img onLoad> (wired via `onPageImgLoad`) fires once each page
-  //      after its blob URL finishes decoding — the backstop for documents where
-  //      decoding takes more than one frame.
-  // Neither starts an alignment on its own (no user input yet); they only feed
-  // `kick()` correct geometry when the user DOES scroll.
+  //  (1) This effect re-runs on every geometry-changing input and defers the
+  //      refresh + re-align two rAFs so the just-rendered <img> has decoded.
+  //      Two frames (not one): the first lets SvgPage's [svg] effect run and
+  //      set the new blob URL; the second lets the <img> actually decode it.
+  //  (2) SvgPage's <img onLoad> (→ `onPageImgLoad` → `handlePageImgLoad`) is the
+  //      backstop: it fires once per page once decoding truly completes, with a
+  //      guaranteed-non-zero height, and re-aligns then too.
+  // Re-alignment drives from the EDITOR (the authority — the user edits there),
+  // so the preview snaps to the editor's current top line under the new layout.
+  // Guarded by `scrollSyncOn` + a live editor API; no-op when sync is off or
+  // the editor isn't mounted yet.
   useEffect(() => {
-    const raf = requestAnimationFrame(refreshPageMetrics);
-    return () => cancelAnimationFrame(raf);
+    // Track both rAF ids so cleanup cancels whichever is pending.
+    const ids: number[] = [];
+    const schedule = (fn: () => void) => {
+      const id = requestAnimationFrame(fn);
+      ids.push(id);
+    };
+    schedule(() => {
+      schedule(() => {
+        refreshPageMetrics();
+        if (scrollSyncOn && editorApiRef.current) {
+          kick("editor");
+        }
+      });
+    });
+    return () => {
+      for (const id of ids) cancelAnimationFrame(id);
+    };
   }, [
     activeTab?.id,
     activeTab?.svgPages,
@@ -448,6 +465,8 @@ export function EditorArea() {
     previewZoomLevel,
     previewVisible,
     refreshPageMetrics,
+    scrollSyncOn,
+    kick,
   ]);
 
   // Cleanup the animation loop on unmount.
@@ -509,12 +528,18 @@ export function EditorArea() {
   // Each page's <img> finishes decoding its blob URL once per compile (SvgPage
   // revokes + recreates the URL on every `svg` change). At that moment the
   // rendered height is finally non-zero, so this is the reliable signal to
-  // re-read page geometry — closing the window where `refreshPageMetrics` would
-  // have skipped the page (height 0) and left the sync mappers with nothing to
-  // map to. Stable callback: depends only on `refreshPageMetrics`.
+  // re-read page geometry — AND to re-align the preview, since a recompile can
+  // reflow the document (the source-line → page-rect map changes entirely) and
+  // leave the two panes silently out of sync until the user scrolls. Re-aligning
+  // here, with the editor as the driver, makes the preview follow the new layout
+  // immediately. The editor is the authority because the user edits there; the
+  // preview should snap to reflect the editor's current top line.
   const handlePageImgLoad = useCallback(() => {
     refreshPageMetrics();
-  }, [refreshPageMetrics]);
+    if (scrollSyncOn && editorApiRef.current) {
+      kick("editor");
+    }
+  }, [refreshPageMetrics, scrollSyncOn, kick]);
 
   return (
     <div className="editor-area">

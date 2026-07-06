@@ -1,5 +1,23 @@
 import { useState } from "react";
-import { Plus, X, Hammer, Type, Eye, Monitor, Save, Database, Palette, FolderOpen, type LucideIcon } from "lucide-react";
+import {
+  Plus,
+  X,
+  Hammer,
+  Type,
+  Eye,
+  Monitor,
+  Save,
+  Database,
+  Palette,
+  FolderOpen,
+  Search,
+  Download,
+  FileText,
+  GitBranch,
+  PanelsTopLeft,
+  Stethoscope,
+  type LucideIcon,
+} from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 import type { ManifestCategory, SettingDef } from "../../lib/settings-types";
 import { useSetting } from "../../hooks/useSetting";
@@ -30,6 +48,12 @@ const CATEGORY_ICON: Record<string, LucideIcon> = {
   saving: Save,
   data: Database,
   appearance: Palette,
+  search: Search,
+  export: Download,
+  document: FileText,
+  git: GitBranch,
+  tabs: PanelsTopLeft,
+  diagnostics: Stethoscope,
 };
 
 /**

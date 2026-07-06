@@ -194,7 +194,7 @@ impl ThemeService {
             // and re-applies the current theme's CSS.
             let _ = app.emit("themes_changed", payload);
         });
-        match watcher::watch(&self.themes_dir, on_change) {
+        match watcher::watch(&self.themes_dir, watcher::DEFAULT_DEBOUNCE, on_change) {
             Ok(guard) => *self.watcher.write() = Some(guard),
             Err(e) => tracing::warn!(error = %e, "themes: watcher failed to start; hot-reload disabled"),
         }

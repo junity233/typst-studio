@@ -31,6 +31,22 @@ function findDefault(manifest: Manifest | null, key: string): unknown {
 }
 
 /**
+ * Read a setting value WITHOUT a React hook, for use inside Zustand stores or
+ * other non-component code. Resolves the live value at `path`, falling back to
+ * the manifest default, then to `fallback`. Prefer `useSetting` in components —
+ * this is for store actions and other places hooks can't reach.
+ */
+export function readSetting<T>(
+  path: string,
+  fallback: T,
+): T {
+  const { data, manifest } = useSettingsStore.getState();
+  const raw = getByPath(data, path);
+  const value = raw !== undefined ? raw : findDefault(manifest, path);
+  return (value !== undefined ? (value as T) : fallback);
+}
+
+/**
  * Reactive accessor for one setting, `useState`-style.
  *
  *   const [fontSize, setFontSize] = useSetting<number>("editor.fontSize");

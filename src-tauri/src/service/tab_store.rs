@@ -198,7 +198,7 @@ pub(crate) fn loose_watcher_for(store: &TabStore, parent: &Path) {
             handle_external_change_locked(p, &tabs, &registry, &workers, &vfs, &emitter);
         }
     });
-    match watcher::watch(parent, on_change) {
+    match watcher::watch(parent, watcher::DEFAULT_DEBOUNCE, on_change) {
         Ok(guard) => {
             store
                 .loose_watchers

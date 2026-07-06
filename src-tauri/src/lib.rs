@@ -193,11 +193,12 @@ pub fn run() {
                 Err(e) => eprintln!("diagnostics: log dir unavailable: {e}"),
             }
 
-            // Pre-build the process-wide font store (embedded + system scan).
-            // The scan is the dominant cost of opening the first tab (~hundreds
-            // of ms on macOS); warming it here — during LSP startup, before any
-            // window/tab exists — moves that cost off the first-open path.
-            crate::typst_engine::font_loader::warm();
+            // Pre-build the process-wide font store (embedded + system scan +
+            // user-configured extra dirs). Moved to AFTER the settings service
+            // is constructed so the `compiler.extraFontDirs` setting can fold
+            // into the one-time scan; see `warm(extra_dirs)` below. The scan is
+            // the dominant cost of opening the first tab (~hundreds of ms on
+            // macOS), so it still runs well before any window/tab exists.
 
             use crate::ipc::state::{AppState, TauriEmitter};
             use crate::lsp::manager::LspConfig;
@@ -311,6 +312,20 @@ pub fn run() {
                 },
                 &mut startup_problems,
             ));
+
+            // Now that settings exist, pre-build the process-wide font store
+            // folding in the user-configured extra font directories
+            // (`compiler.extraFontDirs`). This runs before any window/tab can
+            // open, so the system scan cost stays off the first-open path. The
+            // store is process-wide; changing extra dirs takes effect on restart.
+            {
+                let extra_font_dirs = settings
+                    .get_or_default::<Vec<String>>("compiler.extraFontDirs")
+                    .into_iter()
+                    .map(std::path::PathBuf::from)
+                    .collect::<Vec<_>>();
+                crate::typst_engine::font_loader::warm(&extra_font_dirs);
+            }
 
             // Session memory (open documents + active view, §13) in the same config dir.
             // `SessionService::load` is already load-tolerant (corrupt/missing →

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { SearchHit, SearchQuery } from "../lib/types";
 import { searchWorkspace } from "../lib/tauri";
+import { readSetting } from "../hooks/useSetting";
 
 /**
  * Search view state (§Search view). Holds the query box text + option toggles
@@ -55,8 +56,8 @@ export const useSearchStore = create<SearchState>((set, get) => ({
         caseSensitive,
         wholeWord,
         includeGlob: null,
-        maxPerFile: 200,
-        maxTotal: 2000,
+        maxPerFile: readSetting<number>("search.maxPerFile", 200),
+        maxTotal: readSetting<number>("search.maxTotal", 2000),
       };
       const hits = await searchWorkspace(req);
       if (seq !== runSeq) return; // a newer run superseded this one — discard

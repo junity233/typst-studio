@@ -3,6 +3,7 @@ import { ChevronRight, ChevronsDownUp, ChevronsUpDown, FileText } from "lucide-r
 import { useTranslation } from "react-i18next";
 import { useSearchStore } from "../../store/searchStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
+import { useSetting } from "../../hooks/useSetting";
 import { openFile } from "../../lib/openFile";
 import { editorApiRef } from "../Editor/editorApiRef";
 import type { SearchHit } from "../../lib/types";
@@ -37,16 +38,19 @@ export function SearchPanel(_props: { viewId?: string }) {
   const run = useSearchStore((s) => s.run);
   const clear = useSearchStore((s) => s.clear);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
+  const [debounceMs] = useSetting<number>("search.debounceMs");
 
-  // Debounced search: re-runs 300ms after the last query/option change.
+  // Debounced search: re-runs `search.debounceMs` after the last query/option
+  // change. The debounce value is in the dependency array so a settings change
+  // re-arms the timer at the new cadence.
   useEffect(() => {
     if (!query.trim()) {
       clear(); // empty query → clear results + error
       return;
     }
-    const t = setTimeout(() => void run(), 300);
+    const t = setTimeout(() => void run(), debounceMs ?? 300);
     return () => clearTimeout(t);
-  }, [query, isRegex, caseSensitive, wholeWord, run, clear]);
+  }, [query, isRegex, caseSensitive, wholeWord, run, clear, debounceMs]);
 
   // Group hits by file path (preserves first-seen order, which is the walkdir
   // traversal order — stable across re-runs of the same query).

@@ -171,12 +171,19 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   const workspaceNameRef = useRef(workspaceName);
   workspaceNameRef.current = workspaceName;
 
-  // Debounced backend push for the compile pipeline (SVG preview).
+  // `editor.updateDebounceMs` drives the compile-push debouncer below. Read
+  // here (before `pushToBackend`) so it is in scope; the value is also a normal
+  // settings option consumed via the options memo further down.
+  const [updateDebounceMs] = useSetting<number>("editor.updateDebounceMs");
+
+  // Debounced backend push for the compile pipeline (SVG preview). The window
+  // is the `editor.updateDebounceMs` setting; rebuilding on its change is
+  // intended (useDebouncedCallback keys its stable callback on `delay`).
   const pushToBackend = useDebouncedCallback((id: string, value: string) => {
     void updateText(id, value).catch((e) =>
       console.warn("[MonacoEditor] updateText failed:", e),
     );
-  }, 100);
+  }, updateDebounceMs ?? 100);
 
   // Memoize the language-client config on `wsUrl` ONLY (not workspace). A
   // workspace-open must not rebuild the config for a mounted editor — that
@@ -203,6 +210,15 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   const [wordWrap] = useSetting<boolean>("editor.wordWrap");
   const [lineNumbers] = useSetting<boolean>("editor.lineNumbers");
   const [minimap] = useSetting<boolean>("editor.minimap");
+  const [fontLigatures] = useSetting<boolean>("editor.fontLigatures");
+  const [renderWhitespace] = useSetting<
+    "none" | "all" | "boundary" | "selection" | "trailing"
+  >("editor.renderWhitespace");
+  const [folding] = useSetting<boolean>("editor.folding");
+  const [scrollBeyondLastLine] = useSetting<boolean>(
+    "editor.scrollBeyondLastLine",
+  );
+  const [lineHeight] = useSetting<number>("editor.lineHeight");
   const [autoRefresh] = useSetting<boolean>("preview.autoRefresh");
   // When the preview pane is hidden there's no point compiling; the gate is
   // OR'd with `preview.autoRefresh` below. Read via the store directly (not a
@@ -221,7 +237,8 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // Settings-derived editor options. Only keys that are actually set are
   // overridden; everything else falls through to the built-in defaults below.
   // `editor.fontFamily` is applied only when non-empty so an unset value keeps
-  // Monaco's own font stack.
+  // Monaco's own font stack. `editor.lineHeight` of 0 means "Monaco default",
+  // so we omit it in that case rather than force 0.
   const settingsOptions =
     useMemo<Monaco.editor.IStandaloneEditorConstructionOptions>(() => {
       const opts: Monaco.editor.IStandaloneEditorConstructionOptions = {};
@@ -235,8 +252,26 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
       if (lineNumbers !== undefined)
         opts.lineNumbers = lineNumbers ? "on" : "off";
       if (minimap !== undefined) opts.minimap = { enabled: minimap };
+      if (fontLigatures !== undefined) opts.fontLigatures = fontLigatures;
+      if (renderWhitespace !== undefined) opts.renderWhitespace = renderWhitespace;
+      if (folding !== undefined) opts.folding = folding;
+      if (scrollBeyondLastLine !== undefined)
+        opts.scrollBeyondLastLine = scrollBeyondLastLine;
+      if (lineHeight !== undefined && lineHeight > 0) opts.lineHeight = lineHeight;
       return opts;
-    }, [fontSize, fontFamily, tabSize, wordWrap, lineNumbers, minimap]);
+    }, [
+      fontSize,
+      fontFamily,
+      tabSize,
+      wordWrap,
+      lineNumbers,
+      minimap,
+      fontLigatures,
+      renderWhitespace,
+      folding,
+      scrollBeyondLastLine,
+      lineHeight,
+    ]);
 
   // Phase A (spec §8.3 / §10.5): models are owned by `monacoModelRegistry`,
   // NOT by the wrapper's `editorAppConfig` URI. The wrapper still needs an
@@ -249,7 +284,7 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     () => ({
       // Editor options only — no `codeResources`. The registry owns the model.
       editorOptions: {
-        fontSize: 13,
+        fontSize: 14,
         fontFamily:
           '"SF Mono", Menlo, Monaco, "Cascadia Code", Consolas, monospace',
         fontLigatures: true,
@@ -268,6 +303,18 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         // the top of the document. The app exposes export through the native menu
         // instead, so hide the lens.
         codeLens: false,
+        // Disable occurrence highlighting (the "highlight all occurrences of the
+        // word under the cursor" feature). Its implementation
+        // (wordHighlighter) resolves the current model via the workbench's
+        // TextModelResolverService on every cursor move, which tries to READ
+        // the model's resource from disk. For an untitled doc whose model URI
+        // the workbench classifies as a `file:` path (Documents/typst/Untitled.typ),
+        // that read throws "Unable to resolve nonexistent file" on every cursor
+        // move / focus / edit — a noisy, recurring uncaught-promise error that
+        // can destabilize the editor's event dispatch. Typst Studio doesn't need
+        // cross-document occurrence highlighting, so disabling it kills the
+        // failing model-resolution path at its source.
+        occurrencesHighlight: "off",
         // Tighten the vertical air around the text so the editor reads edge-to-edge
         // within its pane instead of floating in wide whitespace.
         padding: { top: 6, bottom: 6 },

@@ -22,10 +22,26 @@ use crate::error::{AppError, Result};
 use crate::ipc::events::{LspStatusPayload, OpenedDocument};
 use crate::ipc::state::AppState;
 
-/// Create a new untitled tab. `content` defaults to the built-in template.
-/// The initial compile is spawned asynchronously — this returns immediately.
+/// Upper bound on a source file we are willing to load into an editor tab. A
+/// legitimate `.typ` file is at most a few hundred KB; anything past 10 MiB is
+/// almost certainly a mis-picked binary or a generated blob that would stall or
+/// OOM the webview. Sized as a resource guard, not a user preference.
+const MAX_SOURCE_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Create a new untitled tab. `content` defaults to the `document.defaultTemplate`
+/// setting (falling back to the built-in template if unset). The initial compile
+/// is spawned asynchronously — this returns immediately.
 #[tauri::command]
 pub async fn new_tab(state: State<'_, AppState>, content: Option<String>) -> Result<OpenedDocument> {
+    // When the caller omits content, seed the tab from the user's configured
+    // new-document template rather than the built-in literal.
+    let content = match content {
+        Some(c) => Some(c),
+        None => {
+            let tmpl = state.settings.get_or_default::<String>("document.defaultTemplate");
+            if tmpl.is_empty() { None } else { Some(tmpl) }
+        }
+    };
     let editor = state.editor.clone();
     let meta = editor.new_tab(content);
     let content_text = editor.tab_text(meta.id).unwrap_or_default();
@@ -60,8 +76,21 @@ pub async fn open_file(
     let path = path_buf_from(picked)?;
     // Read file on a blocking thread (large files shouldn't stall the async runtime).
     let path_for_read = path.clone();
-    let content = tauri::async_runtime::spawn_blocking(move || {
+    let content = tauri::async_runtime::spawn_blocking(move || -> std::result::Result<String, AppError> {
+        // Guard against accidentally opening a huge/binary file as a source tab:
+        // reading tens/hundreds of MiB into a string stalls the runtime and the
+        // resulting model would OOM the webview. Stat first, then read.
+        let len = std::fs::metadata(&path_for_read)
+            .map_err(|e| AppError::Other(format!("stat {path_for_read:?}: {e}")))?
+            .len();
+        if len > MAX_SOURCE_FILE_BYTES {
+            return Err(AppError::Other(format!(
+                "file too large to open as source ({} bytes; limit {} bytes): {path_for_read:?}",
+                len, MAX_SOURCE_FILE_BYTES
+            )));
+        }
         std::fs::read_to_string(&path_for_read)
+            .map_err(|e| AppError::Other(format!("read {path_for_read:?}: {e}")))
     })
     .await
     .map_err(|e| AppError::Other(format!("join error: {e}")))??;
@@ -219,9 +248,12 @@ pub async fn export_pdf(
     let path = path_buf_from(picked)?;
     let path_str = path.to_string_lossy().to_string();
     let export = state.export.clone();
+    let revision_wait = std::time::Duration::from_millis(
+        state.settings.get_or_default::<u64>("export.revisionWaitMs"),
+    );
     // Render (CPU-bound) + write (blocking IO) together on a blocking thread.
     tauri::async_runtime::spawn_blocking(move || -> Result<()> {
-        let bytes = export.render_pdf(id, revision)?;
+        let bytes = export.render_pdf(id, revision, revision_wait)?;
         std::fs::write(&path, &bytes)?;
         Ok(())
     })
@@ -265,10 +297,14 @@ pub async fn export_png(
         .unwrap_or("document")
         .to_string();
     let export = state.export.clone();
+    let revision_wait = std::time::Duration::from_millis(
+        state.settings.get_or_default::<u64>("export.revisionWaitMs"),
+    );
+    let pixel_per_pt = state.settings.get_or_default::<f64>("export.pngPixelPerPt");
     let base_name_clone = base_name.clone();
     // Render (CPU-bound) + write (blocking IO) together on a blocking thread.
     let paths = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>> {
-        let pages = export.render_pngs(id, revision, &base_name_clone)?;
+        let pages = export.render_pngs(id, revision, &base_name_clone, revision_wait, pixel_per_pt)?;
         std::fs::create_dir_all(&save_dir)?;
         let mut written = Vec::with_capacity(pages.len());
         for (name, bytes) in pages {
@@ -318,10 +354,13 @@ pub async fn export_svg(
         .unwrap_or("document")
         .to_string();
     let export = state.export.clone();
+    let revision_wait = std::time::Duration::from_millis(
+        state.settings.get_or_default::<u64>("export.revisionWaitMs"),
+    );
     let base_name_clone = base_name.clone();
     // Render (CPU-bound) + write (blocking IO) together on a blocking thread.
     let paths = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>> {
-        let pages = export.render_svgs(id, revision, &base_name_clone)?;
+        let pages = export.render_svgs(id, revision, &base_name_clone, revision_wait)?;
         std::fs::create_dir_all(&save_dir)?;
         let mut written = Vec::with_capacity(pages.len());
         for (name, bytes) in pages {

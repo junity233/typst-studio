@@ -15,6 +15,7 @@ import {
   type Document,
 } from "./documentsStore";
 import { useSaveStateStore } from "./saveStateStore";
+import { readSetting } from "../hooks/useSetting";
 
 /**
  * Phase 4 (design §10): the **views store**. This holds ONLY view state — the
@@ -171,17 +172,20 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
       console.warn("[softClose] backend rejected:", e);
     }
     // Compute the LRU eviction list BEFORE set (cleaner than reading it back
-    // out of state). newest goes at the end of hidden; if that overflows
-    // MAX_HIDDEN, the oldest (front) entries are evicted (hard-closed).
+    // out of state). newest goes at the end of hidden; if that overflows the
+    // `tabs.maxHidden` setting, the oldest (front) entries are evicted
+    // (hard-closed). Read live so a settings change takes effect on the next
+    // soft-close.
+    const maxHidden = readSetting<number>("tabs.maxHidden", MAX_HIDDEN);
     const prevHidden = get().hidden;
     const nextHiddenAll = [...prevHidden, id];
     const evict =
-      nextHiddenAll.length > MAX_HIDDEN
-        ? nextHiddenAll.slice(0, nextHiddenAll.length - MAX_HIDDEN)
+      nextHiddenAll.length > maxHidden
+        ? nextHiddenAll.slice(0, nextHiddenAll.length - maxHidden)
         : [];
     const hidden =
-      nextHiddenAll.length > MAX_HIDDEN
-        ? nextHiddenAll.slice(nextHiddenAll.length - MAX_HIDDEN)
+      nextHiddenAll.length > maxHidden
+        ? nextHiddenAll.slice(nextHiddenAll.length - maxHidden)
         : nextHiddenAll;
     set((s) => {
       const tabs = s.tabs.filter((tabId) => tabId !== id);

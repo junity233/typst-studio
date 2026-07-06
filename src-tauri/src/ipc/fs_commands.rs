@@ -21,6 +21,10 @@ use crate::ipc::state::AppState;
 use crate::lsp::manager::LspRestartReason;
 use crate::service::workspace_service::WorkspaceMeta;
 
+/// Upper bound on a source file we are willing to load into an editor tab via
+/// the file tree. See `commands::MAX_SOURCE_FILE_BYTES` for rationale.
+const MAX_SOURCE_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
 /// Wire view of one document rebound by a rename/move (§6.4). Emitted in the
 /// `docs_rebound` event payload AND returned from the `rename_entry` command so
 /// the frontend can rebind tab titles / breadcrumbs / active-file highlight.
@@ -112,7 +116,11 @@ fn open_path_as_workspace(
         };
         let _ = app_for_cb.emit("fs_changed", payload);
     });
-    let meta = state.workspace.open(root, on_change)?;
+    // Read the fs-watcher debounce window from settings (manifest default
+    // 300 ms). This is the `compiler.debounceMs` setting — the quiet period the
+    // watcher waits before flushing a batch of changed paths.
+    let debounce_ms = state.settings.get_or_default::<u64>("compiler.debounceMs");
+    let meta = state.workspace.open(root, std::time::Duration::from_millis(debounce_ms), on_change)?;
     // §6.3: reflect watcher health. `watcher_healthy()` is true iff the watcher
     // guard is live (started OK); a start failure leaves it false. Surface that
     // to the watcher-health service so the frontend can warn "external detection
@@ -442,11 +450,22 @@ pub async fn open_file_by_path(
     // "retry might help" semantics.
     let path_for_err = path.to_string_lossy().into_owned();
     let content = tauri::async_runtime::spawn_blocking(move || {
+        // Size guard: see `commands::MAX_SOURCE_FILE_BYTES`. A huge file would
+        // stall the runtime on read and OOM the webview as a model.
+        let len = std::fs::metadata(&path_for_read)
+            .map_err(|e| AppError::Other(format!("stat {path_for_err:?}: {e}")))?
+            .len();
+        if len > MAX_SOURCE_FILE_BYTES {
+            return Err(AppError::Other(format!(
+                "file too large to open as source ({} bytes; limit {} bytes): {path_for_err:?}",
+                len, MAX_SOURCE_FILE_BYTES
+            )));
+        }
         std::fs::read_to_string(&path_for_read)
+            .map_err(|e| AppError::Other(format!("read {path_for_err:?}: {e}")))
     })
     .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))?
-    .map_err(|e| AppError::Other(format!("read {path_for_err:?}: {e}")))?;
+    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
 
     // The editor service classifies the file (loose vs workspace) and builds a
     // resolver-anchored world accordingly. A workspace file gets the workspace

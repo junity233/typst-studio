@@ -5,9 +5,10 @@
 //! [`typst_kit::fonts::FontStore`], which owns a [`LazyHash<FontBook>`] and
 //! resolves fonts by index on demand. `SystemFontLoader` wraps a `FontStore`
 //! populated with the embedded fallback fonts plus every font discoverable on
-//! the host system (via the `scan-fonts` feature of `typst-kit`).
+//! the host system (via the `scan-fonts` feature of `typst-kit`), plus any
+//! user-configured extra directories (the `compiler.extraFontDirs` setting).
 
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, OnceLock};
 
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
@@ -22,7 +23,8 @@ pub trait FontLoader: Send + Sync {
     fn font(&self, id: usize) -> Option<Font>;
 }
 
-/// Process-wide cache of the full font store (embedded + system scan).
+/// Process-wide cache of the full font store (embedded + system scan + any
+/// user-configured extra directories).
 ///
 /// The system font scan (`typst_kit::fonts::system()`) walks every host font
 /// directory and is the dominant cost of building a World — hundreds of
@@ -31,9 +33,18 @@ pub trait FontLoader: Send + Sync {
 /// `EditorWorld`. Opening a second tab no longer re-scans.
 ///
 /// Initialized eagerly at app startup via [`warm()`] (called from `lib.rs`
-/// `.setup()`) so the first tab open isn't delayed by the scan; the `LazyLock`
-/// is the safety net if any code path constructs a World before `warm()` runs.
-static SYSTEM_FONTS: LazyLock<Arc<FontStore>> = LazyLock::new(|| {
+/// `.setup()`) so the first tab open isn't delayed by the scan. `warm()` takes
+/// the user-configured extra font directories (the `compiler.extraFontDirs`
+/// setting) so they are folded into the one-time scan; the `OnceLock` fallback
+/// (empty extra dirs) is the safety net if any code path constructs a World
+/// before `warm()` runs.
+static SYSTEM_FONTS: OnceLock<Arc<FontStore>> = OnceLock::new();
+
+/// Build the process-wide `FontStore`: embedded fallbacks + every host system
+/// font + every font discoverable under each path in `extra_dirs`. Non-existent
+/// / unreadable extra directories are skipped (best-effort: a bad entry must
+/// not block font loading).
+fn build_store(extra_dirs: &[std::path::PathBuf]) -> Arc<FontStore> {
     let mut store = FontStore::new();
     // Bundled fallback fonts (New Computer Modern family, etc.). Always
     // available, so the editor renders even on a font-less host.
@@ -42,14 +53,32 @@ static SYSTEM_FONTS: LazyLock<Arc<FontStore>> = LazyLock::new(|| {
     // which is enabled in Cargo.toml. Fonts are loaded lazily from disk by
     // `FontStore::font`, so this only records their metadata.
     store.extend(typst_kit::fonts::system());
+    // User-configured extra directories (the `compiler.extraFontDirs` setting).
+    // `scan(path)` recurses a directory and yields `(FontPath, FontInfo)` the
+    // store accepts directly. A missing/unreadable dir just yields nothing.
+    for dir in extra_dirs {
+        store.extend(typst_kit::fonts::scan(dir));
+    }
     Arc::new(store)
-});
+}
 
-/// Pre-build the process-wide font store. Call once at app startup (before the
+/// Pre-build the process-wide font store, folding in `extra_dirs` (the
+/// `compiler.extraFontDirs` setting). Call once at app startup (before the
 /// first tab opens) so the system font scan doesn't delay the first open. Safe
-/// to call any number of times; a no-op after the first.
-pub fn warm() {
-    let _ = &*SYSTEM_FONTS;
+/// to call any number of times; only the FIRST call's `extra_dirs` take effect
+/// — the store is process-wide and not rebuilt. Changing extra font dirs
+/// therefore requires an app restart to take effect.
+pub fn warm(extra_dirs: &[std::path::PathBuf]) {
+    SYSTEM_FONTS.get_or_init(|| build_store(extra_dirs));
+}
+
+/// Access the process-wide font store, initializing it with no extra dirs if
+/// `warm()` hasn't run yet (the safety net for any World built before startup
+/// warms it — e.g. some test paths).
+fn store() -> Arc<FontStore> {
+    SYSTEM_FONTS
+        .get_or_init(|| build_store(&[]))
+        .clone()
 }
 
 /// A [`FontLoader`] backed by typst-kit's embedded fonts + a system font scan.
@@ -63,12 +92,13 @@ pub struct SystemFontLoader {
 
 impl SystemFontLoader {
     /// Build a loader containing the bundled embedded fonts and every font
-    /// found by scanning the host system font directories. The expensive scan
-    /// runs once per process (see [`SYSTEM_FONTS`] / [`warm`]); subsequent
-    /// calls just bump the `Arc` refcount.
+    /// found by scanning the host system font directories (plus any
+    /// user-configured extra directories). The expensive scan runs once per
+    /// process (see [`SYSTEM_FONTS`] / [`warm`]); subsequent calls just bump
+    /// the `Arc` refcount.
     pub fn new() -> Self {
         Self {
-            fonts: SYSTEM_FONTS.clone(),
+            fonts: store(),
         }
     }
 

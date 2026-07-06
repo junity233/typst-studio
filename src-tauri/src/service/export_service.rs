@@ -30,11 +30,6 @@ use crate::render::svg::SvgRenderer;
 
 use super::editor_service::EditorService;
 
-/// Maximum time [`ExportService`] will wait for a requested revision to finish
-/// compiling before giving up (§9). Generous on purpose: a heavy compile can
-/// take a couple seconds, and the user explicitly asked to export.
-const REVISION_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Poll interval while waiting for a compile to reach the requested revision.
 const REVISION_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
@@ -42,18 +37,17 @@ const REVISION_POLL_INTERVAL: Duration = Duration::from_millis(25);
 pub struct ExportService {
     editor: Arc<EditorService>,
     pdf_renderer: PdfRenderer,
-    png_renderer: PngRenderer,
     svg_renderer: SvgRenderer,
 }
 
 impl ExportService {
     /// Construct with a handle to the editor (for document access) and fresh
-    /// renderers.
+    /// renderers. The PNG renderer is built per-export so its resolution can be
+    /// driven by the `export.pngPixelPerPt` setting.
     pub fn new(editor: Arc<EditorService>) -> Self {
         Self {
             editor,
             pdf_renderer: PdfRenderer::new(),
-            png_renderer: PngRenderer::default(),
             svg_renderer: SvgRenderer::new(),
         }
     }
@@ -73,8 +67,13 @@ impl ExportService {
     /// Reads the `(last_compiled_revision, success, doc, errors)` snapshot under
     /// the tab lock each poll; the triple is written atomically by
     /// [`EditorService::do_compile_for_tab`].
-    fn doc_for_revision(&self, id: DocumentId, revision: u64) -> Result<PagedDocument> {
-        let deadline = Instant::now() + REVISION_WAIT_TIMEOUT;
+    fn doc_for_revision(
+        &self,
+        id: DocumentId,
+        revision: u64,
+        revision_wait: Duration,
+    ) -> Result<PagedDocument> {
+        let deadline = Instant::now() + revision_wait;
         loop {
             let Some(state) = self.editor.last_compile_state(id) else {
                 return Err(AppError::Export(format!("no open document for tab {id}")));
@@ -125,21 +124,30 @@ impl ExportService {
     }
 
     /// Render the tab's document for `revision` to a single PDF byte buffer.
-    fn render_pdf_bytes(&self, id: DocumentId, revision: u64) -> Result<Vec<u8>> {
-        let doc = self.doc_for_revision(id, revision)?;
+    fn render_pdf_bytes(
+        &self,
+        id: DocumentId,
+        revision: u64,
+        revision_wait: Duration,
+    ) -> Result<Vec<u8>> {
+        let doc = self.doc_for_revision(id, revision, revision_wait)?;
         self.pdf_renderer.render(&doc).map_err(AppError::from)
     }
 
     /// Render each page to a PNG byte buffer. Returns `(name, bytes)` pairs
-    /// where name is `{base_name}-{n}.png`.
+    /// where name is `{base_name}-{n}.png`. `pixel_per_pt` overrides the
+    /// renderer's raster resolution (the `export.pngPixelPerPt` setting).
     fn render_png_bytes(
         &self,
         id: DocumentId,
         revision: u64,
         base_name: &str,
+        revision_wait: Duration,
+        pixel_per_pt: f64,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        let doc = self.doc_for_revision(id, revision)?;
-        let pages = self.png_renderer.render(&doc).map_err(AppError::from)?;
+        let doc = self.doc_for_revision(id, revision, revision_wait)?;
+        let renderer = PngRenderer::new(pixel_per_pt);
+        let pages = renderer.render(&doc).map_err(AppError::from)?;
         Ok(pages
             .into_iter()
             .enumerate()
@@ -154,8 +162,9 @@ impl ExportService {
         id: DocumentId,
         revision: u64,
         base_name: &str,
+        revision_wait: Duration,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        let doc = self.doc_for_revision(id, revision)?;
+        let doc = self.doc_for_revision(id, revision, revision_wait)?;
         let pages = self.svg_renderer.render(&doc).map_err(AppError::from)?;
         Ok(pages
             .into_iter()
@@ -165,20 +174,29 @@ impl ExportService {
     }
 
     /// Render to PDF bytes for `revision` (§9). Public entry point for the
-    /// command layer (which writes to disk asynchronously).
-    pub fn render_pdf(&self, id: DocumentId, revision: u64) -> Result<Vec<u8>> {
-        self.render_pdf_bytes(id, revision)
+    /// command layer (which writes to disk asynchronously). `revision_wait` is
+    /// how long to wait for a pending compile before giving up.
+    pub fn render_pdf(
+        &self,
+        id: DocumentId,
+        revision: u64,
+        revision_wait: Duration,
+    ) -> Result<Vec<u8>> {
+        self.render_pdf_bytes(id, revision, revision_wait)
     }
 
     /// Render to PNG bytes for `revision` (§9). Returns `(filename, bytes)` per
-    /// page.
+    /// page. `revision_wait` bounds the compile wait; `pixel_per_pt` sets the
+    /// raster resolution.
     pub fn render_pngs(
         &self,
         id: DocumentId,
         revision: u64,
         base_name: &str,
+        revision_wait: Duration,
+        pixel_per_pt: f64,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        self.render_png_bytes(id, revision, base_name)
+        self.render_png_bytes(id, revision, base_name, revision_wait, pixel_per_pt)
     }
 
     /// Render to SVG bytes for `revision` (§9). Returns `(filename, bytes)` per
@@ -188,14 +206,18 @@ impl ExportService {
         id: DocumentId,
         revision: u64,
         base_name: &str,
+        revision_wait: Duration,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        self.render_svg_bytes(id, revision, base_name)
+        self.render_svg_bytes(id, revision, base_name, revision_wait)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Test revision-wait matching the pre-setting default (10s). Generous so
+    /// the "wait for compile" tests don't flake under load.
+    const TEST_REVISION_WAIT: Duration = Duration::from_secs(10);
     use crate::domain::diagnostics::Diagnostic;
 
     fn make_editor() -> Arc<EditorService> {
@@ -258,7 +280,7 @@ mod tests {
     fn render_pdf_produces_valid_pdf_bytes() {
         let (_editor, export, id, revision) =
             make_editor_with_tab("#set page(width: 10cm)\n\nExport me");
-        let bytes = export.render_pdf(id, revision).unwrap();
+        let bytes = export.render_pdf(id, revision, TEST_REVISION_WAIT).unwrap();
         assert!(
             bytes.starts_with(b"%PDF-"),
             "rendered bytes must be a PDF"
@@ -269,7 +291,9 @@ mod tests {
     fn render_pngs_produces_valid_png_per_page() {
         let (_editor, export, id, revision) =
             make_editor_with_tab("#set page(width: 10cm)\n\nPage one");
-        let pages = export.render_pngs(id, revision, "doc").unwrap();
+        let pages = export
+            .render_pngs(id, revision, "doc", TEST_REVISION_WAIT, 2.0)
+            .unwrap();
         assert!(!pages.is_empty(), "at least one PNG expected");
         for (name, bytes) in &pages {
             assert!(name.starts_with("doc-"), "filename prefix: {name}");
@@ -282,7 +306,9 @@ mod tests {
     fn render_svgs_produces_svg_per_page() {
         let (_editor, export, id, revision) =
             make_editor_with_tab("#set page(width: 10cm)\n\nVector export");
-        let pages = export.render_svgs(id, revision, "doc").unwrap();
+        let pages = export
+            .render_svgs(id, revision, "doc", TEST_REVISION_WAIT)
+            .unwrap();
         assert!(!pages.is_empty(), "at least one SVG expected");
         for (name, bytes) in &pages {
             assert!(name.starts_with("doc-"), "filename prefix: {name}");
@@ -309,7 +335,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        assert!(export.render_pdf(meta.id, 0).is_err());
+        assert!(export.render_pdf(meta.id, 0, TEST_REVISION_WAIT).is_err());
     }
 
     // --- export bound to revision (§9) ---------------------------------------
@@ -339,12 +365,14 @@ mod tests {
         // Edit → revision 1, then wait for its compile.
         editor.update_text(id, "#set page(width: 10cm)\n\nSecond".into()).unwrap();
         wait_for_revision(&editor, id, 1);
-        let bytes = export.render_pdf(id, 1).expect("revision 1 should export");
+        let bytes = export
+            .render_pdf(id, 1, TEST_REVISION_WAIT)
+            .expect("revision 1 should export");
         assert!(bytes.starts_with(b"%PDF-"), "export of revision 1 must be a PDF");
         // revision 0 is now superseded (the worker coalesced past it after the
         // edit landed). Exporting it must NOT silently hand back revision 1's
         // doc — it's a stale request.
-        let stale = export.render_pdf(id, 0);
+        let stale = export.render_pdf(id, 0, TEST_REVISION_WAIT);
         assert!(stale.is_err(), "exporting a superseded revision must error");
     }
 
@@ -363,7 +391,7 @@ mod tests {
         assert!(!state.success, "revision 1 must have failed");
 
         let err = export
-            .render_pdf(id, 1)
+            .render_pdf(id, 1, TEST_REVISION_WAIT)
             .err()
             .expect("export of a failed revision must error");
         let msg = err.to_string();
@@ -383,7 +411,9 @@ mod tests {
             make_editor_with_tab("#set page(width: 10cm)\n\nA");
         editor.update_text(id, "#set page(width: 10cm)\n\nB".into()).unwrap();
         // Don't pre-wait — call export right away; doc_for_revision polls.
-        let bytes = export.render_pdf(id, 1).expect("should wait then render revision 1");
+        let bytes = export
+            .render_pdf(id, 1, TEST_REVISION_WAIT)
+            .expect("should wait then render revision 1");
         assert!(bytes.starts_with(b"%PDF-"));
         // Confirm the wait actually landed on revision 1.
         assert_eq!(
@@ -397,7 +427,10 @@ mod tests {
         let editor = make_editor();
         let export = ExportService::new(editor.clone());
         let bogus = DocumentId::new();
-        let err = export.render_pdf(bogus, 0).err().expect("unknown tab must error");
+        let err = export
+            .render_pdf(bogus, 0, TEST_REVISION_WAIT)
+            .err()
+            .expect("unknown tab must error");
         assert!(err.to_string().contains("no open document"));
     }
 
@@ -409,7 +442,7 @@ mod tests {
             make_editor_with_tab("#set page(width: 10cm)\n\nx");
         let start = std::time::Instant::now();
         let err = export
-            .render_pdf(id, 9_999)
+            .render_pdf(id, 9_999, TEST_REVISION_WAIT)
             .err()
             .expect("an unreachable revision must time out");
         let elapsed = start.elapsed();
