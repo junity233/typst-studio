@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  constrainSynchronizedScrollTarget,
   lineRectBounds,
   rectsForLine,
 } from "../previewMapping";
@@ -43,5 +44,24 @@ describe("lineRectBounds", () => {
 
   it("returns null for an empty fragment set", () => {
     expect(lineRectBounds([])).toBeNull();
+  });
+});
+
+describe("constrainSynchronizedScrollTarget", () => {
+  it("pins the follower to zero when the driver is at the top", () => {
+    expect(constrainSynchronizedScrollTarget(0, 500, 800, 48)).toBe(0);
+    expect(constrainSynchronizedScrollTarget(0.25, 500, 800, null)).toBe(0);
+  });
+
+  it("pins the follower to its own bottom when the driver reaches bottom", () => {
+    expect(constrainSynchronizedScrollTarget(500, 500, 800, 600)).toBe(800);
+    expect(constrainSynchronizedScrollTarget(499.75, 500, 800, null)).toBe(800);
+  });
+
+  it("bounds content-based mapping to the follower's scroll range", () => {
+    expect(constrainSynchronizedScrollTarget(100, 500, 800, 48)).toBe(48);
+    expect(constrainSynchronizedScrollTarget(100, 500, 800, -20)).toBe(0);
+    expect(constrainSynchronizedScrollTarget(100, 500, 800, 900)).toBe(800);
+    expect(constrainSynchronizedScrollTarget(100, 500, 800, null)).toBeNull();
   });
 });

@@ -54,6 +54,8 @@ export interface MonacoEditorApi {
   getScrollTop: () => number;
   /** Set the scroll offset in px (for interpolated scroll-sync). */
   setScrollTop: (top: number) => void;
+  /** Maximum valid vertical scroll offset in px. */
+  getMaxScrollTop: () => number;
   /** Current caret line (1-indexed). Used by preview line-marking. */
   getCurrentLine: () => number;
   /** Current selection's covered source lines; empty when the caret is collapsed. */
@@ -833,6 +835,14 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         const editor = getEditor();
         editor?.setScrollTop(top);
       },
+      getMaxScrollTop: () => {
+        const editor = getEditor();
+        if (!editor) return 0;
+        return Math.max(
+          0,
+          editor.getScrollHeight() - editor.getLayoutInfo().height,
+        );
+      },
       getCurrentLine: () => {
         const editor = getEditor();
         return editor?.getPosition()?.lineNumber ?? 1;
@@ -854,7 +864,13 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
           const ranges = editor.getVisibleRanges();
           return ranges.length > 0 ? ranges[0].startLineNumber : 1;
         };
-        const d = editor.onDidScrollChange(() => cb(topLine()));
+        const d = editor.onDidScrollChange((event) => {
+          // Horizontal scrolling uses this event too, but must not claim
+          // scroll-sync ownership. Vertical movement and scroll-height changes
+          // (font size, wrapping, folding, content reflow) both require a fresh
+          // editor-derived target.
+          if (event.scrollTopChanged || event.scrollHeightChanged) cb(topLine());
+        });
         return () => d.dispose();
       },
       // Format-toolbar edit seam (Task 1): the actual edit logic lives in pure

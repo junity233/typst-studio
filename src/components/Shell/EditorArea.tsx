@@ -13,6 +13,7 @@ import { useUiStore } from "../../store/uiStore";
 import { useSetting } from "../../hooks/useSetting";
 import { updateText } from "../../lib/tauri";
 import {
+  constrainSynchronizedScrollTarget,
   lineAtOrAboveY,
   parseViewBoxPt,
   rectAtOrBeforeLine,
@@ -295,14 +296,22 @@ export function EditorArea() {
   // Cache of each page wrapper's offsetTop + px-per-pt, rebuilt when pages
   // change. Reading offsetTop/getBoundingClientRect once per page (lazily) is
   // fine; we avoid re-reading them every animation frame.
-  const pageMetrics = useRef<
-    { offsetTop: number; pxPerPt: number; ptHeight: number }[]
-  >([]);
+  type PageMetric = {
+    offsetTop: number;
+    pxPerPt: number;
+    ptHeight: number;
+  };
+  const pageMetrics = useRef<(PageMetric | null)[]>([]);
 
-  // Refresh the cached page metrics from the live DOM. Called at the start of
-  // each sync kick so offsets reflect the current layout (zoom, pane width).
+  // Refresh the cached page metrics from the live DOM after geometry changes
+  // and each image decode, so offsets reflect the current zoom/pane width.
   const refreshPageMetrics = useCallback(() => {
-    const out: { offsetTop: number; pxPerPt: number; ptHeight: number }[] = [];
+    // Keep one slot per page. Images decode independently, so compacting only
+    // the ready pages with push() would make (for example) page 2 temporarily
+    // occupy index 0 and map source rectangles onto the wrong page.
+    const out: (PageMetric | null)[] = Array(
+      pageRefs.current.length,
+    ).fill(null);
     for (let i = 0; i < pageRefs.current.length; i++) {
       const el = pageRefs.current[i];
       if (!el) continue;
@@ -313,11 +322,11 @@ export function EditorArea() {
       if (!img || !ptSize || ptSize.height === 0) continue;
       const imgRect = img.getBoundingClientRect();
       if (imgRect.height === 0) continue;
-      out.push({
+      out[i] = {
         offsetTop: el.offsetTop,
         pxPerPt: imgRect.height / ptSize.height,
         ptHeight: ptSize.height,
-      });
+      };
     }
     pageMetrics.current = out;
   }, []);
@@ -352,6 +361,7 @@ export function EditorArea() {
     let leadPage = -1;
     for (let i = 0; i < pageMetrics.current.length; i++) {
       const m = pageMetrics.current[i];
+      if (!m) continue;
       // A page spans [offsetTop, offsetTop + ptHeight*pxPerPt). The gap between
       // pages (var(--space-xs)) is small; treat the anchor as "in" the last
       // page whose top is at/above it.
@@ -360,6 +370,7 @@ export function EditorArea() {
     }
     if (leadPage < 0) return null;
     const m = pageMetrics.current[leadPage];
+    if (!m) return null;
     const ptY = (anchorContentY - m.offsetTop) / m.pxPerPt;
     const hit = lineAtOrAboveY(
       lineMapRef.current.filter((lr) => lr.page === leadPage),
@@ -376,6 +387,8 @@ export function EditorArea() {
   const driverRef = useRef<"editor" | "preview" | null>(null);
   const lastUserScrollAt = useRef(0);
   const animRaf = useRef<number | null>(null);
+  const scrollSyncOnRef = useRef(scrollSyncOn);
+  scrollSyncOnRef.current = scrollSyncOn;
   // Settling bookkeeping (see SETTLE_FRAMES). `lastAppliedRef` holds the value
   // most recently written to the follower, so the ease step has a stable basis
   // even when the follower's queried position lags a frame (Monaco's
@@ -387,22 +400,27 @@ export function EditorArea() {
   const settleTargetRef = useRef<number | null>(null);
   const settleCountRef = useRef(0);
 
-  // Set the driven pane, refresh the target, and start the easing loop if it
-  // isn't already running. Called on every user scroll event.
+  // Set the driven pane and start the easing loop if it isn't already running.
+  // Page metrics are refreshed by the geometry-change effect and image-load
+  // callback, not here: querying every page's layout box on every wheel event
+  // is an avoidable O(page-count) forced-layout cost on large documents.
   const kick = useCallback((driver: "editor" | "preview") => {
+    // `lastAppliedRef` stores coordinates in whichever pane was the follower.
+    // Switching direction swaps that coordinate system, so carrying the old
+    // value across would make the first easing step jump or overshoot.
+    if (driverRef.current !== driver) {
+      lastAppliedRef.current = null;
+    }
     driverRef.current = driver;
     lastUserScrollAt.current = performance.now();
     // A new user event ends any prior settling phase: reset the steady-target
     // tracker so the loop can re-arm the snap once the driver stops again.
     settleTargetRef.current = null;
     settleCountRef.current = 0;
-    // Refresh cached page metrics (offsetTop/pxPerPt) so the target math uses
-    // the current layout rather than stale geometry from a prior zoom/resize.
-    refreshPageMetrics();
     if (animRaf.current == null) {
       animRaf.current = requestAnimationFrame(tick);
     }
-  }, [refreshPageMetrics]);
+  }, []);
 
   // The per-frame step: ease the follower toward its target, then either
   // schedule another frame or finalize (absolute snap) once idle AND the
@@ -413,26 +431,39 @@ export function EditorArea() {
     const driver = driverRef.current;
     const api = editorApiRef.current;
     const pane = previewPaneRef.current;
-    if (!driver || !api || !pane) return;
+    if (!scrollSyncOnRef.current || !driver || !api || !pane) return;
 
     // Refresh the target from the driver's CURRENT position (the user may still
     // be scrolling, so the target moves each frame).
     let target: number | null;
     let applyRaw: (v: number) => void;
     let current: number;
+    let follower: "editor" | "preview";
     if (driver === "editor") {
-      target = previewScrollTopForLine(api.getTopVisibleLine());
+      const editorScrollTop = api.getScrollTop();
+      target = constrainSynchronizedScrollTarget(
+        editorScrollTop,
+        api.getMaxScrollTop(),
+        Math.max(0, pane.scrollHeight - pane.clientHeight),
+        previewScrollTopForLine(api.getTopVisibleLine()),
+      );
       current = pane.scrollTop;
+      follower = "preview";
       applyRaw = (v) => {
         pane.scrollTop = v;
       };
     } else {
-      target = editorScrollTopForPreview();
+      target = constrainSynchronizedScrollTarget(
+        pane.scrollTop,
+        Math.max(0, pane.scrollHeight - pane.clientHeight),
+        api.getMaxScrollTop(),
+        editorScrollTopForPreview(),
+      );
       current = api.getScrollTop();
+      follower = "editor";
       applyRaw = (v) => api.setScrollTop(v);
     }
     if (target == null) return;
-    target = Math.max(0, target);
     const idle = performance.now() - lastUserScrollAt.current >= IDLE_MS;
 
     // Wrap the apply so the follower's echo scroll events are ignored (they'd
@@ -443,12 +474,13 @@ export function EditorArea() {
     // position lags a frame (Monaco setScrollTop updates asynchronously).
     const apply = (v: number) => {
       lastAppliedRef.current = v;
-      applyingRef.current = true;
-      applyingUntil.current = performance.now() + APPLY_GUARD_MS;
+      applyingRef.current = follower;
+      applyingUntil.current[follower] =
+        performance.now() + APPLY_GUARD_MS;
       try {
         applyRaw(v);
       } finally {
-        applyingRef.current = false;
+        applyingRef.current = null;
       }
     };
 
@@ -494,19 +526,22 @@ export function EditorArea() {
   // opposite direction. Two layers:
   //  (a) `applyingRef` is set synchronously around each programmatic scroll, so
   //      events fired *during* the apply are ignored.
-  //  (b) `applyingUntil` is a timestamp: some scroll events (Monaco's
+  //  (b) `applyingUntil` stores a timestamp per pane: some scroll events (Monaco's
   //      setScrollTop in particular) fire asynchronously, after `apply()`
   //      returns. We keep the guard armed for a short window after each apply
   //      so those deferred echoes don't flip the driver and start a ping-pong.
   // Together these prevent the oscillation where editor→preview moves the
   // preview, whose echo re-kicks as preview→editor, etc.
-  const applyingRef = useRef(false);
-  const applyingUntil = useRef(0);
+  const applyingRef = useRef<"editor" | "preview" | null>(null);
+  const applyingUntil = useRef({ editor: 0, preview: 0 });
   // How long after a programmatic apply to keep ignoring follower echoes.
   const APPLY_GUARD_MS = 80;
 
-  const isApplying = useCallback(() => {
-    return applyingRef.current || performance.now() < applyingUntil.current;
+  const isApplying = useCallback((pane: "editor" | "preview") => {
+    return (
+      applyingRef.current === pane ||
+      performance.now() < applyingUntil.current[pane]
+    );
   }, []);
 
   // Editor → preview: the editor is the driver.
@@ -516,7 +551,7 @@ export function EditorArea() {
     if (!api) return;
     const dispose = api.onDidScrollChange((topLine) => {
       // Ignore echoes of our own programmatic editor scroll (preview driving).
-      if (isApplying()) return;
+      if (isApplying("editor")) return;
       void topLine;
       kick("editor");
     });
@@ -528,7 +563,7 @@ export function EditorArea() {
   const handlePreviewScroll = useCallback(() => {
     if (!scrollSyncOn) return;
     // Ignore echoes of our own programmatic preview scroll (editor driving).
-    if (isApplying()) return;
+    if (isApplying("preview")) return;
     kick("preview");
   }, [scrollSyncOn, kick, isApplying]);
 
@@ -569,6 +604,7 @@ export function EditorArea() {
         const d = doc ? useDocumentsStore.getState().documents[doc] : undefined;
         const caughtUp = !!d && d.compiledRevision >= d.revision;
         if (scrollSyncOn && caughtUp && editorApiRef.current) {
+          lastAppliedRef.current = null;
           kick("editor");
         }
       });
@@ -581,6 +617,8 @@ export function EditorArea() {
     activeTab?.svgPages,
     activeTab?.lineMap,
     previewZoomLevel,
+    previewPadding,
+    previewWidth,
     previewVisible,
     refreshPageMetrics,
     scrollSyncOn,
@@ -593,6 +631,21 @@ export function EditorArea() {
       if (animRaf.current != null) cancelAnimationFrame(animRaf.current);
     };
   }, []);
+
+  // Turning sync off must stop an already-running interpolation immediately;
+  // unsubscribing from future scroll events alone would let the old rAF loop
+  // continue moving the follower until its idle/settle phase completed.
+  useEffect(() => {
+    if (scrollSyncOn) return;
+    if (animRaf.current != null) {
+      cancelAnimationFrame(animRaf.current);
+      animRaf.current = null;
+    }
+    driverRef.current = null;
+    lastAppliedRef.current = null;
+    settleTargetRef.current = null;
+    settleCountRef.current = 0;
+  }, [scrollSyncOn]);
 
   useEffect(() => {
     if (!prevPreviewVisible.current && previewVisible && activeTab) {
@@ -803,6 +856,7 @@ export function EditorArea() {
     const d = id ? useDocumentsStore.getState().documents[id] : undefined;
     const caughtUp = !!d && d.compiledRevision >= d.revision;
     if (scrollSyncOn && caughtUp && editorApiRef.current) {
+      lastAppliedRef.current = null;
       kick("editor");
     }
   }, [refreshPageMetrics, scrollSyncOn, kick]);

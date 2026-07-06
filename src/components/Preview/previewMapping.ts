@@ -21,6 +21,36 @@
 
 import type { LineRect } from "../../lib/types";
 
+const SCROLL_EDGE_EPSILON = 0.5;
+
+/**
+ * Keep synchronized scrolling inside the follower's real range and preserve
+ * both shared document edges before applying content-based line mapping.
+ *
+ * Source-line mapping intentionally skips whitespace before the first/after
+ * the last rendered line (for example Typst page margins). Explicit edge
+ * pinning keeps both panes at their true top/bottom; bounding the intermediate
+ * target also prevents a DOM-clamped value from diverging from the animation
+ * engine's remembered value.
+ */
+export function constrainSynchronizedScrollTarget(
+  driverScrollTop: number,
+  driverMaxScrollTop: number,
+  followerMaxScrollTop: number,
+  mappedTarget: number | null,
+): number | null {
+  const followerMax = Math.max(0, followerMaxScrollTop);
+  if (driverScrollTop <= SCROLL_EDGE_EPSILON) return 0;
+  if (
+    driverMaxScrollTop > SCROLL_EDGE_EPSILON &&
+    driverScrollTop >= driverMaxScrollTop - SCROLL_EDGE_EPSILON
+  ) {
+    return followerMax;
+  }
+  if (mappedTarget === null) return null;
+  return Math.min(followerMax, Math.max(0, mappedTarget));
+}
+
 /**
  * Parse a typst-svg string's intrinsic page size in pt, from its `viewBox`
  * attribute. typst-svg always emits `viewBox="0 0 W H"` with W,H in pt (matching

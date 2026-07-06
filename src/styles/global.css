@@ -363,6 +363,10 @@ button {
 
 /* ---- Preview pane (parchment surface; the SVG page rests on it) ---- */
 .preview-pane {
+  /* Establish the coordinate origin used by scroll-sync. Direct child page
+     offsetTop values must be relative to this scroll container, not the body
+     or an unrelated positioned ancestor higher in the workbench. */
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
