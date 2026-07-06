@@ -1686,16 +1686,16 @@ button {
 }
 
 /* ---- Sidebar host shell (header + body) ----------------------------------
-   The header mirrors DESIGN.md's `sub-nav-frosted`: parchment at 80% with a
-   backdrop blur, so the active view's content softly shows through as the
-   user scrolls — the sidebar reads as a floating layer over the workbench,
-   not a hard column. */
+   A slim frosted header (parchment @ 80% + backdrop blur) so the active
+   view's content softly shows through as the user scrolls — the sidebar
+   reads as a floating layer over the workbench, not a hard column. Height
+   tracks the caption-sized title (no empty headroom above a 14px label). */
 .sidebar-header {
   flex: 0 0 auto;
-  height: 52px; /* DESIGN.md sub-nav-frosted height */
+  height: 38px;
   display: flex;
   align-items: center;
-  padding: 0 var(--space-lg);
+  padding: 0 var(--space-md);
   background: rgba(245, 245, 247, 0.8);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
@@ -1703,8 +1703,8 @@ button {
 }
 
 .sidebar-title {
-  font: var(--text-tagline); /* 21/600 — the sub-nav category-name voice */
-  letter-spacing: 0.231px; /* DESIGN.md tagline tracking */
+  font: var(--text-caption-strong); /* 14/600 — quiet, not a hero headline */
+  letter-spacing: -0.224px; /* SF Pro tight tracking at caption size */
   color: var(--color-ink);
 }
 
@@ -1748,15 +1748,20 @@ button {
   min-height: 0;
 }
 .explorer-header {
+  /* Secondary toolbar row, NOT a second title — the frosted .sidebar-title
+     above already names the view. The workspace path here is context (which
+     folder), so it reads as quiet fine-print, with the action buttons as the
+     row's real affordance. Matches .tree-toolbar's chrome so all four tabs
+     share one sub-header grammar. */
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: var(--space-xs);
-  padding: var(--space-xs) var(--space-md);
-  font: var(--text-caption-strong); /* 14/600 — DESIGN.md: weight, not case */
-  letter-spacing: -0.224px; /* SF Pro tight tracking at caption size */
-  color: var(--color-ink);
-  border-bottom: 1px solid var(--color-hairline);
+  padding: var(--space-xxs) var(--space-sm);
+  font: var(--text-fine-print); /* 12/400 — context label, not a heading */
+  letter-spacing: -0.12px;
+  color: var(--color-ink-muted-48);
+  border-bottom: 1px solid var(--color-divider-soft); /* softer than hairline */
 }
 .explorer-title {
   display: block;
