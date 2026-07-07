@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   resolveConflictUseDisk,
@@ -55,6 +55,22 @@ export function ConflictDialog() {
   // boundaries.
   const [showCompare, setShowCompare] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // Reset cross-open local UI state: showCompare/busy are per-opening, not
+  // session-wide. The dialog component stays mounted across closes (it just
+  // returns null when openForId is null), so without this reset a stale
+  // showCompare would render the wrong button label (e.g. "Hide Compare" on a
+  // variant where compare is unavailable) on the next conflict — and a stale
+  // busy=true would lock the next dialog. The store already clears `error` on
+  // open(), so we only reset the local flags here.
+  const prevOpenForIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (openForId !== null && openForId !== prevOpenForIdRef.current) {
+      setShowCompare(false);
+      setBusy(false);
+    }
+    prevOpenForIdRef.current = openForId;
+  }, [openForId]);
 
   if (openForId === null || doc === null) return null;
 

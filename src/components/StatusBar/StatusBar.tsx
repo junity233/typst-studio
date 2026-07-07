@@ -7,6 +7,7 @@ import { useStartupProblemsStore } from "../../store/startupProblemsStore";
 import { useSaveStateStore } from "../../store/saveStateStore";
 import { useConflictDialogStore } from "../../store/conflictDialogStore";
 import { useWatcherHealthStore } from "../../store/watcherHealthStore";
+import { useWorkspaceStore } from "../../store/workspaceStore";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
@@ -164,14 +165,15 @@ export function StatusBar() {
   const isConflicted = tab !== null && tab.conflict !== "none";
 
   // §6.3 watcher-health warning: shown when the workspace watcher failed to
-  // start. Refreshed once on mount and whenever the active doc changes (a
-  // workspace open/close is the only transition; the poll fallback compensates
+  // start. Refreshed once on mount and whenever `rootPath` changes (a workspace
+  // open/close is the only such transition; the poll fallback compensates
   // server-side, so this is just a promptness heads-up).
   const watcherFailed = useWatcherHealthStore((s) => s.watcherFailed);
   const refreshWatcherHealth = useWatcherHealthStore((s) => s.refresh);
+  const rootPath = useWorkspaceStore((s) => s.rootPath);
   useEffect(() => {
     void refreshWatcherHealth();
-  }, [refreshWatcherHealth]);
+  }, [refreshWatcherHealth, rootPath]);
 
   // §6.3/§6.4: show a clickable "Restart" affordance whenever the LSP is
   // enabled but not yet running (restarting/failed/awaiting-client/etc.). The
@@ -197,8 +199,16 @@ export function StatusBar() {
         <span
           className="statusbar-section statusbar-status--conflict"
           role="button"
+          tabIndex={0}
+          aria-label={t("conflict.label")}
           title={t("conflict.title")}
           onClick={() => openConflict(tab.id)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              openConflict(tab.id);
+            }
+          }}
         >
           {t("conflict.label")}
         </span>

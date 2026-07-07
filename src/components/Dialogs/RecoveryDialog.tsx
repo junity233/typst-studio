@@ -56,8 +56,14 @@ export function RecoveryDialog() {
         <h2 className="dialog-title">{t("recovery.title")}</h2>
         <p className="dialog-message">{t("recovery.message")}</p>
         <ul className="recovery-list">
-          {recoverable.map((snap) => (
-            <RecoveryRow key={snap.documentId} snap={snap} />
+          {/* Only the first row may auto-focus its Recover button. Multiple
+              autoFocus targets in the same render resolve to the LAST one in
+              DOM order, so a multi-doc list would otherwise land startup focus
+              on an unexpected (last) item — pressing Enter would then act on
+              the wrong file. The row additionally gates autofocus on its own
+              `mustCompare` eligibility (see RecoveryRow). */}
+          {recoverable.map((snap, index) => (
+            <RecoveryRow key={snap.documentId} snap={snap} autoFocus={index === 0} />
           ))}
         </ul>
       </div>
@@ -65,8 +71,17 @@ export function RecoveryDialog() {
   );
 }
 
+/** Props for {@link RecoveryRow}. */
+interface RecoveryRowProps {
+  snap: RecoverableInfo;
+  /** When true the row may auto-focus its Recover button (intended only for the
+   *  first row of the list). Inside the row this is still gated on the row's
+   *  own `mustCompare` eligibility so a disabled Recover never steals focus. */
+  autoFocus?: boolean;
+}
+
 /** One recoverable document row. Self-contained: holds its own compare state. */
-function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
+function RecoveryRow({ snap, autoFocus: autoFocusProp }: RecoveryRowProps) {
   const { t } = useTranslation("dialog");
   const markDecided = useRecoveryStore((s) => s.markDecided);
   const markRecovered = useRecoveryStore((s) => s.markRecovered);
@@ -205,7 +220,10 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
           onClick={handleRecover}
           disabled={busy || mustCompare}
           title={mustCompare ? t("recovery.recoverTitleOff") : t("recovery.recoverTitleOn")}
-          autoFocus={!mustCompare}
+          // Auto-focus only on the first row (autoFocusProp) AND only when this
+          // row's Recover is not gated by mustCompare — keeps focus off disabled
+          // buttons and prevents the multi-row "last one wins" autoFocus clash.
+          autoFocus={autoFocusProp === true && !mustCompare}
         >
           {t("recovery.recover")}
         </button>

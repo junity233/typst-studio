@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useStartupProblemsStore } from "../../store/startupProblemsStore";
@@ -32,6 +32,22 @@ export function StartupProblemsPanel() {
   const problems = useStartupProblemsStore((s) => s.problems);
   const clearStore = useStartupProblemsStore((s) => s.dismiss);
   const [dismissed, setDismissed] = useState(false);
+
+  // Re-emission re-shows the panel (the doc comment's stated intent): the user
+  // dismissed THIS set, not all future ones. We compare by a component+message
+  // signature so a genuinely new problem set resurfaces the panel, while an
+  // identical re-emit (e.g. a redundant broadcast of the same problems) does
+  // NOT re-spawn a panel the user just closed — that would be a dismiss loop.
+  const prevSignatureRef = useRef<string>("");
+  useEffect(() => {
+    const sig = problems
+      .map((p) => `${p.component}\u0000${p.message}`)
+      .join("\n");
+    if (sig !== prevSignatureRef.current) {
+      prevSignatureRef.current = sig;
+      if (problems.length > 0) setDismissed(false);
+    }
+  }, [problems]);
 
   if (problems.length === 0 || dismissed) {
     return null;
