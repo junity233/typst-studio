@@ -73,6 +73,13 @@ export function BibEditModal({ mode, initial, onConfirm, onCancel }: BibEditModa
 
   const keyValid = key.trim().length > 0;
 
+  /** Patch one cell of an `extra` row (0 = name, 1 = value) immutably. */
+  const setExtraCell = (index: number, field: 0 | 1, value: string) => {
+    setExtra(
+      extra.map((row, i) => (i === index ? replaceCell(row, field, value) : row)),
+    );
+  };
+
   const submit = () => {
     if (!keyValid) return; // key required — empty is a no-op (don't close)
     const assembled: BibEntryEditable = {
@@ -191,11 +198,7 @@ export function BibEditModal({ mode, initial, onConfirm, onCancel }: BibEditModa
                   className="bib-edit-input bib-edit-extra-name"
                   type="text"
                   value={row[0]}
-                  onChange={(e) => {
-                    const next = [...extra];
-                    next[i] = [e.target.value, row[1]];
-                    setExtra(next);
-                  }}
+                  onChange={(e) => setExtraCell(i, 0, e.target.value)}
                   placeholder={t("fieldName")}
                   aria-label={t("fieldName")}
                 />
@@ -203,11 +206,7 @@ export function BibEditModal({ mode, initial, onConfirm, onCancel }: BibEditModa
                   className="bib-edit-input bib-edit-extra-value"
                   type="text"
                   value={row[1]}
-                  onChange={(e) => {
-                    const next = [...extra];
-                    next[i] = [row[0], e.target.value];
-                    setExtra(next);
-                  }}
+                  onChange={(e) => setExtraCell(i, 1, e.target.value)}
                   placeholder={t("fieldValue")}
                   aria-label={t("fieldValue")}
                 />
@@ -248,4 +247,16 @@ export function BibEditModal({ mode, initial, onConfirm, onCancel }: BibEditModa
     </div>,
     document.body,
   );
+}
+
+/** Return a copy of `row` with the cell at `field` (0 = name, 1 = value)
+ *  replaced by `value`. */
+function replaceCell(
+  row: [string, string],
+  field: 0 | 1,
+  value: string,
+): [string, string] {
+  const next: [string, string] = [row[0], row[1]];
+  next[field] = value;
+  return next;
 }

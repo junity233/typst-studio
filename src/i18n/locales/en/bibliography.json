@@ -7,7 +7,6 @@
   "selectFile": "Select a bibliography file",
   "parseError": "Failed to parse bibliography file",
   "citeAria": "Cite {{key}}",
-  "add": "Add",
   "edit": "Edit",
   "delete": "Delete",
   "insertCite": "Insert Citation",

@@ -118,12 +118,6 @@ pub enum BibParseError {
     #[error("failed to parse Hayagriva YAML: {0}")]
     Yaml(String),
 
-    /// `serde_json` round-trip failed while extracting `entry_type`. Should be
-    /// unreachable in practice (EntryType always serializes), but we keep the
-    /// branch total rather than `unwrap`-ing.
-    #[error("internal: entry-type serialization failed: {0}")]
-    Json(String),
-
     /// Serializing back to Hayagriva YAML failed (`to_yaml_str` is serde_yaml
     /// based and can fail on non-string map keys, though our entries are always
     /// string-keyed — included for totality).
@@ -139,53 +133,51 @@ pub fn parse_bibliography(
     content: &str,
     format: BibFormat,
 ) -> Result<Vec<BibEntry>, BibParseError> {
-    let library = match format {
-        BibFormat::BibLatex => hayagriva::io::from_biblatex_str(content)
-            .map_err(|errs| BibParseError::BibLatex(errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; ")))?,
-        BibFormat::HayagrivaYaml => hayagriva::io::from_yaml_str(content)
-            .map_err(|e| BibParseError::Yaml(e.to_string()))?,
-    };
-
+    let library = parse_library(content, format)?;
     Ok(library.iter().map(entry_to_bib).collect::<Result<_, _>>()?)
+}
+
+/// Parse `content` into a `hayagriva::Library` for the given [`BibFormat`].
+/// Shared by [`parse_bibliography`] and [`parse_bibliography_editable`] so the
+/// BibLaTeX/YAML parse + error-mapping lives in one place. BibLaTeX errors come
+/// back as a `Vec` (often several for one malformed file) and are flattened
+/// into a single user-facing line.
+fn parse_library(
+    content: &str,
+    format: BibFormat,
+) -> Result<hayagriva::Library, BibParseError> {
+    match format {
+        BibFormat::BibLatex => hayagriva::io::from_biblatex_str(content).map_err(|errs| {
+            BibParseError::BibLatex(
+                errs.into_iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        }),
+        BibFormat::HayagrivaYaml => {
+            hayagriva::io::from_yaml_str(content).map_err(|e| BibParseError::Yaml(e.to_string()))
+        }
+    }
 }
 
 /// Convert a single `hayagriva::Entry` into a [`BibEntry`].
 fn entry_to_bib(entry: &hayagriva::Entry) -> Result<BibEntry, BibParseError> {
-    // `entry_type` does not impl Display, but serializes to its kebab-case name.
-    let entry_type = serde_json::to_value(entry.entry_type())
-        .map_err(|e| BibParseError::Json(e.to_string()))?
-        .as_str()
-        .map(str::to_string)
-        .unwrap_or_else(|| "misc".to_string());
-
-    let title = entry.title().map(|t| t.to_string());
-
-    let authors = entry
-        .authors()
-        .map(|persons| {
-            persons
-                .iter()
-                .map(|p| p.given_first(false))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let year = entry.date_any().map(|d| d.year);
-
+    let core = core_fields(entry);
     Ok(BibEntry {
-        key: entry.key().to_string(),
-        entry_type,
-        title,
-        authors,
-        year,
+        key: core.key,
+        entry_type: core.entry_type,
+        title: core.title,
+        authors: core.authors,
+        year: core.year,
     })
 }
 
 /// Parse bibliography `content` into the full-field [`BibEntryEditable`] form
 /// used by the edit modal. Both formats parse into a `hayagriva::Library`
 /// (BibLaTeX via `from_biblatex_str`, YAML via `from_yaml_str`), then each
-/// `Entry` is projected into the 5 core fields (reusing [`entry_to_bib`]'s
-/// extraction logic) PLUS every other set field into `extra`.
+/// `Entry` is projected into the 5 core fields PLUS every other set field into
+/// `extra`.
 ///
 /// `extra` enumeration: hayagriva's `Entry` has no "list all set fields" API,
 /// so each known field is probed via its typed getter and, when `Some`,
@@ -198,133 +190,99 @@ pub fn parse_bibliography_editable(
     content: &str,
     format: BibFormat,
 ) -> Result<Vec<BibEntryEditable>, BibParseError> {
-    let library = match format {
-        BibFormat::BibLatex => hayagriva::io::from_biblatex_str(content).map_err(|errs| {
-            BibParseError::BibLatex(
-                errs.into_iter()
-                    .map(|e| e.to_string())
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            )
-        })?,
-        BibFormat::HayagrivaYaml => {
-            hayagriva::io::from_yaml_str(content).map_err(|e| BibParseError::Yaml(e.to_string()))?
-        }
-    };
-
+    let library = parse_library(content, format)?;
     Ok(library.iter().map(entry_to_editable).collect())
 }
 
-/// Convert a single `hayagriva::Entry` into a [`BibEntryEditable`], extracting
-/// the 5 core fields (same logic as [`entry_to_bib`]) plus every other set
-/// field into `extra`.
-fn entry_to_editable(entry: &hayagriva::Entry) -> BibEntryEditable {
-    // Core fields — identical extraction to `entry_to_bib` (kept in sync so the
-    // panel list and the edit modal agree on key/type/title/authors/year).
+/// The 5 core fields shared by [`BibEntry`] and [`BibEntryEditable`], extracted
+/// once so the panel list and the edit modal always agree on
+/// key/type/title/authors/year.
+struct CoreFields {
+    key: String,
+    entry_type: String,
+    title: Option<String>,
+    authors: Vec<String>,
+    year: Option<i32>,
+}
+
+/// Extract the 5 core fields from a `hayagriva::Entry`. Shared by
+/// [`entry_to_bib`] (the 5-field panel projection) and [`entry_to_editable`]
+/// (the full-field edit form) so the two stay in sync.
+///
+/// `entry_type` does not impl `Display`, but serializes to its kebab-case name
+/// (`#[serde(rename_all = "kebab-case")]`); we round-trip it through
+/// `serde_json` and fall back to `"misc"` (the round-trip always succeeds for
+/// the known enum, so the fallback is defensive).
+fn core_fields(entry: &hayagriva::Entry) -> CoreFields {
     let entry_type = serde_json::to_value(entry.entry_type())
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_else(|| "misc".to_string());
 
-    let title = entry.title().map(|t| t.to_string());
+    CoreFields {
+        key: entry.key().to_string(),
+        entry_type,
+        title: entry.title().map(|t| t.to_string()),
+        authors: entry
+            .authors()
+            .map(|persons| persons.iter().map(|p| p.given_first(false)).collect::<Vec<_>>())
+            .unwrap_or_default(),
+        year: entry.date_any().map(|d| d.year),
+    }
+}
 
-    let authors = entry
-        .authors()
-        .map(|persons| persons.iter().map(|p| p.given_first(false)).collect::<Vec<_>>())
-        .unwrap_or_default();
-
-    let year = entry.date_any().map(|d| d.year);
+/// Convert a single `hayagriva::Entry` into a [`BibEntryEditable`], extracting
+/// the 5 core fields (via [`core_fields`]) plus every other set field into
+/// `extra`.
+fn entry_to_editable(entry: &hayagriva::Entry) -> BibEntryEditable {
+    let core = core_fields(entry);
 
     // Extra fields. Each getter returns `Option<&T>`; when `Some` we stringify
     // via the type's `Display` impl. The probe list covers the fields a user is
     // likely to edit in a reference (journal comes from the parent `Periodical`
     // title for `Article` entries — surfaced via `map_parents` so the edit form
-    // shows the journal name the user expects).
+    // shows the journal name the user expects). Empty strings are skipped so the
+    // edit form doesn't show noise for fields hayagriva reports as set-but-empty.
     let mut extra: Vec<(String, String)> = Vec::new();
+    let mut push = |name: &str, value: Option<String>| {
+        if let Some(s) = value {
+            if !s.is_empty() {
+                extra.push((name.to_string(), s));
+            }
+        }
+    };
 
     // Journal: for an Article, the parent Periodical/Proceedings holds the
     // journal title. Walk parents looking for a title.
-    if let Some(journal) = entry.map_parents(|e| e.title().map(|t| t.to_string())) {
-        extra.push(("journal".to_string(), journal));
-    }
+    push("journal", entry.map_parents(|e| e.title().map(|t| t.to_string())));
 
-    if let Some(p) = entry.publisher() {
-        // `Publisher` has no `Display` impl; surface its name (the part a user
-        // edits). Location is a separate `location` field below.
-        if let Some(name) = p.name() {
-            let s = name.to_string();
-            if !s.is_empty() {
-                extra.push(("publisher".to_string(), s));
-            }
-        }
-    }
-    if let Some(l) = entry.location() {
-        let s = l.to_string();
-        if !s.is_empty() {
-            extra.push(("location".to_string(), s));
-        }
-    }
-    if let Some(o) = entry.organization() {
-        let s = o.to_string();
-        if !s.is_empty() {
-            extra.push(("organization".to_string(), s));
-        }
-    }
+    // `Publisher` has no `Display` impl; surface its name (the part a user
+    // edits). Location is a separate `location` field below.
+    push("publisher", entry.publisher().and_then(|p| p.name().map(|n| n.to_string())));
+    push("location", entry.location().map(|l| l.to_string()));
+    push("organization", entry.organization().map(|o| o.to_string()));
     // Volume/issue/edition may live on the parent (e.g. a journal's volume).
     // `map` checks self then parents (BFS), matching how hayagriva resolves
     // inherited fields for citation formatting.
-    if let Some(v) = entry.map(|e| e.volume().map(|v| v.to_string())) {
-        extra.push(("volume".to_string(), v));
-    }
-    if let Some(i) = entry.map(|e| e.issue().map(|i| i.to_string())) {
-        extra.push(("issue".to_string(), i));
-    }
-    if let Some(e) = entry.map(|e| e.edition().map(|e| e.to_string())) {
-        extra.push(("edition".to_string(), e));
-    }
-    if let Some(pr) = entry.map(|e| e.page_range().map(|pr| pr.to_string())) {
-        extra.push(("pages".to_string(), pr));
-    }
-    if let Some(u) = entry.url_any() {
-        extra.push(("url".to_string(), u.to_string()));
-    }
-    if let Some(doi) = entry.doi() {
-        extra.push(("doi".to_string(), doi.to_string()));
-    }
-    if let Some(isbn) = entry.isbn() {
-        extra.push(("isbn".to_string(), isbn.to_string()));
-    }
-    if let Some(issn) = entry.issn() {
-        extra.push(("issn".to_string(), issn.to_string()));
-    }
-    if let Some(lang) = entry.language() {
-        extra.push(("language".to_string(), lang.to_string()));
-    }
-    if let Some(n) = entry.note() {
-        let s = n.to_string();
-        if !s.is_empty() {
-            extra.push(("note".to_string(), s));
-        }
-    }
-    if let Some(a) = entry.abstract_() {
-        let s = a.to_string();
-        if !s.is_empty() {
-            extra.push(("abstract".to_string(), s));
-        }
-    }
-    if let Some(g) = entry.genre() {
-        let s = g.to_string();
-        if !s.is_empty() {
-            extra.push(("genre".to_string(), s));
-        }
-    }
+    push("volume", entry.map(|e| e.volume().map(|v| v.to_string())));
+    push("issue", entry.map(|e| e.issue().map(|i| i.to_string())));
+    push("edition", entry.map(|e| e.edition().map(|e| e.to_string())));
+    push("pages", entry.map(|e| e.page_range().map(|pr| pr.to_string())));
+    push("url", entry.url_any().map(|u| u.to_string()));
+    push("doi", entry.doi().map(|d| d.to_string()));
+    push("isbn", entry.isbn().map(|i| i.to_string()));
+    push("issn", entry.issn().map(|i| i.to_string()));
+    push("language", entry.language().map(|l| l.to_string()));
+    push("note", entry.note().map(|n| n.to_string()));
+    push("abstract", entry.abstract_().map(|a| a.to_string()));
+    push("genre", entry.genre().map(|g| g.to_string()));
 
     BibEntryEditable {
-        key: entry.key().to_string(),
-        entry_type,
-        title,
-        authors,
-        year,
+        key: core.key,
+        entry_type: core.entry_type,
+        title: core.title,
+        authors: core.authors,
+        year: core.year,
         extra,
     }
 }
@@ -621,34 +579,13 @@ fn apply_hayagriva_extra(entry: &mut hayagriva::Entry, edited: &BibEntryEditable
                     entry.set_organization(o);
                 }
             }
-            // `MaybeTyped` impls `FromStr` with `Err = Infallible` for the
-            // typed Numeric / PageRanges fields, so `.parse()` always succeeds
-            // — values that don't fit the typed shape fall back to the `String`
-            // variant. We collapse the infallible error with `unwrap_or_else`.
-            "volume" => {
-                let v = value
-                    .parse()
-                    .unwrap_or_else(|e: std::convert::Infallible| match e {});
-                entry.set_volume(v);
-            }
-            "issue" => {
-                let i = value
-                    .parse()
-                    .unwrap_or_else(|e: std::convert::Infallible| match e {});
-                entry.set_issue(i);
-            }
-            "edition" => {
-                let e = value
-                    .parse()
-                    .unwrap_or_else(|e: std::convert::Infallible| match e {});
-                entry.set_edition(e);
-            }
-            "pages" => {
-                let pr = value
-                    .parse()
-                    .unwrap_or_else(|e: std::convert::Infallible| match e {});
-                entry.set_page_range(pr);
-            }
+            // `MaybeTyped` (Numeric / PageRanges) impls `FromStr` with
+            // `Err = Infallible`, so these never fail — values that don't fit
+            // the typed shape fall back to the `String` variant.
+            "volume" => entry.set_volume(parse_infallible(value)),
+            "issue" => entry.set_issue(parse_infallible(value)),
+            "edition" => entry.set_edition(parse_infallible(value)),
+            "pages" => entry.set_page_range(parse_infallible(value)),
             "note" => {
                 if let Ok(n) = value.parse() {
                     entry.set_note(n);
@@ -672,6 +609,14 @@ fn apply_hayagriva_extra(entry: &mut hayagriva::Entry, edited: &BibEntryEditable
             _ => {}
         }
     }
+}
+
+/// Parse a value whose `FromStr` impl is infallible (`Err = Infallible`).
+/// hayagriva's `MaybeTyped` numeric/page-range types always parse (falling back
+/// to a `String` variant), so we collapse the unreachable error here rather than
+/// repeating the `unwrap_or_else(|e| match e {})` boilerplate at each call site.
+fn parse_infallible<T: std::str::FromStr<Err = std::convert::Infallible>>(s: &str) -> T {
+    s.parse().unwrap_or_else(|e| match e {})
 }
 
 /// Sniff the format from a file extension, falling back to a content heuristic
