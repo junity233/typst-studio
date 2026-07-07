@@ -176,8 +176,9 @@ export const useBibliographyStore = create<BibliographyState>((set, get) => ({
     // Replace the old-keyed entry in place (preserving list order) — this
     // covers both the unchanged-key case and the key-change case (the old key
     // is swapped out for the new one at the same index). If the new key
-    // collides with a DIFFERENT existing entry, that one is overwritten too;
-    // the modal pre-checks for collisions, so this is just a defensive guard.
+    // collides with a DIFFERENT existing entry, the backend dedupes by key
+    // (last-wins), so the colliding entry is effectively replaced. The modal
+    // does NOT pre-check for collisions today — a future enhancement.
     const next = fullEntries.map((e) =>
       e.key === originalKey ? entry : e,
     );

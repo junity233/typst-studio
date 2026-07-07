@@ -32,7 +32,6 @@ export function BibliographyPanel() {
   const discoveredFiles = useBibliographyStore((s) => s.discoveredFiles);
   const activeFilePath = useBibliographyStore((s) => s.activeFilePath);
   const entries = useBibliographyStore((s) => s.entries);
-  const fullEntries = useBibliographyStore((s) => s.fullEntries);
   const query = useBibliographyStore((s) => s.query);
   const setQuery = useBibliographyStore((s) => s.setQuery);
   const loading = useBibliographyStore((s) => s.loading);
@@ -94,16 +93,18 @@ export function BibliographyPanel() {
     });
   }, []);
 
-  const handleEdit = useCallback(
-    (key: string) => {
-      // Look up the FULL editable entry from the store (the item displays the
-      // 5-field projection; the modal needs every field).
-      const full = fullEntries.find((e) => e.key === key);
-      if (!full) return;
-      setEditState({ mode: "edit", entry: full, originalKey: key });
-    },
-    [fullEntries],
-  );
+  const handleEdit = useCallback((key: string) => {
+    // Read `fullEntries` lazily from the store (not from the render-scope
+    // binding) so the callback identity is stable (deps []); this keeps the
+    // BibEntryItem memo effective across saves (each save repopulates
+    // fullEntries, which would otherwise recreate this callback and re-render
+    // the whole list).
+    const full = useBibliographyStore.getState().fullEntries.find(
+      (e) => e.key === key,
+    );
+    if (!full) return;
+    setEditState({ mode: "edit", entry: full, originalKey: key });
+  }, []);
 
   const handleConfirm = useCallback(
     (entry: BibEntryEditable) => {
