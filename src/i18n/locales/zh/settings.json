@@ -94,5 +94,28 @@
   "setting.action.openLogDir": "打开日志目录",
   "setting.action.openDevtools": "打开开发者工具",
   "settingHelp.action.openDevtools": "在主窗口打开 WebView 控制台 (F12),用于检查渲染和 IPC 错误。",
-  "setting.action.exportDiagnostics": "导出诊断信息包"
+  "setting.action.exportDiagnostics": "导出诊断信息包",
+
+  "category.ai": "AI 助手",
+
+  "setting.ai.provider": "服务商",
+  "settingHelp.ai.provider": "「OpenAI 兼容」涵盖 OpenAI、DeepSeek、Moonshot、本地 Ollama 等。",
+  "optionLabel.ai.provider.openai": "OpenAI / 兼容",
+  "optionLabel.ai.provider.anthropic": "Anthropic",
+
+  "setting.ai.baseUrl": "Base URL",
+  "settingHelp.ai.baseUrl": "留空则使用服务商默认值(例如 https://api.openai.com/v1)。",
+
+  "setting.ai.apiKey": "API key",
+  "setting.ai.model": "模型",
+
+  "setting.ai.openaiApi": "OpenAI API 类型",
+  "settingHelp.ai.openaiApi": "目前仅实现 Chat Completions;Responses API 路径作为后续工作。",
+  "optionLabel.ai.openaiApi.responses": "Responses API",
+  "optionLabel.ai.openaiApi.chat": "Chat Completions",
+
+  "setting.ai.maxTokens": "最大输出 token 数",
+  "settingHelp.ai.maxTokens": "Anthropic 必填此项;OpenAI 除非调高否则忽略。",
+
+  "setting.ai.temperature": "温度"
 }

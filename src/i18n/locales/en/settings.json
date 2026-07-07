@@ -94,5 +94,28 @@
   "setting.action.openLogDir": "Open log directory",
   "setting.action.openDevtools": "Open developer tools",
   "settingHelp.action.openDevtools": "Open the WebView console (F12) on the main window to inspect rendering and IPC errors.",
-  "setting.action.exportDiagnostics": "Export diagnostics bundle"
+  "setting.action.exportDiagnostics": "Export diagnostics bundle",
+
+  "category.ai": "AI Assistant",
+
+  "setting.ai.provider": "Provider",
+  "settingHelp.ai.provider": "OpenAI-compatible covers OpenAI, DeepSeek, Moonshot, local Ollama, etc.",
+  "optionLabel.ai.provider.openai": "OpenAI / compatible",
+  "optionLabel.ai.provider.anthropic": "Anthropic",
+
+  "setting.ai.baseUrl": "Base URL",
+  "settingHelp.ai.baseUrl": "Leave empty for provider default (e.g. https://api.openai.com/v1).",
+
+  "setting.ai.apiKey": "API key",
+  "setting.ai.model": "Model",
+
+  "setting.ai.openaiApi": "OpenAI API style",
+  "settingHelp.ai.openaiApi": "Only Chat Completions is currently implemented; the Responses API path is tracked as a follow-up.",
+  "optionLabel.ai.openaiApi.responses": "Responses API",
+  "optionLabel.ai.openaiApi.chat": "Chat Completions",
+
+  "setting.ai.maxTokens": "Max output tokens",
+  "settingHelp.ai.maxTokens": "Anthropic requires this; OpenAI ignores it unless you raise it.",
+
+  "setting.ai.temperature": "Temperature"
 }
