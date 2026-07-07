@@ -290,22 +290,40 @@ function NumberControl({ def, integer }: { def: SettingDef; integer: boolean }) 
   const [value, setValue] = useSetting<number>(def.key);
   const fallback = typeof def.default === "number" ? def.default : 0;
   const current = value ?? fallback;
+
+  // Local draft so the user can type through intermediate states (empty
+  // string, "-", leading digits) without each keystroke being rejected and
+  // snapped back by the controlled `value`. The draft commits to the store on
+  // blur (and on Enter); while focused we show the draft, otherwise the
+  // committed value.
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft === null ? String(current) : draft;
+
+  const commit = () => {
+    const raw = draft ?? String(current);
+    setDraft(null);
+    if (raw === "" || raw === "-") return;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return;
+    setValue(integer ? Math.trunc(n) : n);
+  };
+
   return (
     <input
       id={SETTING_ID(def.key)}
       className="setting-input setting-input-number"
       type="number"
       inputMode={integer ? "numeric" : "decimal"}
-      value={current}
+      value={shown}
       min={def.min}
       max={def.max}
       step={def.step ?? (integer ? 1 : "any")}
-      onChange={(e) => {
-        const raw = e.target.value;
-        if (raw === "" || raw === "-") return;
-        const n = Number(raw);
-        if (!Number.isFinite(n)) return;
-        setValue(integer ? Math.trunc(n) : n);
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.currentTarget.blur();
+        }
       }}
     />
   );
