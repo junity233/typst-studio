@@ -61,6 +61,16 @@ pub struct TabRuntime {
     /// when `consecutive_panic_count` first hits the threshold; cleared on a
     /// successful compile.
     pub panic_cooldown_until: Option<std::time::Instant>,
+    /// Incremental-rendering cache: each page's (`Page::hash`, rendered SVG)
+    /// from the last successful compile. On the next compile, a page whose hash
+    /// still matches reuses the cached SVG string — skipping both the
+    /// `typst_svg::svg` CPU cost AND re-transmitting that page to the frontend.
+    ///
+    /// Hash stability relies on comemo reusing unchanged frames under the same
+    /// `EditorWorld` (verified by `incremental_page_hashes_stable`). The cache
+    /// is cleared alongside `last_doc` on a panic / world rebuild so a stale
+    /// hash can never mark a changed page as "unchanged".
+    pub last_page_svgs: Vec<(u64, String)>,
 }
 
 /// Per-tab state: the editor world (lock-free during compile) + locked runtime.
@@ -102,6 +112,7 @@ impl TabState {
                 file_identity: FileIdentity::UNKNOWN,
                 consecutive_panic_count: 0,
                 panic_cooldown_until: None,
+                last_page_svgs: Vec::new(),
             }),
         }
     }
@@ -121,6 +132,7 @@ impl TabState {
                 file_identity: FileIdentity::UNKNOWN,
                 consecutive_panic_count: 0,
                 panic_cooldown_until: None,
+                last_page_svgs: Vec::new(),
             }),
         }
     }

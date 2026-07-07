@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { CompileStatus } from "../lib/ui-types";
 import type {
+  ChangedPage,
   ConflictState,
   DocumentKind,
   DocumentOrigin,
@@ -232,11 +233,20 @@ export interface DocumentsState {
     status: CompileStatus,
     durationMs?: number,
   ) => void;
-  /** Replace preview pages tagged with `revision`; stale revisions ignored. */
+  /**
+   * Apply a compile's page update tagged with `revision`; stale revisions
+   * ignored. Supports incremental rendering (§perf): on `full`, replaces the
+   * whole array; otherwise merges `changedPages` into the existing array BY
+   * INDEX, leaving unchanged pages' string references intact so `SvgPage`'s
+   * `memo` skips blob rebuild. The array is sized to `pageCount` (truncating
+   * or pad-extending as needed).
+   */
   setPages: (
     id: string,
     revision: number,
-    svgPages: string[],
+    pageCount: number,
+    full: boolean,
+    changedPages: ChangedPage[],
     lineMap: LineRect[],
     outline: OutlineNode[],
   ) => void;
@@ -336,19 +346,48 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
       };
     }),
 
-  setPages: (id, revision, svgPages, lineMap, outline) =>
+  setPages: (id, revision, pageCount, full, changedPages, lineMap, outline) =>
     set((s) => {
       const doc = s.documents[id];
       if (!doc) return s;
       // §7: discard stale-revision preview. Without this guard, a slow compile
       // of an older buffer could clobber a newer preview.
       if (revision < doc.revision) return s;
+
+      // Incremental merge: build the new svgPages array so that UNCHANGED
+      // slots keep their old string reference (identity-equal). This is what
+      // lets `SvgPage`'s `memo` skip re-render + blob rebuild for unchanged
+      // pages — the whole point of incremental rendering. On `full`, every
+      // page is supplied in `changedPages`, so this collapses to a fresh array.
+      //
+      // Defensive: if an incremental update arrives but the previous array's
+      // length doesn't match what the backend assumed (e.g. a missed event),
+      // fall back to a full rebuild from changedPages only — safer than
+      // blending mismatched states. The backend sends `full=true` precisely
+      // when page count changed, so this fallback is a belt-and-suspenders.
+      const prev = doc.svgPages;
+      let next: string[];
+      if (full || prev.length !== pageCount) {
+        // Full replace: start from an empty array sized to pageCount, then fill.
+        next = new Array(pageCount);
+        for (const cp of changedPages) {
+          if (cp.index < pageCount) next[cp.index] = cp.svg;
+        }
+      } else {
+        // Incremental: copy the previous array (preserving element refs), then
+        // overwrite only the changed indices.
+        next = prev.slice(0, pageCount);
+        for (const cp of changedPages) {
+          if (cp.index < pageCount) next[cp.index] = cp.svg;
+        }
+      }
+
       return {
         documents: {
           ...s.documents,
           [id]: {
             ...doc,
-            svgPages,
+            svgPages: next,
             lineMap,
             outline,
             // Record that the shown preview now reflects this revision. While

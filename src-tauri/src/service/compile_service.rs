@@ -39,7 +39,6 @@ use crate::domain::compile_result::CompileOutcome;
 use crate::domain::compile_status::CompileStatus;
 use crate::domain::diagnostics::{Diagnostic, Range, Severity};
 use crate::domain::document::DocumentId;
-use crate::render::pipeline::RenderPipeline;
 use crate::render::source_map::build_source_map;
 use crate::render::svg::SvgRenderer;
 use crate::typst_engine::compiler;
@@ -272,6 +271,7 @@ impl CompileService {
                     let mut rt = tab.state.lock();
                     rt.last_outcome = CompileOutcome::fail(vec![diag.clone()], 0);
                     rt.last_doc = None;
+                    rt.last_page_svgs.clear();
                     rt.last_compiled_revision = Some(revision);
                 }
                 emitter.emit_diagnostics(id, revision, vec![diag]);
@@ -302,22 +302,57 @@ impl CompileService {
             let text_after = tab.world.text();
             if text_before == text_after {
                 if let Some(doc) = doc {
-                    // --- DIAGNOSTIC TIMING (compile-pipeline breakdown) -------
-                    // `outcome.duration_ms` only covers `typst::compile` (③).
-                    // The segments below (④ render, ⑤ aux, ⑥ emit/serialize)
-                    // are NOT reflected in the status bar's number but dominate
-                    // perceived latency for large/complex documents. Time them
-                    // here so a single run with RUST_LOG=...=info reveals which
-                    // segment is the bottleneck.
                     let n_pages = doc.pages().len();
+
+                    // --- Incremental page rendering --------------------------------
+                    // Reuse the previous compile's SVG for pages whose content
+                    // hash is unchanged (comemo reuses unchanged frames under
+                    // the same EditorWorld, so `Page::hash` is stable across
+                    // compiles for untouched pages — verified by
+                    // `incremental_page_hashes_stable`). This skips both the
+                    // `typst_svg::svg` CPU cost AND re-transmitting that page.
                     let t_svg = Instant::now();
-                    // SVG rendering is infallible in practice (`typst_svg::svg`
-                    // returns `String`); if it ever errors, degrade to an empty
-                    // page list rather than panicking the compile worker.
-                    let pages = SvgRenderer::new()
-                        .render(&doc)
-                        .unwrap_or_default();
+                    // Take the cache out under a brief lock; we'll write the
+                    // refreshed cache back after emit (consistency with last_doc).
+                    let cached = std::mem::take(&mut tab.state.lock().last_page_svgs);
+                    // `full` when the page count changed or there's no cache:
+                    // the frontend must replace its whole array rather than merge.
+                    let full = cached.len() != n_pages;
+                    let renderer = SvgRenderer::new();
+                    // `new_cache` always holds every page (the next compile's
+                    // baseline). `changed_payload` holds only the pages whose SVG
+                    // differs — that's what crosses the wire on an incremental
+                    // update; on a `full` update it carries every page.
+                    let mut new_cache: Vec<(u64, String)> = Vec::with_capacity(n_pages);
+                    let mut changed_payload: Vec<crate::ipc::events::ChangedPage> =
+                        Vec::with_capacity(if full { n_pages } else { 0 });
+                    for (i, page) in doc.pages().iter().enumerate() {
+                        let h = hash_page(page);
+                        // Unchanged (and not full): reuse the cached SVG, skip
+                        // `typst_svg::svg`. Note: can't use a `let`-chain here
+                        // (pre-2024 edition).
+                        let reused = if !full {
+                            match cached.get(i) {
+                                Some((ph, svg)) if *ph == h => {
+                                    new_cache.push((*ph, svg.clone()));
+                                    true
+                                }
+                                _ => false,
+                            }
+                        } else {
+                            false
+                        };
+                        if !reused {
+                            let svg = renderer.render_single(&doc, i).unwrap_or_default();
+                            new_cache.push((h, svg.clone()));
+                            changed_payload.push(crate::ipc::events::ChangedPage {
+                                index: i as u32,
+                                svg,
+                            });
+                        }
+                    }
                     let d_svg = t_svg.elapsed();
+                    let changed_count = changed_payload.len();
 
                     let t_aux = Instant::now();
                     // Build the source map from the same compiled document. This
@@ -329,16 +364,17 @@ impl CompileService {
                     let outline = crate::render::outline::build_outline(&doc, &tab.world);
                     let d_aux = t_aux.elapsed();
 
-                    // Total SVG payload size in bytes — the dominant factor in
-                    // both serde serialization and IPC transfer cost.
-                    let svg_bytes: usize = pages.iter().map(|s| s.len()).sum();
+                    // Wire payload size — only the pages actually transmitted.
+                    let svg_bytes: usize = changed_payload.iter().map(|c| c.svg.len()).sum();
                     let svg_kb = svg_bytes as f64 / 1024.0;
 
                     let t_emit = Instant::now();
                     emitter.emit_compiled(
                         id,
                         revision,
-                        pages,
+                        n_pages,
+                        full,
+                        changed_payload,
                         line_map,
                         outline,
                         outcome.duration_ms,
@@ -350,14 +386,22 @@ impl CompileService {
                         %id,
                         revision,
                         pages = n_pages,
+                        changed_pages = changed_count,
+                        full,
                         svg_kb = format!("{svg_kb:.1}"),
                         compile_ms = outcome.duration_ms,    // ③ typst::compile
-                        svg_ms = d_svg.as_millis() as u64,   // ④ render all pages
+                        svg_ms = d_svg.as_millis() as u64,   // ④ render changed pages only
                         aux_ms = d_aux.as_millis() as u64,   // ⑤ source_map + outline
                         emit_ms = d_emit.as_millis() as u64, // ⑥ serialize + app.emit
                         total_post_ms = (d_svg + d_aux + d_emit).as_millis() as u64,
                         "compile pipeline timing"
                     );
+
+                    // Write the refreshed cache back for the next compile.
+                    {
+                        let mut rt = tab.state.lock();
+                        rt.last_page_svgs = new_cache;
+                    }
                 }
             }
             emitter.emit_status(id, revision, CompileStatus::Success, Some(outcome.duration_ms));
@@ -425,6 +469,24 @@ fn is_current_tab(
         .is_some_and(|current| Arc::ptr_eq(current, candidate))
 }
 
+/// Hash a compiled page to a stable `u64` for incremental-rendering dedup.
+///
+/// Cheap by construction: `Page: Hash` derives through `Frame.items`, whose
+/// `Arc<LazyHash<Vec<…>>>` caches a u128 content hash — so hashing a page only
+/// writes that cached u128 (plus the scalar header fields), never recomputing
+/// the frame contents. Under comemo, an unchanged page reuses the same `Arc`
+/// across compiles (same `EditorWorld`), so its hash is byte-stable — the lever
+/// for skipping `typst_svg::svg` on unchanged pages.
+///
+/// The hasher is `DefaultHasher`; only same-process stability is required (the
+/// hash never crosses the wire), so its non-determinism across builds is fine.
+fn hash_page(page: &typst_layout::Page) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    page.hash(&mut h);
+    h.finish()
+}
+
 /// Spawn the slow-compile watchdog (§6.2 "编译超过 2 秒显示编译时间较长").
 ///
 /// A detached short-lived thread sleeps [`SLOW_COMPILE_THRESHOLD`], then checks
@@ -486,6 +548,9 @@ mod tests {
     #[derive(Default)]
     struct RecordingEmitter {
         statuses: PlMutex<Vec<(DocumentId, u64, CompileStatus, Option<u64>)>>,
+        /// Captured (page_count, full, changed_count) per emit_compiled, for
+        /// the incremental-rendering perf test.
+        compiled: PlMutex<Vec<(usize, bool, usize)>>,
     }
 
     impl Emitter for RecordingEmitter {
@@ -493,12 +558,16 @@ mod tests {
             &self,
             _id: DocumentId,
             _revision: u64,
-            _pages: Vec<String>,
+            page_count: usize,
+            full: bool,
+            changed_pages: Vec<crate::ipc::events::ChangedPage>,
             _line_map: Vec<LineRect>,
             _outline: Vec<crate::domain::outline::OutlineNode>,
             _duration_ms: u64,
         ) {
-            // Unused for supervision tests.
+            self.compiled
+                .lock()
+                .push((page_count, full, changed_pages.len()));
             let _ = _line_map;
             let _ = _outline;
         }
@@ -577,6 +646,71 @@ mod tests {
         assert!(
             statuses.iter().any(|(_, _, s, _)| *s == CompileStatus::Success),
             "expected a Success status, got {statuses:?}"
+        );
+    }
+
+    /// Incremental rendering end-to-end: compile a multi-page doc, then make a
+    /// SMALL edit on the LAST page only and recompile. Asserts:
+    ///   - first compile: full=true, changed_pages == page_count (everything)
+    ///   - second compile: full=false, changed_pages << page_count (only the
+    ///     page(s) affected by the edit — ideally just 1)
+    /// This is the core contract that lets svg_ms/emit_ms stay under
+    /// compile_ms after the first compile.
+    ///
+    /// Run: cargo test --lib incremental_rendering_skips_unchanged_pages -- --nocapture --ignored
+    #[test]
+    #[ignore]
+    fn incremental_rendering_skips_unchanged_pages() {
+        let (tab, emitter_typed, emitter_dyn, supervisor, tabs, id) = fixtures(2);
+
+        // A few pages of body text. Page size set small so this spans multiple
+        // pages; the edit below only touches the last paragraph.
+        let mut src = String::from("#set page(width: 10cm, height: 5cm)\n\n");
+        for i in 0..30 {
+            src.push_str(&format!("Body paragraph number {i} stays the same.\n\n"));
+        }
+        src.push_str("This is the last paragraph that we will edit.");
+        tab.world.set_text(src);
+
+        // First compile: full.
+        emitter_typed.compiled.lock().clear();
+        CompileService::do_compile_for_tab(&tab, &emitter_dyn, &supervisor, &tabs, id);
+        let first = emitter_typed.compiled.lock().clone();
+        assert!(first.len() == 1, "expected one emit_compiled, got {first:?}");
+        let (page_count, full1, changed1) = first[0];
+        println!("\n=== incremental_rendering_skips_unchanged_pages ===");
+        println!(
+            "first compile: page_count={page_count} full={full1} changed={changed1}"
+        );
+        assert!(full1, "first compile must be full");
+        assert_eq!(changed1, page_count, "first compile sends every page");
+
+        // Small edit on the LAST page only. Same world (comemo cache survives).
+        tab.world.set_text(
+            "#set page(width: 10cm, height: 5cm)\n\n".to_string()
+                + &(0..30)
+                    .map(|i| format!("Body paragraph number {i} stays the same.\n\n"))
+                    .collect::<String>()
+                + "This is the last paragraph EDITED to change only the final page.",
+        );
+
+        // Second compile: should be incremental.
+        emitter_typed.compiled.lock().clear();
+        CompileService::do_compile_for_tab(&tab, &emitter_dyn, &supervisor, &tabs, id);
+        let second = emitter_typed.compiled.lock().clone();
+        assert!(second.len() == 1, "expected one emit, got {second:?}");
+        let (page_count2, full2, changed2) = second[0];
+        println!(
+            "second compile: page_count={page_count2} full={full2} changed={changed2}"
+        );
+        assert!(!full2, "second compile must be incremental (full=false)");
+        assert_eq!(page_count2, page_count, "page count stable across the edit");
+        assert!(
+            changed2 < page_count2,
+            "incremental compile must send fewer pages than total: changed={changed2} total={page_count2}"
+        );
+        println!(
+            "✓ incremental: only {changed2}/{page_count2} pages re-rendered + transmitted"
         );
     }
 

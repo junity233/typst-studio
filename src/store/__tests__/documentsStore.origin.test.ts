@@ -228,7 +228,7 @@ describe("origin is undisturbed by non-path mutations (§17)", () => {
     useDocumentsStore.getState().openDocument(
       openedDoc({ id: "m2", origin }),
     );
-    useDocumentsStore.getState().setPages("m2", 0, ["<svg/>"], [], []);
+    useDocumentsStore.getState().setPages("m2", 0, 1, true, [{ index: 0, svg: "<svg/>" }], [], []);
     expect(useDocumentsStore.getState().documents["m2"].origin).toEqual(origin);
   });
 

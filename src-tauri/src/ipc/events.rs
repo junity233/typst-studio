@@ -55,7 +55,22 @@ pub struct CompiledPayload {
     pub id: DocumentId,
     #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub revision: u64,
-    pub pages: Vec<String>,
+    /// Total page count for this compile. The frontend sizes its `svgPages`
+    /// array to this; on a `full` payload it replaces every slot, on an
+    /// incremental payload it merges `changed_pages` into the existing array
+    /// (truncating/extending to `page_count`).
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub page_count: usize,
+    /// `true` when this payload carries every page (first compile, page-count
+    /// change, or after any state the backend can't reconcile incrementally).
+    /// `false` for an incremental update: `changed_pages` holds only the pages
+    /// whose content hash differed from the previous compile; unchanged pages
+    /// keep their existing SVG string + blob URL on the frontend.
+    pub full: bool,
+    /// The pages rendered this round. On a `full` payload this is every page
+    /// (0..page_count); on an incremental payload, only the pages that changed.
+    /// Each entry carries its 0-based index so the frontend can place it.
+    pub changed_pages: Vec<ChangedPage>,
     /// Source line → preview-page bbox index, sorted by `(page, y)`. Empty for
     /// documents with no rendered text (or when compilation produced no doc).
     pub line_map: Vec<LineRect>,
@@ -67,6 +82,21 @@ pub struct CompiledPayload {
     /// JSON number at runtime — override to `number` to match the contract.
     #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub duration_ms: u64,
+}
+
+/// One changed page in an incremental [`CompiledPayload`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct ChangedPage {
+    /// 0-based page index within the document.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub index: u32,
+    /// The page's self-contained SVG string.
+    pub svg: String,
 }
 
 /// Payload of the `diagnostics` event. `revision` (§7) tags which buffer
@@ -279,6 +309,7 @@ mod tests {
         let cfg = ts_rs::Config::default();
         // `CompileStatus` is exported by `domain::compile_status`.
         CompiledPayload::export(&cfg).unwrap();
+        ChangedPage::export(&cfg).unwrap();
         DiagnosticsPayload::export(&cfg).unwrap();
         StatusPayload::export(&cfg).unwrap();
         OpenedDocument::export(&cfg).unwrap();
@@ -325,14 +356,18 @@ mod tests {
         let payload = CompiledPayload {
             id: DocumentId::new(),
             revision: 3,
-            pages: vec!["<svg/>".to_string()],
+            page_count: 1,
+            full: true,
+            changed_pages: vec![ChangedPage { index: 0, svg: "<svg/>".to_string() }],
             line_map: Vec::new(),
             outline: Vec::new(),
             duration_ms: 7,
         };
         let json = serde_json::to_string(&payload).unwrap();
         assert!(json.contains("\"durationMs\""), "camelCase field expected: {json}");
-        assert!(json.contains("\"pages\""));
+        assert!(json.contains("\"pageCount\""), "camelCase field expected: {json}");
+        assert!(json.contains("\"changedPages\""), "camelCase field expected: {json}");
+        assert!(json.contains("\"full\""));
         assert!(json.contains("\"lineMap\""), "camelCase field expected: {json}");
         assert!(json.contains("\"id\""));
         assert!(json.contains("\"revision\""), "revision field expected: {json}");

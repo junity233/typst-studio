@@ -73,6 +73,19 @@ latestOnly?: boolean | null, };
 export type CatalogListingPayload = { entries: Array<PackageEntry>, fetchedAt: number, stale: boolean, };
 
 /**
+ * One changed page in an incremental [`CompiledPayload`].
+ */
+export type ChangedPage = { 
+/**
+ * 0-based page index within the document.
+ */
+index: number, 
+/**
+ * The page's self-contained SVG string.
+ */
+svg: string, };
+
+/**
  * Result of `compare_recovery`: the snapshot buffer + the current disk content
  * (or `None` if the file is gone).
  */
@@ -114,7 +127,28 @@ export type CompileStatus = "idle" | "compiling" | "slow" | "success" | "error";
  * to. The frontend discards results whose revision is older than the tab's
  * current revision, so a slow compile can never overwrite a newer preview.
  */
-export type CompiledPayload = { id: DocumentId, revision: number, pages: Array<string>, 
+export type CompiledPayload = { id: DocumentId, revision: number, 
+/**
+ * Total page count for this compile. The frontend sizes its `svgPages`
+ * array to this; on a `full` payload it replaces every slot, on an
+ * incremental payload it merges `changed_pages` into the existing array
+ * (truncating/extending to `page_count`).
+ */
+pageCount: number, 
+/**
+ * `true` when this payload carries every page (first compile, page-count
+ * change, or after any state the backend can't reconcile incrementally).
+ * `false` for an incremental update: `changed_pages` holds only the pages
+ * whose content hash differed from the previous compile; unchanged pages
+ * keep their existing SVG string + blob URL on the frontend.
+ */
+full: boolean, 
+/**
+ * The pages rendered this round. On a `full` payload this is every page
+ * (0..page_count); on an incremental payload, only the pages that changed.
+ * Each entry carries its 0-based index so the frontend can place it.
+ */
+changedPages: Array<ChangedPage>, 
 /**
  * Source line → preview-page bbox index, sorted by `(page, y)`. Empty for
  * documents with no rendered text (or when compilation produced no doc).

@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import type { CompileStatus } from "../lib/ui-types";
-import type { ConflictState, LineRect, OpenedDocument, OutlineNode } from "../lib/types";
+import type {
+  ChangedPage,
+  ConflictState,
+  LineRect,
+  OpenedDocument,
+  OutlineNode,
+} from "../lib/types";
 import {
   hardCloseTab as hardCloseTabBE,
   newTab as newTabBE,
@@ -93,11 +99,13 @@ export interface TabsState {
     status: CompileStatus,
     durationMs?: number,
   ) => void;
-  /** Replace preview pages tagged with `revision`. Delegates to documentsStore. */
+  /** Replace/merge preview pages tagged with `revision`. Delegates to documentsStore. */
   setPages: (
     id: string,
     revision: number,
-    svgPages: string[],
+    pageCount: number,
+    full: boolean,
+    changedPages: ChangedPage[],
     lineMap: LineRect[],
     outline: OutlineNode[],
   ) => void;
@@ -255,8 +263,10 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
   setStatus: (id, revision, status, durationMs) =>
     useDocumentsStore.getState().setStatus(id, revision, status, durationMs),
 
-  setPages: (id, revision, svgPages, lineMap, outline) =>
-    useDocumentsStore.getState().setPages(id, revision, svgPages, lineMap, outline),
+  setPages: (id, revision, pageCount, full, changedPages, lineMap, outline) =>
+    useDocumentsStore
+      .getState()
+      .setPages(id, revision, pageCount, full, changedPages, lineMap, outline),
 
   setConflict: (id, conflict, diskContent) =>
     useDocumentsStore.getState().setConflict(id, conflict, diskContent),

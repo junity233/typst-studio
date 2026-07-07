@@ -54,13 +54,18 @@ use std::path::{Path, PathBuf};
 /// Every emit carries a `revision` (§7): the document revision the result
 /// corresponds to. Stale-revision results are discarded by the frontend.
 pub trait Emitter: Send + Sync {
-    /// Notify the frontend of a successful compile with rendered SVG pages and
-    /// the source map (source line → preview-page bbox).
+    /// Notify the frontend of a successful compile. `full` is true when
+    /// `changed_pages` contains every page (first compile, page-count change,
+    /// or any unreconcilable state); false for an incremental update where
+    /// unchanged pages stay on the frontend. `page_count` is the total; the
+    /// frontend sizes its array to it and merges `changed_pages` by index.
     fn emit_compiled(
         &self,
         id: DocumentId,
         revision: u64,
-        pages: Vec<String>,
+        page_count: usize,
+        full: bool,
+        changed_pages: Vec<crate::ipc::events::ChangedPage>,
         line_map: Vec<LineRect>,
         outline: Vec<crate::domain::outline::OutlineNode>,
         duration_ms: u64,
@@ -388,7 +393,9 @@ mod tests {
         Compiled {
             id: DocumentId,
             revision: u64,
-            pages: Vec<String>,
+            page_count: usize,
+            full: bool,
+            changed_pages: Vec<crate::ipc::events::ChangedPage>,
             line_map: Vec<LineRect>,
             outline: Vec<crate::domain::outline::OutlineNode>,
             duration_ms: u64,
@@ -465,7 +472,9 @@ mod tests {
             &self,
             id: DocumentId,
             revision: u64,
-            pages: Vec<String>,
+            page_count: usize,
+            full: bool,
+            changed_pages: Vec<crate::ipc::events::ChangedPage>,
             line_map: Vec<LineRect>,
             outline: Vec<crate::domain::outline::OutlineNode>,
             duration_ms: u64,
@@ -473,7 +482,9 @@ mod tests {
             self.events.lock().push(CapturedEvent::Compiled {
                 id,
                 revision,
-                pages,
+                page_count,
+                full,
+                changed_pages,
                 line_map,
                 outline,
                 duration_ms,

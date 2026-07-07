@@ -4,7 +4,13 @@
 // LspStatusKind, LspRestartReason, ...) live in ./types and are auto-generated
 // by ts-rs — do not duplicate here.
 
-import type { Diagnostic, DocumentId, LineRect, OutlineNode } from "./types";
+import type {
+  ChangedPage,
+  Diagnostic,
+  DocumentId,
+  LineRect,
+  OutlineNode,
+} from "./types";
 
 // Re-export the wire types so existing `from "./ui-types"` import sites keep
 // resolving after the LSP payload moved to the generated `types.ts` (Task 7).
@@ -12,6 +18,8 @@ export type {
   LspStatusPayload,
   LspStatusKind,
   LspRestartReason,
+  ChangedPage,
+  CompiledPayload as GeneratedCompiledPayload,
 } from "./types";
 
 /**
@@ -23,16 +31,28 @@ export type {
  */
 export type CompileStatus = "idle" | "compiling" | "slow" | "success" | "error";
 
-/** Payload of the `compiled` event (svg pages + source map) from the backend. */
+/**
+ * Payload of the `compiled` event. Mirrors the ts-rs-generated
+ * `CompiledPayload` in `types.ts`; duplicated here so existing import sites
+ * (`from "./ui-types"`) keep resolving. Kept in lockstep — when the backend
+ * struct changes, regenerate types.ts and update this mirror.
+ *
+ * Incremental rendering (§perf): when `full` is false, `changedPages` holds
+ * ONLY the pages that changed since the previous compile; the frontend merges
+ * them into its existing array, leaving unchanged pages' SVG string references
+ * intact so `SvgPage`'s `memo` skips blob rebuild. When `full` is true, every
+ * page is in `changedPages` and the frontend replaces its whole array.
+ */
 export interface CompiledPayload {
   id: DocumentId;
-  /**
-   * Document content revision this compile corresponds to (§7). If it is
-   * strictly less than the tab's current `revision`, the result is stale and
-   * must be discarded — a newer edit already won.
-   */
+  /** Document content revision this compile corresponds to (§7). */
   revision: number;
-  pages: string[];
+  /** Total page count; the frontend sizes its array to this. */
+  pageCount: number;
+  /** true = full payload (every page in changedPages); false = incremental. */
+  full: boolean;
+  /** Pages rendered this round, each with its 0-based index. */
+  changedPages: ChangedPage[];
   /** Source line → preview-page bbox index (scroll-sync / click-to-source). */
   lineMap: LineRect[];
   /** Document heading outline (§Outline view). Empty if no headings. */

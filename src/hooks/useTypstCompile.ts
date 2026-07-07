@@ -47,13 +47,23 @@ export function useTypstCompile(): void {
       const uCompiled = await onCompiled((p) => {
         // DIAGNOSTIC: mark the instant the compiled event arrived in JS (end of
         // ⑦ IPC transfer + ⑧ deserialize). See src/lib/compileTiming.ts.
-        markReceived(p.revision, p.pages.length, p.durationMs);
+        markReceived(p.revision, p.pageCount, p.durationMs);
         const tabs = useTabsStore.getState();
         // Wrap the SVG payload update in a transition so Monaco keystroke
         // processing is never blocked by preview reconciliation. The revision
-        // guard inside setPages discards stale compiles (§7).
+        // guard inside setPages discards stale compiles (§7). setPages merges
+        // incrementally: unchanged pages keep their SVG string reference, so
+        // SvgPage's memo skips blob rebuild.
         startTransition(() => {
-          tabs.setPages(p.id, p.revision, p.pages, p.lineMap, p.outline);
+          tabs.setPages(
+            p.id,
+            p.revision,
+            p.pageCount,
+            p.full,
+            p.changedPages,
+            p.lineMap,
+            p.outline,
+          );
           // DIAGNOSTIC: record when setPages actually committed inside the
           // transition (⑨ transition lag).
           markCommitted(p.revision);

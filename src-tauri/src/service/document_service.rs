@@ -37,7 +37,6 @@ use crate::domain::registry::SharedRegistry;
 use crate::error::{AppError, Result};
 use crate::persistence::recovery::RecoveryService;
 use crate::render::outline::build_outline;
-use crate::render::pipeline::RenderPipeline;
 use crate::render::source_map::build_source_map;
 use crate::render::svg::SvgRenderer;
 use crate::typst_engine::world::EditorWorld;
@@ -1163,17 +1162,29 @@ impl DocumentService {
             (rt.meta.clone(), rt.last_doc.clone(), honest_rev)
         };
         if let Some(doc) = last_doc {
-            // SVG rendering is infallible; on the (impossible) error path
-            // degrade to an empty page list instead of panicking the replay.
-            let pages = SvgRenderer::new()
-                .render(&doc)
-                .unwrap_or_default();
+            // Replay is always a FULL payload: the tab was hidden so the
+            // frontend holds no pages for it — send every page. SVG rendering
+            // is infallible; on the (impossible) error path degrade to an empty
+            // page list instead of panicking the replay.
+            let renderer = SvgRenderer::new();
+            let changed_pages: Vec<crate::ipc::events::ChangedPage> = doc
+                .pages()
+                .iter()
+                .enumerate()
+                .map(|(i, _)| crate::ipc::events::ChangedPage {
+                    index: i as u32,
+                    svg: renderer.render_single(&doc, i).unwrap_or_default(),
+                })
+                .collect();
+            let page_count = changed_pages.len();
             let line_map = build_source_map(&doc, &tab.world);
             let outline = build_outline(&doc, &tab.world);
             self.store.emitter.emit_compiled(
                 id,
                 revision,
-                pages,
+                page_count,
+                /* full */ true,
+                changed_pages,
                 line_map,
                 outline,
                 /* duration_ms */ 0,
@@ -1514,7 +1525,9 @@ mod tests {
             &self,
             id: DocumentId,
             _revision: u64,
-            _pages: Vec<String>,
+            _page_count: usize,
+            _full: bool,
+            _changed_pages: Vec<crate::ipc::events::ChangedPage>,
             _line_map: Vec<LineRect>,
             _outline: Vec<crate::domain::outline::OutlineNode>,
             _duration_ms: u64,

@@ -138,6 +138,49 @@ export function PreviewPane({
     [pageRefs],
   );
 
+  // Stable per-index onImgLoad closure, for the same memo-preservation reason
+  // as `refForPage`: an inline `() => onPageImgLoad(i)` here would be a NEW
+  // function reference on every render, defeating `SvgPage`'s `memo` even when
+  // the page's SVG string is unchanged (which would wrongly trigger a blob
+  // rebuild for unchanged pages — the exact cost incremental rendering avoids).
+  //
+  // The closure captures `onPageImgLoad` and `revision`, which change across
+  // renders — so we invalidate the whole cache when either changes (cheaper
+  // than per-entry invalidation, and these change rarely: revision changes once
+  // per compile, onPageImgLoad only if the parent re-wires it).
+  const imgLoadCache = useRef<Map<number, () => void>>(new Map());
+  const imgLoadDeps = useRef<{ onPageImgLoad: typeof onPageImgLoad; revision: number | undefined }>(
+    { onPageImgLoad, revision },
+  );
+  if (
+    imgLoadDeps.current.onPageImgLoad !== onPageImgLoad ||
+    imgLoadDeps.current.revision !== revision
+  ) {
+    imgLoadCache.current = new Map();
+    imgLoadDeps.current = { onPageImgLoad, revision };
+  }
+  const onImgLoadForPage = useCallback(
+    (i: number): (() => void) | undefined => {
+      if (!onPageImgLoad && revision == null) return undefined;
+      let fn = imgLoadCache.current.get(i);
+      if (!fn) {
+        fn = () => {
+          // Read the LATEST onPageImgLoad/revision at call time via the deps
+          // ref, so a cached closure never fires a stale callback.
+          if (imgLoadDeps.current.revision != null) {
+            markPageDecoded(imgLoadDeps.current.revision, i + 1);
+          }
+          imgLoadDeps.current.onPageImgLoad?.(i);
+        };
+        imgLoadCache.current.set(i, fn);
+      }
+      return fn;
+    },
+    // Stable: the cache + deps-ref absorb the changing values. The body reads
+    // through imgLoadDeps.current so it always uses the latest.
+    [],
+  );
+
   return (
     <div
       ref={paneRef}
@@ -167,16 +210,7 @@ export function PreviewPane({
             lineRects={rectsByPage.get(i)}
             activeLines={activeLines}
             onJumpToLine={onJumpToLine}
-            onImgLoad={
-              // DIAGNOSTIC: record each page's blob-decode finish time. When the
-              // last page of `revision` decodes, compileTiming prints the full
-              // ⑨/⑩ breakdown. The page-index callback still fires for
-              // scroll-sync geometry refresh.
-              () => {
-                if (revision != null) markPageDecoded(revision, i + 1);
-                onPageImgLoad?.(i);
-              }
-            }
+            onImgLoad={onImgLoadForPage(i)}
             pageRef={refForPage(i)}
           />
         ))
