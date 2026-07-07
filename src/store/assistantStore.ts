@@ -6,6 +6,7 @@ import { resolveLanguage } from "../i18n";
 import { useWorkspaceStore } from "./workspaceStore";
 import { useTabsStore } from "./tabsStore";
 import { useDocumentsStore } from "./documentsStore";
+import { useDiagnosticsStore, selectDiagnosticsForDoc } from "./diagnosticsStore";
 import { editorApiRef } from "../components/Editor/editorApiRef";
 import { buildSystemPrompt } from "./assistantPrompt";
 import { buildTools, type PendingApproval } from "./assistantTools";
@@ -91,6 +92,42 @@ function currentWorkspaceContext() {
   };
 }
 
+/**
+ * Collect editor context that should be auto-injected into the user's message:
+ * the current text selection (if any) and the active document's compile
+ * diagnostics (if there are errors/warnings). Returns a string block to
+ * prepend, or null when there's nothing to add.
+ *
+ * This lets the agent "see" what the user is looking at and what's broken,
+ * without the user having to manually copy-paste or describe it.
+ */
+function collectEditorContext(): string | null {
+  const parts: string[] = [];
+  const api = editorApiRef.current;
+  const { activeId } = useTabsStore.getState();
+
+  // Selection: only include if the user has actual text selected (not empty).
+  const selection = api?.getSelectionText()?.trim();
+  if (selection) {
+    parts.push(`<selected_text>\n${selection}\n</selected_text>`);
+  }
+
+  // Diagnostics: errors + warnings from the active document.
+  if (activeId) {
+    const docDiags = useDiagnosticsStore.getState().byDoc[activeId];
+    const diags = selectDiagnosticsForDoc(docDiags);
+    if (diags.length > 0) {
+      const summary = diags
+        .map((d) => `Line ${d.range.start_line}: [${d.severity}] ${d.message}`)
+        .join("\n");
+      parts.push(`<diagnostics>\n${summary}\n</diagnostics>`);
+    }
+  }
+
+  if (parts.length === 0) return null;
+  return parts.join("\n\n");
+}
+
 function currentUiLanguage(): "en" | "zh" {
   return resolveLanguage(readSetting<string>("appearance.language", "auto"));
 }
@@ -111,6 +148,13 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       return;
     }
     console.log("[ai] sendMessage start:", JSON.stringify(text));
+
+    // Auto-inject editor context (selection + diagnostics) so the agent can
+    // "see" what the user is looking at. Prepended as tagged blocks; the user's
+    // actual message follows. Only the user's text is shown in the UI bubble.
+    const editorCtx = collectEditorContext();
+    const fullMessage = editorCtx ? `${editorCtx}\n\n${text}` : text;
+
     set((s) => ({
       messages: [...s.messages, { id: uid(), role: "user", text }],
       status: "streaming",
@@ -202,7 +246,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     console.log("[ai] calling agent.prompt()");
 
     try {
-      await agent.prompt(text);
+      await agent.prompt(fullMessage);
       console.log("[ai] agent.prompt() resolved (turn complete)");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
