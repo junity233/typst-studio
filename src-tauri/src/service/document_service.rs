@@ -791,6 +791,14 @@ impl DocumentService {
     /// doc). Best-effort: a non-canonicalizable prefix yields an empty result.
     ///
     /// Untitled documents carry no canonical path and are never affected.
+    ///
+    /// Soft-closed (hidden) documents are intentionally EXCLUDED: the user has
+    /// dismissed them from the tab strip, so from their perspective the file is
+    /// no longer "open". Counting a hidden tab here would let a stale hidden
+    /// doc (e.g. one carrying an unresolved conflict) block deletes/overwrites
+    /// forever, even though the user believes they closed it. The hidden tab's
+    /// state survives for zero-cost reactivate (§B2) and is naturally reclaimed
+    /// when LRU hard-closes it.
     pub fn docs_under_path(&self, prefix: &Path) -> Vec<AffectedDoc> {
         // Canonicalize the prefix once so the per-doc comparison is in the same
         // form as the docs' stored canonical paths.
@@ -802,6 +810,9 @@ impl DocumentService {
         tabs.values()
             .filter_map(|t| {
                 let rt = t.state.lock();
+                if rt.meta.hidden {
+                    return None;
+                }
                 let canon = rt.meta.origin.canonical_path()?.to_path_buf();
                 if canon == canon_prefix || canon.starts_with(&canon_prefix) {
                     Some(AffectedDoc {
@@ -821,6 +832,9 @@ impl DocumentService {
     /// `paths`. App-initiated writes use this to preflight template application
     /// before the disk is changed and before the watcher reports a surprising
     /// external modification.
+    ///
+    /// Soft-closed (hidden) documents are excluded — see
+    /// [`docs_under_path`](Self::docs_under_path) for the rationale.
     pub fn docs_at_paths(&self, paths: &[PathBuf]) -> Vec<AffectedDoc> {
         use std::collections::HashSet;
 
@@ -836,6 +850,9 @@ impl DocumentService {
         tabs.values()
             .filter_map(|t| {
                 let rt = t.state.lock();
+                if rt.meta.hidden {
+                    return None;
+                }
                 let canon = rt.meta.origin.canonical_path()?.to_path_buf();
                 if targets.contains(&canon) {
                     Some(AffectedDoc {
@@ -2028,6 +2045,37 @@ mod tests {
         assert_eq!(under_sub.len(), 1);
         assert_eq!(under_sub[0].id, meta_b.id);
         assert!(!under_sub[0].dirty, "b is clean");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Soft-closed (hidden) docs are excluded from `docs_under_path` and
+    /// `docs_at_paths`: the user dismissed them, so they must not block a
+    /// delete or template-overwrite of their backing file. A stale hidden doc
+    /// carrying an unresolved conflict would otherwise block the op forever.
+    #[test]
+    fn hidden_docs_are_excluded_from_delete_and_template_preflight() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir().join(format!("ts-hidden-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let path = dir.join("doc.typ");
+        std::fs::write(&path, "x").unwrap();
+
+        let meta = document.open_from_content(path.clone(), "x".into(), None).unwrap();
+        // Even a dirty + conflicted hidden doc is ignored once soft-closed.
+        document.update_text(meta.id, "unsaved".into()).unwrap();
+        force_conflict(&document, meta.id, ConflictState::Modified { disk_version: None });
+        document.soft_close(meta.id).unwrap();
+        assert!(document.tab_meta(meta.id).unwrap().hidden);
+
+        // docs_under_path no longer reports the hidden doc.
+        let under = document.docs_under_path(&dir);
+        assert!(under.is_empty(), "hidden doc must not block delete; got {under:?}");
+
+        // docs_at_paths (template preflight) likewise ignores it.
+        let at = document.docs_at_paths(&[path.clone()]);
+        assert!(at.is_empty(), "hidden doc must not block template; got {at:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
