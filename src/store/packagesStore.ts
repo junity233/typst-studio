@@ -128,12 +128,23 @@ export const usePackagesStore = create<PackagesState>((set, get) => ({
   },
 }));
 
+/** Input shape the selectors below need — a slice of PackagesState. Letting
+ *  callers pass `{ index, filter }` / `{ index }` avoids constructing a full
+ *  PackagesState at the call site and keeps the selectors usable from useMemo. */
+export interface IndexSlice {
+  index: PackageEntry[];
+}
+export interface FilterSlice {
+  index: PackageEntry[];
+  filter: CatalogFilter;
+}
+
 /** Filter the full index for a given view (templates-only or packages-only)
  *  by the current filter (query + categories), client-side. The tab decides
  *  template-vs-package; the filter decides text + category. Pure + cheap
  *  (~4000 small objects, sub-millisecond). */
 export function selectFiltered(
-  state: PackagesState,
+  state: FilterSlice,
   isTemplateView: boolean,
 ): PackageEntry[] {
   const q = state.filter.query?.trim().toLowerCase();
@@ -158,7 +169,7 @@ export function selectFiltered(
  *  populate the category dropdown — derived from the UNFILTERED index so the
  *  picker's options are stable regardless of the current category selection. */
 export function selectCategories(
-  state: PackagesState,
+  state: IndexSlice,
   isTemplateView: boolean,
 ): string[] {
   const set = new Set<string>();
