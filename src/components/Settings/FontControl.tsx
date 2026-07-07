@@ -87,27 +87,26 @@ export function FontControl({ def }: { def: SettingDef }) {
     setHighlight(query.trim() === "" || filtered.length === 0 ? 0 : 1);
   }, [open, query, filtered.length]);
 
-  /** Commit a selection and collapse back to the closed (display) state. */
-  const choose = (name: string) => {
-    setValue(name);
+  /** Collapse the list and drop the in-flight query (writes no value). */
+  const collapse = () => {
     setOpen(false);
     setQuery("");
   };
 
-  /**
-   * Collapse without committing — drops the in-flight query and restores the
-   * committed value to the display. Deferred a tick so a simultaneous option
-   * click (whose `mousedown` runs just before this blur) can commit first:
-   * `choose` flips `open` to false, and by the time this runs the guard below
-   * is already a no-op. Without the deferral, blur fires first on some
-   * platforms and races the selection.
-   */
-  const scheduleClose = () => {
-    setTimeout(() => {
-      setOpen(false);
-      setQuery("");
-    }, 0);
+  /** Commit a selection, then collapse. */
+  const choose = (name: string) => {
+    setValue(name);
+    collapse();
   };
+
+  /**
+   * Collapse without committing. Deferred a tick so a simultaneous option click
+   * (whose `mousedown` runs just before this blur) can commit first: `choose`
+   * flips `open` to false, and by the time this runs the collapse is already a
+   * no-op. Without the deferral, blur fires first on some platforms and races
+   * the selection.
+   */
+  const scheduleClose = () => setTimeout(collapse, 0);
 
   // The list has a synthetic "(Default)" row at index 0; real fonts occupy
   // highlight indices 1..filtered.length. So the max is filtered.length (the
@@ -160,6 +159,14 @@ export function FontControl({ def }: { def: SettingDef }) {
   const displayValue = open ? query : current;
   const placeholder = open ? t("searchFonts") : current === "" ? t("fontDefault") : current;
 
+  // id of the highlighted option, for aria-activedescendant. Indices mirror
+  // `highlight`: 0 = the synthetic "(Default)" row, 1..N = filtered fonts.
+  const listboxId = `${SETTING_ID(def.key)}-listbox`;
+  const activeOptionId =
+    !open || highlight === 0
+      ? `${listboxId}-default`
+      : `${listboxId}-${filtered[highlight - 1]}`;
+
   return (
     <div className="font-combobox" ref={rootRef}>
       <div className="font-combobox-field">
@@ -187,6 +194,10 @@ export function FontControl({ def }: { def: SettingDef }) {
           aria-autocomplete="list"
           aria-expanded={open}
           aria-controls={`${SETTING_ID(def.key)}-listbox`}
+          // Announce the highlighted option to AT as the user arrows through
+          // the list. Only meaningful while open; `activeOptionId` is derived
+          // below from `highlight` (0 = "(Default)", 1..N = fonts).
+          aria-activedescendant={open ? activeOptionId : undefined}
           role="combobox"
         />
         {current !== "" && (
@@ -195,8 +206,8 @@ export function FontControl({ def }: { def: SettingDef }) {
             className="font-combobox-clear"
             aria-label={t("clearFont")}
             title={t("clearFont")}
-            // preventDefault on mousedown so the input's onBlur doesn't fire
-            // first and call close() (which would no-op the clear).
+            // preventDefault on mousedown so the input's onBlur (→
+            // scheduleClose) can't fire first and no-op the clear.
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => choose("")}
           >
@@ -208,11 +219,12 @@ export function FontControl({ def }: { def: SettingDef }) {
 
       {open && (
         <ul
-          id={`${SETTING_ID(def.key)}-listbox`}
+          id={listboxId}
           className="font-combobox-list"
           role="listbox"
         >
           <li
+            id={`${listboxId}-default`}
             role="option"
             aria-selected={current === ""}
             className={"font-combobox-option" + (highlight === 0 ? " font-combobox-active" : "")}
@@ -237,6 +249,7 @@ export function FontControl({ def }: { def: SettingDef }) {
               return (
                 <li
                   key={name}
+                  id={`${listboxId}-${name}`}
                   role="option"
                   aria-selected={isActive}
                   className={
