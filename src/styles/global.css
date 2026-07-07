@@ -3084,20 +3084,27 @@ button {
 .packages-status { margin: 0; padding: var(--space-xxs) var(--space-sm); font: var(--text-fine-print); color: var(--color-ink-muted-48); text-align: center; }
 .packages-status-error { color: var(--color-ink-muted-80); }
 .packages-status-stale { color: var(--color-ink-muted-48); background: var(--color-canvas-parchment); }
-.packages-tabs { display: flex; gap: 2px; padding: 0 var(--space-sm); border-bottom: 1px solid var(--color-divider-soft); }
-.packages-tab { flex: 1; padding: var(--space-xs) 0; font: var(--text-caption); color: var(--color-ink-muted-48); background: transparent; border: 0; border-bottom: 2px solid transparent; cursor: pointer; }
-.packages-tab:hover { color: var(--color-ink-muted-80); }
-.packages-tab.active { color: var(--color-ink); font-weight: 600; border-bottom-color: var(--color-primary); }
+.packages-filterrow { display: flex; gap: var(--space-xxs); padding: var(--space-xxs) var(--space-sm); border-bottom: 1px solid var(--color-divider-soft); }
+.packages-select { flex: 1; min-width: 0; height: 30px; padding: 0 var(--space-xs); font: var(--text-caption-strong); color: var(--color-ink); background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); outline: none; cursor: pointer; }
+/* The category filter is narrower than the view selector. */
+.packages-select-cat { flex: 0 0 38%; }
+.packages-select:focus { border-color: var(--color-primary); }
 .packages-body { flex: 1; min-height: 0; overflow-y: auto; }
 .packages-empty { padding: var(--space-lg); text-align: center; font: var(--text-caption); color: var(--color-ink-muted-48); }
 
 /* gallery cards (templates) */
-.pkg-gallery { list-style: none; margin: 0; padding: var(--space-sm); display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-xs); }
-.pkg-card { display: flex; flex-direction: column; gap: var(--space-xxs); padding: var(--space-xs); background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: 12px; cursor: pointer; transition: transform 0.08s ease; }
+.pkg-gallery { list-style: none; margin: 0; padding: var(--space-xs) var(--space-sm); display: grid; grid-template-columns: 1fr; gap: var(--space-xs); }
+.pkg-gallery > li { width: 100%; }
+.pkg-card { display: flex; flex-direction: column; gap: var(--space-xxs); width: 100%; padding: var(--space-xs); background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: 12px; cursor: pointer; transition: transform 0.08s ease; text-align: left; }
 .pkg-card:hover { border-color: var(--color-primary); }
 .pkg-card:active { transform: scale(0.95); }
-.pkg-thumb-img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: var(--radius-sm); box-shadow: var(--shadow-product); }
-.pkg-thumb-fallback { width: 100%; aspect-ratio: 1 / 1; display: grid; place-items: center; background: var(--color-canvas-parchment); border-radius: var(--radius-sm); color: var(--color-ink-muted-48); font: var(--text-body-strong); }
+/* Thumbnails are the ONE element allowed the product shadow. The fixed-size
+   `.pkg-thumb` container holds aspect-ratio + shadow + radius; the inner
+   img/fallback fill it so loaded and placeholder cards are visually
+   identical and never shift on load. */
+.pkg-thumb { position: relative; width: 100%; aspect-ratio: 3 / 2; border-radius: var(--radius-sm); box-shadow: var(--shadow-product); overflow: hidden; }
+.pkg-thumb-img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.pkg-thumb-fallback { position: absolute; inset: 0; display: grid; place-items: center; background: var(--color-canvas-parchment); color: var(--color-ink-muted-48); font: var(--text-body-strong); }
 .pkg-card-name { font: var(--text-caption-strong); color: var(--color-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pkg-card-cat { font: var(--text-nav-link); color: var(--color-ink-muted-48); }
 
@@ -3119,16 +3126,16 @@ button {
 
 /* detail (push-replace) */
 .pkg-detail { display: flex; flex-direction: column; gap: var(--space-xs); padding: var(--space-sm); height: 100%; }
-.pkg-back { align-self: flex-start; background: transparent; border: 0; color: var(--color-primary); font: var(--text-body); cursor: pointer; padding: 0; }
-.pkg-detail-name { font: var(--text-tagline); color: var(--color-ink); margin: 0; }
+.pkg-back { align-self: flex-start; background: transparent; border: 0; color: var(--color-primary); font: var(--text-caption); cursor: pointer; padding: 0; }
+.pkg-detail-name { font: var(--text-body-strong); color: var(--color-ink); margin: 0; }
 .pkg-detail-desc { font: var(--text-caption); color: var(--color-ink-muted-80); margin: 0; }
 .pkg-detail-meta { display: grid; grid-template-columns: auto 1fr; gap: 0 var(--space-xs); font: var(--text-caption); margin: 0; }
 .pkg-detail-meta dt { color: var(--color-ink-muted-48); }
 .pkg-readme { flex: 1; min-height: 0; overflow: auto; font: var(--text-caption); white-space: pre-wrap; background: var(--color-canvas-parchment); padding: var(--space-sm); border-radius: var(--radius-sm); }
 .pkg-detail-actions { display: flex; gap: var(--space-xs); }
-.pkg-btn-primary { flex: 1; font: var(--text-body); color: var(--color-on-primary); background: var(--color-primary); border: 0; border-radius: var(--radius-pill); padding: var(--space-xxs) var(--space-md); cursor: pointer; }
+.pkg-btn-primary { flex: 1; font: var(--text-caption-strong); color: var(--color-on-primary); background: var(--color-primary); border: 0; border-radius: var(--radius-pill); padding: var(--space-xxs) var(--space-sm); cursor: pointer; }
 .pkg-btn-primary:active { transform: scale(0.95); }
-.pkg-btn-secondary { flex: 1; font: var(--text-body); color: var(--color-primary); background: transparent; border: 1px solid var(--color-primary); border-radius: var(--radius-pill); padding: var(--space-xxs) var(--space-md); cursor: pointer; }
+.pkg-btn-secondary { flex: 1; font: var(--text-caption); color: var(--color-primary); background: transparent; border: 1px solid var(--color-primary); border-radius: var(--radius-pill); padding: var(--space-xxs) var(--space-sm); cursor: pointer; }
 /* compiler-compat warning (§4.3) — gray, not red, per the single-accent rule */
 .pkg-compat-warn { color: var(--color-ink-muted-48); cursor: help; }
 .pkg-compat-line { margin: 0; padding: var(--space-xxs) var(--space-sm); font: var(--text-fine-print); color: var(--color-ink-muted-48); background: var(--color-canvas-parchment); border-radius: var(--radius-sm); }
