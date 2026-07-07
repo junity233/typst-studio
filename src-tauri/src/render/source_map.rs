@@ -25,7 +25,7 @@
 //! space flipped by `Transform::scale(1, -1)`, exactly as `typst_svg::text`
 //! does.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use typst::layout::{Abs, Frame, FrameItem, Point, Transform};
 use typst::syntax::Span;
@@ -33,7 +33,6 @@ use typst::text::TextItem;
 use typst_layout::PagedDocument;
 
 use crate::domain::source_map::LineRect;
-use crate::typst_engine::compiler::span_to_line;
 use crate::typst_engine::world::EditorWorld;
 
 /// A line's accumulated geometry while walking the frame tree.
@@ -69,7 +68,39 @@ impl LineAccum {
 /// reflows onto multiple pages yields multiple rects). Output is sorted by
 /// `(page, y)` so the frontend can binary-search for the rect nearest a scroll
 /// position or click.
+///
+/// ## Performance: batch span→line resolution
+///
+/// The naive approach (calling `span_to_line` per glyph) is O(glyph_count ×
+/// tree_height): each call does `LinkedNode::find_number`, which descends from
+/// the syntax-tree root on every lookup. On a dense 3-page document this ran
+/// ~9.4s because tens of thousands of glyphs each re-walked the tree.
+///
+/// Instead we resolve every distinct `Span` in **two passes**:
+///   1. Walk all frames once collecting the set of spans (deduplicated).
+///   2. For each `FileId` referenced, do a single DFS over its syntax tree,
+///      recording byte ranges for exactly the `SpanNumber`s we need. Span
+///      numbers are monotonic (parent < children, siblings increase), so one
+///      DFS resolves all spans of a source in O(node_count).
+/// Then the geometry pass looks each span up in the precomputed map — O(1).
 pub fn build_source_map(doc: &PagedDocument, world: &EditorWorld) -> Vec<LineRect> {
+    // --- Pass 1: collect the set of distinct spans we need to resolve. -------
+    let mut needed_spans: HashSet<Span> = HashSet::new();
+    {
+        let mut collect_ctx = CollectCtx { needed: &mut needed_spans };
+        for page in doc.pages().iter() {
+            collect_frame(&mut collect_ctx, &page.frame);
+        }
+    }
+
+    // --- Pass 2: resolve each distinct span → source line, once. -------------
+    // The resolver memoizes per-span; the first lookup for each (FileId, span)
+    // pays for a single source-wide DFS, all subsequent lookups are O(1). The
+    // DFS itself is driven lazily on the first request for a given FileId and
+    // then reused, so the total work across all spans of one source is O(nodes).
+    let resolver = SpanLineResolver::new(world, &needed_spans);
+
+    // --- Geometry pass: walk frames again, looking up precomputed lines. -----
     // Key: (page_idx, source_line) → accumulator. A line may appear on multiple
     // pages (e.g. page-spanning paragraphs); we keep one accumulator per page.
     let mut by_line: HashMap<(u16, u32), LineAccum> = HashMap::new();
@@ -77,7 +108,7 @@ pub fn build_source_map(doc: &PagedDocument, world: &EditorWorld) -> Vec<LineRec
     for (page_idx, page) in doc.pages().iter().enumerate() {
         let page_idx = u16::try_from(page_idx).unwrap_or(u16::MAX);
         let mut ctx = WalkCtx {
-            world,
+            resolver: &resolver,
             page_idx,
             by_line: &mut by_line,
             transform: Transform::identity(),
@@ -112,24 +143,216 @@ pub fn build_source_map(doc: &PagedDocument, world: &EditorWorld) -> Vec<LineRec
     rects
 }
 
-struct WalkCtx<'a> {
+/// Deduplicated, single-DFS span→line resolver.
+///
+/// Two earlier inefficiencies, both now fixed:
+/// 1. Originally `span_to_line` ran **per glyph** (O(glyphs × tree-height)).
+/// 2. After dedup it ran per distinct span, but each call still did an
+///    independent `LinkedNode::find_number` descent from the root
+///    (O(distinct × tree-height)) — profiling showed `world.range` alone was
+///    82% of the remaining cost.
+///
+/// This version walks each referenced source's syntax tree **once**, recording
+/// the byte offset of every node whose span number is among the ones we need.
+/// That single pass resolves all spans of a source in O(node_count), replacing
+/// N independent root-descents. The number→line conversion then uses the
+/// source's prebuilt `Lines` table (O(log lines) each).
+struct SpanLineResolver<'a> {
     world: &'a EditorWorld,
-    page_idx: u16,
-    by_line: &'a mut HashMap<(u16, u32), LineAccum>,
-    transform: Transform,
+    /// `Span → 1-indexed line` for every distinct span seen in the document.
+    /// `None` means the span was resolved but points nowhere (detached /
+    /// synthesized); cached so we don't re-attempt it.
+    map: HashMap<Span, Option<u32>>,
 }
 
-impl<'a> WalkCtx<'a> {
-    /// Record a shape/image anchor (no advance geometry — a single point).
-    fn record_anchor(&mut self, span: Span) {
-        let Some(line) = span_to_line(span, self.world) else {
-            return;
-        };
-        let (px, py) = apply_transform(&self.transform, Point::zero());
-        self.by_line
-            .entry((self.page_idx, line))
-            .or_default()
-            .add_point(px, py);
+/// The low 48 bits of a `Span`'s raw encoding hold its number within a source.
+/// `SpanNumber` is `pub(crate)`, so we extract the bits ourselves via the
+/// public `into_raw()`. Two spans with the same extracted number AND the same
+/// `FileId` are the same source location.
+const SPAN_NUMBER_MASK: u64 = (1 << 48) - 1;
+
+impl<'a> SpanLineResolver<'a> {
+    fn new(world: &'a EditorWorld, needed: &HashSet<Span>) -> Self {
+        // Group needed spans by FileId so each source's tree is walked once.
+        // Range-variant spans (external files) carry their bytes directly and
+        // never enter the tree walk; collect their byte→line separately.
+        let mut by_id: HashMap<typst::syntax::FileId, HashSet<u64>> = HashMap::new();
+        let mut range_spans: Vec<(Span, usize)> = Vec::new(); // (span, byte_start)
+        let mut detached: Vec<Span> = Vec::new();
+
+        for &span in needed {
+            use typst::syntax::SpanKind;
+            match span.get() {
+                SpanKind::Number { id, num, .. } => {
+                    // SpanNumber is pub(crate); extract the bits via into_raw.
+                    // `num` was derived from `span.number()` (source.rs:179),
+                    // which IS `into_raw().get() & SPAN_NUMBER_MASK`, so reading
+                    // the same bits off the span itself yields the identical key.
+                    let num_bits = span.into_raw().get() & SPAN_NUMBER_MASK;
+                    let _ = num; // (opaque; we use num_bits instead)
+                    by_id.entry(id).or_default().insert(num_bits);
+                }
+                SpanKind::Range { id: _, range } => {
+                    range_spans.push((span, range.start));
+                }
+                SpanKind::Detached => {
+                    detached.push(span);
+                }
+            }
+        }
+
+        let mut map: HashMap<Span, Option<u32>> = HashMap::with_capacity(needed.len());
+        // Detached spans never resolve.
+        for span in detached {
+            map.insert(span, None);
+        }
+
+        // Range spans: resolve their byte offset to a line via the source's
+        // Lines table. Grouped with the Number spans of the same source so we
+        // fetch each source only once.
+        for (span, byte_start) in &range_spans {
+            let line = line_at_byte(world, span.id(), *byte_start);
+            map.insert(*span, line);
+        }
+
+        // Number spans: one DFS per source resolves all its needed numbers.
+        for (id, needed_nums) in by_id {
+            let Some(source) = world.source_for_id(id) else {
+                // Source unreadable — leave these spans absent from the map; the
+                // `resolve()` fallback handles any stragglers (returning None).
+                continue;
+            };
+            let number_to_line = resolve_numbers_via_dfs(&source, &needed_nums);
+            // Fill the map: for each needed span of this source, look up its
+            // number's line. We iterate `needed` (not `needed_nums`) because we
+            // need the full Span as the map key.
+            for &span in needed {
+                use typst::syntax::SpanKind;
+                if matches!(span.get(), SpanKind::Number { id: sid, .. } if sid == id) {
+                    let num_bits = span.into_raw().get() & SPAN_NUMBER_MASK;
+                    let line = number_to_line.get(&num_bits).copied();
+                    map.insert(span, line);
+                }
+            }
+        }
+
+        Self { world, map }
+    }
+
+    /// Resolve a span to a 1-indexed line, or `None` if detached / unresolvable.
+    /// O(1) — the work was done up front in [`Self::new`]. A span not seen by
+    /// the collector falls back to a one-off resolution.
+    #[inline]
+    fn resolve(&self, span: Span) -> Option<u32> {
+        if let Some(line) = self.map.get(&span) {
+            return *line;
+        }
+        // Fallback for spans the collector missed (shouldn't happen in practice
+        // since collect_frame walks the same items as walk_frame).
+        resolve_one(span, self.world)
+    }
+}
+
+/// Resolve a batch of span numbers to 1-indexed lines via a SINGLE depth-first
+/// traversal of the source's syntax tree.
+///
+/// Each `SyntaxNode` carries a span; its number (low 48 bits) is monotonic in
+/// the tree but we don't rely on that — we just visit every node once and record
+/// those whose number is in `needed`. Total work is O(node_count), independent
+/// of how many distinct spans we need.
+fn resolve_numbers_via_dfs(
+    source: &typst::syntax::Source,
+    needed: &HashSet<u64>,
+) -> HashMap<u64, u32> {
+    use typst::syntax::SyntaxNode;
+    let mut out: HashMap<u64, u32> = HashMap::with_capacity(needed.len());
+    // Early exit if nothing is needed from this source.
+    if needed.is_empty() {
+        return out;
+    }
+    let lines = source.lines();
+    // Iterative DFS to avoid recursion overhead / stack growth on deep trees.
+    // We track byte offset manually (SyntaxNode doesn't carry its absolute
+    // offset; LinkedNode does, but it allocates an Rc per node — heavier than
+    // this explicit stack).
+    let root = source.root();
+    let mut stack: Vec<(&SyntaxNode, usize)> = vec![(root, 0)];
+    while let Some((node, offset)) = stack.pop() {
+        // Does this node's span number match one we need?
+        let num_bits = node.span().into_raw().get() & SPAN_NUMBER_MASK;
+        if needed.contains(&num_bits) {
+            if let Some((line, _)) = lines.byte_to_line_column(offset) {
+                if let Ok(l) = u32::try_from(line + 1) {
+                    out.insert(num_bits, l);
+                }
+            }
+        }
+        // Stop early once we've resolved everything (rare hit, but cheap to check).
+        if out.len() == needed.len() {
+            break;
+        }
+        // Push children with their correct absolute byte offsets. We iterate
+        // children LEFT-TO-RIGHT accumulating offsets, then push in reverse so
+        // the stack (LIFO) visits them in source order. Reversing BEFORE
+        // accumulating would scramble the offsets — a bug that previously made
+        // every lookup return line 1.
+        let mut child_offset = offset;
+        let mut children: Vec<(&SyntaxNode, usize)> = Vec::new();
+        for child in node.children() {
+            children.push((child, child_offset));
+            child_offset += child.len();
+        }
+        // Push in reverse so the first child is popped first.
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
+    }
+    out
+}
+
+/// Convert a byte offset in a source to a 1-indexed line.
+fn line_at_byte(
+    world: &EditorWorld,
+    id: Option<typst::syntax::FileId>,
+    byte_start: usize,
+) -> Option<u32> {
+    let source = id
+        .and_then(|id| world.source_for_id(id))
+        .unwrap_or_else(|| world.main_source());
+    let (line, _) = source.lines().byte_to_line_column(byte_start)?;
+    u32::try_from(line + 1).ok()
+}
+
+/// Resolve a single span to a 1-indexed line — the one-off fallback path.
+/// Kept for `resolve()`'s defensive fallback; the hot path goes through the
+/// precomputed map.
+fn resolve_one(span: Span, world: &EditorWorld) -> Option<u32> {
+    use typst::WorldExt;
+    let bytes = world.range(span)?;
+    line_at_byte(world, span.id(), bytes.start)
+}
+
+/// Pass-1 collector: gathers every distinct span the geometry pass will need,
+/// so the resolver can pre-compute their lines in one shot (deduplicated) rather
+/// than per-glyph.
+struct CollectCtx<'a> {
+    needed: &'a mut HashSet<Span>,
+}
+
+fn collect_frame(ctx: &mut CollectCtx, frame: &Frame) {
+    for (_pos, item) in frame.items() {
+        match item {
+            FrameItem::Text(text) => {
+                for glyph in &text.glyphs {
+                    ctx.needed.insert(glyph.span.0);
+                }
+            }
+            FrameItem::Group(group) => collect_frame(ctx, &group.frame),
+            FrameItem::Shape(_, span) | FrameItem::Image(_, _, span) => {
+                ctx.needed.insert(*span);
+            }
+            FrameItem::Link(_, _) | FrameItem::Tag(_) => {}
+        }
     }
 }
 
@@ -143,6 +366,27 @@ fn apply_transform(t: &Transform, p: Point) -> (f64, f64) {
     (nx, ny)
 }
 
+struct WalkCtx<'a> {
+    resolver: &'a SpanLineResolver<'a>,
+    page_idx: u16,
+    by_line: &'a mut HashMap<(u16, u32), LineAccum>,
+    transform: Transform,
+}
+
+impl<'a> WalkCtx<'a> {
+    /// Record a shape/image anchor (no advance geometry — a single point).
+    fn record_anchor(&mut self, span: Span) {
+        let Some(line) = self.resolver.resolve(span) else {
+            return;
+        };
+        let (px, py) = apply_transform(&self.transform, Point::zero());
+        self.by_line
+            .entry((self.page_idx, line))
+            .or_default()
+            .add_point(px, py);
+    }
+}
+
 /// Recursively walk a frame, mirroring `typst_svg::render_frame`.
 fn walk_frame(ctx: &mut WalkCtx, frame: &Frame) {
     // Record a vertical extent per text line so wrapped lines keep height even
@@ -152,7 +396,7 @@ fn walk_frame(ctx: &mut WalkCtx, frame: &Frame) {
         // Each item is positioned at `pos` relative to the current frame's
         // origin — pre-translate, exactly like `typst_svg::State::pre_translate`.
         let mut child = WalkCtx {
-            world: ctx.world,
+            resolver: ctx.resolver,
             page_idx: ctx.page_idx,
             by_line: ctx.by_line,
             transform: ctx.transform.pre_concat(Transform::translate(pos.x, pos.y)),
@@ -221,7 +465,10 @@ fn record_glyph(
     advance: Abs,
     size: f64,
 ) {
-    let Some(line) = span_to_line(span, ctx.world) else {
+    // O(1) memoized lookup — the per-distinct-span tree descent happened once in
+    // SpanLineResolver::new. This is the fix for the old O(glyphs × tree_height)
+    // behavior where every glyph re-descended from the syntax-tree root.
+    let Some(line) = ctx.resolver.resolve(span) else {
         return;
     };
     // Span the box from the glyph's draw position to (cursor + advance), so an
@@ -429,5 +676,131 @@ mod tests {
             println!("wrote {} ({} rects)", out, page_rects.len());
         }
         println!("\nOpen /tmp/demo-overlay-*.svg in a browser to inspect alignment.");
+    }
+
+    /// PERFORMANCE benchmark for `build_source_map` — the fix target.
+    ///
+    /// Builds a document dense in glyphs (many short lines of CJK text, which
+    /// each render as a distinct glyph) and times `build_source_map` over a few
+    /// iterations. Before the fix (per-glyph `find_number` from the tree root),
+    /// this scaled as O(glyphs × tree-height); after the single-DFS resolver it
+    /// is roughly linear in syntax-node count.
+    ///
+    /// Run with:
+    ///   cargo test --lib build_source_map_perf -- --nocapture --ignored
+    #[test]
+    #[ignore]
+    fn build_source_map_perf() {
+        // Helper: count total glyphs and collect distinct spans in a frame tree.
+        fn count_glyphs(frame: &Frame, glyphs: &mut usize, distinct: &mut HashSet<Span>) {
+            use typst::layout::{FrameItem};
+            for (_pos, item) in frame.items() {
+                match item {
+                    FrameItem::Text(text) => {
+                        for g in &text.glyphs {
+                            *glyphs += 1;
+                            distinct.insert(g.span.0);
+                        }
+                    }
+                    FrameItem::Group(group) => count_glyphs(&group.frame, glyphs, distinct),
+                    FrameItem::Shape(_, span) | FrameItem::Image(_, _, span) => {
+                        distinct.insert(*span);
+                    }
+                    FrameItem::Link(_, _) | FrameItem::Tag(_) => {}
+                }
+            }
+        }
+        // ~1200 lines of CJK-ish text → each line ~12 glyphs → tens of
+        // thousands of glyphs across a few pages, mirroring the user's
+        // reported "dense single/multi-page" scenario.
+        let mut src = String::from("#set page(width: 21cm, height: 29.7cm)\n\n");
+        for i in 0..1200 {
+            // Mix of CJK and latin; each char is a glyph. Repeat to grow glyph count.
+            src.push_str(&format!("第{i}行 测试文本编译性能 abcdefghijklmnop 汉字字形映射检验\n"));
+        }
+
+        let w = world(&src);
+        let (outcome, doc) = crate::typst_engine::compiler::compile(&w);
+        assert!(outcome.success, "errors: {:?}", outcome.errors);
+        let doc = doc.expect("doc on success");
+
+        let n_pages = doc.pages().len();
+        println!("\n=== build_source_map perf ===");
+        println!("compile_ms={}, pages={n_pages}", outcome.duration_ms);
+
+        // Count total glyphs vs distinct spans — the dedup ratio is the win.
+        let mut total_glyphs: usize = 0;
+        let mut distinct: HashSet<Span> = HashSet::new();
+        for page in doc.pages().iter() {
+            count_glyphs(&page.frame, &mut total_glyphs, &mut distinct);
+        }
+        println!(
+            "glyphs={total_glyphs}, distinct_spans={} (dedup ratio {:.1}×)",
+            distinct.len(),
+            total_glyphs as f64 / distinct.len().max(1) as f64,
+        );
+
+        // Warm up (first run primes any caches).
+        let _ = build_source_map(&doc, &w);
+
+        // Measure 5 iterations, report min (least noise) and mean.
+        const ITER: usize = 5;
+        let mut samples: Vec<u128> = Vec::with_capacity(ITER);
+        for _ in 0..ITER {
+            let t = std::time::Instant::now();
+            let map = build_source_map(&doc, &w);
+            let elapsed = t.elapsed().as_micros();
+            samples.push(elapsed);
+            // Keep `map` alive so we don't measure with the optimizer eliding it.
+            std::hint::black_box(&map);
+        }
+        let min_us = *samples.iter().min().unwrap();
+        let mean_us = samples.iter().sum::<u128>() as f64 / ITER as f64;
+        println!(
+            "build_source_map: min={min_us} µs ({:.1} ms), mean={mean_us:.0} µs ({:.1} ms) over {ITER} iters",
+            min_us as f64 / 1000.0,
+            mean_us / 1000.0,
+        );
+        println!("samples (µs): {samples:?}");
+
+        // --- CONTROL: the OLD per-glyph path (resolve every glyph's span
+        // independently via find_number) — to measure the actual speedup.
+        // This mirrors the pre-fix `span_to_line` call per glyph.
+        let t_old = std::time::Instant::now();
+        let mut old_lines: HashSet<u32> = HashSet::new();
+        for page in doc.pages().iter() {
+            collect_old_lines(&page.frame, &w, &mut old_lines);
+        }
+        let old_us = t_old.elapsed().as_micros();
+        println!(
+            "OLD per-glyph resolve: {} µs ({:.1} ms) — speedup {:.1}×",
+            old_us,
+            old_us as f64 / 1000.0,
+            old_us as f64 / min_us as f64,
+        );
+    }
+
+    /// Control helper: resolve every glyph's span the OLD way (one
+    /// `span_to_line` / find_number per glyph), to measure the speedup.
+    fn collect_old_lines(frame: &Frame, w: &EditorWorld, out: &mut HashSet<u32>) {
+        use typst::layout::FrameItem;
+        for (_pos, item) in frame.items() {
+            match item {
+                FrameItem::Text(text) => {
+                    for g in &text.glyphs {
+                        if let Some(line) = crate::typst_engine::compiler::span_to_line(g.span.0, w) {
+                            out.insert(line);
+                        }
+                    }
+                }
+                FrameItem::Group(group) => collect_old_lines(&group.frame, w, out),
+                FrameItem::Shape(_, span) | FrameItem::Image(_, _, span) => {
+                    if let Some(line) = crate::typst_engine::compiler::span_to_line(*span, w) {
+                        out.insert(line);
+                    }
+                }
+                FrameItem::Link(_, _) | FrameItem::Tag(_) => {}
+            }
+        }
     }
 }

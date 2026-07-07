@@ -302,12 +302,24 @@ impl CompileService {
             let text_after = tab.world.text();
             if text_before == text_after {
                 if let Some(doc) = doc {
+                    // --- DIAGNOSTIC TIMING (compile-pipeline breakdown) -------
+                    // `outcome.duration_ms` only covers `typst::compile` (③).
+                    // The segments below (④ render, ⑤ aux, ⑥ emit/serialize)
+                    // are NOT reflected in the status bar's number but dominate
+                    // perceived latency for large/complex documents. Time them
+                    // here so a single run with RUST_LOG=...=info reveals which
+                    // segment is the bottleneck.
+                    let n_pages = doc.pages().len();
+                    let t_svg = Instant::now();
                     // SVG rendering is infallible in practice (`typst_svg::svg`
                     // returns `String`); if it ever errors, degrade to an empty
                     // page list rather than panicking the compile worker.
                     let pages = SvgRenderer::new()
                         .render(&doc)
                         .unwrap_or_default();
+                    let d_svg = t_svg.elapsed();
+
+                    let t_aux = Instant::now();
                     // Build the source map from the same compiled document. This
                     // is cheap (one frame walk, KB-scale output) and runs on the
                     // compile thread, so it never blocks the editor. Skipped
@@ -315,6 +327,14 @@ impl CompileService {
                     // step with the rendered pages.
                     let line_map = build_source_map(&doc, &tab.world);
                     let outline = crate::render::outline::build_outline(&doc, &tab.world);
+                    let d_aux = t_aux.elapsed();
+
+                    // Total SVG payload size in bytes — the dominant factor in
+                    // both serde serialization and IPC transfer cost.
+                    let svg_bytes: usize = pages.iter().map(|s| s.len()).sum();
+                    let svg_kb = svg_bytes as f64 / 1024.0;
+
+                    let t_emit = Instant::now();
                     emitter.emit_compiled(
                         id,
                         revision,
@@ -322,6 +342,21 @@ impl CompileService {
                         line_map,
                         outline,
                         outcome.duration_ms,
+                    );
+                    let d_emit = t_emit.elapsed();
+
+                    tracing::info!(
+                        target: "typst_studio::compile_timing",
+                        %id,
+                        revision,
+                        pages = n_pages,
+                        svg_kb = format!("{svg_kb:.1}"),
+                        compile_ms = outcome.duration_ms,    // ③ typst::compile
+                        svg_ms = d_svg.as_millis() as u64,   // ④ render all pages
+                        aux_ms = d_aux.as_millis() as u64,   // ⑤ source_map + outline
+                        emit_ms = d_emit.as_millis() as u64, // ⑥ serialize + app.emit
+                        total_post_ms = (d_svg + d_aux + d_emit).as_millis() as u64,
+                        "compile pipeline timing"
                     );
                 }
             }

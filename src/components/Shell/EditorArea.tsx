@@ -927,6 +927,7 @@ export function EditorArea() {
                 onJumpToLine={handleJumpToLine}
                 onScroll={handlePreviewScroll}
                 onPageImgLoad={handlePageImgLoad}
+                revision={activeTab.compiledRevision}
                 paneRef={previewPaneRef}
                 pageRefs={pageRefs}
               />

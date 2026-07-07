@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useSetting } from "../../hooks/useSetting";
 import { useThemeStore } from "../../store/themeStore";
+import { markPageDecoded } from "../../lib/compileTiming";
 import { SvgPage } from "./SvgPage";
 import type { LineRect } from "../../lib/types";
 
@@ -23,6 +24,12 @@ interface PreviewPaneProps {
    * read at render time is still height:0). Receives the 0-based page index.
    */
   onPageImgLoad?: (pageIndex: number) => void;
+  /**
+   * The revision these `svgPages` correspond to (DIAGNOSTIC: used by
+   * compileTiming to attribute blob-decode latency per compile cycle). Optional
+   * so existing callers that don't care about timing still compile.
+   */
+  revision?: number;
   /** Ref onto the scroll container (`.preview-pane`). */
   paneRef?: React.Ref<HTMLDivElement>;
   /** Refs to each `.svg-page` wrapper, indexed by 0-based page number. */
@@ -50,6 +57,7 @@ export function PreviewPane({
   onJumpToLine,
   onScroll,
   onPageImgLoad,
+  revision,
   paneRef,
   pageRefs,
 }: PreviewPaneProps) {
@@ -159,7 +167,16 @@ export function PreviewPane({
             lineRects={rectsByPage.get(i)}
             activeLines={activeLines}
             onJumpToLine={onJumpToLine}
-            onImgLoad={onPageImgLoad ? () => onPageImgLoad(i) : undefined}
+            onImgLoad={
+              // DIAGNOSTIC: record each page's blob-decode finish time. When the
+              // last page of `revision` decodes, compileTiming prints the full
+              // ⑨/⑩ breakdown. The page-index callback still fires for
+              // scroll-sync geometry refresh.
+              () => {
+                if (revision != null) markPageDecoded(revision, i + 1);
+                onPageImgLoad?.(i);
+              }
+            }
             pageRef={refForPage(i)}
           />
         ))

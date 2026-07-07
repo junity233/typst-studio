@@ -8,10 +8,12 @@ import {
   onSaveStateChanged,
   onStatus,
 } from "../lib/tauri";
+import { markCommitted, markReceived } from "../lib/compileTiming";
 import { useTabsStore } from "../store/tabsStore";
 import { useDocumentsStore } from "../store/documentsStore";
 import { useSaveStateStore } from "../store/saveStateStore";
 import { useDiagnosticsStore } from "../store/diagnosticsStore";
+import { useConflictDialogStore } from "../store/conflictDialogStore";
 
 /**
  * App-level subscription to the typst compile lifecycle. Mount once near the
@@ -43,12 +45,18 @@ export function useTypstCompile(): void {
 
     (async () => {
       const uCompiled = await onCompiled((p) => {
+        // DIAGNOSTIC: mark the instant the compiled event arrived in JS (end of
+        // ⑦ IPC transfer + ⑧ deserialize). See src/lib/compileTiming.ts.
+        markReceived(p.revision, p.pages.length, p.durationMs);
         const tabs = useTabsStore.getState();
         // Wrap the SVG payload update in a transition so Monaco keystroke
         // processing is never blocked by preview reconciliation. The revision
         // guard inside setPages discards stale compiles (§7).
         startTransition(() => {
           tabs.setPages(p.id, p.revision, p.pages, p.lineMap, p.outline);
+          // DIAGNOSTIC: record when setPages actually committed inside the
+          // transition (⑨ transition lag).
+          markCommitted(p.revision);
         });
       });
       if (cancelled) {
@@ -88,9 +96,20 @@ export function useTypstCompile(): void {
       // §5.4 / §8.4: external-modification conflict. Surface the backend's
       // conflict state on the tab and stash the disk content (present on
       // "modified") so the ConflictDialog can show a compare view without a
-      // second IPC round-trip.
+      // second IPC round-trip. Any external change (clean or dirty buffer) now
+      // surfaces as a conflict — open the dialog so the user can decide whether
+      // to apply the disk content, rather than silently reloading.
       const uConflict = await onConflict((p) => {
         useTabsStore.getState().setConflict(p.id, p.conflict, p.diskContent);
+        if (p.conflict !== "none") {
+          const dlg = useConflictDialogStore.getState();
+          // Don't re-open if this doc's dialog is already up (e.g. the user is
+          // reviewing the compare view, or dismissed it with "Later"); the
+          // StatusBar "Conflict" entry remains a manual re-entry point.
+          if (dlg.openForId !== p.id) {
+            dlg.open(p.id);
+          }
+        }
       });
       if (cancelled) {
         uConflict();
