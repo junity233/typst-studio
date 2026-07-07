@@ -2,8 +2,10 @@ import { create } from "zustand";
 import type { DirEntry, EntryKind } from "../lib/types";
 import {
   closeWorkspace as closeWorkspaceBE,
+  copyEntry as copyEntryBE,
   createEntry as createEntryBE,
   deleteEntry as deleteEntryBE,
+  deleteEntryPermanent as deleteEntryPermanentBE,
   getWorkspace as getWorkspaceBE,
   openDefaultWorkspace as openDefaultWorkspaceBE,
   openWorkspace as openWorkspaceBE,
@@ -74,6 +76,17 @@ export interface WorkspaceState {
    * when a dirty document is open under the target.
    */
   deleteEntry: (rel: string) => Promise<void>;
+  /**
+   * Permanently delete an entry (§5.5 advanced action; NOT recoverable). Same
+   * dirty-doc protection as [`deleteEntry`].
+   */
+  deleteEntryPermanent: (rel: string) => Promise<void>;
+  /**
+   * Recursively copy an entry to another workspace-relative path (Copy / Paste /
+   * Duplicate). The source is left untouched; both source and destination
+   * parent dirs are refreshed.
+   */
+  copyEntry: (from: string, to: string) => Promise<void>;
 }
 
 /** The parent directory of a workspace-relative path ("" if at root). */
@@ -220,6 +233,17 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   deleteEntry: async (rel) => {
     await deleteEntryBE(rel);
     await get().refresh(parentRel(rel));
+  },
+
+  deleteEntryPermanent: async (rel) => {
+    await deleteEntryPermanentBE(rel);
+    await get().refresh(parentRel(rel));
+  },
+
+  copyEntry: async (from, to) => {
+    await copyEntryBE(from, to);
+    await get().refresh(parentRel(from));
+    await get().refresh(parentRel(to));
   },
 }));
 

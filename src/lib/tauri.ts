@@ -530,6 +530,25 @@ export async function deleteEntry(rel: string): Promise<DeleteResult> {
   return invoke<DeleteResult>("delete_entry", { rel });
 }
 
+/**
+ * Permanently delete a workspace-relative entry (§5.5 advanced action). NOT
+ * recoverable. Same dirty-doc protection as [`deleteEntry`]: a dirty document
+ * AT/UNDER the target blocks the delete with `delete_blocked`.
+ */
+export async function deleteEntryPermanent(rel: string): Promise<DeleteResult> {
+  return invoke<DeleteResult>("delete_entry_permanent", { rel });
+}
+
+/**
+ * Recursively copy a workspace-relative entry to another workspace-relative
+ * path (Copy / Paste / Duplicate in the file manager). The source is left
+ * untouched. Both paths are workspace-relative; `../` escapes are rejected by
+ * the backend.
+ */
+export async function copyEntry(from: string, to: string): Promise<void> {
+  await invoke("copy_entry", { from, to });
+}
+
 /** Reveal a workspace-relative file or directory in the OS file manager. */
 export async function revealInFinder(rel: string): Promise<void> {
   await invoke("reveal_in_finder", { rel });

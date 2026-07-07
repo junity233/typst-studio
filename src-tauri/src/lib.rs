@@ -133,6 +133,8 @@ pub fn run() {
             ipc::fs_commands::create_entry,
             ipc::fs_commands::rename_entry,
             ipc::fs_commands::delete_entry,
+            ipc::fs_commands::delete_entry_permanent,
+            ipc::fs_commands::copy_entry,
             ipc::fs_commands::open_file_by_path,
             ipc::fs_commands::reveal_in_finder,
             // Git (Source Control view, Phase 4).

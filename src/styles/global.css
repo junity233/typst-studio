@@ -2133,6 +2133,30 @@ button {
   background: var(--color-primary);
   border-radius: var(--radius-pill);
 }
+/* Keyboard-selection anchor (F2 / Delete / Ctrl+C/X/V act on this row). A
+   subtle parchment fill + ink-strong label — distinct from .tree-row-active
+   (Action-Blue, marks the open document) so the two never read as the same
+   state. No left stripe: the active stripe is the open-file affordance. */
+.tree-row-selected {
+  background: var(--color-canvas-parchment);
+  color: var(--color-ink-strong, var(--color-ink));
+}
+/* A row currently in the CUT clipboard: de-emphasized (dimmed + italic) until
+   pasted (moved) or the clipboard is cleared, signaling "this will move on
+   paste". Parity with VS Code's cut-row affordance. */
+.tree-row-cut {
+  opacity: 0.55;
+  font-style: italic;
+}
+/* The Explorer tree is a focusable region (keyboard shortcuts anchor on it).
+   A faint focus ring keeps the affordance discoverable without adding chrome
+   during normal mouse use. */
+.explorer-body:focus {
+  outline: none;
+}
+.explorer-body:focus-visible {
+  outline: none;
+}
 .tree-twisty {
   width: 14px;
   flex: 0 0 auto;

@@ -378,28 +378,7 @@ pub async fn delete_entry(state: State<'_, AppState>, rel: String) -> Result<Del
     let target = ws.resolve_path(&rel)?;
     // §5.5 dirty-doc check. The IPC layer has AppState (both workspace + editor
     // services), so this is the right place — WorkspaceService is disk-only.
-    let affected = state.editor.document().docs_under_path(&target);
-    let dirty: Vec<&crate::service::document_service::AffectedDoc> =
-        affected.iter().filter(|d| d.dirty).collect();
-    if !dirty.is_empty() {
-        let affected_wire: Vec<AffectedDoc> = dirty
-            .iter()
-            .map(|d| AffectedDoc {
-                id: d.id,
-                path: d.path.to_string_lossy().into_owned(),
-            })
-            .collect();
-        let n = affected_wire.len();
-        let details = serde_json::json!({ "affectedDocs": affected_wire });
-        return Err(AppError::Code {
-            code: crate::ipc::error::ErrorCode::DeleteBlocked,
-            message: format!(
-                "{n} unsaved document(s) open under '{rel}'; save, close, or discard them before deleting."
-            ),
-            recoverable: true,
-            details: Some(details),
-        });
-    }
+    block_on_dirty(&state, &rel, &target)?;
     // No dirty docs: proceed to trash. Clean open docs under the target will be
     // marked Missing by the watcher (§8.4) — the correct recoverable state.
     let outcome = ws.delete_entry(&rel)?;
@@ -410,6 +389,79 @@ pub async fn delete_entry(state: State<'_, AppState>, rel: String) -> Result<Del
         }
         .to_string(),
     })
+}
+
+/// Reject the operation with `DeleteBlocked` if any dirty document is open AT or
+/// UNDER `target`. Shared by [`delete_entry`] (trash) and
+/// [`delete_entry_permanent`] — both must refuse to delete underneath an unsaved
+/// edit. Returns `Ok(())` if no dirty docs block. See §5.5 "dirty 文档存在时
+/// 阻止删除".
+fn block_on_dirty(
+    state: &State<'_, AppState>,
+    rel: &str,
+    target: &std::path::Path,
+) -> std::result::Result<(), AppError> {
+    let affected = state.editor.document().docs_under_path(target);
+    let dirty: Vec<&crate::service::document_service::AffectedDoc> =
+        affected.iter().filter(|d| d.dirty).collect();
+    if dirty.is_empty() {
+        return Ok(());
+    }
+    let affected_wire: Vec<AffectedDoc> = dirty
+        .iter()
+        .map(|d| AffectedDoc {
+            id: d.id,
+            path: d.path.to_string_lossy().into_owned(),
+        })
+        .collect();
+    let n = affected_wire.len();
+    let details = serde_json::json!({ "affectedDocs": affected_wire });
+    Err(AppError::Code {
+        code: crate::ipc::error::ErrorCode::DeleteBlocked,
+        message: format!(
+            "{n} unsaved document(s) open under '{rel}'; save, close, or discard them before deleting."
+        ),
+        recoverable: true,
+        details: Some(details),
+    })
+}
+
+/// Permanently delete a workspace-relative file or directory (§5.5 "永久删除只
+/// 作为明确标注的高级动作"). NOT recoverable. This is the explicit advanced
+/// action — the default [`delete_entry`] trashes. Same dirty-doc protection as
+/// `delete_entry`: a dirty document AT/UNDER the target blocks the delete.
+#[tauri::command]
+pub async fn delete_entry_permanent(
+    state: State<'_, AppState>,
+    rel: String,
+) -> Result<DeleteResult> {
+    let ws = state.workspace.clone();
+    let target = ws.resolve_path(&rel)?;
+    block_on_dirty(&state, &rel, &target)?;
+    let outcome = ws.delete_entry_permanent(&rel)?;
+    Ok(DeleteResult {
+        outcome: match outcome {
+            crate::service::trash::TrashOutcome::Trashed => "trashed",
+            crate::service::trash::TrashOutcome::PermanentlyDeleted => "permanently_deleted",
+        }
+        .to_string(),
+    })
+}
+
+/// Recursively copy a workspace-relative entry to another workspace-relative
+/// path (Copy / Paste / Duplicate in the file manager context menu). The source
+/// is left untouched. Works for files and directories. Both paths are resolved
+/// and containment-checked by the service, so `../` escapes are rejected.
+#[tauri::command]
+pub async fn copy_entry(
+    state: State<'_, AppState>,
+    from: String,
+    to: String,
+) -> Result<()> {
+    let ws = state.workspace.clone();
+    tauri::async_runtime::spawn_blocking(move || ws.copy_entry(&from, &to))
+        .await
+        .map_err(|e| AppError::Other(format!("join error: {e}")))?
 }
 
 /// Reveal a workspace-relative file or directory in the OS file manager

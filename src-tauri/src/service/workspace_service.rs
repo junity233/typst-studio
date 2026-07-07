@@ -283,6 +283,38 @@ impl WorkspaceService {
         crate::service::trash::TrashService::permanent_delete(&path)
     }
 
+    /// Recursively copy a workspace-relative entry to another
+    /// workspace-relative path (used by Copy / Paste / Duplicate in the file
+    /// manager context menu). The source is left untouched. Works for files and
+    /// directories. The destination's parent is created if missing (mirroring
+    /// [`rename_entry`](Self::rename_entry)).
+    ///
+    /// Both `from_rel` and `to_rel` are workspace-relative and containment is
+    /// enforced by [`resolve_rel`](Self::resolve_rel), so `../` escapes are
+    /// rejected. A copy where `to_rel` is at/inside `from_rel` (copying a dir
+    /// into itself) is rejected to avoid infinite recursion.
+    pub fn copy_entry(&self, from_rel: &str, to_rel: &str) -> Result<()> {
+        let from = self.resolve_rel(from_rel)?;
+        let to = self.resolve_rel(to_rel)?;
+        // Guard against copying a directory into itself (would recurse forever).
+        if to == from || to.starts_with(&from) {
+            return Err(AppError::InvalidInput(format!(
+                "cannot copy '{}' into itself",
+                from.display()
+            )));
+        }
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(AppError::Io)?;
+        }
+        let meta = std::fs::symlink_metadata(&from).map_err(AppError::Io)?;
+        if meta.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to).map_err(AppError::Io)?;
+        }
+        Ok(())
+    }
+
     /// Read a `.typ` file's text by absolute path (for `open_file_by_path`).
     /// The command layer pairs this with the resolver to open a workspace-backed
     /// tab.
@@ -295,6 +327,47 @@ impl Default for WorkspaceService {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Recursively copy a directory tree from `src` to `dst`. `dst` must not exist
+/// (its parent is created by the caller). Walks `src` with `walkdir` and mirrors
+/// the structure: dirs via `create_dir`, files via `fs::copy`. Symlinks are
+/// copied as the underlying target's bytes (we use `symlink_metadata` so we
+/// never follow a symlink out of the workspace — consistent with the trash and
+/// permanent-delete paths).
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst).map_err(AppError::Io)?;
+    for entry in walkdir::WalkDir::new(src).follow_links(false) {
+        let entry = entry.map_err(|e| AppError::Other(e.to_string()))?;
+        // The walk's first entry is `src` itself (already created as `dst`).
+        if entry.path() == src {
+            continue;
+        }
+        let rel = entry
+            .path()
+            .strip_prefix(src)
+            .map_err(|e| AppError::Other(e.to_string()))?;
+        let target = dst.join(rel);
+        let ft = entry.file_type();
+        if ft.is_dir() {
+            std::fs::create_dir_all(&target).map_err(AppError::Io)?;
+        } else if ft.is_symlink() {
+            // Copy the link target's bytes (don't recreate the link — a copy
+            // should materialize content, not a dangling reference).
+            let meta = std::fs::metadata(entry.path()).map_err(AppError::Io)?;
+            if meta.is_dir() {
+                copy_dir_recursive(entry.path(), &target)?;
+            } else {
+                std::fs::copy(entry.path(), &target).map_err(AppError::Io)?;
+            }
+        } else {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).map_err(AppError::Io)?;
+            }
+            std::fs::copy(entry.path(), &target).map_err(AppError::Io)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -380,6 +453,47 @@ mod tests {
         ws.rename_entry("a.typ", "b.typ").unwrap();
         assert!(!dir.join("a.typ").exists());
         assert!(dir.join("b.typ").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_entry_copies_file_and_dir() {
+        // A file copy duplicates content (source untouched); a directory copy
+        // recursively mirrors the tree.
+        let dir = tmp_dir();
+        std::fs::write(dir.join("a.typ"), "hello").unwrap();
+        std::fs::create_dir_all(dir.join("sub/nested")).unwrap();
+        std::fs::write(dir.join("sub/nested/child.typ"), "child").unwrap();
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+
+        // File copy.
+        ws.copy_entry("a.typ", "a_copy.typ").unwrap();
+        assert!(dir.join("a.typ").exists(), "source file must remain");
+        assert!(dir.join("a_copy.typ").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("a_copy.typ")).unwrap(), "hello");
+
+        // Directory copy (recursive).
+        ws.copy_entry("sub", "sub_copy").unwrap();
+        assert!(dir.join("sub/nested/child.typ").exists(), "source dir must remain");
+        assert!(dir.join("sub_copy/nested/child.typ").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("sub_copy/nested/child.typ")).unwrap(),
+            "child"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_entry_rejects_path_escape_and_self_copy() {
+        let dir = tmp_dir();
+        std::fs::create_dir_all(dir.join("d")).unwrap();
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        // Escaping the root is rejected by resolve_rel.
+        assert!(ws.copy_entry("d", "../escape").is_err());
+        // Copying a dir into itself (would recurse forever) is rejected.
+        assert!(ws.copy_entry("d", "d/inner").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

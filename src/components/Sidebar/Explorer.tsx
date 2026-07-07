@@ -1,16 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
+  ClipboardPaste,
   Copy,
+  CopyPlus,
   File,
   FilePlus,
   Folder,
   FolderOpen,
   FolderPlus,
   Pencil,
+  Scissors,
   SquareArrowOutUpRight,
   Trash2,
 } from "lucide-react";
@@ -18,10 +21,19 @@ import type { DirEntry, EntryKind } from "../../lib/types";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useTabsStore, readAllDocuments } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
+import { useFileClipboardStore, readClipboard } from "../../store/fileClipboardStore";
+import { useExplorerSelectionStore } from "../../store/explorerSelectionStore";
 import { openFileByPath, revealInFinder } from "../../lib/tauri";
 import { toIpcError } from "../../lib/ipc-error";
 import i18n from "../../i18n";
-import { useContextMenuStore } from "./contextMenuStore";
+import { isMac } from "../../lib/platform";
+import { useContextMenuStore, type MenuItem } from "./contextMenuStore";
+import {
+  allLoadedEntries,
+  joinRel,
+  parentRel,
+  resolveCollision,
+} from "./explorerOps";
 import type { TFunction } from "i18next";
 import {
   joinWorkspacePath,
@@ -32,13 +44,157 @@ const ICON_SIZE = 14;
 
 /**
  * The workspace file explorer: a lazy, recursively-expandable tree of the open
- * folder. Supports browse + open (click a `.typ`), file management via the
- * toolbar (New File / New Folder) and a real right-click context menu
- * (Rename / Delete / Copy / Reveal / Collapse-all). Renames use an inline
- * editor. Folders expand/collapse with a CSS grid height transition.
+ * folder. Supports browse + open (double-click a `.typ`), file management via
+ * the toolbar (New File / New Folder) and a feature-rich right-click context
+ * menu (Rename / Delete / Copy / Cut / Paste / Duplicate / Reveal / Copy-Path).
+ * Renames use an inline editor. Folders expand/collapse with a CSS grid height
+ * transition.
  *
- * Drag-to-move is deferred — create/rename/delete cover the daily cases.
+ * Keyboard shortcuts (F2 / Delete / Shift+Delete / Ctrl+C / Ctrl+X / Ctrl+V /
+ * Ctrl+D) are bound on the tree container and only fire when it holds focus —
+ * never stealing Monaco's clipboard chords.
+ *
+ * Drag-to-move is deferred — the context menu + shortcuts cover the daily cases.
  */
+
+/** Copy text to the system clipboard, warning (not throwing) on failure. */
+function copyToClipboard(text: string) {
+  navigator.clipboard?.writeText(text).catch((e) => {
+    console.warn("[Explorer] clipboard write failed:", e);
+  });
+}
+
+/** Run a destructive-delete (trash or permanent) with shared error handling. */
+async function doDeleteWithConfirm(
+  entry: DirEntry,
+  deleteFn: (rel: string) => Promise<unknown>,
+  confirm: string,
+  errKey: string,
+) {
+  const ok = window.confirm(confirm);
+  if (!ok) return;
+  try {
+    await deleteFn(entry.relative);
+  } catch (e) {
+    const err = toIpcError(e);
+    if (err.code === "delete_blocked") {
+      const affected = extractAffectedDocs(err.details);
+      const names = affected.length > 0 ? affected.join("\n") : "";
+      window.alert(
+        names
+          ? i18n.t("deleteBlockedWithNames", {
+              ns: "errors",
+              name: entry.name,
+              count: affected.length,
+              names,
+            })
+          : i18n.t("deleteBlocked", {
+              ns: "errors",
+              name: entry.name,
+              count: affected.length,
+            }),
+      );
+      return;
+    }
+    window.alert(i18n.t(errKey, { ns: "errors", message: err.message }));
+  }
+}
+
+/** Trash an entry with a confirm prompt (the default delete path; recoverable). */
+function handleDeleteWithConfirm(
+  entry: DirEntry,
+  deleteEntry: (rel: string) => Promise<unknown>,
+) {
+  const isDir = entry.kind === "dir";
+  return doDeleteWithConfirm(
+    entry,
+    deleteEntry,
+    i18n.t(isDir ? "deleteConfirmDir" : "deleteConfirmFile", { ns: "errors", name: entry.name }),
+    "deleteFailed",
+  );
+}
+
+/** Permanently delete an entry (NOT recoverable) with a stronger confirm. */
+function handleDeletePermanentWithConfirm(
+  entry: DirEntry,
+  deleteEntryPermanent: (rel: string) => Promise<unknown>,
+) {
+  const isDir = entry.kind === "dir";
+  return doDeleteWithConfirm(
+    entry,
+    deleteEntryPermanent,
+    i18n.t(isDir ? "sidebar:explorer.deletePermanentlyConfirmDir" : "sidebar:explorer.deletePermanentlyConfirmFile", {
+      name: entry.name,
+    }),
+    "deletePermanentlyFailed",
+  );
+}
+
+/**
+ * Pull the affected-doc paths out of a `delete_blocked` error's `details`
+ * (§5.5). The backend carries `{ affectedDocs: [{ id, path }, ...] }`; we only
+ * need the paths for the user-facing message.
+ */
+function extractAffectedDocs(details: unknown): string[] {
+  if (typeof details !== "object" || details === null) return [];
+  const affected = (details as { affectedDocs?: unknown }).affectedDocs;
+  if (!Array.isArray(affected)) return [];
+  return affected
+    .map((d) => (typeof d === "object" && d !== null ? (d as { path?: unknown }).path : null))
+    .filter((p): p is string => typeof p === "string");
+}
+
+/**
+ * Paste the clipboard entry into `destDir`. Copy mode → duplicate (source kept);
+ * cut mode → move (source removed). Name collisions resolve to "X copy". On a
+ * cut-paste, the clipboard is cleared after the move. Surfaces errors via
+ * `window.alert` with the right i18n key.
+ */
+async function handlePaste(destDir: string) {
+  const { entries, mode } = readClipboard();
+  if (entries.length === 0) return;
+  const ws = useWorkspaceStore.getState();
+  const tree = ws.tree;
+  const existing = allLoadedEntries(tree);
+  for (const entry of entries) {
+    // Don't paste a dir into itself / a descendant of itself (would recurse).
+    if (entry.kind === "dir" && (destDir === entry.relative || destDir.startsWith(entry.relative + "/"))) {
+      window.alert(i18n.t("pasteFailed", { ns: "errors", message: entry.name }));
+      continue;
+    }
+    const desiredRel = joinRel(destDir, entry.name);
+    const target = resolveCollision(desiredRel, existing);
+    try {
+      if (mode === "copy") {
+        await ws.copyEntry(entry.relative, target);
+      } else {
+        await ws.renameEntry(entry.relative, target);
+      }
+      existing.add(target);
+    } catch (e) {
+      const key = mode === "copy" ? "copyFailed" : "pasteFailed";
+      window.alert(i18n.t(key, { ns: "errors", message: toIpcError(e).message }));
+    }
+  }
+  // Cut moves the source — the clipboard is now stale (points at the old path).
+  if (mode === "cut") {
+    useFileClipboardStore.getState().clear();
+  }
+}
+
+/** Duplicate an entry in its own directory (always renames — "X copy"). */
+async function handleDuplicate(entry: DirEntry) {
+  const ws = useWorkspaceStore.getState();
+  const existing = allLoadedEntries(ws.tree);
+  const parent = parentRel(entry.relative);
+  const target = resolveCollision(joinRel(parent, entry.name), existing);
+  try {
+    await ws.copyEntry(entry.relative, target);
+  } catch (e) {
+    window.alert(i18n.t("duplicateFailed", { ns: "errors", message: toIpcError(e).message }));
+  }
+}
+
 export function Explorer(_props: { viewId?: string }) {
   const { t } = useTranslation(["sidebar", "common"]);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
@@ -49,12 +205,22 @@ export function Explorer(_props: { viewId?: string }) {
   const createEntry = useWorkspaceStore((s) => s.createEntry);
   const collapseAll = useWorkspaceStore((s) => s.collapseAll);
   const expandAll = useWorkspaceStore((s) => s.expandAll);
+  const deleteEntry = useWorkspaceStore((s) => s.deleteEntry);
+  const deleteEntryPermanent = useWorkspaceStore((s) => s.deleteEntryPermanent);
   const openMenu = useContextMenuStore((s) => s.open);
+  // Track the cut set so rows re-render with the `.tree-row-cut` style.
+  const clipEntries = useFileClipboardStore((s) => s.entries);
+  const clipMode = useFileClipboardStore((s) => s.mode);
+  const setSelected = useExplorerSelectionStore((s) => s.set);
+  const selectedRelForChildren = useExplorerSelectionStore((s) => s.selectedRel);
   const rootEntries = tree[""] ?? [];
 
   // The directory a "new file/folder" prompt is targeting (relative; "" = root).
   // When set, a TreeRow for that dir renders an inline name input.
   const [pendingNew, setPendingNew] = useState<{ dir: string; kind: EntryKind } | null>(null);
+  // A pending rename initiated by keyboard (F2) — keyed by the entry's relative
+  // path. TreeRow flips into its inline editor when its own relative matches.
+  const [pendingRename, setPendingRename] = useState<string | null>(null);
 
   if (rootPath === null) return null;
 
@@ -62,9 +228,19 @@ export function Explorer(_props: { viewId?: string }) {
     setPendingNew({ dir: "", kind });
   };
 
+  /** Find a DirEntry anywhere in the loaded tree by its relative path. */
+  const findEntryByRel = (rel: string): DirEntry | null => {
+    for (const entries of Object.values(tree)) {
+      const hit = entries.find((e) => e.relative === rel);
+      if (hit) return hit;
+    }
+    return null;
+  };
+
   const handleBodyContextMenu = (e: React.MouseEvent) => {
     // Right-click on empty space (not on a row — rows stopPropagation).
     e.preventDefault();
+    const canPaste = useFileClipboardStore.getState().entries.length > 0;
     openMenu(
       [
         {
@@ -79,6 +255,17 @@ export function Explorer(_props: { viewId?: string }) {
           icon: <FolderPlus size={ICON_SIZE} />,
           onSelect: () => handleNew("dir"),
         },
+        ...(canPaste
+          ? [
+              { type: "separator" as const },
+              {
+                type: "action" as const,
+                label: t("sidebar:explorer.paste"),
+                icon: <ClipboardPaste size={ICON_SIZE} />,
+                onSelect: () => void handlePaste(""),
+              },
+            ]
+          : []),
         { type: "separator" },
         {
           type: "action",
@@ -97,6 +284,86 @@ export function Explorer(_props: { viewId?: string }) {
       e.clientY,
     );
   };
+
+  /** Build the right-click menu for a single row, then open it. */
+  const openRowMenu = (entry: DirEntry, x: number, y: number) => {
+    openMenu(
+      buildRowMenu(entry, {
+        rootPath,
+        t,
+        setPendingNew,
+        setPendingRename: () => setPendingRename(entry.relative),
+        deleteEntry,
+        deleteEntryPermanent,
+      }),
+      x,
+      y,
+    );
+  };
+
+  /**
+   * Tree-level keyboard shortcuts. Bound on the `.explorer-body` container (not
+   * capture-phase), so they only fire when the tree itself holds focus — Monaco
+   * keeps its own Ctrl+C / Ctrl+X / Ctrl+V. `INPUT` focus (inline rename) is
+   * skipped so Enter/Esc/Delete don't fight the text field.
+   */
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    const ae = document.activeElement;
+    if (ae instanceof HTMLInputElement) return;
+    const selectedRel = useExplorerSelectionStore.getState().selectedRel;
+    if (selectedRel === null) return;
+    const entry = findEntryByRel(selectedRel);
+    if (entry === null) return;
+    const mod = e.metaKey || e.ctrlKey;
+    // F2 → rename.
+    if (e.key === "F2") {
+      e.preventDefault();
+      setPendingRename(entry.relative);
+      return;
+    }
+    // Delete → trash; Shift+Delete → permanent.
+    if (e.key === "Delete") {
+      e.preventDefault();
+      if (e.shiftKey) {
+        void handleDeletePermanentWithConfirm(entry, deleteEntryPermanent);
+      } else {
+        void handleDeleteWithConfirm(entry, deleteEntry);
+      }
+      return;
+    }
+    // Ctrl/Cmd+C → copy; Ctrl/Cmd+X → cut; Ctrl/Cmd+V → paste into the row's dir;
+    // Ctrl/Cmd+D → duplicate.
+    if (mod) {
+      const k = e.key.toLowerCase();
+      if (k === "c") {
+        e.preventDefault();
+        useFileClipboardStore.getState().setCopy(entry.relative, entry.name, entry.kind);
+        return;
+      }
+      if (k === "x") {
+        e.preventDefault();
+        useFileClipboardStore.getState().setCut(entry.relative, entry.name, entry.kind);
+        return;
+      }
+      if (k === "v") {
+        e.preventDefault();
+        const destDir = entry.kind === "dir" ? entry.relative : parentRel(entry.relative);
+        void handlePaste(destDir);
+        return;
+      }
+      if (k === "d") {
+        e.preventDefault();
+        void handleDuplicate(entry);
+        return;
+      }
+    }
+  };
+
+  const cutRels = useMemo(
+    () =>
+      clipMode === "cut" ? new Set(clipEntries.map((e) => e.relative)) : new Set<string>(),
+    [clipMode, clipEntries],
+  );
 
   return (
     <div className="explorer">
@@ -119,7 +386,12 @@ export function Explorer(_props: { viewId?: string }) {
           </button>
         </span>
       </div>
-      <div className="explorer-body" onContextMenu={handleBodyContextMenu}>
+      <div
+        className="explorer-body"
+        tabIndex={0}
+        onContextMenu={handleBodyContextMenu}
+        onKeyDown={handleKeyDown}
+      >
         {rootEntries.length === 0 && pendingNew === null ? (
           <p className="explorer-empty">{t("sidebar:explorer.folderEmpty")}</p>
         ) : (
@@ -146,6 +418,12 @@ export function Explorer(_props: { viewId?: string }) {
                 onToggle={toggleExpand}
                 pendingNew={pendingNew}
                 setPendingNew={setPendingNew}
+                cutRels={cutRels}
+                selectedRel={selectedRelForChildren}
+                onSelect={setSelected}
+                pendingRename={pendingRename}
+                clearPendingRename={() => setPendingRename(null)}
+                openRowMenu={openRowMenu}
               />
             ))}
           </ul>
@@ -163,10 +441,35 @@ interface TreeRowProps {
   onToggle: (rel: string) => Promise<void>;
   pendingNew: { dir: string; kind: EntryKind } | null;
   setPendingNew: (v: { dir: string; kind: EntryKind } | null) => void;
+  /** Relative paths currently in the cut clipboard (rendered de-emphasized). */
+  cutRels: Set<string>;
+  /** Currently-selected row path (keyboard anchor). */
+  selectedRel: string | null;
+  /** Set the keyboard-selection anchor (on click / right-click). */
+  onSelect: (rel: string | null) => void;
+  /** A relative path that should enter inline-rename now (F2 / menu Rename). */
+  pendingRename: string | null;
+  /** Clear the pending-rename request once consumed. */
+  clearPendingRename: () => void;
+  /** Open the row context menu at (x, y). Injected so the parent owns buildRowMenu deps. */
+  openRowMenu: (entry: DirEntry, x: number, y: number) => void;
 }
 
-function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendingNew }: TreeRowProps) {
-  const { t } = useTranslation(["sidebar", "common"]);
+function TreeRow({
+  entry,
+  depth,
+  tree,
+  expanded,
+  onToggle,
+  pendingNew,
+  setPendingNew,
+  cutRels,
+  selectedRel,
+  onSelect,
+  pendingRename,
+  clearPendingRename,
+  openRowMenu,
+}: TreeRowProps) {
   const openPath = useTabsStore((s) => s.openPath);
   const activeId = useTabsStore((s) => s.activeId);
   // Subscribe to the documents map so the active-file highlight tracks path
@@ -174,14 +477,23 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
   const documents = useDocumentsStore((s) => s.documents);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const renameEntry = useWorkspaceStore((s) => s.renameEntry);
-  const deleteEntry = useWorkspaceStore((s) => s.deleteEntry);
   const createEntry = useWorkspaceStore((s) => s.createEntry);
-  const openMenu = useContextMenuStore((s) => s.open);
   const [loading, setLoading] = useState(false);
   const [renaming, setRenaming] = useState(false);
 
+  // A rename requested via keyboard (F2) or the parent menu arrives via
+  // `pendingRename`; consume it by flipping into the inline editor once.
+  useEffect(() => {
+    if (pendingRename === entry.relative && !renaming) {
+      setRenaming(true);
+      clearPendingRename();
+    }
+  }, [pendingRename, entry.relative, renaming, clearPendingRename]);
+
   const isDir = entry.kind === "dir";
   const isOpen = expanded.has(entry.relative);
+  const isCut = cutRels.has(entry.relative);
+  const isSelected = selectedRel === entry.relative;
   // `children` is undefined until the dir has been loaded at least once.
   // We keep the animated container mounted whenever children are loaded, so
   // the open/close transition has real content to animate over.
@@ -201,10 +513,11 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
   // matching VS Code / most file managers.
   const handleClick = async () => {
     if (renaming) return;
+    onSelect(entry.relative);
     if (isDir) {
       await onToggle(entry.relative);
     }
-    // Files do nothing on single click (selection is implicit via the row).
+    // Files do nothing on single click (selection is tracked via onSelect).
   };
 
   const handleDoubleClick = async () => {
@@ -249,17 +562,16 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    openMenu(buildRowMenu(entry, setRenaming, setPendingNew, deleteEntry, t), e.clientX, e.clientY);
+    onSelect(entry.relative);
+    openRowMenu(entry, e.clientX, e.clientY);
   };
 
   const commitRename = async (newName: string) => {
     setRenaming(false);
     const trimmed = newName.trim();
     if (trimmed === "" || trimmed === entry.name) return;
-    const parent = entry.relative.includes("/")
-      ? entry.relative.slice(0, entry.relative.lastIndexOf("/"))
-      : "";
-    const to = parent === "" ? trimmed : `${parent}/${trimmed}`;
+    const parent = parentRel(entry.relative);
+    const to = joinRel(parent, trimmed);
     try {
       await renameEntry(entry.relative, to);
     } catch (e) {
@@ -272,10 +584,16 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
     }
   };
 
+  const rowClass =
+    "tree-row" +
+    (isActiveFile ? " tree-row-active" : "") +
+    (isSelected ? " tree-row-selected" : "") +
+    (isCut ? " tree-row-cut" : "");
+
   return (
     <li role="treeitem" aria-expanded={isDir ? isOpen : undefined}>
       <div
-        className={`tree-row${isActiveFile ? " tree-row-active" : ""}`}
+        className={rowClass}
         style={{ "--tree-depth": depth } as React.CSSProperties}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
@@ -340,6 +658,12 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
                 onToggle={onToggle}
                 pendingNew={pendingNew}
                 setPendingNew={setPendingNew}
+                cutRels={cutRels}
+                selectedRel={selectedRel}
+                onSelect={onSelect}
+                pendingRename={pendingRename}
+                clearPendingRename={clearPendingRename}
+                openRowMenu={openRowMenu}
               />
             ))}
           </ul>
@@ -349,30 +673,76 @@ function TreeRow({ entry, depth, tree, expanded, onToggle, pendingNew, setPendin
   );
 }
 
-/** Build the right-click menu items for a single file or directory row. */
+/**
+ * Build the right-click menu items for a single file or directory row. The
+ * resulting structure (group order: New → Rename → clipboard → copy-path →
+ * reveal → delete) mirrors VS Code's Explorer menu so the muscle memory
+ * transfers. Destructive items (`Delete Permanently`) are `danger`-flagged;
+ * `Paste` is disabled when the clipboard is empty.
+ */
 function buildRowMenu(
   entry: DirEntry,
-  setRenaming: (v: boolean) => void,
-  setPendingNew: (v: { dir: string; kind: EntryKind } | null) => void,
-  deleteEntry: (rel: string) => Promise<unknown>,
-  t: TFunction,
-) {
+  deps: {
+    rootPath: string | null;
+    t: TFunction;
+    setPendingNew: (v: { dir: string; kind: EntryKind } | null) => void;
+    setPendingRename: () => void;
+    deleteEntry: (rel: string) => Promise<unknown>;
+    deleteEntryPermanent: (rel: string) => Promise<unknown>;
+  },
+): MenuItem[] {
+  const { rootPath, t, setPendingNew, setPendingRename, deleteEntry, deleteEntryPermanent } = deps;
   const isDir = entry.kind === "dir";
-  const parentDir = entry.relative.includes("/")
-    ? entry.relative.slice(0, entry.relative.lastIndexOf("/"))
-    : "";
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard?.writeText(text).catch((e) => {
-      console.warn("[Explorer] clipboard write failed:", e);
-    });
+  const parentDir = parentRel(entry.relative);
+  const clip = readClipboard();
+  const canPaste = clip.entries.length > 0;
+  // A paste target must be a directory; a file's paste target is its parent.
+  const pasteTarget = isDir ? entry.relative : parentDir;
+  // Refuse to paste a dir into itself or a descendant of itself.
+  const pasteBlocked =
+    canPaste &&
+    clip.entries.some(
+      (c) =>
+        c.kind === "dir" &&
+        (pasteTarget === c.relative || pasteTarget.startsWith(c.relative + "/")),
+    );
+
+  const copyPathSubmenu: MenuItem = {
+    type: "submenu",
+    label: t("sidebar:explorer.copyPath"),
+    children: [
+      {
+        type: "action",
+        label: t("sidebar:explorer.copyName"),
+        icon: <Copy size={ICON_SIZE} />,
+        onSelect: () => copyToClipboard(entry.name),
+      },
+      {
+        type: "action",
+        label: t("sidebar:explorer.copyRelativePath"),
+        icon: <Copy size={ICON_SIZE} />,
+        onSelect: () => copyToClipboard(entry.relative),
+      },
+      ...(rootPath !== null
+        ? [
+            {
+              type: "action" as const,
+              label: t("sidebar:explorer.copyAbsolutePath"),
+              icon: <Copy size={ICON_SIZE} />,
+              onSelect: () => copyToClipboard(joinWorkspacePath(rootPath, entry.relative)),
+            },
+          ]
+        : []),
+    ],
   };
 
-  const items = [
+  const items: MenuItem[] = [
     {
-      type: "action" as const,
+      type: "action",
       label: t("sidebar:explorer.newFile"),
       icon: <FilePlus size={ICON_SIZE} />,
-      onSelect: () => setPendingNew({ dir: isDir ? entry.relative : parentDir, kind: "file" as EntryKind }),
+      onSelect: () =>
+        setPendingNew({ dir: isDir ? entry.relative : parentDir, kind: "file" }),
     },
     ...(isDir
       ? [
@@ -380,114 +750,75 @@ function buildRowMenu(
             type: "action" as const,
             label: t("sidebar:explorer.newFolder"),
             icon: <FolderPlus size={ICON_SIZE} />,
-            onSelect: () =>
-              setPendingNew({ dir: entry.relative, kind: "dir" as EntryKind }),
+            onSelect: () => setPendingNew({ dir: entry.relative, kind: "dir" }),
           },
         ]
       : []),
     {
-      type: "action" as const,
+      type: "action",
       label: t("sidebar:explorer.rename"),
       icon: <Pencil size={ICON_SIZE} />,
-      onSelect: () => setRenaming(true),
+      onSelect: setPendingRename,
     },
-    { type: "separator" as const },
+    { type: "separator" },
     {
-      type: "action" as const,
-      label: t("sidebar:explorer.copyName"),
+      type: "action",
+      label: t("sidebar:explorer.cut"),
+      icon: <Scissors size={ICON_SIZE} />,
+      onSelect: () =>
+        useFileClipboardStore.getState().setCut(entry.relative, entry.name, entry.kind),
+    },
+    {
+      type: "action",
+      label: t("sidebar:explorer.copy"),
       icon: <Copy size={ICON_SIZE} />,
-      onSelect: () => copyToClipboard(entry.name),
+      onSelect: () =>
+        useFileClipboardStore.getState().setCopy(entry.relative, entry.name, entry.kind),
     },
     {
-      type: "action" as const,
-      label: t("sidebar:explorer.copyRelativePath"),
-      icon: <Copy size={ICON_SIZE} />,
-      onSelect: () => copyToClipboard(entry.relative),
+      type: "action",
+      label: t("sidebar:explorer.paste"),
+      icon: <ClipboardPaste size={ICON_SIZE} />,
+      disabled: !canPaste || pasteBlocked,
+      onSelect: () => void handlePaste(pasteTarget),
     },
     {
-      type: "action" as const,
-      label: t("sidebar:explorer.revealInFinder"),
+      type: "action",
+      label: t("sidebar:explorer.duplicate"),
+      icon: <CopyPlus size={ICON_SIZE} />,
+      onSelect: () => void handleDuplicate(entry),
+    },
+    { type: "separator" },
+    copyPathSubmenu,
+    {
+      type: "action",
+      label: isMac
+        ? t("sidebar:explorer.revealInFinder")
+        : t("sidebar:explorer.revealInFileExplorer"),
       icon: <SquareArrowOutUpRight size={ICON_SIZE} />,
-      onSelect: () => void revealInFinder(entry.relative).catch((e) => {
-        window.alert(
-          i18n.t("revealFailed", {
-            ns: "errors",
-            message: toIpcError(e).message,
-          }),
-        );
-      }),
+      onSelect: () =>
+        void revealInFinder(entry.relative).catch((e) => {
+          window.alert(
+            i18n.t("revealFailed", { ns: "errors", message: toIpcError(e).message }),
+          );
+        }),
     },
-    { type: "separator" as const },
+    { type: "separator" },
     {
-      type: "action" as const,
+      type: "action",
       label: t("common:delete"),
       icon: <Trash2 size={ICON_SIZE} />,
-      danger: true,
       onSelect: () => void handleDeleteWithConfirm(entry, deleteEntry),
+    },
+    {
+      type: "action",
+      label: t("sidebar:explorer.deletePermanently"),
+      icon: <Trash2 size={ICON_SIZE} />,
+      danger: true,
+      onSelect: () => void handleDeletePermanentWithConfirm(entry, deleteEntryPermanent),
     },
   ];
   return items;
-}
-
-async function handleDeleteWithConfirm(
-  entry: DirEntry,
-  deleteEntry: (rel: string) => Promise<unknown>,
-) {
-  // §5.5: the default delete routes through the system trash (recoverable from
-  // Finder / Recycle Bin / freedesktop Trash), so the prompt says "Move to
-  // Trash" rather than "This cannot be undone".
-  const isDir = entry.kind === "dir";
-  const ok = window.confirm(
-    i18n.t(isDir ? "deleteConfirmDir" : "deleteConfirmFile", {
-      ns: "errors",
-      name: entry.name,
-    }),
-  );
-  if (!ok) return;
-  try {
-    await deleteEntry(entry.relative);
-  } catch (e) {
-    const err = toIpcError(e);
-    if (err.code === "delete_blocked") {
-      // §5.5: a dirty document is open under the target. Name the affected
-      // docs (carried in details.affectedDocs) so the user knows which to save
-      // or close before retrying.
-      const affected = extractAffectedDocs(err.details);
-      const names = affected.length > 0 ? affected.join("\n") : "";
-      window.alert(
-        names
-          ? i18n.t("deleteBlockedWithNames", {
-              ns: "errors",
-              name: entry.name,
-              count: affected.length,
-              names,
-            })
-          : i18n.t("deleteBlocked", {
-              ns: "errors",
-              name: entry.name,
-              count: affected.length,
-            }),
-      );
-      return;
-    }
-    window.alert(
-      i18n.t("deleteFailed", { ns: "errors", message: err.message }),
-    );
-  }
-}
-
-/**
- * Pull the affected-doc paths out of a `delete_blocked` error's `details`
- * (§5.5). The backend carries `{ affectedDocs: [{ id, path }, ...] }`; we only
- * need the paths for the user-facing message.
- */
-function extractAffectedDocs(details: unknown): string[] {
-  if (typeof details !== "object" || details === null) return [];
-  const affected = (details as { affectedDocs?: unknown }).affectedDocs;
-  if (!Array.isArray(affected)) return [];
-  return affected
-    .map((d) => (typeof d === "object" && d !== null ? (d as { path?: unknown }).path : null))
-    .filter((p): p is string => typeof p === "string");
 }
 
 /** An inline text input for creating a new entry or renaming one. */
