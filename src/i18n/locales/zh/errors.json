@@ -17,6 +17,8 @@
   "duplicateFailed": "创建副本失败:{{message}}",
   "deleteBlocked": "无法删除\"{{name}}\":该路径下有 {{count}} 个未保存的文档。请先保存或关闭它们。",
   "deleteBlockedWithNames": "无法删除\"{{name}}\":该路径下有 {{count}} 个未保存的文档。请先保存或关闭它们。\n\n{{names}}",
+  "templateInitFailed": "模板初始化失败:{{message}}",
+  "templateInitBlockedByOpenDocs": "模板将覆盖当前已打开的文件。请先关闭或处理这些标签页。\n\n{{names}}",
   "deleteConfirmFile": "将\"{{name}}\"移到废纸篓?",
   "deleteConfirmDir": "将\"{{name}}\"移到废纸篓?此文件夹及其中的所有内容都将被移到废纸篓。",
   "confirmClearRecovery": "删除所有崩溃恢复快照?此操作无法撤销。",

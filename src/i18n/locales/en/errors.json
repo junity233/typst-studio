@@ -17,6 +17,8 @@
   "duplicateFailed": "Duplicate failed: {{message}}",
   "deleteBlocked": "Cannot delete \"{{name}}\": {{count}} unsaved document(s) open under this path. Save or close them first.",
   "deleteBlockedWithNames": "Cannot delete \"{{name}}\": {{count}} unsaved document(s) open under this path. Save or close them first.\n\n{{names}}",
+  "templateInitFailed": "Template initialization failed: {{message}}",
+  "templateInitBlockedByOpenDocs": "The template would overwrite files that are currently open. Close or resolve those tabs first.\n\n{{names}}",
   "deleteConfirmFile": "Move \"{{name}}\" to the Trash?",
   "deleteConfirmDir": "Move \"{{name}}\" to the Trash? This folder and everything in it will be moved to the Trash.",
   "confirmClearRecovery": "Delete ALL crash-recovery snapshots? This cannot be undone.",

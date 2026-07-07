@@ -14,6 +14,7 @@ import {
   openWorkspaceByPath,
 } from "../../../lib/tauri";
 import { toIpcError } from "../../../lib/ipc-error";
+import i18n from "../../../i18n";
 import { Thumbnail } from "./Thumbnail";
 import { PackageReadme } from "./PackageReadme";
 
@@ -111,7 +112,12 @@ export function PackageDetail() {
       if (ipc.code === "template_init_failed") {
         const openDocs = extractOpenDocs(ipc.details);
         if (openDocs.length > 0) {
-          alert(`${ipc.message}\n\n${openDocs.join("\n")}`);
+          alert(
+            i18n.t("templateInitBlockedByOpenDocs", {
+              ns: "errors",
+              names: openDocs.join("\n"),
+            }),
+          );
           return;
         }
         // Confirm before overwriting existing files at the destination.
@@ -119,11 +125,21 @@ export function PackageDetail() {
           try {
             await runInit(destStr, true);
           } catch (e2) {
-            alert(toIpcError(e2).message);
+            alert(
+              i18n.t("templateInitFailed", {
+                ns: "errors",
+                message: toIpcError(e2).message,
+              }),
+            );
           }
         }
       } else {
-        alert(ipc.message);
+        alert(
+          i18n.t("templateInitFailed", {
+            ns: "errors",
+            message: ipc.message,
+          }),
+        );
       }
     }
   };
