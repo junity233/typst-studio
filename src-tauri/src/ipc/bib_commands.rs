@@ -121,6 +121,43 @@ pub async fn bibliography_save(path: String, content: String) -> Result<()> {
     .map_err(|e| AppError::Other(format!("{e}")))
 }
 
+/// Save edited `BibEntryEditable` entries back to `path`, preserving untouched
+/// entries and untouched fields. This is the save path the edit modal uses: the
+/// frontend sends the FULL edited entry list, and this command:
+///   1. re-reads the original file text (needed for the fidelity-preserving
+///      re-parse-and-patch strategy in [`bib_entry::serialize_bibliography`] —
+///      the frontend has neither the original text nor the hayagriva/biblatex
+///      crates, so serialization MUST happen in Rust),
+///   2. sniffs the format from the extension (same logic as `bibliography_parse`),
+///   3. serializes the edited entries onto the original,
+///   4. writes the result atomically via [`crate::persistence::atomic::write_bytes`].
+///
+/// All four steps run off the async worker via `spawn_blocking` (they are
+/// blocking std::fs + CPU parse/serialize on small files). On any failure the
+/// original file is untouched (atomic write) and the error surfaces to the
+/// caller, which leaves its in-memory list unchanged.
+#[tauri::command]
+pub async fn bibliography_save_entries(
+    path: String,
+    entries: Vec<BibEntryEditable>,
+) -> Result<()> {
+    let p = PathBuf::from(&path);
+    async_runtime::spawn_blocking(move || -> Result<()> {
+        // 1. Re-read the original (fidelity strategy needs the source text).
+        let original = std::fs::read_to_string(&p).map_err(AppError::Io)?;
+        // 2. Sniff the format from the path + content (same logic as parse).
+        let format = sniff_for_path(&path, &original);
+        // 3. Serialize: re-parse the original, apply the edits, re-emit.
+        let serialized = bib_entry::serialize_bibliography(&original, format, &entries)
+            .map_err(|e| AppError::Other(format!("{e}")))?;
+        // 4. Atomic write — the original survives any failure here.
+        crate::persistence::atomic::write_bytes(&p, serialized.as_bytes())
+            .map_err(|e| AppError::Other(format!("{e}")))
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("bibliography_save_entries join: {e}")))?
+}
+
 /// Synchronous discovery: walk `root`, collect `.bib`/`.yml`/`.yaml` files,
 /// skip the usual ignore dirs, cap depth + count.
 fn discover_sync(root: &Path) -> Result<Vec<BibFileInfo>> {

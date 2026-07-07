@@ -2556,6 +2556,134 @@ button {
   box-shadow: 0 0 0 3px var(--color-primary-focus-ring);
 }
 
+/* ---- Bibliography edit modal (add/edit reference) -------------------------
+   Reuses .dialog-overlay / .dialog chrome; this adds the form layout + a
+   wider box (like .link-modal but roomier for the multi-field form). Mirrors
+   .link-modal-input for inputs so the focus ring matches. */
+.bib-edit-modal {
+  width: min(560px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+}
+.bib-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.bib-edit-row {
+  display: flex;
+  gap: var(--space-xs);
+}
+.bib-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.bib-edit-field-key {
+  flex: 3 1 0;
+}
+.bib-edit-field-type {
+  flex: 2 1 0;
+}
+.bib-edit-field-year {
+  max-width: 160px;
+}
+.bib-edit-label {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+}
+.bib-edit-input {
+  padding: 7px 11px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-size: 13px;
+  letter-spacing: -0.1px;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  width: 100%;
+  box-sizing: border-box;
+}
+.bib-edit-input:hover {
+  border-color: var(--color-ink-muted-48);
+}
+.bib-edit-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-focus-ring);
+}
+.bib-edit-select {
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.bib-edit-textarea {
+  resize: vertical;
+  min-height: 60px;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+}
+/* Extra fields: dynamic list of [name][value][delete] rows + add button. */
+.bib-edit-extra {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+.bib-edit-extra-row {
+  display: flex;
+  gap: var(--space-xxs);
+  align-items: center;
+}
+.bib-edit-extra-name {
+  flex: 2 1 0;
+  min-width: 0;
+}
+.bib-edit-extra-value {
+  flex: 3 1 0;
+  min-width: 0;
+}
+.bib-edit-extra-remove {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--color-ink-muted-48);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: color 0.1s ease, background 0.1s ease;
+}
+.bib-edit-extra-remove:hover {
+  color: var(--color-error);
+  background: var(--color-danger-soft);
+}
+.bib-edit-add-field {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  color: var(--color-primary);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  font: var(--text-caption);
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+.bib-edit-add-field:hover {
+  background: var(--color-canvas-parchment);
+}
+.bib-edit-hint {
+  margin: 0;
+  font: var(--text-fine-print);
+  color: var(--color-ink-muted-48);
+}
+
 /* ============================================================================
    Recovery dialog (§5.1.3) — wider than the confirm dialog; lists docs.
    ========================================================================= */
@@ -3646,6 +3774,10 @@ button {
 .bibliography-search-input { flex: 1; min-width: 0; height: 30px; padding: 0 var(--space-sm); font: var(--text-caption); color: var(--color-ink); background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: var(--radius-pill); outline: none; box-sizing: border-box; }
 .bibliography-search-input:focus { border-color: var(--color-primary); }
 .bibliography-search-input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.bibliography-add { flex: none; display: grid; place-items: center; width: 30px; height: 30px; color: var(--color-ink-muted-48); background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: var(--radius-pill); cursor: pointer; transition: color 0.1s ease, border-color 0.1s ease; }
+.bibliography-add:hover:not(:disabled) { color: var(--color-ink); border-color: var(--color-primary); }
+.bibliography-add:active { transform: scale(0.95); }
+.bibliography-add:focus-visible { outline: 2px solid var(--color-primary-focus); outline-offset: 2px; }
 .bibliography-status { margin: 0; padding: var(--space-xxs) var(--space-sm); font: var(--text-fine-print); color: var(--color-ink-muted-80); text-align: center; }
 .bibliography-status-error { background: var(--color-danger-soft); color: var(--color-error); border-radius: var(--radius-sm); padding: var(--space-xs) var(--space-sm); text-align: left; }
 .bibliography-status-error .bibliography-status-detail { margin: var(--space-xxs) 0 0; font-family: var(--font-mono); font-size: 11px; word-break: break-word; opacity: 0.9; }

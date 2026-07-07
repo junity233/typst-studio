@@ -17,6 +17,7 @@ import type {
   CatalogFilter,
   CatalogListingPayload,
   BibEntry,
+  BibEntryEditable,
   BibFileInfo,
   ConflictPayload,
   DeleteResult,
@@ -272,9 +273,13 @@ async function browserInvoke<T>(
     case "package_get_thumbnail":
       return null as T;
     case "bibliography_parse":
+    case "bibliography_parse_full":
       return [] as T;
     case "bibliography_discover":
       return [] as T;
+    case "bibliography_save":
+    case "bibliography_save_entries":
+      return undefined as T;
     default:
       throw new Error(`[tauri] command "${command}" is unavailable in browser mode`);
   }
@@ -679,6 +684,31 @@ export async function bibliographyDiscover(
   rootPath: string | null,
 ): Promise<BibFileInfo[]> {
   return invoke<BibFileInfo[]>("bibliography_discover", { rootPath });
+}
+
+/**
+ * Parse a bibliography file into the full-field editable form used by the edit
+ * modal. Unlike {@link bibliographyParse} (the 5-field list projection), this
+ * surfaces every set field (journal, volume, pages, url, …) so the edit form
+ * can render and round-trip them via the `extra` list.
+ */
+export async function bibliographyParseFull(
+  path: string,
+): Promise<BibEntryEditable[]> {
+  return invoke<BibEntryEditable[]>("bibliography_parse_full", { path });
+}
+
+/**
+ * Save edited entries back to `path`. The backend re-reads the original file,
+ * re-parses it, applies the edits (preserving untouched entries/fields), and
+ * writes the result atomically — the frontend can't serialize because it lacks
+ * the original text and the hayagriva/biblatex crates.
+ */
+export async function bibliographySaveEntries(
+  path: string,
+  entries: BibEntryEditable[],
+): Promise<void> {
+  await invoke<void>("bibliography_save_entries", { path, entries });
 }
 
 // --- Event subscriptions ----------------------------------------------------

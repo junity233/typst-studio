@@ -1,20 +1,29 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Plus } from "lucide-react";
 import { useDebounce } from "../../../hooks/useDebounce";
 import { useBibliographyStore } from "../../../store/bibliographyStore";
 import { useWorkspaceStore } from "../../../store/workspaceStore";
+import { useDialogStore } from "../../../store/dialogStore";
 import { editorApiRef } from "../../Editor/editorApiRef";
 import { BibEntryItem } from "./BibEntryItem";
-import type { BibEntry } from "../../../lib/types";
+import { BibEditModal } from "./BibEditModal";
+import type { BibEntry, BibEntryEditable } from "../../../lib/types";
 
 /**
  * The Bibliography sidebar view (Task 4): discovers `.bib`/`.yml`/`.yaml` files
  * in the workspace, parses the selected one natively (hayagriva, backend), and
- * lists references. Clicking a reference inserts `#cite(<key>)` at the caret.
+ * lists references. Right-click a reference for a context menu (insert
+ * citation / copy key / edit / delete); double-click to edit. The `+` button
+ * next to the search box opens the add-reference modal.
  *
  * Discovery runs on mount and whenever the workspace root changes. Only shown
  * when a folder is open (`when: "workspace"` in the extension), so the empty-
  * workspace prompt is handled by the sidebar shell.
+ *
+ * CRUD is delegated to `bibliographyStore` (which round-trips through the
+ * backend's serialize-and-write command). Delete asks for confirmation via
+ * `dialogStore.confirm` BEFORE calling the store (the store just executes).
  */
 export function BibliographyPanel() {
   const { t } = useTranslation("bibliography");
@@ -23,12 +32,16 @@ export function BibliographyPanel() {
   const discoveredFiles = useBibliographyStore((s) => s.discoveredFiles);
   const activeFilePath = useBibliographyStore((s) => s.activeFilePath);
   const entries = useBibliographyStore((s) => s.entries);
+  const fullEntries = useBibliographyStore((s) => s.fullEntries);
   const query = useBibliographyStore((s) => s.query);
   const setQuery = useBibliographyStore((s) => s.setQuery);
   const loading = useBibliographyStore((s) => s.loading);
   const error = useBibliographyStore((s) => s.error);
   const discoverFiles = useBibliographyStore((s) => s.discoverFiles);
   const loadFile = useBibliographyStore((s) => s.loadFile);
+  const addEntry = useBibliographyStore((s) => s.addEntry);
+  const updateEntry = useBibliographyStore((s) => s.updateEntry);
+  const deleteEntry = useBibliographyStore((s) => s.deleteEntry);
   const clear = useBibliographyStore((s) => s.clear);
 
   // Local input state, debounced into the store query so typing stays snappy.
@@ -64,6 +77,64 @@ export function BibliographyPanel() {
   const handleCite = useCallback((key: string) => {
     editorApiRef.current?.replaceSelection(`#cite(<${key}>)`);
   }, []);
+
+  // --- Modal state + handlers ------------------------------------------------
+  // `originalKey` is captured when opening in "edit" mode so the store can
+  // handle a key change (the modal's `key` field may differ from the original).
+  const [editState, setEditState] = useState<
+    | { mode: "add" | "edit"; entry: BibEntryEditable; originalKey: string }
+    | null
+  >(null);
+
+  const handleAdd = useCallback(() => {
+    setEditState({
+      mode: "add",
+      entry: blankTemplate(),
+      originalKey: "",
+    });
+  }, []);
+
+  const handleEdit = useCallback(
+    (key: string) => {
+      // Look up the FULL editable entry from the store (the item displays the
+      // 5-field projection; the modal needs every field).
+      const full = fullEntries.find((e) => e.key === key);
+      if (!full) return;
+      setEditState({ mode: "edit", entry: full, originalKey: key });
+    },
+    [fullEntries],
+  );
+
+  const handleConfirm = useCallback(
+    (entry: BibEntryEditable) => {
+      if (editState === null) return;
+      if (editState.mode === "add") {
+        void addEntry(entry);
+      } else {
+        void updateEntry(editState.originalKey, entry);
+      }
+      setEditState(null);
+    },
+    [editState, addEntry, updateEntry],
+  );
+
+  const handleCancelModal = useCallback(() => setEditState(null), []);
+
+  const handleDelete = useCallback(
+    async (key: string) => {
+      // Confirm BEFORE calling the store — the store just executes the delete.
+      const result = await useDialogStore.getState().confirm({
+        title: t("confirmDeleteTitle"),
+        message: t("confirmDeleteMessage", { key }),
+        confirmLabel: t("delete"),
+        cancelLabel: t("cancel"),
+      });
+      if (result === "confirm") {
+        void deleteEntry(key);
+      }
+    },
+    [deleteEntry, t],
+  );
 
   // Case-insensitive filter over key, title, and authors.
   const normalizedQuery = debouncedInput.trim().toLowerCase();
@@ -107,6 +178,15 @@ export function BibliographyPanel() {
               onChange={(e) => setInput(e.target.value)}
               aria-label={t("searchPlaceholder")}
             />
+            <button
+              type="button"
+              className="bibliography-add"
+              onClick={handleAdd}
+              title={t("addEntry")}
+              aria-label={t("addEntry")}
+            >
+              <Plus size={14} />
+            </button>
           </div>
           {error && (
             <div className="bibliography-status bibliography-status-error">
@@ -120,7 +200,13 @@ export function BibliographyPanel() {
             ) : hasEntries ? (
               <ul className="bibliography-list" role="list">
                 {visibleEntries.map((entry) => (
-                  <BibEntryItem key={entry.key} entry={entry} onCite={handleCite} />
+                  <BibEntryItem
+                    key={entry.key}
+                    entry={entry}
+                    onCite={handleCite}
+                    onEdit={handleEdit}
+                    onDelete={handleDelete}
+                  />
                 ))}
               </ul>
             ) : (
@@ -137,8 +223,28 @@ export function BibliographyPanel() {
           )}
         </div>
       )}
+      {editState && (
+        <BibEditModal
+          mode={editState.mode}
+          initial={editState.entry}
+          onConfirm={handleConfirm}
+          onCancel={handleCancelModal}
+        />
+      )}
     </div>
   );
+}
+
+/** A blank entry template for the "add" modal. */
+function blankTemplate(): BibEntryEditable {
+  return {
+    key: "",
+    entryType: "misc",
+    title: null,
+    authors: [],
+    year: null,
+    extra: [],
+  };
 }
 
 /** Reduce an absolute path to its basename for the file selector. */

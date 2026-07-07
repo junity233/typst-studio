@@ -202,6 +202,10 @@ pub fn run() {
             // Bibliography edit modal: full-field parse + atomic save.
             ipc::bib_commands::bibliography_parse_full,
             ipc::bib_commands::bibliography_save,
+            // Bibliography edit modal: serialize-edited-entries save (re-reads
+            // original + re-parses + patches in Rust — the frontend can't
+            // serialize because it lacks the original text + hayagriva/biblatex).
+            ipc::bib_commands::bibliography_save_entries,
             // AI Assistant proxy (streaming LLM calls; key injected in Rust).
             ipc::ai_commands::ai_proxy_stream,
         ])
