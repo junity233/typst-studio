@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useTranslation } from "react-i18next";
 import { packageGetReadme } from "../../../lib/tauri";
+import { MarkdownLink } from "../../common/ExternalLink";
 
 /**
  * Renders a cached package's README as markdown (GFM). Fetches on mount/name
@@ -33,7 +34,12 @@ export function PackageReadme({ name, version }: { name: string; version: string
 
   return (
     <div className="pkg-readme">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{readme}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{ a: MarkdownLink }}
+      >
+        {readme}
+      </ReactMarkdown>
     </div>
   );
 }

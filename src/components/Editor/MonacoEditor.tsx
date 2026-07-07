@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Monaco from "@codingame/monaco-vscode-editor-api";
-import { getService, IWorkbenchThemeService } from "@codingame/monaco-vscode-api/services";
+import {
+  getService,
+  IOpenerService,
+  IWorkbenchThemeService,
+} from "@codingame/monaco-vscode-api/services";
 import type { TextContents, EditorAppConfig } from "monaco-languageclient/editorApp";
 import { updateText } from "../../lib/tauri";
+import { openExternalUrl } from "../../lib/openLink";
 import type { Tab } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
@@ -855,6 +860,25 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
       );
     }
     installLspDiagnosticsBridge();
+    // Route Monaco's external link opens (Ctrl/Cmd+click on detected URLs, the
+    // "Open Link" command) to the system default browser via the opener plugin.
+    // Monaco's IOpenerService resolves every external URL through this single
+    // default opener, so one registration covers all link gestures. The editor
+    // is a sticky singleton for the component's lifetime, so registering once at
+    // editor-start is sufficient; no matching dispose is needed. `getService`
+    // returns a promise (same pattern as the IWorkbenchThemeService use above).
+    void getService(IOpenerService)
+      .then((openerService) => {
+        openerService.setDefaultExternalOpener({
+          openExternal: async (href: string) => {
+            await openExternalUrl(href);
+            return true;
+          },
+        });
+      })
+      .catch((error) => {
+        console.warn("[MonacoEditor] failed to set external opener:", error);
+      });
     onReady?.({
       revealLine: (line, column) => {
         const editor = getEditor();

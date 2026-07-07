@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { MarkdownLink } from "../common/ExternalLink";
 
 /**
  * Rendered-markdown preview pane for `DocumentKind === "markdown"` tabs.
@@ -32,7 +33,12 @@ export function MarkdownPreview({
 
   return (
     <div className="markdown-preview pane-scroll">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{debounced}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{ a: MarkdownLink }}
+      >
+        {debounced}
+      </ReactMarkdown>
     </div>
   );
 }
