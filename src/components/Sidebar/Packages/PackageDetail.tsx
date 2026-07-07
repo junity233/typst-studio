@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { join } from "@tauri-apps/api/path";
 import { usePackagesStore } from "../../../store/packagesStore";
 import { useWorkspaceStore } from "../../../store/workspaceStore";
 import {
@@ -24,15 +25,17 @@ function parseVer(s: string): [number, number, number] | null {
 export function PackageDetail() {
   const { t } = useTranslation("packages");
   const selectedKey = usePackagesStore((s) => s.selectedKey);
-  const catalog = usePackagesStore((s) => s.catalog);
+  const index = usePackagesStore((s) => s.index);
   const setSelected = usePackagesStore((s) => s.setSelected);
   const install = usePackagesStore((s) => s.install);
   const hydrate = useWorkspaceStore((s) => s.hydrate);
   const [compilerVersion, setCompilerVersion] = useState<string | null>(null);
 
+  // Look up the selected entry in the FULL (unfiltered) index so the detail
+  // view stays valid even if the user changes the search/category filter.
   const entry = useMemo(
-    () => catalog.find((e) => `${e.name}@${e.version}` === selectedKey) ?? null,
-    [catalog, selectedKey],
+    () => index.find((e) => `${e.name}@${e.version}` === selectedKey) ?? null,
+    [index, selectedKey],
   );
 
   // Fetch the embedded compiler version once for the compat warning (§4.3).
@@ -97,7 +100,12 @@ export function PackageDetail() {
       // then re-hydrate the store (getWorkspace now returns the new meta).
       await openWorkspaceByPath(destStr);
       await hydrate();
-      await openFileByPath(`${destStr}/${entrypoint}`);
+      // Auto-open the template entrypoint (e.g. main.typ) so the user lands on
+      // a compilable document. Use the platform path joiner so the separator is
+      // correct on Windows (backslash) — a bare `${dest}/${entrypoint}` mixes
+      // separators and can fail to resolve.
+      const entryAbs = await join(destStr, entrypoint);
+      await openFileByPath(entryAbs);
     } catch (e) {
       alert(toIpcError(e).message);
     }

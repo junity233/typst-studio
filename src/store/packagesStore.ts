@@ -12,7 +12,11 @@ import { toIpcError } from "../lib/ipc-error";
 export type IndexStatus = "idle" | "loading" | "fresh" | "stale" | "error";
 
 export interface PackagesState {
-  catalog: PackageEntry[];
+  /** The FULL unfiltered index snapshot. Category options and search both
+   *  derive from this, so changing the category filter never shrinks the
+   *  dropdown (the previous backend-filtered `catalog` caused a feedback loop
+   *  where picking a category removed all others from the picker). */
+  index: PackageEntry[];
   installed: InstalledPackage[];
   activeTab: "templates" | "packages" | "installed";
   filter: CatalogFilter;
@@ -34,7 +38,7 @@ export interface PackagesState {
 }
 
 export const usePackagesStore = create<PackagesState>((set, get) => ({
-  catalog: [],
+  index: [],
   installed: [],
   activeTab: "templates",
   // `categories` is required on CatalogFilter, so seed it explicitly.
@@ -50,11 +54,16 @@ export const usePackagesStore = create<PackagesState>((set, get) => ({
   setSelected: (key) => set({ selectedKey: key }),
 
   loadCatalog: async () => {
-    if (get().catalog.length === 0) set({ indexStatus: "loading" });
+    if (get().index.length === 0) set({ indexStatus: "loading" });
     try {
-      const payload = await packageListCatalogBE(get().filter);
+      // Fetch the FULL index (empty filter) so category options + search
+      // filter against the complete set, not a pre-filtered subset.
+      const payload = await packageListCatalogBE({
+        latestOnly: true,
+        categories: [],
+      });
       set({
-        catalog: payload.entries,
+        index: payload.entries,
         indexFetchedAt: payload.fetchedAt,
         indexStatus: payload.stale ? "stale" : "fresh",
         error: null,
@@ -119,7 +128,43 @@ export const usePackagesStore = create<PackagesState>((set, get) => ({
   },
 }));
 
-/** Convenience selector: only template entries (those with a `[template]` table). */
-export function selectTemplates(state: PackagesState): PackageEntry[] {
-  return state.catalog.filter((e) => e.template != null);
+/** Filter the full index for a given view (templates-only or packages-only)
+ *  by the current filter (query + categories), client-side. The tab decides
+ *  template-vs-package; the filter decides text + category. Pure + cheap
+ *  (~4000 small objects, sub-millisecond). */
+export function selectFiltered(
+  state: PackagesState,
+  isTemplateView: boolean,
+): PackageEntry[] {
+  const q = state.filter.query?.trim().toLowerCase();
+  const cats = state.filter.categories;
+  return state.index.filter((e) => {
+    if ((e.template != null) !== isTemplateView) return false;
+    if (
+      cats.length > 0 &&
+      !e.categories.some((c) => cats.includes(c))
+    ) {
+      return false;
+    }
+    if (q) {
+      const hay = `${e.name} ${e.description ?? ""} ${e.keywords.join(" ")} ${e.authors.join(" ")}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+/** Distinct categories present in the full index for a given view. Used to
+ *  populate the category dropdown — derived from the UNFILTERED index so the
+ *  picker's options are stable regardless of the current category selection. */
+export function selectCategories(
+  state: PackagesState,
+  isTemplateView: boolean,
+): string[] {
+  const set = new Set<string>();
+  for (const e of state.index) {
+    if ((e.template != null) !== isTemplateView) continue;
+    for (const c of e.categories) set.add(c);
+  }
+  return [...set].sort();
 }

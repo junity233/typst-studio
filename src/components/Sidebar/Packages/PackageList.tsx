@@ -1,15 +1,11 @@
-import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { usePackagesStore } from "../../../store/packagesStore";
+import { selectFiltered, usePackagesStore } from "../../../store/packagesStore";
 
 export function PackageList() {
   const { t } = useTranslation("packages");
-  const catalog = usePackagesStore((s) => s.catalog);
   const setSelected = usePackagesStore((s) => s.setSelected);
-  const packages = useMemo(
-    () => catalog.filter((e) => e.template == null),
-    [catalog],
-  );
+  // Client-side filter over the full index (packages view).
+  const packages = usePackagesStore((s) => selectFiltered(s, false));
 
   if (packages.length === 0) {
     return <p className="packages-empty">{t("empty")}</p>;
