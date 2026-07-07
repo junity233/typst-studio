@@ -341,6 +341,10 @@ function buildEditMenu(t: T): MenuItem[] {
     editAction(t("paste"), "paste"),
     editAction(t("selectAll"), "selectAll"),
     sep(),
+    // Format Document: tinymist `textDocument/formatting` via the registered
+    // `format-document` command (Shift+Alt+F). Mirrors the native-menu entry.
+    action(t("formatDocument"), "format-document"),
+    sep(),
     action(t("settings"), "open-settings"),
   ];
 }

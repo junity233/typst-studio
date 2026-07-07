@@ -22,6 +22,7 @@
   "copy": "Copy",
   "paste": "Paste",
   "selectAll": "Select All",
+  "formatDocument": "Format Document",
   "findInFiles": "Find in Files",
   "outline": "Outline",
   "toggleSidebar": "Toggle Sidebar",

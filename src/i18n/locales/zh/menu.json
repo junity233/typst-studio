@@ -22,6 +22,7 @@
   "copy": "复制",
   "paste": "粘贴",
   "selectAll": "全选",
+  "formatDocument": "格式化文档",
   "findInFiles": "在文件中查找",
   "outline": "大纲",
   "toggleSidebar": "切换侧边栏",
