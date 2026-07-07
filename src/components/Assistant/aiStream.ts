@@ -374,6 +374,9 @@ async function driveAnthropic(
   const anthropicIdxToContentIdx: Map<number, number> = new Map();
   let nextContentIndex = 0;
   let stopReason: string | null = null;
+  // Thinking blocks use a sentinel contentIndex that won't collide with
+  // text(0) or tool calls(1+). The UI keys thinking rendering off this.
+  const THINKING_INDEX = -1;
 
   for await (const ev of response) {
     if (ev.type === "content_block_start") {
@@ -393,6 +396,12 @@ async function driveAnthropic(
         acc.toolArgJson.set(contentIdx, "");
         acc.content.push(tc);
         stream.push({ type: "toolcall_start", contentIndex: contentIdx, partial: partial(acc, modelId, provider) });
+      } else if (block.type === "thinking") {
+        // Extended thinking block — emit thinking events so the UI can show
+        // the reasoning process. Use a dedicated contentIndex offset to avoid
+        // collision with text(0)/tool(1+); we track it separately.
+        anthropicIdxToContentIdx.set(ev.index, THINKING_INDEX);
+        stream.push({ type: "thinking_start", contentIndex: THINKING_INDEX, partial: partial(acc, modelId, provider) });
       }
     } else if (ev.type === "content_block_delta") {
       const delta = ev.delta;
@@ -405,11 +414,15 @@ async function driveAnthropic(
         const next = prev + delta.partial_json;
         acc.toolArgJson.set(contentIdx, next);
         stream.push({ type: "toolcall_delta", contentIndex: contentIdx, delta: delta.partial_json, partial: partial(acc, modelId, provider) });
+      } else if (delta.type === "thinking_delta" && contentIdx === THINKING_INDEX) {
+        stream.push({ type: "thinking_delta", contentIndex: THINKING_INDEX, delta: delta.thinking, partial: partial(acc, modelId, provider) });
       }
     } else if (ev.type === "content_block_stop") {
       const contentIdx = anthropicIdxToContentIdx.get(ev.index);
       if (contentIdx === 0 && acc.textBlock) {
         stream.push({ type: "text_end", contentIndex: 0, content: acc.textBlock.text, partial: partial(acc, modelId, provider) });
+      } else if (contentIdx === THINKING_INDEX) {
+        stream.push({ type: "thinking_end", contentIndex: THINKING_INDEX, content: "", partial: partial(acc, modelId, provider) });
       } else if (contentIdx !== undefined && contentIdx > 0) {
         const block = acc.toolBlocks.get(contentIdx)!;
         try {

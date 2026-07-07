@@ -51,6 +51,8 @@ interface AssistantState {
   errorMessage: string | null;
   /** Live accumulator for the in-flight assistant text turn. */
   streamingText: string;
+  /** Live accumulator for the in-flight assistant thinking content. */
+  streamingThinking: string;
   /** The approval currently awaiting a user decision, if any. */
   pendingApproval: PendingApproval | null;
 
@@ -63,8 +65,12 @@ interface AssistantState {
 
 // --- module-scoped run state ---------------------------------------------
 
-/** The current run's agent, if any. Held at module scope so `stop()` can abort. */
-let currentAgent: Agent | null = null;
+/**
+ * The persistent agent — lives across turns so the conversation transcript
+ * accumulates (multi-turn). Created lazily on first `sendMessage`, destroyed
+ * on `clearConversation`. Held at module scope so `stop()` can abort it.
+ */
+let persistentAgent: Agent | null = null;
 /** The approval gate resolver — the tool handler awaits this. */
 let approvalGate: {
   approval: PendingApproval;
@@ -96,6 +102,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   status: "idle",
   errorMessage: null,
   streamingText: "",
+  streamingThinking: "",
   pendingApproval: null,
 
   sendMessage: async (text) => {
@@ -108,11 +115,11 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       messages: [...s.messages, { id: uid(), role: "user", text }],
       status: "streaming",
       streamingText: "",
+      streamingThinking: "",
       errorMessage: null,
     }));
 
-    // Each run gets its own agent + approval gate closure. The tools capture
-    // the gate resolver via `requestApproval` below.
+    // The approval gate closure — captured by tool handlers via requestApproval.
     let localGate: {
       approval: PendingApproval;
       resolve: (verdict: "approved" | "rejected") => void;
@@ -124,8 +131,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         set((s) => ({
           status: "awaiting-approval",
           pendingApproval: p,
-          // Surface the pending approval as a tool message so the DiffCard
-          // renders in the transcript.
           messages: [
             ...s.messages,
             {
@@ -141,7 +146,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           approval: p,
           resolve: (verdict) => {
             console.log("[ai][approval] gate resolved with:", verdict);
-            // Mark the card's verdict and clear the gate.
             const cardVerdict: "applied" | "rejected" =
               verdict === "approved" ? "applied" : "rejected";
             set((s) => ({
@@ -166,30 +170,33 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         approvalGate = localGate;
       });
 
-    const systemPrompt = buildSystemPrompt({
-      ...currentWorkspaceContext(),
-      uiLanguage: currentUiLanguage(),
-    });
-
-    const agent = new Agent({
-      initialState: {
-        systemPrompt,
-        model: buildModel(),
-        tools: buildTools({ requestApproval }),
-      },
-      streamFn: makeStreamFn(),
-      // Edits block in the tool handler; run tools sequentially so an approval
-      // gate doesn't stall a parallel batch.
-      toolExecution: "sequential",
-    });
-    currentAgent = agent;
-
-    agent.subscribe((event) => handleAgentEvent(event, set, get));
-    console.log("[ai] agent constructed + subscribed, calling prompt()");
+    // Create the persistent agent on first send, or reuse it for multi-turn
+    // conversation. The Agent accumulates the transcript internally.
+    if (!persistentAgent) {
+      const systemPrompt = buildSystemPrompt({
+        ...currentWorkspaceContext(),
+        uiLanguage: currentUiLanguage(),
+      });
+      persistentAgent = new Agent({
+        initialState: {
+          systemPrompt,
+          model: buildModel(),
+          tools: buildTools({ requestApproval }),
+        },
+        streamFn: makeStreamFn(),
+        // Edits block in the tool handler; run tools sequentially so an approval
+        // gate doesn't stall a parallel batch.
+        toolExecution: "sequential",
+      });
+      persistentAgent.subscribe((event) => handleAgentEvent(event, set, get));
+      console.log("[ai] persistent agent created + subscribed");
+    }
+    const agent = persistentAgent;
+    console.log("[ai] calling agent.prompt()");
 
     try {
       await agent.prompt(text);
-      console.log("[ai] agent.prompt() resolved (run complete)");
+      console.log("[ai] agent.prompt() resolved (turn complete)");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[ai] agent.prompt() rejected:", msg);
@@ -202,49 +209,66 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         ],
       }));
     } finally {
-      // Finalize: flush any accumulated streaming text into a message.
+      // Finalize: flush any accumulated streaming text + thinking into messages.
       set((s) => {
         const text2 = s.streamingText;
-        const msgs = text2
-          ? [...s.messages, { id: uid(), role: "assistant" as const, text: text2 }]
+        const think = s.streamingThinking;
+        const msgs = text2 || think
+          ? [
+              ...s.messages,
+              {
+                id: uid(),
+                role: "assistant" as const,
+                text: text2 || undefined,
+                thinking: think || undefined,
+              },
+            ]
           : s.messages;
         return {
           messages: msgs,
-          // Preserve terminal states set by stop()/error paths; only fall back
-          // to "idle" when the run completed without being interrupted.
           status:
             s.status === "error" || s.status === "stopped" ? s.status : "idle",
           streamingText: "",
+          streamingThinking: "",
         };
       });
-      currentAgent = null;
       approvalGate = null;
     }
   },
 
   stop: () => {
-    currentAgent?.abort();
+    persistentAgent?.abort();
     approvalGate?.resolve("rejected");
     set((s) => ({
       status: "stopped",
       // Flush streaming text as a partial assistant message.
-      messages: s.streamingText
-        ? [...s.messages, { id: uid(), role: "assistant", text: s.streamingText }]
+      messages: s.streamingText || s.streamingThinking
+        ? [
+            ...s.messages,
+            {
+              id: uid(),
+              role: "assistant" as const,
+              text: s.streamingText || undefined,
+              thinking: s.streamingThinking || undefined,
+            },
+          ]
         : s.messages,
       streamingText: "",
+      streamingThinking: "",
       pendingApproval: null,
     }));
   },
 
   clearConversation: () => {
-    currentAgent?.abort();
+    persistentAgent?.abort();
     approvalGate?.resolve("rejected");
-    currentAgent = null;
+    persistentAgent = null;
     approvalGate = null;
     set({
       messages: [],
       status: "idle",
       streamingText: "",
+      streamingThinking: "",
       pendingApproval: null,
       errorMessage: null,
     });
@@ -337,6 +361,8 @@ function handleAgentEvent(
       const ev = event.assistantMessageEvent;
       if (ev.type === "text_delta") {
         set({ streamingText: get().streamingText + ev.delta });
+      } else if (ev.type === "thinking_delta") {
+        set({ streamingThinking: get().streamingThinking + ev.delta });
       }
       break;
     }
@@ -377,13 +403,23 @@ function handleAgentEvent(
       break;
     }
     case "message_end": {
-      // The assistant message finished. Flush accumulated streaming text into
-      // the message that message_end represents, so it persists in the transcript.
+      // The assistant message finished. Flush accumulated streaming text +
+      // thinking into the transcript so it persists between turns.
       const text = get().streamingText;
+      const think = get().streamingThinking;
       set((s) => ({
         streamingText: "",
-        messages: text
-          ? [...s.messages, { id: uid(), role: "assistant", text }]
+        streamingThinking: "",
+        messages: text || think
+          ? [
+              ...s.messages,
+              {
+                id: uid(),
+                role: "assistant" as const,
+                text: text || undefined,
+                thinking: think || undefined,
+              },
+            ]
           : s.messages,
       }));
       break;

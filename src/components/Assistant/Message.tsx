@@ -1,7 +1,22 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ChevronRight, FileText, Search, FolderOpen, Stethoscope, Play, Pencil, FilePlus } from "lucide-react";
 import { Markdown } from "./Markdown";
 import { DiffCard } from "./DiffCard";
 import type { AssistantMessage } from "../../store/assistantStore";
+import type { LucideIcon } from "lucide-react";
+
+/** Map tool name → icon for the tool card header. */
+const TOOL_ICONS: Record<string, LucideIcon> = {
+  read_file: FileText,
+  get_active_file: FileText,
+  list_dir: FolderOpen,
+  search_files: Search,
+  get_diagnostics: Stethoscope,
+  compile_preview: Play,
+  edit: Pencil,
+  write_file: FilePlus,
+};
 
 export function MessageView({
   message,
@@ -27,7 +42,7 @@ export function MessageView({
         {message.thinking && (
           <details className="assistant-thinking">
             <summary>{t("thinking")}</summary>
-            <Markdown>{message.thinking}</Markdown>
+            <div className="assistant-thinking__body">{message.thinking}</div>
           </details>
         )}
         {message.text && <Markdown>{message.text}</Markdown>}
@@ -36,9 +51,12 @@ export function MessageView({
   }
 
   // tool message
+  const Icon = TOOL_ICONS[message.toolName ?? ""] ?? FileText;
+  const hasResult = !!message.toolResult && !message.approval;
   return (
     <div className="assistant-tool">
       <div className="assistant-tool__head">
+        <Icon size={13} className="assistant-tool__icon" />
         <span className="assistant-tool__name">{message.toolName}</span>
         {message.toolStatus && (
           <span
@@ -51,11 +69,7 @@ export function MessageView({
                   : t("toolRunning")
             }
           >
-            {message.toolStatus === "ok"
-              ? "✓"
-              : message.toolStatus === "error"
-                ? "⊗"
-                : "⏳"}
+            {message.toolStatus === "ok" ? "✓" : message.toolStatus === "error" ? "✕" : "⏳"}
           </span>
         )}
       </div>
@@ -66,9 +80,37 @@ export function MessageView({
           onReject={onReject}
         />
       )}
-      {message.toolResult && !message.approval && (
-        <pre className="assistant-tool__result">{message.toolResult}</pre>
+      {hasResult && <ToolResult text={message.toolResult!} />}
+    </div>
+  );
+}
+
+/** Collapsible tool result. Collapsed shows a one-line summary; expanded shows the full text. */
+function ToolResult({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const summary = text.split("\n")[0].slice(0, 80);
+  const isMulti = text.length > 80 || text.includes("\n");
+
+  return (
+    <div className="assistant-tool__result-wrap">
+      {isMulti ? (
+        <button
+          className="assistant-tool__result-toggle"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          <ChevronRight
+            size={12}
+            style={{ transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}
+          />
+          <span className="assistant-tool__result-summary">{summary}{summary.length < text.length ? "…" : ""}</span>
+        </button>
+      ) : (
+        <span className="assistant-tool__result-summary">{summary}</span>
+      )}
+      {expanded && isMulti && (
+        <pre className="assistant-tool__result">{text}</pre>
       )}
     </div>
   );
 }
+

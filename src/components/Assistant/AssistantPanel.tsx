@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ArrowUp, Square, Trash2 } from "lucide-react";
 import { useAssistantStore } from "../../store/assistantStore";
 import { useSetting } from "../../hooks/useSetting";
 import { openSettings } from "../../lib/tauri";
@@ -56,7 +57,7 @@ export function AssistantPanel(_: { viewId: string }) {
           title={t("clear")}
           aria-label={t("clear")}
         >
-          🗑
+          <Trash2 size={15} />
         </button>
       </div>
 
@@ -98,32 +99,47 @@ export function AssistantPanel(_: { viewId: string }) {
         </div>
       ) : (
         <div className="assistant-panel__input">
-          <textarea
-            className="assistant-input"
-            placeholder={t("placeholder")}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                onSend();
-              }
-            }}
-            rows={2}
-            disabled={busy}
-          />
-          <div className="assistant-panel__actions">
+          <div className="assistant-input-wrap">
+            <textarea
+              className="assistant-input"
+              placeholder={t("placeholder")}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  onSend();
+                }
+              }}
+              rows={2}
+              disabled={busy}
+            />
             {busy ? (
               <button
-                className="assistant-btn assistant-btn--ghost"
+                className="assistant-send-btn assistant-send-btn--stop"
                 onClick={stop}
+                title={t("stop")}
+                aria-label={t("stop")}
               >
-                {t("stop")}
+                <Square size={15} fill="currentColor" />
               </button>
             ) : (
-              <span className="assistant-hint">{t("enterToSend")}</span>
+              <button
+                className="assistant-send-btn"
+                onClick={onSend}
+                disabled={!input.trim()}
+                title={t("send")}
+                aria-label={t("send")}
+              >
+                <ArrowUp size={17} />
+              </button>
             )}
           </div>
+          {!busy && (
+            <div className="assistant-panel__hint-row">
+              <span className="assistant-hint">{t("enterToSend")}</span>
+            </div>
+          )}
         </div>
       )}
     </div>
