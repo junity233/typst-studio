@@ -7,5 +7,5 @@
   "selectFile": "选择参考文献文件",
   "parseError": "解析参考文献文件失败",
   "citeAria": "引用 {{key}}",
-  "__smoke__": "ok"
+  "__smoke__": "bibliography zh 就绪"
 }

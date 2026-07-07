@@ -7,5 +7,5 @@
   "selectFile": "Select a bibliography file",
   "parseError": "Failed to parse bibliography file",
   "citeAria": "Cite {{key}}",
-  "__smoke__": "ok"
+  "__smoke__": "bibliography en ok"
 }
