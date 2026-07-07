@@ -19,7 +19,7 @@ import { effectiveLayout } from "../../lib/layoutState";
 // (useAppCommands). The default/min match the pane's maxSize [0,520] bounds;
 // the clamp on read guarantees a stale snapshot can't collapse the sidebar.
 const SIDEBAR_WIDTH_KEY = "ts-sidebar-width";
-const SIDEBAR_WIDTH_DEFAULT = 280;
+const SIDEBAR_WIDTH_DEFAULT = 320;
 const SIDEBAR_WIDTH_MIN = 0;
 
 function loadSidebarWidth(): number {
