@@ -1063,4 +1063,88 @@ knuth1984:
         assert_eq!(new.authors, vec!["Jane Doe".to_string()]);
         assert_eq!(new.year, Some(2024));
     }
+
+    /// A complex YAML fixture mirroring `examples/bib-demo/refs.yml`: nested
+    /// `parent` (Periodical), mixed author formats (scalar string AND a list of
+    /// `{given, family, suffix}` maps), a `publisher` map, and a leading `#`
+    /// comment. Regression guard for the panel failing to open real-world .yml
+    /// files — every getter in `entry_to_editable` must handle these without
+    /// panicking, and the 5-field parse must not be dragged down by the
+    /// full-field parse.
+    const COMPLEX_YAML_FIXTURE: &str = r#"
+# leading comment
+einstein-1905:
+  type: article
+  title: On the Electrodynamics of Moving Bodies
+  author: Albert Einstein
+  date: 1905
+  parent:
+    type: periodical
+    title: Annalen der Physik
+    volume: 322
+
+knuth-texbook:
+  type: book
+  title: The TeXbook
+  author: Donald E. Knuth
+  date: 1984-01-01
+  publisher:
+    name: Addison-Wesley
+    location: Reading, MA
+
+latex-companion:
+  type: book
+  title: The LaTeX Companion
+  author:
+    - Frank Mittelbach
+    - Michel Goossens
+  date: 2004
+  edition: 2
+
+minimal-entry:
+  type: misc
+  author: Anonymous
+  title: An Entry With No Date
+"#;
+
+    #[test]
+    fn complex_yaml_basic_parse_succeeds() {
+        // The 5-field projection must parse without error.
+        let entries = parse_bibliography(COMPLEX_YAML_FIXTURE, BibFormat::HayagrivaYaml)
+            .expect("complex yaml parses (basic)");
+        assert_eq!(entries.len(), 4);
+    }
+
+    #[test]
+    fn complex_yaml_editable_parse_succeeds() {
+        // The full-field projection (the one the edit modal + loadFile use)
+        // must not panic or error on nested parents / mixed author formats.
+        let entries =
+            parse_bibliography_editable(COMPLEX_YAML_FIXTURE, BibFormat::HayagrivaYaml)
+                .expect("complex yaml parses (editable)");
+        assert_eq!(entries.len(), 4);
+
+        // Nested parent (Periodical) title surfaces as the journal extra field.
+        let einstein = find_editable(&entries, "einstein-1905");
+        assert_eq!(einstein.entry_type, "article");
+        let journal = einstein
+            .extra
+            .iter()
+            .find(|(k, _)| k == "journal")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(journal, Some("Annalen der Physik"));
+
+        // Mixed author format: the {given,family,suffix} list must resolve to a
+        // display name, not panic.
+        let knuth = find_editable(&entries, "knuth-texbook");
+        assert!(
+            knuth.authors.iter().any(|a| a.contains("Knuth")),
+            "knuth author resolved: {:?}",
+            knuth.authors
+        );
+
+        // Entry with no date → year is None, no panic.
+        let minimal = find_editable(&entries, "minimal-entry");
+        assert_eq!(minimal.year, None);
+    }
 }

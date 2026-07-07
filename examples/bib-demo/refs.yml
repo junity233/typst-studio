@@ -1,0 +1,59 @@
+# Hayagriva YAML bibliography for testing the Bibliography panel.
+# This is Typst's native bibliography format. Keys are top-level map keys.
+
+einstein-1905:
+  type: article
+  title: On the Electrodynamics of Moving Bodies
+  author: Albert Einstein
+  date: 1905
+  parent:
+    type: periodical
+    title: Annalen der Physik
+    volume: 322
+
+knuth-texbook:
+  type: book
+  title: The TeXbook
+  author: Donald E. Knuth
+  date: 1984-01-01
+  publisher:
+    name: Addison-Wesley
+    location: Reading, MA
+
+latex-companion:
+  type: book
+  title: The LaTeX Companion
+  author:
+    - Frank Mittelbach
+    - Michel Goossens
+    - Johannes Braams
+    - David Carlisle
+    - Chris Rowley
+  date: 2004
+  publisher: Addison-Wesley
+  edition: 2
+
+typst-paper:
+  type: article
+  title: "Typst: A new markup-based typesetting system"
+  author:
+    - Martin Haug
+    - Laurenz Mädje
+  date: 2023
+  parent:
+    type: proceedings
+    title: Proceedings of the ACM on Programming Languages
+
+minimal-entry:
+  type: misc
+  author: Anonymous
+  title: An Entry With No Date
+
+shannon-info:
+  type: article
+  title: A Mathematical Theory of Communication
+  author: Claude E. Shannon
+  date: 1948
+  parent:
+    type: periodical
+    title: Bell System Technical Journal
