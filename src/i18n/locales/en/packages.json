@@ -23,6 +23,6 @@
   "copyImport": "Copy import",
   "noReadme": "No description available.",
   "confirmUninstall": "Uninstall {{name}} {{version}}? This deletes it from the local cache.",
-  "confirmNonEmptyDest": "The chosen folder is not empty. Continuing may merge or overwrite files. Proceed?",
+  "confirmOverwrite": "Some files at the chosen folder already exist. Overwrite them with the template's files?",
   "pickTemplateDir": "Choose a folder for the new project"
 }

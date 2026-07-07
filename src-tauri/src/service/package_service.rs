@@ -187,13 +187,15 @@ impl PackageService {
     }
 
     /// Initialize a template: ensure cached, then copy `template.path/` into
-    /// `dest`. Aborts on the first file conflict (never silently overwrites).
-    /// Returns the entrypoint path (relative to dest) to open as the first tab.
+    /// `dest`. When `overwrite` is false, aborts on the first file conflict;
+    /// when true, overwrites existing files (user confirmed). Returns the
+    /// entrypoint path (relative to dest) to open as the first tab.
     pub fn init_template(
         &self,
         name: &str,
         version: &str,
         dest: &Path,
+        overwrite: bool,
     ) -> Result<String, PackageOpError> {
         self.install_blocking(name, version)?;
         let Some(pkg_dir) = self.package_dir(name, version) else {
@@ -216,7 +218,7 @@ impl PackageService {
             copied: copied.clone(),
             cause: format!("create dest: {e}"),
         })?;
-        copy_tree(&src_dir, dest, &mut copied).map_err(|e| PackageOpError::TemplateInit {
+        copy_tree(&src_dir, dest, &mut copied, overwrite).map_err(|e| PackageOpError::TemplateInit {
             copied,
             cause: e,
         })?;
@@ -304,7 +306,12 @@ fn read_manifest(pkg_dir: &Path) -> Result<typst::syntax::package::PackageManife
     toml::from_str(&text).map_err(|e| format!("parse typst.toml: {e}"))
 }
 
-fn copy_tree(src: &Path, dest: &Path, copied: &mut Vec<PathBuf>) -> Result<(), String> {
+fn copy_tree(
+    src: &Path,
+    dest: &Path,
+    copied: &mut Vec<PathBuf>,
+    overwrite: bool,
+) -> Result<(), String> {
     for entry in walkdir::WalkDir::new(src).into_iter() {
         let entry = entry.map_err(|e| e.to_string())?;
         let rel = entry.path().strip_prefix(src).map_err(|e| e.to_string())?;
@@ -312,7 +319,7 @@ fn copy_tree(src: &Path, dest: &Path, copied: &mut Vec<PathBuf>) -> Result<(), S
         if entry.file_type().is_dir() {
             std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
         } else {
-            if target.exists() {
+            if target.exists() && !overwrite {
                 return Err(format!("refusing to overwrite existing file: {}", target.display()));
             }
             std::fs::copy(entry.path(), &target).map_err(|e| e.to_string())?;
@@ -427,7 +434,7 @@ thumbnail = "thumbnail.png"
     }
 
     #[test]
-    fn copy_tree_aborts_on_existing_file() {
+    fn copy_tree_aborts_on_existing_file_without_overwrite() {
         let tmp = std::env::temp_dir().join(format!("ts-copy-{}", uuid::Uuid::new_v4()));
         let src = tmp.join("src");
         let dest = tmp.join("dest");
@@ -436,8 +443,27 @@ thumbnail = "thumbnail.png"
         std::fs::create_dir_all(&dest).unwrap();
         std::fs::write(dest.join("a.typ"), "EXISTING").unwrap();
         let mut copied = Vec::new();
-        let res = copy_tree(&src, &dest, &mut copied);
-        assert!(res.is_err(), "must abort when a target exists");
+        let res = copy_tree(&src, &dest, &mut copied, false);
+        assert!(res.is_err(), "must abort when a target exists and overwrite is false");
+        // The pre-existing file must be untouched on abort.
+        assert_eq!(std::fs::read_to_string(dest.join("a.typ")).unwrap(), "EXISTING");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn copy_tree_overwrites_existing_file_when_confirmed() {
+        let tmp = std::env::temp_dir().join(format!("ts-copy-{}", uuid::Uuid::new_v4()));
+        let src = tmp.join("src");
+        let dest = tmp.join("dest");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.typ"), "NEW").unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("a.typ"), "EXISTING").unwrap();
+        let mut copied = Vec::new();
+        copy_tree(&src, &dest, &mut copied, true).expect("overwrite=true must succeed");
+        // The file is now the template's content, and it's recorded as copied.
+        assert_eq!(std::fs::read_to_string(dest.join("a.typ")).unwrap(), "NEW");
+        assert_eq!(copied.len(), 1);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -4,12 +4,13 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { join } from "@tauri-apps/api/path";
 import { usePackagesStore } from "../../../store/packagesStore";
 import { useWorkspaceStore } from "../../../store/workspaceStore";
+import { useUiStore } from "../../../store/uiStore";
+import { openFile } from "../../../lib/openFile";
 import {
   packageCompilerVersion,
   packageDirIsEmpty,
   packageImportSnippet,
   packageInitTemplate,
-  openFileByPath,
   openWorkspaceByPath,
 } from "../../../lib/tauri";
 import { toIpcError } from "../../../lib/ipc-error";
@@ -29,6 +30,7 @@ export function PackageDetail() {
   const setSelected = usePackagesStore((s) => s.setSelected);
   const install = usePackagesStore((s) => s.install);
   const hydrate = useWorkspaceStore((s) => s.hydrate);
+  const setActiveView = useUiStore((s) => s.setActiveView);
   const [compilerVersion, setCompilerVersion] = useState<string | null>(null);
 
   // Look up the selected entry in the FULL (unfiltered) index so the detail
@@ -72,6 +74,24 @@ export function PackageDetail() {
         })()
       : false;
 
+  /** Run the full "init → open workspace → open entrypoint" sequence for the
+   *  chosen destination, with a given overwrite flag. Throws on any error. */
+  const runInit = async (destStr: string, overwrite: boolean) => {
+    const entrypoint = await packageInitTemplate(entry.name, entry.version, destStr, overwrite);
+    // Open the freshly-populated folder as the workspace. The workspace store
+    // has no `openWorkspaceByPath` method, so drive the backend directly and
+    // then re-hydrate the store (getWorkspace now returns the new meta).
+    await openWorkspaceByPath(destStr);
+    await hydrate();
+    // Auto-open the template entrypoint (e.g. main.typ) so the user lands on
+    // a compilable document. Use the platform path joiner so the separator is
+    // correct on Windows (backslash).
+    const entryAbs = await join(destStr, entrypoint);
+    await openFile(entryAbs);
+    // Switch to the Explorer so the user sees their new project's file tree.
+    setActiveView("workbench.explorer");
+  };
+
   const applyTemplate = async () => {
     const dest = await openDialog({
       directory: true,
@@ -80,34 +100,26 @@ export function PackageDetail() {
     });
     if (!dest || Array.isArray(dest)) return;
     const destStr = String(dest);
-    // §4.1: if the chosen folder is non-empty, confirm before proceeding — the
-    // backend aborts on the first existing-file conflict, so a pre-confirm
-    // avoids a partial-copy cleanup modal. Uses the Rust-backed
-    // packageDirIsEmpty (NOT the fs-plugin, which is scoped and would throw).
-    let isEmpty = true;
     try {
-      isEmpty = await packageDirIsEmpty(destStr);
-    } catch {
-      // If we can't read the dir, proceed and let init surface the error.
-    }
-    if (!isEmpty) {
-      if (!confirm(t("confirmNonEmptyDest"))) return;
-    }
-    try {
-      const entrypoint = await packageInitTemplate(entry.name, entry.version, destStr);
-      // Open the freshly-populated folder as the workspace. The workspace store
-      // has no `openWorkspaceByPath` method, so drive the backend directly and
-      // then re-hydrate the store (getWorkspace now returns the new meta).
-      await openWorkspaceByPath(destStr);
-      await hydrate();
-      // Auto-open the template entrypoint (e.g. main.typ) so the user lands on
-      // a compilable document. Use the platform path joiner so the separator is
-      // correct on Windows (backslash) — a bare `${dest}/${entrypoint}` mixes
-      // separators and can fail to resolve.
-      const entryAbs = await join(destStr, entrypoint);
-      await openFileByPath(entryAbs);
+      const isEmpty = await packageDirIsEmpty(destStr);
+      if (!isEmpty && !confirm(t("confirmOverwrite"))) {
+        return;
+      }
+      await runInit(destStr, !isEmpty);
     } catch (e) {
-      alert(toIpcError(e).message);
+      const ipc = toIpcError(e);
+      if (ipc.code === "template_init_failed") {
+        // Confirm before overwriting existing files at the destination.
+        if (confirm(t("confirmOverwrite"))) {
+          try {
+            await runInit(destStr, true);
+          } catch (e2) {
+            alert(toIpcError(e2).message);
+          }
+        }
+      } else {
+        alert(ipc.message);
+      }
     }
   };
 

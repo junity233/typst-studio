@@ -96,15 +96,17 @@ pub async fn package_init_template(
     name: String,
     version: String,
     dest: String,
+    overwrite: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<String> {
     let dest = PathBuf::from(&dest);
     if !dest.is_absolute() {
         return Err(AppError::InvalidInput("dest must be absolute".into()));
     }
+    let overwrite = overwrite.unwrap_or(false);
     let svc = state.packages.clone();
     let entrypoint = tauri::async_runtime::spawn_blocking(move || {
-        svc.init_template(&name, &version, &dest)
+        svc.init_template(&name, &version, &dest, overwrite)
     })
     .await
     .map_err(|e| AppError::Other(format!("init_template join: {e}")))?

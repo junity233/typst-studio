@@ -23,6 +23,6 @@
   "copyImport": "复制 import",
   "noReadme": "暂无描述。",
   "confirmUninstall": "卸载 {{name}} {{version}}？这会从本地缓存删除它。",
-  "confirmNonEmptyDest": "所选文件夹非空。继续可能会合并或覆盖文件。确定继续吗？",
+  "confirmOverwrite": "所选文件夹中已存在部分文件。是否用模板的文件覆盖它们？",
   "pickTemplateDir": "选择新项目文件夹"
 }

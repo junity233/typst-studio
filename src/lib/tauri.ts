@@ -626,13 +626,17 @@ export async function packageListInstalled(): Promise<InstalledPackage[]> {
   return invoke<InstalledPackage[]>("package_list_installed");
 }
 
-/** Apply a template into `dest` (absolute path); returns the entrypoint filename. */
+/** Apply a template into `dest` (absolute path); returns the entrypoint filename.
+ *  When `overwrite` is true, existing files at the destination are replaced
+ *  (user-confirmed); otherwise a conflict surfaces as a `template_init_failed`
+ *  error the caller can retry from. */
 export async function packageInitTemplate(
   name: string,
   version: string,
   dest: string,
+  overwrite = false,
 ): Promise<string> {
-  return invoke<string>("package_init_template", { name, version, dest });
+  return invoke<string>("package_init_template", { name, version, dest, overwrite });
 }
 
 /** Build the `#import "@preview/name:version": *` snippet (pure, no IPC). */
