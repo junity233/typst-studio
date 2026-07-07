@@ -41,7 +41,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::domain::document::DocumentOrigin;
-use crate::service::tab_store::{handle_external_change_locked, Tabs, Workers};
+use crate::service::tab_store::{handle_external_change_locked, Tabs};
 
 use super::tab_store::TabStore;
 
@@ -79,8 +79,6 @@ impl WatcherHealth {
         let stop_clone = Arc::clone(&stop);
         let registry = store.registry.clone();
         let tabs = store.tabs.clone();
-        let workers = store.workers.clone();
-        let vfs = store.vfs.clone();
         let emitter = store.emitter.clone();
 
         let thread = std::thread::Builder::new()
@@ -91,8 +89,6 @@ impl WatcherHealth {
                     stop_clone,
                     registry,
                     tabs,
-                    workers,
-                    vfs,
                     emitter,
                 );
             })
@@ -110,14 +106,13 @@ impl WatcherHealth {
     /// 2. Enumerate open docs via the registry.
     /// 3. For each doc with a disk path, call `handle_external_change_locked` —
     ///    which re-reads the DiskVersion and routes a divergence through the
-    ///    normal external-change path (reload clean / conflict dirty).
+    ///    normal external-change path (content-differs → Modified conflict,
+    ///    surfaced to the user to resolve).
     fn poll_loop(
         _watcher_failed: Arc<AtomicBool>,
         stop: Arc<AtomicBool>,
         registry: crate::domain::registry::SharedRegistry,
         tabs: Tabs,
-        workers: Workers,
-        vfs: Arc<crate::typst_engine::MemoryVfs>,
         emitter: Arc<dyn super::editor_service::Emitter>,
     ) {
         while !stop.load(Ordering::SeqCst) {
@@ -150,7 +145,7 @@ impl WatcherHealth {
                 // Re-route through the shared external-change handler. It's
                 // idempotent (DiskVersion equality), so a watcher event that
                 // already fired for this change is a no-op here.
-                handle_external_change_locked(&path, &tabs, &registry, &workers, &vfs, &emitter);
+                handle_external_change_locked(&path, &tabs, &registry, &emitter);
             }
         }
     }
@@ -300,20 +295,29 @@ mod tests {
             &canon,
             &store.tabs,
             &store.registry,
-            &store.workers,
-            &store.vfs,
             &store.emitter,
         );
 
         health.shutdown();
-        // The doc was clean (not dirty), so an external change auto-reloads
-        // (no conflict). Assert the buffer now reflects the disk content.
+        // The doc was clean (not dirty), but external changes now surface as a
+        // Modified conflict for the user to resolve explicitly (rather than a
+        // silent auto-reload). Assert the buffer is UNCHANGED and the tab is
+        // flagged Modified — the disk content is applied only when the user
+        // confirms via resolve_conflict_use_disk.
         let tab = store.tabs.read().get(&id).cloned().expect("tab still open");
         assert_eq!(
             tab.world.text(),
-            "externally changed",
-            "poll-driven check should have reloaded the externally-changed clean doc"
+            "original",
+            "buffer must not be silently reloaded; the user must confirm the external change"
         );
+        {
+            let rt = tab.state.lock();
+            assert!(
+                matches!(rt.meta.conflict, ConflictState::Modified { .. }),
+                "external change on a clean doc should surface as Modified conflict, got {:?}",
+                rt.meta.conflict
+            );
+        }
         let _ = fs::remove_dir_all(canon.parent().unwrap());
     }
 
@@ -335,7 +339,7 @@ mod tests {
         // Two consecutive checks for the SAME on-disk version must not double-
         // fire (DiskVersion equality short-circuits to a no-op). We verify the
         // poll's per-doc call is safe to repeat; the deeper idempotency
-        // (content-equal → no reload) is covered by handle_version_change's
+        // (content-equal → no-op) is covered by handle_version_change's
         // own tests.
         let (store, _id, canon) = open_doc("stable");
         // No mutation → both checks are no-ops (no panic, clean exit).
@@ -344,8 +348,6 @@ mod tests {
                 &canon,
                 &store.tabs,
                 &store.registry,
-                &store.workers,
-                &store.vfs,
                 &store.emitter,
             );
         }

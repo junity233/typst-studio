@@ -200,13 +200,11 @@ pub(crate) fn loose_watcher_for(store: &TabStore, parent: &Path) {
     // handle_external_change. It captures the shared `Arc`s (NOT a service Arc —
     // that would be a cycle), so the closure stays 'static + Send + Sync.
     let tabs = store.tabs.clone();
-    let workers = store.workers.clone();
     let registry = store.registry.clone();
-    let vfs = store.vfs.clone();
     let emitter = store.emitter.clone();
     let on_change: watcher::OnChange = Arc::new(move |paths: &[PathBuf]| {
         for p in paths {
-            handle_external_change_locked(p, &tabs, &registry, &workers, &vfs, &emitter);
+            handle_external_change_locked(p, &tabs, &registry, &emitter);
         }
     });
     match watcher::watch(parent, watcher::DEFAULT_DEBOUNCE, on_change) {
@@ -332,8 +330,6 @@ pub(crate) fn handle_external_change_locked(
     path: &Path,
     tabs: &Tabs,
     registry: &SharedRegistry,
-    workers: &Workers,
-    vfs: &Arc<MemoryVfs>,
     emitter: &Arc<dyn Emitter>,
 ) {
     // Canonicalize the watcher's path so it compares against the registry's
@@ -420,7 +416,7 @@ pub(crate) fn handle_external_change_locked(
         }
         VersionRead::Ok(new_version) => {
             // Fall through to the content/identity comparison below.
-            handle_version_change(&tab, id, live_path, new_version, emitter, vfs, workers);
+            handle_version_change(&tab, id, live_path, new_version, emitter);
         }
     }
 }
@@ -476,16 +472,16 @@ fn merge_non_ok(_first: VersionRead, fallback: VersionRead) -> VersionRead {
 /// rules for a successfully-read new on-disk version:
 /// - content identical + inode identical → no-op (self-save / touch).
 /// - content identical + inode CHANGED → `Replaced` (dirty) or silent re-baseline (clean).
-/// - content differs + dirty → `Modified` (carrying the new disk_version + disk content).
-/// - content differs + clean → auto-reload.
+/// - content differs (clean or dirty) → `Modified` (carrying the new disk_version +
+///   disk content). The frontend surfaces the conflict and asks the user whether to
+///   apply the disk content; resolving via `resolve_conflict_use_disk` performs the
+///   reload + recompile under the user's explicit confirmation.
 fn handle_version_change(
     tab: &Arc<TabState>,
     id: DocumentId,
     live_path: &Path,
     new_version: DiskVersion,
     emitter: &Arc<dyn Emitter>,
-    vfs: &Arc<MemoryVfs>,
-    workers: &Workers,
 ) {
     // Snapshot stored version + inode + dirty under a brief lock.
     let (stored_version, stored_identity, dirty) = {
@@ -536,77 +532,22 @@ fn handle_version_change(
         return;
     }
 
-    // Case 2: content differs.
-    if dirty {
-        // Buffer has unsaved edits → never clobber. Surface Modified with the
-        // disk content (for the compare view) AND the new disk_version (carried
-        // Rust-side so re-detection / use-disk knows the target version).
-        let disk_content = std::fs::read_to_string(live_path).ok();
-        set_conflict(
-            tab,
-            id,
-            emitter,
-            ConflictState::Modified {
-                disk_version: Some(new_version),
-            },
-            disk_content,
-        );
-        return;
-    }
-
-    // Clean buffer + external change → auto-reload. Read the new text, then
-    // re-check `dirty` BEFORE committing the reload: the disk read above ran
-    // outside any lock, and a `DocumentService::update_text` (the user's first
-    // keystroke) could have landed in that window. Applying the reload
-    // unconditionally would either overwrite that edit on the world buffer
-    // (last `set_text` wins) or — worse — leave it in the buffer while marking
-    // it clean (`dirty = false`), silently dropping it on close. Re-checking
-    // `dirty` under the commit lock converts this into the Modified-conflict
-    // path, which is the safe non-destructive branch.
-    let Ok(content) = std::fs::read_to_string(live_path) else {
+    // Case 2: content differs. Whether the buffer is clean or dirty, surface a
+    // `Modified` conflict carrying the new disk_version + current disk content,
+    // and let the frontend ask the user whether to apply the external change.
+    // Resolving via `resolve_conflict_use_disk` re-reads the disk at that point
+    // (so the user always confirms the latest bytes), performs `set_text` +
+    // `worker.recompile()`, and clears the conflict — keeping the buffer/world/
+    // VFS in step atomically under one decision rather than racing the user's
+    // typing against a silent auto-reload.
+    let disk_content = std::fs::read_to_string(live_path).ok();
+    let conflict = match disk_content.as_ref() {
         // File vanished between the version read and the content read.
-        set_conflict(tab, id, emitter, ConflictState::Missing, None);
-        return;
+        None => ConflictState::Missing,
+        // Surface the external change for the user to resolve explicitly.
+        Some(_) => ConflictState::Modified {
+            disk_version: Some(new_version),
+        },
     };
-    // Commit text + metadata under the same state lock used by `update_text`.
-    // Whichever side acquires it first creates one coherent snapshot:
-    // - an editor update first makes the document dirty, routing us to conflict;
-    // - a clean reload first completes atomically, after which the editor's
-    //   versioned update safely replaces it and becomes dirty.
-    let (revision, canon) = {
-        let mut rt = tab.state.lock();
-        if rt.meta.dirty {
-            // An edit landed while the disk content was being read. Don't
-            // clobber it; surface Modified with the disk bytes for comparison.
-            drop(rt);
-            set_conflict(
-                tab,
-                id,
-                emitter,
-                ConflictState::Modified {
-                    disk_version: Some(new_version),
-                },
-                Some(content),
-            );
-            return;
-        }
-        tab.world.set_text(content.clone());
-        rt.meta.revision = rt.meta.revision.saturating_add(1);
-        rt.meta.dirty = false;
-        rt.meta.conflict = ConflictState::None;
-        rt.disk_version = Some(new_version);
-        rt.file_identity = new_identity;
-        (
-            rt.meta.revision,
-            rt.meta.origin.canonical_path().map(|p| p.to_path_buf()),
-        )
-    };
-    // Keep the shared VFS in step with the reloaded buffer (§5 end): another
-    // tab that #includes this file must compile against the reloaded content.
-    if let Some(canon) = canon {
-        vfs.upsert(canon, content, revision);
-    }
-    if let Some(worker) = workers.read().get(&id) {
-        worker.recompile();
-    }
+    set_conflict(tab, id, emitter, conflict, disk_content);
 }

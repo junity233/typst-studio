@@ -1462,13 +1462,16 @@ mod tests {
         meta.id
     }
 
-    /// §8.4: a clean buffer auto-reloads from disk on external change (revision
-    /// bumps, dirty stays false, content updates), then recompiles.
+    /// §8.4: a clean buffer with an external change surfaces a `Modified`
+    /// conflict (rather than silently auto-reloading) so the user can decide
+    /// whether to apply the disk content. The buffer is never clobbered; the
+    /// reload + recompile happens later, under `resolve_conflict_use_disk`.
     #[test]
-    fn handle_external_change_clean_buffer_auto_reloads() {
+    fn handle_external_change_clean_buffer_enters_conflict() {
         let tmp = make_tmp_file("#set page(width: 10cm)\n\nOriginal");
         let (svc, emitter) = make_service();
         let id = open_clean_file(&svc, &emitter, &tmp);
+        let text_before = svc.tab_text(id).unwrap();
         let rev_before = svc.tab_revision(id).unwrap();
         assert!(!svc.tab_meta(id).unwrap().dirty);
 
@@ -1476,24 +1479,30 @@ mod tests {
         std::fs::write(&tmp, "#set page(width: 10cm)\n\nChanged on disk").unwrap();
         svc.handle_external_change(&tmp);
 
-        // Buffer reloaded to the new content; revision bumped; still not dirty.
+        // Buffer is NOT clobbered; the user must confirm before the disk
+        // content is applied.
         assert_eq!(
             svc.tab_text(id).as_deref(),
-            Some("#set page(width: 10cm)\n\nChanged on disk"),
-            "clean buffer must reload from disk"
+            Some(text_before.as_str()),
+            "clean buffer must NOT be silently reloaded; the user must confirm"
+        );
+        assert_eq!(
+            svc.tab_revision(id),
+            Some(rev_before),
+            "no reload → no revision bump"
+        );
+        assert_eq!(
+            svc.tab_meta(id).unwrap().conflict.tag(),
+            ConflictState::Modified { disk_version: None }.tag(),
+            "must enter Modified conflict"
         );
         assert!(
-            svc.tab_revision(id).unwrap() > rev_before,
-            "reload must bump the revision"
+            emitter
+                .conflicts_for(id)
+                .iter()
+                .any(|c| c.tag() == ConflictState::Modified { disk_version: None }.tag()),
+            "expected a Modified conflict event"
         );
-        assert!(
-            !svc.tab_meta(id).unwrap().dirty,
-            "auto-reload must not mark the buffer dirty"
-        );
-        assert_eq!(svc.tab_meta(id).unwrap().conflict, ConflictState::None);
-        // The reload signals a recompile.
-        emitter.clear();
-        wait_for_compiled(&emitter, id);
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -1646,13 +1655,20 @@ mod tests {
 
         // Behaviourally: a real external change reaches handle_external_change
         // (we call it directly since the watcher's 300ms debounce is timing-
-        // dependent and already tested in watcher.rs).
+        // dependent and already tested in watcher.rs). External changes now
+        // surface as a Modified conflict (clean or dirty) for the user to
+        // resolve, rather than silently reloading.
         std::fs::write(&main, "#set page(width: 10cm)\n\nChanged").unwrap();
         svc.handle_external_change(&main);
         assert_eq!(
             svc.tab_text(id).as_deref(),
-            Some("#set page(width: 10cm)\n\nChanged"),
-            "loose-file external change reloads the clean buffer"
+            Some("#set page(width: 10cm)\n\nLoose"),
+            "loose-file external change must not silently reload the clean buffer"
+        );
+        assert_eq!(
+            svc.tab_meta(id).unwrap().conflict.tag(),
+            ConflictState::Modified { disk_version: None }.tag(),
+            "loose-file external change must enter Modified conflict"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

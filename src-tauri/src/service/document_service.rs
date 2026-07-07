@@ -496,10 +496,13 @@ impl DocumentService {
     ///   preserved; conflict event emitted; no reload.
     /// - **content identical** to the stored version (mtime-only change) →
     ///   no-op (no reload, no recompile).
-    /// - **content differs AND buffer clean** → auto-reload: set world text,
-    ///   bump revision, keep `dirty=false`, update disk version, recompile.
-    /// - **content differs AND buffer dirty** → `ConflictState::Modified`;
-    ///   buffer untouched; conflict event emitted with the disk content.
+    /// - **content differs** (clean or dirty buffer) → `ConflictState::Modified`
+    ///   carrying the new disk version + current disk content; buffer untouched;
+    ///   conflict event emitted. The frontend surfaces the conflict and asks the
+    ///   user whether to apply the disk content; resolving via
+    ///   [`resolve_conflict_use_disk`][Self::resolve_conflict_use_disk] then
+    ///   performs the reload (set world text, bump revision, clear dirty/conflict,
+    ///   update disk version) and recompiles.
     ///
     /// The app's OWN save is recognized because [`mark_saved`] updates the
     /// stored version to match the freshly-written bytes, so the watcher event
@@ -509,8 +512,6 @@ impl DocumentService {
             path,
             &self.store.tabs,
             &self.store.registry,
-            &self.store.workers,
-            &self.store.vfs,
             &self.store.emitter,
         );
     }
