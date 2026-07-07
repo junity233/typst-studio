@@ -94,6 +94,60 @@ fn read_api_key(state: &AppState) -> Result<String> {
     Ok(key)
 }
 
+/// The default base URL for a provider, used when the user leaves `ai.baseUrl`
+/// empty. Must stay in sync with the frontend's SDK defaults.
+fn provider_default_base_url(provider: &str) -> &'static str {
+    match provider {
+        "anthropic" => "https://api.anthropic.com",
+        // OpenAI and any OpenAI-compatible service (DeepSeek, Moonshot, Ollama,
+        // …) — the OpenAI SDK defaults to this when no baseURL is set.
+        _ => "https://api.openai.com",
+    }
+}
+
+/// Resolve the single origin (`scheme://host[:port]`, no path) the proxy is
+/// allowed to send the API key to. Sources, in priority order:
+///   1. `ai.baseUrl` (user-configured) — the origin is extracted from it.
+///   2. provider default (from `ai.provider`).
+///
+/// `ai.baseUrl` is what the user explicitly trusted; if they point it at a
+/// local Ollama or a proxy, that is the only legitimate destination. We do NOT
+/// allow the webview to override this per-request.
+fn resolve_allowed_origin(state: &AppState) -> Result<String> {
+    let provider = state.settings.get::<String>("ai.provider", "openai".into());
+    let base_url = state.settings.get::<String>("ai.baseUrl", String::new());
+    let source = if !base_url.trim().is_empty() {
+        base_url
+    } else {
+        provider_default_base_url(&provider).to_string()
+    };
+    origin_of(&source)
+}
+
+/// Extract the origin (`scheme://host[:port]`) from an absolute URL. Returns
+/// an error if the URL is not a valid absolute http(s) URL. Used for the
+/// allowlist comparison so path/query differences don't matter.
+fn origin_of(raw: &str) -> Result<String> {
+    let parsed = url::Url::parse(raw)
+        .map_err(|e| AppError::InvalidInput(format!("invalid URL '{}': {}", raw, e)))?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(AppError::InvalidInput(format!(
+            "AI proxy only allows http(s) URLs; got '{}'",
+            raw
+        )));
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| AppError::InvalidInput(format!("URL '{}' has no host", raw)))?;
+    // Include the port only when it's explicitly present.
+    let origin = match parsed.port() {
+        Some(port) => format!("{}://{}:{}", scheme, host, port),
+        None => format!("{}://{}", scheme, host),
+    };
+    Ok(origin)
+}
+
 /// Stream an LLM request through Rust. See module docs for the threat model:
 /// the webview supplies everything except the key; Rust injects the key and
 /// pipes bytes. The frontend's custom-`fetch` wrapper reconstructs a standard
@@ -109,10 +163,28 @@ pub async fn ai_proxy_stream(
     // SECURITY: the webview controls `opts.url`. Enforce http(s)-only so a
     // compromised/XSSed webview cannot use this command to read local files
     // (file://) or hit internal/cloud-metadata endpoints (SSRF). This mirrors
-    // the boundary every other net/ entrypoint enforces (fetch.rs). The API
-    // key is injected below; restricting the destination host protects it.
+    // the boundary every other net/ entrypoint enforces (fetch.rs).
     crate::net::client::HttpClient::validate_scheme(&opts.url)
         .map_err(AppError::from)?;
+
+    // SECURITY (host allowlist): the API key is injected into the request
+    // below, so the destination host MUST be one the user actually configured.
+    // Without this check, a compromised renderer could exfiltrate the key by
+    // pointing this command at an attacker-controlled domain (the scheme check
+    // above permits any https URL, which is not enough). We resolve the
+    // expected host from `ai.baseUrl` (when set) or the provider default, then
+    // reject any URL whose host:port does not match. Path/query are left to
+    // the provider's API to validate.
+    let allowed_origin = resolve_allowed_origin(&state)?;
+    let requested_origin = origin_of(&opts.url)?;
+    if requested_origin != allowed_origin {
+        return Err(AppError::InvalidInput(format!(
+            "AI proxy refuses to send the API key to '{}': the configured AI \
+             provider is '{}'. Only the configured base URL (or the provider \
+             default) is allowed as a request target.",
+            requested_origin, allowed_origin,
+        )));
+    }
 
     // Forward the pre-serialized JSON body as raw bytes with the right
     // content-type. Rust does not parse or re-serialize the JSON — it is a

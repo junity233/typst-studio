@@ -274,15 +274,51 @@ describe("aiStream — OpenAI Chat Completions", () => {
 
     const toolEnds = events.filter((e) => e.type === "toolcall_end");
     expect(toolEnds).toHaveLength(2);
+    // No text block → first tool call is at contentIndex 0, second at 1.
+    // (contentIndex must be the real position in partial.content — pi-ai contract.)
     expect(toolEnds[0]).toMatchObject({
-      contentIndex: 1,
+      contentIndex: 0,
       toolCall: { id: "c1", arguments: { path: "a" } },
     });
     expect(toolEnds[1]).toMatchObject({
-      contentIndex: 2,
+      contentIndex: 1,
       toolCall: { id: "c2", arguments: { path: "b" } },
     });
     expect(events[events.length - 1]).toMatchObject({ type: "done", reason: "toolUse" });
+  });
+
+  it("contentIndex always matches partial.content position (pi-ai contract)", async () => {
+    // Text first, then a tool call: contentIndex should be 0 for text, 1 for tool.
+    const chunks: OpenAIChunk[] = [
+      { choices: [{ delta: { content: "Look:" } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "read_file", arguments: '{"path":"a"}' } }] } }] },
+      { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+    ];
+    openaiCreateMock.mockReturnValue(asyncIter(chunks));
+
+    const streamFn = makeStreamFn();
+    const events: any[] = [];
+    for await (const ev of streamFn({} as any, { messages: [] } as any)) {
+      events.push(ev);
+    }
+
+    // For every event that carries a contentIndex, verify partial.content[ci]
+    // exists and has the expected type.
+    for (const ev of events) {
+      if ("contentIndex" in ev && ev.partial) {
+        const ci = ev.contentIndex;
+        const block = ev.partial.content?.[ci];
+        expect(block).toBeDefined();
+        if (ev.type.startsWith("text")) expect(block.type).toBe("text");
+        if (ev.type.startsWith("toolcall")) expect(block.type).toBe("toolCall");
+      }
+    }
+
+    // text at 0, tool at 1 (text block came first in the stream).
+    const textStart = events.find((e) => e.type === "text_start");
+    const toolStart = events.find((e) => e.type === "toolcall_start");
+    expect(textStart.contentIndex).toBe(0);
+    expect(toolStart.contentIndex).toBe(1);
   });
 
   it("maps null finish_reason with tool calls to 'toolUse' (Ollama-style)", async () => {

@@ -86,6 +86,10 @@ parking_lot = "0.12"
 # Error handling
 anyhow = "1"
 thiserror = "2"
+
+# URL parsing for the AI proxy's host allowlist (origin extraction). Already a
+# transitive dep via typst; declared explicitly so we don't lean on that.
+url = "2"
 # HTTP types (Origin header parsing for the WS handshake). Same version as
 # tauri/tungstenite depend on, so this adds no new compiled code.
 http = "1"

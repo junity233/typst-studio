@@ -223,9 +223,12 @@ async function driveOpenAIChat(
   );
   console.log("[ai][stream] OpenAI: create() returned, iterating chunks");
 
-  // Map OpenAI's tool_call index → our contentIndex (text is always 0).
+  // Map OpenAI's tool_call index → the contentIndex (position in acc.content)
+  // of the tool-call block we created for it. contentIndex MUST be the real
+  // position in partial.content (pi-ai contract), so we derive it from
+  // acc.content.length at push time rather than assuming text=0 / tools=1+.
   const openaiToolIndexToContentIndex: Map<number, number> = new Map();
-  let nextContentIndex = 1;
+  let textContentIndex: number | null = null;
   let finishReason: string | null = null;
 
   for await (const chunk of completion as AsyncIterable<ChatCompletionChunk>) {
@@ -234,27 +237,28 @@ async function driveOpenAIChat(
     const delta = choice.delta;
 
     if (delta?.content) {
-      if (!acc.textBlock) {
+      if (acc.textBlock === null) {
         acc.textBlock = { type: "text", text: "" };
         acc.content.push(acc.textBlock);
-        stream.push({ type: "text_start", contentIndex: 0, partial: partial(acc, modelId, provider) });
+        textContentIndex = acc.content.length - 1;
+        stream.push({ type: "text_start", contentIndex: textContentIndex, partial: partial(acc, modelId, provider) });
       }
       acc.textBlock.text += delta.content;
-      stream.push({ type: "text_delta", contentIndex: 0, delta: delta.content, partial: partial(acc, modelId, provider) });
+      stream.push({ type: "text_delta", contentIndex: textContentIndex!, delta: delta.content, partial: partial(acc, modelId, provider) });
     }
 
     if (delta?.tool_calls) {
       for (const tc of delta.tool_calls) {
         let contentIdx = openaiToolIndexToContentIndex.get(tc.index);
         if (contentIdx === undefined) {
-          contentIdx = nextContentIndex++;
-          openaiToolIndexToContentIndex.set(tc.index, contentIdx);
           const id = tc.id ?? "";
           const name = tc.function?.name ?? "";
           const block: ToolCall = { type: "toolCall", id, name, arguments: {} };
+          acc.content.push(block);
+          contentIdx = acc.content.length - 1;
+          openaiToolIndexToContentIndex.set(tc.index, contentIdx);
           acc.toolBlocks.set(contentIdx, block);
           acc.toolArgJson.set(contentIdx, "");
-          acc.content.push(block);
           stream.push({ type: "toolcall_start", contentIndex: contentIdx, partial: partial(acc, modelId, provider) });
         }
         if (tc.id) acc.toolBlocks.get(contentIdx)!.id = tc.id;
@@ -272,8 +276,8 @@ async function driveOpenAIChat(
   }
 
   // Close out content blocks.
-  if (acc.textBlock) {
-    stream.push({ type: "text_end", contentIndex: 0, content: acc.textBlock.text, partial: partial(acc, modelId, provider) });
+  if (acc.textBlock !== null && textContentIndex !== null) {
+    stream.push({ type: "text_end", contentIndex: textContentIndex, content: acc.textBlock.text, partial: partial(acc, modelId, provider) });
   }
   for (const [contentIdx, block] of acc.toolBlocks) {
     const raw = acc.toolArgJson.get(contentIdx) ?? "{}";
@@ -370,13 +374,13 @@ async function driveAnthropic(
   } as MessageCreateParamsStreaming;
   const response = await client.messages.create(params, { signal });
 
-  // Anthropic content-block index → our contentIndex (text block is index 0).
+  // Anthropic content-block index → the contentIndex (position in acc.content)
+  // of the block we created for it. contentIndex MUST be the real position in
+  // partial.content (pi-ai contract), so we derive it from acc.content.length
+  // at push time rather than hardcoding offsets.
   const anthropicIdxToContentIdx: Map<number, number> = new Map();
-  let nextContentIndex = 0;
+  let textContentIndex: number | null = null;
   let stopReason: string | null = null;
-  // Thinking blocks use a sentinel contentIndex that won't collide with
-  // text(0) or tool calls(1+). The UI keys thinking rendering off this.
-  const THINKING_INDEX = -1;
 
   for await (const ev of response) {
     if (ev.type === "content_block_start") {
@@ -385,45 +389,48 @@ async function driveAnthropic(
         if (!acc.textBlock) {
           acc.textBlock = { type: "text", text: "" };
           acc.content.push(acc.textBlock);
-          anthropicIdxToContentIdx.set(ev.index, 0);
-          stream.push({ type: "text_start", contentIndex: 0, partial: partial(acc, modelId, provider) });
+          textContentIndex = acc.content.length - 1;
+          anthropicIdxToContentIdx.set(ev.index, textContentIndex);
+          stream.push({ type: "text_start", contentIndex: textContentIndex, partial: partial(acc, modelId, provider) });
         }
       } else if (block.type === "tool_use") {
-        const contentIdx = ++nextContentIndex; // tool calls start at 1
-        anthropicIdxToContentIdx.set(ev.index, contentIdx);
         const tc: ToolCall = { type: "toolCall", id: block.id, name: block.name, arguments: {} };
+        acc.content.push(tc);
+        const contentIdx = acc.content.length - 1;
+        anthropicIdxToContentIdx.set(ev.index, contentIdx);
         acc.toolBlocks.set(contentIdx, tc);
         acc.toolArgJson.set(contentIdx, "");
-        acc.content.push(tc);
         stream.push({ type: "toolcall_start", contentIndex: contentIdx, partial: partial(acc, modelId, provider) });
       } else if (block.type === "thinking") {
-        // Extended thinking block — emit thinking events so the UI can show
-        // the reasoning process. Use a dedicated contentIndex offset to avoid
-        // collision with text(0)/tool(1+); we track it separately.
-        anthropicIdxToContentIdx.set(ev.index, THINKING_INDEX);
-        stream.push({ type: "thinking_start", contentIndex: THINKING_INDEX, partial: partial(acc, modelId, provider) });
+        // Extended thinking block. Add a placeholder to acc.content so its
+        // position is a real index (pi-ai contract), not a sentinel.
+        const placeholder = { type: "thinking", thinking: "" } as { type: "thinking"; thinking: string };
+        acc.content.push(placeholder);
+        const contentIdx = acc.content.length - 1;
+        anthropicIdxToContentIdx.set(ev.index, contentIdx);
+        stream.push({ type: "thinking_start", contentIndex: contentIdx, partial: partial(acc, modelId, provider) });
       }
     } else if (ev.type === "content_block_delta") {
       const delta = ev.delta;
       const contentIdx = anthropicIdxToContentIdx.get(ev.index);
-      if (delta.type === "text_delta" && contentIdx === 0 && acc.textBlock) {
+      if (delta.type === "text_delta" && contentIdx === textContentIndex && acc.textBlock) {
         acc.textBlock.text += delta.text;
-        stream.push({ type: "text_delta", contentIndex: 0, delta: delta.text, partial: partial(acc, modelId, provider) });
-      } else if (delta.type === "input_json_delta" && contentIdx !== undefined && contentIdx > 0) {
+        stream.push({ type: "text_delta", contentIndex: contentIdx, delta: delta.text, partial: partial(acc, modelId, provider) });
+      } else if (delta.type === "input_json_delta" && contentIdx !== undefined && acc.toolBlocks.has(contentIdx)) {
         const prev = acc.toolArgJson.get(contentIdx) ?? "";
         const next = prev + delta.partial_json;
         acc.toolArgJson.set(contentIdx, next);
         stream.push({ type: "toolcall_delta", contentIndex: contentIdx, delta: delta.partial_json, partial: partial(acc, modelId, provider) });
-      } else if (delta.type === "thinking_delta" && contentIdx === THINKING_INDEX) {
-        stream.push({ type: "thinking_delta", contentIndex: THINKING_INDEX, delta: delta.thinking, partial: partial(acc, modelId, provider) });
+      } else if (delta.type === "thinking_delta" && contentIdx !== undefined) {
+        const block = acc.content[contentIdx] as { type: "thinking"; thinking: string };
+        block.thinking += delta.thinking;
+        stream.push({ type: "thinking_delta", contentIndex: contentIdx, delta: delta.thinking, partial: partial(acc, modelId, provider) });
       }
     } else if (ev.type === "content_block_stop") {
       const contentIdx = anthropicIdxToContentIdx.get(ev.index);
-      if (contentIdx === 0 && acc.textBlock) {
-        stream.push({ type: "text_end", contentIndex: 0, content: acc.textBlock.text, partial: partial(acc, modelId, provider) });
-      } else if (contentIdx === THINKING_INDEX) {
-        stream.push({ type: "thinking_end", contentIndex: THINKING_INDEX, content: "", partial: partial(acc, modelId, provider) });
-      } else if (contentIdx !== undefined && contentIdx > 0) {
+      if (contentIdx === textContentIndex && acc.textBlock) {
+        stream.push({ type: "text_end", contentIndex: contentIdx, content: acc.textBlock.text, partial: partial(acc, modelId, provider) });
+      } else if (contentIdx !== undefined && acc.toolBlocks.has(contentIdx)) {
         const block = acc.toolBlocks.get(contentIdx)!;
         try {
           block.arguments = JSON.parse(acc.toolArgJson.get(contentIdx) ?? "{}") as Record<string, unknown>;
@@ -431,6 +438,9 @@ async function driveAnthropic(
           block.arguments = {};
         }
         stream.push({ type: "toolcall_end", contentIndex: contentIdx, toolCall: block, partial: partial(acc, modelId, provider) });
+      } else if (contentIdx !== undefined && (acc.content[contentIdx] as { type?: string }).type === "thinking") {
+        const block = acc.content[contentIdx] as { type: "thinking"; thinking: string };
+        stream.push({ type: "thinking_end", contentIndex: contentIdx, content: block.thinking, partial: partial(acc, modelId, provider) });
       }
     } else if (ev.type === "message_delta") {
       if (ev.delta.stop_reason) stopReason = ev.delta.stop_reason;

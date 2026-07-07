@@ -74,7 +74,7 @@ let persistentAgent: Agent | null = null;
 /** The approval gate resolver — the tool handler awaits this. */
 let approvalGate: {
   approval: PendingApproval;
-  resolve: (verdict: "approved" | "rejected") => void;
+  resolve: (verdict: "approved" | "rejected") => Promise<void>;
 } | null = null;
 
 function uid(): string {
@@ -122,7 +122,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     // The approval gate closure — captured by tool handlers via requestApproval.
     let localGate: {
       approval: PendingApproval;
-      resolve: (verdict: "approved" | "rejected") => void;
+      resolve: (verdict: "approved" | "rejected") => Promise<void>;
     } | null = null;
 
     const requestApproval = (p: PendingApproval): Promise<string> =>
@@ -144,15 +144,18 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         }));
         localGate = {
           approval: p,
-          resolve: (verdict) => {
+          resolve: async (verdict) => {
             console.log("[ai][approval] gate resolved with:", verdict);
             const cardVerdict: "applied" | "rejected" =
               verdict === "approved" ? "applied" : "rejected";
+            // Update the card's verdict. Match by path (the unique key on the
+            // approval payload) — NOT by object identity: the message stores a
+            // COPY of p (with verdict), so `=== p` would never be true.
             set((s) => ({
               status: "streaming",
               pendingApproval: null,
               messages: s.messages.map((m) =>
-                m.approval && m.approval === (p as PendingApproval & { verdict: string })
+                m.approval && m.approval.path === p.path
                   ? { ...m, approval: { ...m.approval, verdict: cardVerdict } }
                   : m,
               ),
@@ -160,8 +163,12 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             localGate = null;
             approvalGate = null;
             if (verdict === "approved") {
-              void applyApproval(p);
-              resolve("Edit applied.");
+              // Await the actual edit/file-write so the tool result reflects
+              // real success or failure. Previously this was fire-and-forget
+              // (`void applyApproval(p)`), which reported "applied" even when
+              // the write threw or strReplace returned false.
+              const result = await applyApproval(p);
+              resolve(result);
             } else {
               resolve("User rejected the edit.");
             }
@@ -290,42 +297,62 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
  * onChange → updateContent debounce. For `write_file`, we create the file via
  * the existing IPC and let the workspace watcher pick it up.
  */
-async function applyApproval(p: PendingApproval): Promise<void> {
-  if (p.kind === "edit") {
-    const api = editorApiRef.current;
-    if (api) {
-      api.strReplace(p.old_string ?? "", p.new_string ?? "");
-      return;
-    }
-    // No editor: update the active doc's content directly as a fallback.
-    const { activeId } = useTabsStore.getState();
-    if (activeId) {
-      const doc = useDocumentsStore.getState().documents[activeId];
-      if (doc) {
-        const next = doc.content.replace(p.old_string ?? "", p.new_string ?? "");
-        useDocumentsStore.getState().updateContent(activeId, next);
+/**
+ * Apply an approved edit/write. Returns a result string fed back to the LLM as
+ * the tool result — a real success/failure message, never a blind "applied".
+ *
+ * For `edit`, goes through `editorApiRef.strReplace` (single undo step). If
+ * the editor reports the replacement didn't land (old_string not found / not
+ * unique — e.g. the buffer changed while waiting for approval), the agent is
+ * told so it can re-read and retry.
+ *
+ * For `write_file`, creates the file via IPC then opens it as a tab and pushes
+ * content. Errors propagate as the tool result.
+ */
+async function applyApproval(p: PendingApproval): Promise<string> {
+  try {
+    if (p.kind === "edit") {
+      const api = editorApiRef.current;
+      if (api) {
+        const ok = api.strReplace(p.old_string ?? "", p.new_string ?? "");
+        if (!ok) {
+          return "Edit could not be applied — old_string was not found or was not unique in the current buffer (it may have changed while waiting for approval). Re-read the file and retry.";
+        }
+        return "Edit applied.";
       }
+      // No editor: update the active doc's content directly as a fallback.
+      const { activeId } = useTabsStore.getState();
+      if (activeId) {
+        const doc = useDocumentsStore.getState().documents[activeId];
+        if (doc) {
+          const next = doc.content.replace(p.old_string ?? "", p.new_string ?? "");
+          useDocumentsStore.getState().updateContent(activeId, next);
+          return "Edit applied.";
+        }
+      }
+      return "Edit could not be applied — no active editor or document.";
     }
-    return;
-  }
-  if (p.kind === "write_file") {
-    // `create_entry` makes an EMPTY file (it takes no content) and expects a
-    // workspace-RELATIVE path. After creating, open it as a tab and push the
-    // content via updateText so it lands on disk + in the editor. Errors are
-    // surfaced to the agent via the tool result so it can retry with `edit`.
-    const { invoke } = await import("@tauri-apps/api/core");
-    const root = useWorkspaceStore.getState().rootPath;
-    // Relativize the absolute path against the workspace root.
-    const rel = root && p.path.startsWith(root)
-      ? p.path.slice(root.length).replace(/^[/\\]+/, "")
-      : p.path;
-    await invoke("create_entry", { rel, kind: "file" });
-    // Open the new file as a tab, then set its content via the document pipeline.
-    const { openFileByPath, updateText } = await import("../lib/tauri");
-    const opened = await openFileByPath(p.path);
-    if (p.after) {
-      await updateText(opened.id, p.after, opened.revision);
+    if (p.kind === "write_file") {
+      // `create_entry` makes an EMPTY file (it takes no content) and expects a
+      // workspace-RELATIVE path. After creating, open it as a tab and push the
+      // content via updateText so it lands on disk + in the editor.
+      const { invoke } = await import("@tauri-apps/api/core");
+      const root = useWorkspaceStore.getState().rootPath;
+      const rel = root && p.path.startsWith(root)
+        ? p.path.slice(root.length).replace(/^[/\\]+/, "")
+        : p.path;
+      await invoke("create_entry", { rel, kind: "file" });
+      const { openFileByPath, updateText } = await import("../lib/tauri");
+      const opened = await openFileByPath(p.path);
+      if (p.after) {
+        await updateText(opened.id, p.after, opened.revision);
+      }
+      return "File created.";
     }
+    return "Unknown approval kind.";
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return `Edit failed: ${msg}`;
   }
 }
 
