@@ -815,6 +815,38 @@ mod tests {
     }
 
     #[test]
+    fn reopening_existing_path_returns_live_revision_and_buffer() {
+        let tmp = std::env::temp_dir().join(format!(
+            "ts-dedup-live-meta-{}.typ",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&tmp, "disk version").unwrap();
+        let (svc, _) = make_service();
+        let first = svc
+            .open_from_content(tmp.clone(), "disk version".into(), None)
+            .unwrap();
+
+        svc.update_text_at_revision(first.id, "unsaved edit".into(), 7)
+            .unwrap();
+        svc.soft_close(first.id).unwrap();
+        assert!(svc.tab_meta(first.id).unwrap().hidden);
+
+        // Simulate reopening from disk after a frontend/webview reload. The
+        // service deduplicates the path and must expose the live tab metadata,
+        // not the registry's revision-0 registration snapshot.
+        let reopened = svc
+            .open_from_content(tmp.clone(), "disk version".into(), None)
+            .unwrap();
+
+        assert_eq!(reopened.id, first.id);
+        assert_eq!(reopened.revision, 7);
+        assert!(reopened.dirty);
+        assert!(!reopened.hidden);
+        assert_eq!(svc.tab_text(first.id).as_deref(), Some("unsaved edit"));
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
     fn save_as_preserves_id_and_rebinds_registry() {
         // §4.1 / §8.3: Save As keeps the DocumentId and updates the canonical
         // path index.

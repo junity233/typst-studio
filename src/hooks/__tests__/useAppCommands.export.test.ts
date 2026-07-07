@@ -69,6 +69,11 @@ describe("dispatch forwards active tab revision to export IPC (§9)", () => {
   it("export-pdf forwards the active tab's revision", async () => {
     seedActiveTab(11);
     await dispatch("export-pdf");
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "update_text", {
+      id: "active",
+      content: "",
+      revision: 11,
+    });
     expect(invokeMock).toHaveBeenCalledWith("export_pdf", {
       id: "active",
       revision: 11,
@@ -78,6 +83,11 @@ describe("dispatch forwards active tab revision to export IPC (§9)", () => {
   it("export-png forwards the active tab's revision", async () => {
     seedActiveTab(22);
     await dispatch("export-png");
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "update_text", {
+      id: "active",
+      content: "",
+      revision: 22,
+    });
     expect(invokeMock).toHaveBeenCalledWith("export_png", {
       id: "active",
       revision: 22,
@@ -87,6 +97,11 @@ describe("dispatch forwards active tab revision to export IPC (§9)", () => {
   it("export-svg forwards the active tab's revision", async () => {
     seedActiveTab(33);
     await dispatch("export-svg");
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "update_text", {
+      id: "active",
+      content: "",
+      revision: 33,
+    });
     expect(invokeMock).toHaveBeenCalledWith("export_svg", {
       id: "active",
       revision: 33,
@@ -96,6 +111,11 @@ describe("dispatch forwards active tab revision to export IPC (§9)", () => {
   it("forwards revision 0 (no falsy-drop bug)", async () => {
     seedActiveTab(0);
     await dispatch("export-pdf");
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "update_text", {
+      id: "active",
+      content: "",
+      revision: 0,
+    });
     expect(invokeMock).toHaveBeenCalledWith("export_pdf", {
       id: "active",
       revision: 0,

@@ -17,6 +17,7 @@ import {
   handleSaveAs,
   labelFor,
 } from "../../hooks/useAppCommands";
+import { flushDocumentSnapshot } from "../../lib/saveDocument";
 import i18n from "../../i18n";
 
 /**
@@ -159,12 +160,9 @@ export default function activate(ctx: HostApi): void {
     category: "File",
     handler: async () => {
       const { activeId } = useTabsStore.getState();
-      const activeTab =
-        activeId !== null
-          ? (useDocumentsStore.getState().documents[activeId] ?? null)
-          : null;
-      if (activeId !== null && activeTab !== null) {
-        await exportPdf(activeId, activeTab.revision);
+      if (activeId !== null) {
+        const snapshot = await flushDocumentSnapshot(activeId);
+        await exportPdf(activeId, snapshot.revision);
       }
     },
     enablement: () => useTabsStore.getState().activeId !== null,
@@ -176,12 +174,9 @@ export default function activate(ctx: HostApi): void {
     category: "File",
     handler: async () => {
       const { activeId } = useTabsStore.getState();
-      const activeTab =
-        activeId !== null
-          ? (useDocumentsStore.getState().documents[activeId] ?? null)
-          : null;
-      if (activeId !== null && activeTab !== null) {
-        await exportPng(activeId, activeTab.revision);
+      if (activeId !== null) {
+        const snapshot = await flushDocumentSnapshot(activeId);
+        await exportPng(activeId, snapshot.revision);
       }
     },
     enablement: () => useTabsStore.getState().activeId !== null,
@@ -193,12 +188,9 @@ export default function activate(ctx: HostApi): void {
     category: "File",
     handler: async () => {
       const { activeId } = useTabsStore.getState();
-      const activeTab =
-        activeId !== null
-          ? (useDocumentsStore.getState().documents[activeId] ?? null)
-          : null;
-      if (activeId !== null && activeTab !== null) {
-        await exportSvg(activeId, activeTab.revision);
+      if (activeId !== null) {
+        const snapshot = await flushDocumentSnapshot(activeId);
+        await exportSvg(activeId, snapshot.revision);
       }
     },
     enablement: () => useTabsStore.getState().activeId !== null,

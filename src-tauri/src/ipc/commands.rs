@@ -96,6 +96,10 @@ pub async fn open_file(
     .map_err(|e| AppError::Other(format!("join error: {e}")))??;
     let editor = state.editor.clone();
     let meta = editor.open_from_content(path, content.clone(), Some(&state.workspace))?;
+    // The open path deduplicates an already-open document. Its in-memory
+    // buffer may be newer than disk, so hydrate the frontend from the live tab
+    // rather than overwriting it with the just-read disk copy.
+    let content = editor.tab_text(meta.id).unwrap_or(content);
     Ok(Some(OpenedDocument { meta, content }))
 }
 

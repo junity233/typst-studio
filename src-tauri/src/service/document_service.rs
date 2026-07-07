@@ -196,7 +196,7 @@ impl DocumentService {
             // Flip the flag to visible here (idempotent for an already-visible
             // doc) so the returned meta is consistent.
             self.set_visibility(existing.id, false);
-            return Ok(existing);
+            return Ok(self.tab_meta(existing.id).unwrap_or(existing));
         }
         let meta = classify_new(DocumentId::new(), canon.clone(), workspace);
         let id = meta.id;
@@ -235,7 +235,7 @@ impl DocumentService {
             // §B1 dedup invariant: see `open_from_content` — a soft-closed
             // (hidden) doc must be made visible on reopen.
             self.set_visibility(existing.id, false);
-            return Ok(existing);
+            return Ok(self.tab_meta(existing.id).unwrap_or(existing));
         }
         let meta = classify_new(DocumentId::new(), canon.clone(), workspace);
         let id = meta.id;

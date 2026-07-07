@@ -49,7 +49,17 @@ export function ContextMenu() {
   useEffect(() => {
     if (current === null) return;
     const onPointerDown = (e: PointerEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) close();
+      // Submenus are portaled directly to document.body, so they are not DOM
+      // descendants of `ref`. Treat every panel in the active menu chain as
+      // inside; otherwise pointerdown on a submenu leaf closes/unmounts the
+      // menu during capture, before that leaf's React onClick can run.
+      if (
+        e.target instanceof Element &&
+        e.target.closest("[data-context-menu-panel]")
+      ) {
+        return;
+      }
+      close();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") close();
@@ -73,6 +83,7 @@ export function ContextMenu() {
     <div
       ref={ref}
       className="context-menu"
+      data-context-menu-panel
       role="menu"
       style={{ left: pos.x, top: pos.y }}
       onContextMenu={(e) => e.preventDefault()}
@@ -298,6 +309,7 @@ function SubmenuPanel({
     <div
       ref={ref}
       className="context-menu context-menu-submenu"
+      data-context-menu-panel
       role="menu"
       style={{ left: pos.x, top: pos.y }}
       onContextMenu={(e) => e.preventDefault()}

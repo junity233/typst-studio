@@ -125,9 +125,20 @@ impl TabStore {
 /// Return the existing metadata for an already-open canonical path, if any.
 /// Used by the open path to deduplicate before creating a new document.
 pub(crate) fn find_existing(store: &TabStore, canon: &Path) -> Option<DocumentMeta> {
-    let reg = store.registry.read();
-    reg.find_by_canonical(canon)
-        .and_then(|id| reg.get(id).cloned())
+    let id = store.registry.read().find_by_canonical(canon)?;
+
+    // The registry owns identity/path indexing, but its metadata is only a
+    // registration snapshot. Revision, dirty, and conflict evolve on the live
+    // TabState. Reopening an already-open document must return that live
+    // metadata; otherwise the frontend restarts at revision 0 and later edits
+    // and exports are rejected by the backend as stale.
+    if let Some(tab) = store.tabs.read().get(&id).cloned() {
+        return Some(tab.state.lock().meta.clone());
+    }
+
+    // Defensive fallback for a temporarily inconsistent store. The normal
+    // invariant is that every registered id has a matching TabState.
+    store.registry.read().get(id).cloned()
 }
 
 /// Classify a fresh on-disk path as `WorkspaceFile` or `LooseFile` (§4.2).

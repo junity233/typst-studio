@@ -472,6 +472,10 @@ pub async fn open_file_by_path(
     // resolver; a loose file gets the parent-rooted one.
     let editor = state.editor.clone();
     let meta = editor.open_from_disk(path, content.clone(), Some(&state.workspace))?;
+    // The open path deduplicates by canonical identity. When it reuses a live
+    // (possibly dirty) tab, return that tab's authoritative buffer rather than
+    // the stale bytes read from disk above.
+    let content = editor.tab_text(meta.id).unwrap_or(content);
     Ok(OpenedDocument { meta, content })
 }
 
