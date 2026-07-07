@@ -21,6 +21,10 @@
     "count_one": "{{count}} error",
     "count_other": "{{count}} errors"
   },
+  "warnings": {
+    "count_one": "{{count}} warning",
+    "count_other": "{{count}} warnings"
+  },
   "watcher": {
     "limited": "External detection limited",
     "limitedTitle": "Live external-change detection is unavailable (the polling fallback is active). Reload/compare may be slightly delayed."

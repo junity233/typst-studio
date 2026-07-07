@@ -21,6 +21,10 @@
     "count_one": "{{count}} 个错误",
     "count_other": "{{count}} 个错误"
   },
+  "warnings": {
+    "count_one": "{{count}} 个警告",
+    "count_other": "{{count}} 个警告"
+  },
   "watcher": {
     "limited": "外部检测受限",
     "limitedTitle": "实时外部变更检测不可用（已启用轮询回退）。重新加载/比较可能略有延迟。"

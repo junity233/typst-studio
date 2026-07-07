@@ -121,13 +121,15 @@ export function StatusBar() {
   // §13.1: combined diagnostics (compiler + tinymist) for the active doc.
   const diagnostics = useDiagnosticsForDoc(tab?.id ?? null);
   const errorCount = diagnostics.filter((d) => d.severity === "Error").length;
-  // Debounce the compile status, its duration, and the error count: during
-  // active editing each keystroke churns all three (idle → compiling →
-  // success/error and tinymist republishing diagnostics), which flickers the
+  const warningCount = diagnostics.filter((d) => d.severity === "Warning").length;
+  // Debounce the compile status, its duration, and the error/warning counts:
+  // during active editing each keystroke churns all of them (idle → compiling
+  // → success/error and tinymist republishing diagnostics), which flickers the
   // bar. Settling here keeps the display stable until typing pauses.
   const status = useDebounce(tab?.status ?? "idle", STATUS_DEBOUNCE_MS);
   const durationMs = useDebounce(tab?.durationMs ?? null, STATUS_DEBOUNCE_MS);
   const debouncedErrorCount = useDebounce(errorCount, STATUS_DEBOUNCE_MS);
+  const debouncedWarningCount = useDebounce(warningCount, STATUS_DEBOUNCE_MS);
   const statusClassName = statusClass(status);
 
   const { status: lspStatus } = useLspStatus();
@@ -234,7 +236,13 @@ export function StatusBar() {
               {t("errors.count", { count: debouncedErrorCount })}
             </span>
           )
-          : <span className="statusbar-badge">{t("errors.none")}</span>}
+          : debouncedWarningCount > 0
+            ? (
+              <span className="statusbar-badge-warning">
+                {t("warnings.count", { count: debouncedWarningCount })}
+              </span>
+            )
+            : <span className="statusbar-badge">{t("errors.none")}</span>}
       </span>
       {watcherFailed && (
         <span
