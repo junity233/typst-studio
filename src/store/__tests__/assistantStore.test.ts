@@ -60,7 +60,7 @@ vi.mock("../hooks/useSetting", () => ({
 }));
 vi.mock("../i18n", () => ({ resolveLanguage: () => "en" as const }));
 vi.mock("../components/Editor/editorApiRef", () => ({
-  editorApiRef: { current: null },
+  editorApiRef: { current: null, pendingReveal: null },
 }));
 
 const { useAssistantStore } = await import("../assistantStore");

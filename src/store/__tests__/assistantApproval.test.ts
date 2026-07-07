@@ -73,6 +73,7 @@ vi.mock("../../components/Editor/editorApiRef", () => ({
       getCurrentLine: () => 1,
       getSelectionText: () => "",
     },
+    pendingReveal: null,
   },
 }));
 
