@@ -23,12 +23,15 @@ use crate::net::error::NetError;
 /// How Rust should authenticate the proxied request. The webview picks the
 /// scheme based on the provider; Rust injects the actual key from settings.
 ///
-/// Serialized as a tagged union via `#[serde(tag = "scheme")]` so the frontend
-/// payload `{ authScheme: "bearer" }` / `{ authScheme: "x-api-key" }` lands as
-/// the right variant. `rename_all = "kebab-case"` maps `"x-api-key"` ↔ the
-/// `XApiKey` variant.
+/// Serialized as a plain string via `#[serde(rename_all = "kebab-case")]`
+/// (camelCase on the struct field maps `auth_scheme` ↔ `authScheme` on the
+/// wire), so the frontend's `{ ..., authScheme: "bearer" | "x-api-key" }`
+/// deserializes cleanly. We deliberately avoid the earlier
+/// `#[serde(flatten)]` + internally-tagged enum combination — that combo is
+/// notoriously fragile under serde and produced
+/// "missing field `scheme`" deserialization errors.
 #[derive(Deserialize)]
-#[serde(tag = "scheme", rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case")]
 pub enum AuthScheme {
     /// `Authorization: Bearer <key>` — OpenAI Chat Completions + Responses.
     Bearer,
@@ -37,7 +40,7 @@ pub enum AuthScheme {
 }
 
 /// Request payload from the webview. The API key is NOT here — Rust reads it
-/// from settings and injects per `auth.scheme`.
+/// from settings and injects per `auth_scheme`.
 ///
 /// `body` is a pre-serialized JSON string (the SDK has already serialized it).
 /// Rust forwards it verbatim as bytes — it does NOT parse, re-serialize, or
@@ -45,7 +48,7 @@ pub enum AuthScheme {
 /// with zero protocol knowledge (no `json` feature, no `serde_json::Value`).
 ///
 /// `#[serde(rename_all = "camelCase")]` aligns the wire shape with the
-/// frontend's `{ url, body, extraHeaders, scheme }` object.
+/// frontend's `{ url, body, extraHeaders, authScheme }` object.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyOptions {
@@ -58,10 +61,7 @@ pub struct ProxyOptions {
     #[serde(default)]
     pub extra_headers: HashMap<String, String>,
     /// Which auth scheme to use; Rust injects the key per this variant.
-    /// `#[serde(flatten)]` so `authScheme` sits at the top level alongside
-    /// `url`/`body`/`extraHeaders`.
-    #[serde(flatten)]
-    pub auth: AuthScheme,
+    pub auth_scheme: AuthScheme,
 }
 
 /// One streaming event sent to the webview over the Channel.
@@ -123,7 +123,7 @@ pub async fn ai_proxy_stream(
         .post(&opts.url)
         .header("content-type", "application/json")
         .body(opts.body);
-    match opts.auth {
+    match opts.auth_scheme {
         AuthScheme::Bearer => {
             req = req.bearer_auth(&api_key);
         }
