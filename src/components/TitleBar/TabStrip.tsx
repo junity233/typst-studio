@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { useTabsStore } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
-import { useWorkspaceStore, inWorkspace } from "../../store/workspaceStore";
+import { useWorkspaceStore } from "../../store/workspaceStore";
 import {
   closeOtherTabs,
   closeSavedTabs,
@@ -20,6 +20,10 @@ import {
 } from "../../lib/commands";
 import { revealInFinder } from "../../lib/tauri";
 import { isMac } from "../../lib/platform";
+import {
+  isInWorkspace,
+  relativeWithinWorkspace,
+} from "../../lib/workspacePath";
 import { useContextMenuStore, type MenuItem } from "../Sidebar/contextMenuStore";
 
 const ICON_SIZE = 14;
@@ -53,11 +57,11 @@ export function TabStrip() {
   /** Reveal a tab's backing file in the OS file manager. */
   const revealTab = (path: string) => {
     // reveal_in_finder takes a workspace-relative path; only workspace-backed
-    // files can be revealed this way.
-    if (rootPath === null || !inWorkspace(rootPath, path)) return;
-    const rel = path.startsWith(rootPath + "/")
-      ? path.slice(rootPath.length + 1)
-      : "";
+    // files can be revealed this way. relativeWithinWorkspace is separator- and
+    // case-insensitive on Windows (a raw startsWith(root + "/") check fails on
+    // backslash roots like C:\code\...).
+    const rel = relativeWithinWorkspace(rootPath, path);
+    if (rel === null) return;
     void revealInFinder(rel).catch((e) => {
       // No toast system; log clearly. The reveal IPC surfaces a structured
       // error in production via the global error handler.
@@ -74,9 +78,10 @@ export function TabStrip() {
     const title = doc?.title ?? id;
     const isLast = idx === state.tabs.length - 1;
     // Reveal is only meaningful for a workspace-backed file (reveal_in_finder
-    // resolves a workspace-relative path).
+    // resolves a workspace-relative path). isInWorkspace is separator- and
+    // case-insensitive on Windows so backslash roots (C:\code\...) match.
     const path = doc?.path ?? null;
-    const inWs = path !== null && rootPath !== null && inWorkspace(rootPath, path);
+    const inWs = path !== null && isInWorkspace(rootPath, path);
     const hasSavedTabs = state.tabs.some(
       (tid) => !(useDocumentsStore.getState().documents[tid]?.dirty ?? false),
     );
