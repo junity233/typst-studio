@@ -14,7 +14,9 @@ import type { CommandContribution } from "../../extensions/registry";
  *
  * Behavior:
  *   - Keyboard: ↑/↓ move the active row (clamped), Enter runs the active
- *     command then closes, Escape closes (and resets the query).
+ *     command then closes, Escape closes (and resets the query), Tab is trapped
+ *     to the input (the only tabbable node — options are virtualized via
+ *     aria-activedescendant).
  *   - Mouse: hovering a row makes it active; clicking a row runs it.
  *   - Dismissal: clicking the backdrop scrim closes (clicking inside the panel
  *     does not). Mirrors the ContextMenu dismissal pattern.
@@ -40,12 +42,13 @@ export function CommandPalette() {
   );
 
   // The active (highlighted) row index. Reset to the first row whenever the
-  // query or the filtered set changes so the keyboard cursor always tracks a
-  // visible item.
+  // query, the filtered set, OR the open state changes — so reopening the
+  // palette always lands on the top row (VS Code semantics), not wherever the
+  // user last arrowed to.
   const [activeIndex, setActiveIndex] = useState(0);
   useEffect(() => {
     setActiveIndex(0);
-  }, [query, commands]);
+  }, [query, commands, open]);
 
   const inputRef = useRef<HTMLInputElement>(null);
   // Keep the active row scrolled into view as the user arrows through.
@@ -71,8 +74,9 @@ export function CommandPalette() {
 
   if (!open) return null;
 
-  /** Keyboard handling local to the palette. Escape is also caught by the
-   * document-level dismissal listener below; both close. */
+  /** Keyboard handling local to the palette. The input is the only tabbable
+   * node (the options are virtualized via aria-activedescendant), so Tab is
+   * trapped to the input to honor the `aria-modal` contract; Escape closes. */
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -93,6 +97,13 @@ export function CommandPalette() {
     if (e.key === "Escape") {
       e.preventDefault();
       closePalette();
+      return;
+    }
+    // Focus trap: the input is the sole tabbable element, so cycling Tab keeps
+    // focus inside the modal rather than escaping to the dimmed app behind it.
+    if (e.key === "Tab") {
+      e.preventDefault();
+      inputRef.current?.focus();
     }
   };
 
@@ -122,16 +133,30 @@ export function CommandPalette() {
           placeholder={t("placeholder")}
           onChange={(e) => setQuery(e.target.value)}
           aria-label={t("placeholder")}
+          aria-controls="command-palette-listbox"
+          aria-activedescendant={
+            filtered[activeIndex]
+              ? `command-palette-opt-${filtered[activeIndex].id}`
+              : undefined
+          }
+          aria-expanded="true"
+          role="combobox"
           autoComplete="off"
           spellCheck={false}
         />
-        <div className="command-palette-list" ref={listRef} role="listbox">
+        <div
+          className="command-palette-list"
+          id="command-palette-listbox"
+          ref={listRef}
+          role="listbox"
+        >
           {filtered.length === 0 ? (
             <div className="command-palette-empty">{t("emptyState")}</div>
           ) : (
             filtered.map((cmd, i) => (
               <div
                 key={cmd.id}
+                id={`command-palette-opt-${cmd.id}`}
                 ref={i === activeIndex ? activeRowRef : undefined}
                 className={
                   "command-palette-item" +
