@@ -90,6 +90,15 @@ export function useAppCommands(): void {
         e.stopPropagation();
         void dispatch("workbench.action.openCommandPalette");
       }
+      // Shift+Alt+F → Format Document. Capture-phase (same rationale as Cmd+S):
+      // Monaco can swallow the keystroke before the OS menu accelerator fires.
+      // The `!mod` guard keeps this distinct from Cmd/Ctrl+Shift+F (Find in
+      // Files) — a meta key must NOT be held for this to fire.
+      if (!mod && e.shiftKey && e.altKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        e.stopPropagation();
+        void dispatch("format-document");
+      }
     };
     document.addEventListener("keydown", onKeyDown, true);
 

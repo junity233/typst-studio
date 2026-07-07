@@ -112,6 +112,18 @@ export interface MonacoEditorApi {
    *  receives no args (the toolbar re-queries `isInsideWrap`/`isLinePrefixActive`
    *  on each fire). Returns an unsubscribe function. Mirrors `onDidScrollChange`. */
   onDidChangeCursorPosition: (cb: () => void) => () => void;
+  /**
+   * Format the active document via Monaco's built-in
+   * `editor.action.formatDocument` action. That action routes to tinymist's
+   * `textDocument/formatting` (auto-registered by vscode-languageclient's
+   * `DocumentFormattingEditProviderFeature`); the returned `TextEdit[]` is
+   * applied by Monaco's own machinery, and the content-change flows through the
+   * existing `handleTextChanged → updateText` backend sync — so no Rust change
+   * is needed for the formatting itself. Returns `false` when there is no
+   * editor or the action isn't registered (e.g. tinymist unavailable); the
+   * caller decides how to surface that.
+   */
+  formatDocument: () => Promise<boolean>;
 }
 
 /**
@@ -943,6 +955,18 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
           d1.dispose();
           d2.dispose();
         };
+      },
+      // Format seam (Task: Format Document): invokes Monaco's built-in
+      // `editor.action.formatDocument`, which the LSP client wires to tinymist's
+      // `textDocument/formatting`. Same `getEditor()` gating + thin-dispatcher
+      // shape as the wrapSelection/replaceSelection edit seam above.
+      formatDocument: async () => {
+        const editor = getEditor();
+        if (!editor) return false;
+        const action = editor.getAction("editor.action.formatDocument");
+        if (!action) return false;
+        await action.run();
+        return true;
       },
     });
     setEditorRuntimeReady(true);

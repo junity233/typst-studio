@@ -9,5 +9,7 @@
   "newTab": "New Tab",
   "toggleSidebar": "Toggle Sidebar",
   "togglePreview": "Toggle Preview",
-  "openSettings": "Open Settings"
+  "openSettings": "Open Settings",
+  "formatDocument": "Format Document",
+  "formatRequiresLsp": "Formatting requires the tinymist language server. Install it and restart, or click Restart Language Server in the status bar."
 }

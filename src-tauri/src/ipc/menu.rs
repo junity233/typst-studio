@@ -54,6 +54,11 @@ pub mod ids {
     pub const EXPORT_PNG: &str = "export-png";
     pub const EXPORT_SVG: &str = "export-svg";
     pub const OPEN_SETTINGS: &str = "open-settings";
+    /// Format Document (Edit menu). Routes to the registered `format-document`
+    /// command, which invokes tinymist's `textDocument/formatting` via Monaco's
+    /// built-in `editor.action.formatDocument` action. Standard VS Code
+    /// accelerator `Shift+Alt+F`.
+    pub const FORMAT_DOCUMENT: &str = "format-document";
 
     /// Prefix for "Open Recent > <workspace>" submenu items. The full id is
     /// `open-recent:<index>` where `<index>` is the 0-based position into the
@@ -137,7 +142,20 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let paste = PredefinedMenuItem::paste(app, Some(menu_labels::lookup(Key::Paste, lang)))?;
     let select_all =
         PredefinedMenuItem::select_all(app, Some(menu_labels::lookup(Key::SelectAll, lang)))?;
+    // Format Document: invokes tinymist's `textDocument/formatting` via the
+    // registered `format-document` command (Monaco's built-in action). Standard
+    // VS Code accelerator `Shift+Alt+F`.
+    let edit_sep2 = PredefinedMenuItem::separator(app)?;
+    let format_document = MenuItem::with_id(
+        app,
+        ids::FORMAT_DOCUMENT,
+        menu_labels::lookup(Key::FormatDocument, lang),
+        true,
+        Some("Shift+Alt+F"),
+    )?;
 
+    #[cfg(not(target_os = "macos"))]
+    let settings_sep = PredefinedMenuItem::separator(app)?;
     #[cfg(not(target_os = "macos"))]
     let settings_item = MenuItem::with_id(
         app,
@@ -150,8 +168,20 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     // `mut` is only needed on platforms that append the Settings item below
     // (non-macOS); on macOS the push is cfg'd out, so silence unused_mut there.
     #[cfg_attr(target_os = "macos", allow(unused_mut))]
-    let mut edit_items: Vec<&dyn tauri::menu::IsMenuItem<R>> =
-        vec![&undo, &redo, &edit_sep, &cut, &copy, &paste, &select_all];
+    let mut edit_items: Vec<&dyn tauri::menu::IsMenuItem<R>> = vec![
+        &undo,
+        &redo,
+        &edit_sep,
+        &cut,
+        &copy,
+        &paste,
+        &select_all,
+        &edit_sep2,
+        &format_document,
+    ];
+    // Keep the Settings entry visually separated from the Format item.
+    #[cfg(not(target_os = "macos"))]
+    edit_items.push(&settings_sep);
     #[cfg(not(target_os = "macos"))]
     edit_items.push(&settings_item);
 

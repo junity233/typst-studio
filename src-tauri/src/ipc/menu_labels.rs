@@ -69,6 +69,8 @@ pub enum Key {
     Copy,
     Paste,
     SelectAll,
+    // Edit menu: Format Document (invokes tinymist's textDocument/formatting).
+    FormatDocument,
 }
 
 /// All known keys, in declaration order. Used by the coverage test so it can
@@ -104,6 +106,7 @@ const ALL_KEYS: &[Key] = &[
     Key::Copy,
     Key::Paste,
     Key::SelectAll,
+    Key::FormatDocument,
 ];
 
 /// The `appearance.language` value indicating "follow the OS locale". Mirrors
@@ -271,6 +274,10 @@ pub fn lookup(key: Key, lang: Language) -> &'static str {
             Language::En => "Select All",
             Language::Zh => "全选",
         },
+        Key::FormatDocument => match lang {
+            Language::En => "Format Document",
+            Language::Zh => "格式化文档",
+        },
     }
 }
 
@@ -297,8 +304,8 @@ mod tests {
         // Sanity: ALL_KEYS lists every variant exactly once. Catches drift if
         // someone adds a Key but forgets to append it to ALL_KEYS (the test
         // above would silently skip it).
-        // 28 variants expected; update if the enum grows.
-        assert_eq!(ALL_KEYS.len(), 28, "ALL_KEYS out of sync with Key enum");
+        // 29 variants expected; update if the enum grows.
+        assert_eq!(ALL_KEYS.len(), 29, "ALL_KEYS out of sync with Key enum");
     }
 
     #[test]
