@@ -83,21 +83,30 @@ export function ConflictDialog() {
     setBusy(true);
     setError(null);
     try {
-      const diskContent = await resolveConflictUseDisk(openForId);
+      const frontendRevision =
+        useDocumentsStore.getState().documents[openForId]?.revision ??
+        doc.revision;
+      const resolved = await resolveConflictUseDisk(openForId, frontendRevision);
+      const { monacoModelRegistry } = await import("../Editor/monacoModelRegistry");
+      monacoModelRegistry.applyExternalContent(
+        openForId,
+        resolved.content,
+        resolved.revision,
+      );
       // The backend already bumped revision + cleared dirty + conflict; mirror
-      // that into the local document so the editor hydrates immediately.
+      // that exact revision into the local document so the editor hydrates
+      // immediately and stale debounced edits are older than the adopted disk
+      // snapshot.
       useDocumentsStore.setState((s) => ({
         documents: {
           ...s.documents,
           [openForId]: {
             ...s.documents[openForId],
-            content: diskContent,
+            content: resolved.content,
             dirty: false,
             conflict: "none",
             conflictDiskContent: null,
-            // Bump the optimistic revision to match the backend's bump so the
-            // next compile event isn't treated as stale.
-            revision: s.documents[openForId].revision + 1,
+            revision: resolved.revision,
           },
         },
       }));

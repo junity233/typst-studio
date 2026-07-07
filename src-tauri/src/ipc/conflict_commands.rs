@@ -25,6 +25,19 @@ use crate::domain::document::DocumentId;
 use crate::error::{AppError, Result};
 use crate::ipc::state::AppState;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct ResolveConflictUseDiskResult {
+    pub content: String,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub revision: u64,
+}
+
 /// Resolve a conflict by adopting the DISK version (§5.4 使用磁盘版本): replace
 /// the buffer with the current on-disk content, bump revision, clear dirty +
 /// conflict, re-baseline the disk version. Returns the disk content that was
@@ -34,12 +47,14 @@ use crate::ipc::state::AppState;
 pub async fn resolve_conflict_use_disk(
     state: State<'_, AppState>,
     id: DocumentId,
-) -> Result<String> {
+    frontend_revision: Option<u64>,
+) -> Result<ResolveConflictUseDiskResult> {
     let editor = state.editor.clone();
     // The disk read is fast (small .typ files) and already synchronous in the
     // document service; run it directly. The recompile it triggers is async on
     // the worker thread.
-    editor.resolve_conflict_use_disk(id)
+    let (content, revision) = editor.resolve_conflict_use_disk(id, frontend_revision)?;
+    Ok(ResolveConflictUseDiskResult { content, revision })
 }
 
 /// Resolve a conflict by OVERWRITING the disk with the current buffer (§5.4 覆盖
@@ -87,4 +102,12 @@ mod tests {
     // blocked) live there alongside the services they exercise; the IPC layer
     // adds only the Tauri command wrapping, which has no unit-testable logic
     // beyond the delegation.
+
+    #[test]
+    #[cfg(feature = "export-types")]
+    fn export_types() {
+        use ts_rs::TS;
+        let cfg = ts_rs::Config::default();
+        super::ResolveConflictUseDiskResult::export(&cfg).unwrap();
+    }
 }

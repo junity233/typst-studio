@@ -109,6 +109,11 @@ export function PackageDetail() {
     } catch (e) {
       const ipc = toIpcError(e);
       if (ipc.code === "template_init_failed") {
+        const openDocs = extractOpenDocs(ipc.details);
+        if (openDocs.length > 0) {
+          alert(`${ipc.message}\n\n${openDocs.join("\n")}`);
+          return;
+        }
         // Confirm before overwriting existing files at the destination.
         if (confirm(t("confirmOverwrite"))) {
           try {
@@ -187,4 +192,17 @@ export function PackageDetail() {
       </div>
     </div>
   );
+}
+
+function extractOpenDocs(details: unknown): string[] {
+  if (typeof details !== "object" || details === null) return [];
+  const openDocs = (details as { openDocs?: unknown }).openDocs;
+  if (!Array.isArray(openDocs)) return [];
+  return openDocs
+    .map((doc) =>
+      typeof doc === "object" && doc !== null
+        ? (doc as { path?: unknown }).path
+        : null,
+    )
+    .filter((path): path is string => typeof path === "string");
 }

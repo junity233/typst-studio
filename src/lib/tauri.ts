@@ -38,6 +38,7 @@ import type {
   RecoveryAvailablePayload,
   CompareRecovery,
   ReboundDoc,
+  ResolveConflictUseDiskResult,
   SaveAllResult,
   SearchHit,
   SearchQuery,
@@ -265,6 +266,11 @@ async function browserInvoke<T>(
       return [] as T;
     case "package_init_template":
       return "main.typ" as T;
+    case "resolve_conflict_use_disk":
+      return {
+        content: "",
+        revision: Number(args?.frontendRevision ?? 0) + 1,
+      } as T;
     case "package_compiler_version":
       return "0.15.0" as T;
     case "package_dir_is_empty":
@@ -1154,8 +1160,12 @@ export async function markCleanShutdown(): Promise<void> {
  */
 export async function resolveConflictUseDisk(
   id: DocumentId,
-): Promise<string> {
-  return invoke<string>("resolve_conflict_use_disk", { id });
+  frontendRevision?: number,
+): Promise<ResolveConflictUseDiskResult> {
+  return invoke<ResolveConflictUseDiskResult>("resolve_conflict_use_disk", {
+    id,
+    frontendRevision,
+  });
 }
 
 /**

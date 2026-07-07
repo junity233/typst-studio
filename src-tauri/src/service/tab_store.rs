@@ -232,6 +232,9 @@ pub(crate) fn set_conflict(
 ) {
     let revision = {
         let mut rt = tab.state.lock();
+        if rt.meta.conflict == conflict {
+            return;
+        }
         rt.meta.conflict = conflict;
         rt.meta.revision
     };

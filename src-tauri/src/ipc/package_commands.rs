@@ -105,12 +105,38 @@ pub async fn package_init_template(
     }
     let overwrite = overwrite.unwrap_or(false);
     let svc = state.packages.clone();
-    let entrypoint = tauri::async_runtime::spawn_blocking(move || {
-        svc.init_template(&name, &version, &dest, overwrite)
+    let plan = tauri::async_runtime::spawn_blocking(move || {
+        svc.template_init_plan(&name, &version, &dest)
     })
     .await
     .map_err(|e| AppError::Other(format!("init_template join: {e}")))?
     .map_err(map_op_err)?;
+
+    let open_docs = state.editor.document().docs_at_paths(&plan.target_files);
+    if !open_docs.is_empty() {
+        let affected_docs: Vec<_> = open_docs
+            .iter()
+            .map(|doc| {
+                serde_json::json!({
+                    "id": doc.id,
+                    "path": doc.path.to_string_lossy().to_string(),
+                })
+            })
+            .collect();
+        return Err(ipc(
+            ErrorCode::TemplateInitFailed,
+            "template would overwrite or create files that are currently open; close or resolve those tabs first",
+            true,
+            Some(serde_json::json!({ "openDocs": affected_docs })),
+        ));
+    }
+
+    let entrypoint = plan.entrypoint.clone();
+    let svc = state.packages.clone();
+    tauri::async_runtime::spawn_blocking(move || svc.init_template_from_plan(&plan, overwrite))
+        .await
+        .map_err(|e| AppError::Other(format!("init_template join: {e}")))?
+        .map_err(map_op_err)?;
     Ok(entrypoint)
 }
 

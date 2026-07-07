@@ -343,6 +343,7 @@ mod tests {
         crate::ipc::fs_commands::DocsReboundPayload::export(&cfg).unwrap();
         crate::ipc::fs_commands::AffectedDoc::export(&cfg).unwrap();
         crate::ipc::fs_commands::DeleteResult::export(&cfg).unwrap();
+        crate::ipc::conflict_commands::ResolveConflictUseDiskResult::export(&cfg).unwrap();
         // §6.3 watcher-health payload.
         crate::ipc::fs_commands::WatcherHealthPayload::export(&cfg).unwrap();
         // Appearance themes (defined in `service::theme_service`; the payload

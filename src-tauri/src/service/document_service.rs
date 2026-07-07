@@ -45,7 +45,7 @@ use super::compile_service::CompileService;
 use super::tab_state::TabState;
 use super::tab_store::{
     classify_new, find_existing, handle_external_change_locked, loose_resolver_for,
-    loose_watcher_for, reclassified_origin, resolver_for_origin, TabStore,
+    loose_watcher_for, reclassified_origin, resolver_for_origin, set_conflict, TabStore,
 };
 use super::workspace_service::WorkspaceService;
 
@@ -77,6 +77,8 @@ pub struct AffectedDoc {
     pub path: PathBuf,
     /// Whether the document has unsaved edits.
     pub dirty: bool,
+    /// Whether the document is already in an unresolved disk-conflict state.
+    pub conflict: ConflictState,
 }
 
 /// The document-identity half of the editor (§6.1).
@@ -94,6 +96,20 @@ pub struct DocumentService {
     /// Crash-recovery snapshot sink (§5.1). `None` in tests / when recovery is
     /// disabled. Wired after construction via [`set_recovery`](Self::set_recovery).
     recovery: Mutex<Option<Arc<RecoveryService>>>,
+}
+
+fn canonicalize_existing_or_target(path: &Path) -> Result<PathBuf> {
+    if path.exists() {
+        return canonicalize_for_identity(path);
+    }
+    if let (Some(parent), Some(file_name)) = (path.parent(), path.file_name()) {
+        if parent.exists() {
+            let mut parent = canonicalize_for_identity(parent)?;
+            parent.push(file_name);
+            return Ok(parent);
+        }
+    }
+    canonicalize_for_identity(path)
 }
 
 impl DocumentService {
@@ -792,12 +808,65 @@ impl DocumentService {
                         id: rt.meta.id,
                         path: canon,
                         dirty: rt.meta.dirty,
+                        conflict: rt.meta.conflict,
                     })
                 } else {
                     None
                 }
             })
             .collect()
+    }
+
+    /// Collect every open document whose canonical path exactly matches one of
+    /// `paths`. App-initiated writes use this to preflight template application
+    /// before the disk is changed and before the watcher reports a surprising
+    /// external modification.
+    pub fn docs_at_paths(&self, paths: &[PathBuf]) -> Vec<AffectedDoc> {
+        use std::collections::HashSet;
+
+        let targets: HashSet<PathBuf> = paths
+            .iter()
+            .filter_map(|p| canonicalize_existing_or_target(p).ok())
+            .collect();
+        if targets.is_empty() {
+            return Vec::new();
+        }
+
+        let tabs = self.store.tabs.read();
+        tabs.values()
+            .filter_map(|t| {
+                let rt = t.state.lock();
+                let canon = rt.meta.origin.canonical_path()?.to_path_buf();
+                if targets.contains(&canon) {
+                    Some(AffectedDoc {
+                        id: rt.meta.id,
+                        path: canon,
+                        dirty: rt.meta.dirty,
+                        conflict: rt.meta.conflict,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Mark known open documents as missing after an app-initiated delete
+    /// succeeds. The watcher may emit the same deletion later; `set_conflict`
+    /// suppresses an identical duplicate.
+    pub fn mark_docs_missing<I>(&self, ids: I)
+    where
+        I: IntoIterator<Item = DocumentId>,
+    {
+        let tabs_to_mark = {
+            let tabs = self.store.tabs.read();
+            ids.into_iter()
+                .filter_map(|id| tabs.get(&id).cloned().map(|tab| (id, tab)))
+                .collect::<Vec<_>>()
+        };
+        for (id, tab) in tabs_to_mark {
+            set_conflict(&tab, id, &self.store.emitter, ConflictState::Missing, None);
+        }
     }
 
     /// Rebind every open document whose canonical path equals or sits under
@@ -1356,7 +1425,11 @@ impl DocumentService {
     ///
     /// Returns the disk content that was loaded into the buffer (so the IPC
     /// layer can hydrate the frontend's copy without a second read).
-    pub fn resolve_conflict_use_disk(&self, id: DocumentId) -> Result<String> {
+    pub fn resolve_conflict_use_disk(
+        &self,
+        id: DocumentId,
+        frontend_revision: Option<u64>,
+    ) -> Result<(String, u64)> {
         let tab = {
             let tabs = self.store.tabs.read();
             tabs.get(&id)
@@ -1386,7 +1459,11 @@ impl DocumentService {
         tab.world.set_text(content.clone());
         let (revision, canon) = {
             let mut rt = tab.state.lock();
-            rt.meta.revision = rt.meta.revision.saturating_add(1);
+            let backend_next = rt.meta.revision.saturating_add(1);
+            let frontend_next = frontend_revision
+                .map(|revision| revision.saturating_add(1))
+                .unwrap_or(backend_next);
+            rt.meta.revision = backend_next.max(frontend_next);
             rt.meta.dirty = false;
             rt.meta.conflict = ConflictState::None;
             rt.disk_version = Some(new_version);
@@ -1408,7 +1485,7 @@ impl DocumentService {
         if let Some(recovery) = self.recovery() {
             recovery.discard_snapshot(id);
         }
-        Ok(content)
+        Ok((content, revision))
     }
 
     /// Clear the conflict flag WITHOUT touching the buffer or dirty state
@@ -1817,7 +1894,9 @@ mod tests {
         // whatever is on disk NOW, not the version at detection time.
         std::fs::write(&path, "#set page(width: 10cm)\n\nFresh disk version").unwrap();
 
-        let adopted = document.resolve_conflict_use_disk(meta.id).expect("use_disk succeeds");
+        let (adopted, adopted_revision) = document
+            .resolve_conflict_use_disk(meta.id, None)
+            .expect("use_disk succeeds");
         assert_eq!(adopted, "#set page(width: 10cm)\n\nFresh disk version");
 
         // Buffer now matches disk; revision bumped; dirty + conflict cleared.
@@ -1829,9 +1908,42 @@ mod tests {
         assert!(!after.dirty, "dirty must clear on use_disk");
         assert!(!after.conflict.is_active(), "conflict must clear on use_disk");
         assert!(
-            document.tab_revision(meta.id).unwrap() > rev_before,
+            adopted_revision > rev_before,
             "revision must bump on use_disk"
         );
+        assert_eq!(document.tab_revision(meta.id).unwrap(), adopted_revision);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_conflict_use_disk_rejects_late_debounced_frontend_edit() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir().join(format!("ts-docsvc-bounce-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.typ");
+        std::fs::write(&path, "disk v1").unwrap();
+
+        let meta = document.open_from_content(path.clone(), "disk v1".into(), None).unwrap();
+        document
+            .update_text_at_revision(meta.id, "local pending edit".into(), 10)
+            .unwrap();
+        force_conflict(&document, meta.id, ConflictState::Modified { disk_version: None });
+        std::fs::write(&path, "disk v2").unwrap();
+
+        let (adopted, adopted_revision) = document
+            .resolve_conflict_use_disk(meta.id, Some(10))
+            .expect("use_disk succeeds");
+
+        assert_eq!(adopted, "disk v2");
+        assert_eq!(adopted_revision, 11);
+
+        let returned_revision = document
+            .update_text_at_revision(meta.id, "local pending edit".into(), 10)
+            .expect("late edit is accepted as stale no-op");
+
+        assert_eq!(returned_revision, adopted_revision);
+        assert_eq!(document.tab_text(meta.id).as_deref(), Some("disk v2"));
+        assert!(!document.tab_meta(meta.id).unwrap().dirty);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1850,7 +1962,7 @@ mod tests {
         force_conflict(&document, meta.id, ConflictState::Missing);
         std::fs::remove_file(&path).unwrap();
 
-        let err = document.resolve_conflict_use_disk(meta.id).unwrap_err();
+        let err = document.resolve_conflict_use_disk(meta.id, None).unwrap_err();
         assert!(
             matches!(err, crate::error::AppError::NotFound(_)),
             "missing file must surface NotFound, got {err:?}"

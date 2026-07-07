@@ -791,6 +791,8 @@ origin: string, };
  */
 export type RecoveryAvailablePayload = { snapshots: Array<RecoverableInfo>, };
 
+export type ResolveConflictUseDiskResult = { content: string, revision: number, };
+
 /**
  * One entry in a [`SaveAllResult`]'s `failed` list.
  */

@@ -37,6 +37,14 @@ pub enum PackageOpError {
     TemplateInit { copied: Vec<PathBuf>, cause: String },
 }
 
+#[derive(Debug, Clone)]
+pub struct TemplateInitPlan {
+    pub src_dir: PathBuf,
+    pub dest: PathBuf,
+    pub entrypoint: String,
+    pub target_files: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum InstallState {
     InProgress,
@@ -197,6 +205,20 @@ impl PackageService {
         dest: &Path,
         overwrite: bool,
     ) -> Result<String, PackageOpError> {
+        let plan = self.template_init_plan(name, version, dest)?;
+        self.init_template_from_plan(&plan, overwrite)?;
+        Ok(plan.entrypoint)
+    }
+
+    /// Resolve a template into a concrete copy plan without writing to `dest`.
+    /// Callers can inspect `target_files` to coordinate open editor tabs before
+    /// any disk overwrite/create happens.
+    pub fn template_init_plan(
+        &self,
+        name: &str,
+        version: &str,
+        dest: &Path,
+    ) -> Result<TemplateInitPlan, PackageOpError> {
         self.install_blocking(name, version)?;
         let Some(pkg_dir) = self.package_dir(name, version) else {
             return Err(PackageOpError::TemplateInit {
@@ -213,16 +235,34 @@ impl PackageService {
             cause: "package has no [template] table".into(),
         })?;
         let src_dir = pkg_dir.join(template.path.as_str());
+        let target_files =
+            collect_template_target_files(&src_dir, dest).map_err(|e| PackageOpError::TemplateInit {
+                copied: vec![],
+                cause: e,
+            })?;
+        Ok(TemplateInitPlan {
+            src_dir,
+            dest: dest.to_path_buf(),
+            entrypoint: template.entrypoint.to_string(),
+            target_files,
+        })
+    }
+
+    /// Execute a previously built template copy plan.
+    pub fn init_template_from_plan(
+        &self,
+        plan: &TemplateInitPlan,
+        overwrite: bool,
+    ) -> Result<Vec<PathBuf>, PackageOpError> {
         let mut copied = Vec::new();
-        std::fs::create_dir_all(dest).map_err(|e| PackageOpError::TemplateInit {
+        std::fs::create_dir_all(&plan.dest).map_err(|e| PackageOpError::TemplateInit {
             copied: copied.clone(),
             cause: format!("create dest: {e}"),
         })?;
-        copy_tree(&src_dir, dest, &mut copied, overwrite).map_err(|e| PackageOpError::TemplateInit {
-            copied,
-            cause: e,
-        })?;
-        Ok(template.entrypoint.to_string())
+        match copy_tree(&plan.src_dir, &plan.dest, &mut copied, overwrite) {
+            Ok(()) => Ok(copied),
+            Err(cause) => Err(PackageOpError::TemplateInit { copied, cause }),
+        }
     }
 
     /// Build the `#import "@preview/name:version": *` snippet.
@@ -327,6 +367,19 @@ fn copy_tree(
         }
     }
     Ok(())
+}
+
+fn collect_template_target_files(src: &Path, dest: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    for entry in walkdir::WalkDir::new(src).into_iter() {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        let rel = entry.path().strip_prefix(src).map_err(|e| e.to_string())?;
+        out.push(dest.join(rel));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

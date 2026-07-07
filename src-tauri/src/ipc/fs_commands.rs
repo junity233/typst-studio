@@ -376,12 +376,16 @@ pub async fn rename_entry(
 pub async fn delete_entry(state: State<'_, AppState>, rel: String) -> Result<DeleteResult> {
     let ws = state.workspace.clone();
     let target = ws.resolve_path(&rel)?;
-    // §5.5 dirty-doc check. The IPC layer has AppState (both workspace + editor
-    // services), so this is the right place — WorkspaceService is disk-only.
-    block_on_dirty(&state, &rel, &target)?;
-    // No dirty docs: proceed to trash. Clean open docs under the target will be
-    // marked Missing by the watcher (§8.4) — the correct recoverable state.
+    // §5.5 open-doc check. The IPC layer has AppState (workspace + editor),
+    // so this is the right place — WorkspaceService is disk-only.
+    let affected = block_on_unsaved_or_conflicted(&state, &rel, &target)?;
+    // No unsaved/conflicted docs: proceed to trash. Clean open docs under the
+    // target are marked Missing immediately; the watcher duplicate is ignored.
     let outcome = ws.delete_entry(&rel)?;
+    state
+        .editor
+        .document()
+        .mark_docs_missing(affected.into_iter().map(|doc| doc.id));
     Ok(DeleteResult {
         outcome: match outcome {
             crate::service::trash::TrashOutcome::Trashed => "trashed",
@@ -391,23 +395,23 @@ pub async fn delete_entry(state: State<'_, AppState>, rel: String) -> Result<Del
     })
 }
 
-/// Reject the operation with `DeleteBlocked` if any dirty document is open AT or
-/// UNDER `target`. Shared by [`delete_entry`] (trash) and
-/// [`delete_entry_permanent`] — both must refuse to delete underneath an unsaved
-/// edit. Returns `Ok(())` if no dirty docs block. See §5.5 "dirty 文档存在时
-/// 阻止删除".
-fn block_on_dirty(
+/// Reject the operation with `DeleteBlocked` if any dirty or conflicted document
+/// is open AT or UNDER `target`. Returns all affected docs when the delete may
+/// proceed so the caller can mark clean open docs Missing immediately.
+fn block_on_unsaved_or_conflicted(
     state: &State<'_, AppState>,
     rel: &str,
     target: &std::path::Path,
-) -> std::result::Result<(), AppError> {
+) -> std::result::Result<Vec<crate::service::document_service::AffectedDoc>, AppError> {
     let affected = state.editor.document().docs_under_path(target);
-    let dirty: Vec<&crate::service::document_service::AffectedDoc> =
-        affected.iter().filter(|d| d.dirty).collect();
-    if dirty.is_empty() {
-        return Ok(());
+    let blockers: Vec<&crate::service::document_service::AffectedDoc> = affected
+        .iter()
+        .filter(|d| d.dirty || d.conflict.is_active())
+        .collect();
+    if blockers.is_empty() {
+        return Ok(affected);
     }
-    let affected_wire: Vec<AffectedDoc> = dirty
+    let affected_wire: Vec<AffectedDoc> = blockers
         .iter()
         .map(|d| AffectedDoc {
             id: d.id,
@@ -419,7 +423,7 @@ fn block_on_dirty(
     Err(AppError::Code {
         code: crate::ipc::error::ErrorCode::DeleteBlocked,
         message: format!(
-            "{n} unsaved document(s) open under '{rel}'; save, close, or discard them before deleting."
+            "{n} unsaved or conflicted document(s) open under '{rel}'; save, resolve, close, or discard them before deleting."
         ),
         recoverable: true,
         details: Some(details),
@@ -428,8 +432,8 @@ fn block_on_dirty(
 
 /// Permanently delete a workspace-relative file or directory (§5.5 "永久删除只
 /// 作为明确标注的高级动作"). NOT recoverable. This is the explicit advanced
-/// action — the default [`delete_entry`] trashes. Same dirty-doc protection as
-/// `delete_entry`: a dirty document AT/UNDER the target blocks the delete.
+/// action — the default [`delete_entry`] trashes. Same open-doc protection as
+/// `delete_entry`: a dirty/conflicted document AT/UNDER the target blocks.
 #[tauri::command]
 pub async fn delete_entry_permanent(
     state: State<'_, AppState>,
@@ -437,8 +441,12 @@ pub async fn delete_entry_permanent(
 ) -> Result<DeleteResult> {
     let ws = state.workspace.clone();
     let target = ws.resolve_path(&rel)?;
-    block_on_dirty(&state, &rel, &target)?;
+    let affected = block_on_unsaved_or_conflicted(&state, &rel, &target)?;
     let outcome = ws.delete_entry_permanent(&rel)?;
+    state
+        .editor
+        .document()
+        .mark_docs_missing(affected.into_iter().map(|doc| doc.id));
     Ok(DeleteResult {
         outcome: match outcome {
             crate::service::trash::TrashOutcome::Trashed => "trashed",

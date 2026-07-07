@@ -269,8 +269,12 @@ impl EditorService {
     }
 
     /// Delegates to [`DocumentService::resolve_conflict_use_disk`] (§5.4).
-    pub fn resolve_conflict_use_disk(&self, id: DocumentId) -> Result<String> {
-        self.document.resolve_conflict_use_disk(id)
+    pub fn resolve_conflict_use_disk(
+        &self,
+        id: DocumentId,
+        frontend_revision: Option<u64>,
+    ) -> Result<(String, u64)> {
+        self.document.resolve_conflict_use_disk(id, frontend_revision)
     }
 
     /// Delegates to [`DocumentService::clear_conflict`] (§5.4).
@@ -1531,8 +1535,29 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
     }
 
-    /// §8.4: a dirty buffer with an external change enters `Modified` conflict
-    /// — the buffer is NEVER clobbered.
+    // Repeated watcher/poll notifications for the same unresolved disk bytes
+    // must not reopen the same conflict dialog.
+    #[test]
+    fn handle_external_change_same_disk_version_emits_conflict_once() {
+        let tmp = make_tmp_file("#set page(width: 10cm)\n\nOriginal");
+        let (svc, emitter) = make_service();
+        let id = open_clean_file(&svc, &emitter, &tmp);
+
+        std::fs::write(&tmp, "#set page(width: 10cm)\n\nChanged on disk").unwrap();
+        svc.handle_external_change(&tmp);
+        let after_first = emitter.conflicts_for(id).len();
+        assert_eq!(after_first, 1, "first external change should emit one conflict");
+
+        svc.handle_external_change(&tmp);
+        let after_second = emitter.conflicts_for(id).len();
+        assert_eq!(
+            after_second, after_first,
+            "same unresolved disk version must not re-emit the conflict"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    // Dirty buffers enter Modified conflict and are never clobbered.
     #[test]
     fn handle_external_change_dirty_buffer_enters_conflict() {
         let tmp = make_tmp_file("#set page(width: 10cm)\n\nOriginal");
