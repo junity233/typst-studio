@@ -10,6 +10,26 @@
 
 ![Typst Studio icon](app-icon.png)
 
+## Screenshots
+
+### Editing a multi-page report
+
+![Typst Studio editing a report](assets/screenshots/project-report-window.png)
+
+### Poster-style preview layout
+
+![Typst Studio poster preview](assets/screenshots/poster-window.png)
+
+## Sample Documents
+
+The repository now includes a small smoke-test workspace at [`examples/readme-demo`](examples/readme-demo):
+
+- `quick-start.typ`: onboarding-style sample with headings, quote, list, and table
+- `project-report.typ`: multi-page report used for the editor + preview screenshot
+- `poster.typ`: layout-heavy single-page poster used for a more visual preview
+
+These files are useful for quick manual checks when you want to verify editing, preview refresh, and tab switching after local changes.
+
 ## Overview
 
 **Typst Studio** is a cross-platform desktop editor built specifically for [Typst](https://typst.app). It uses `Tauri 2 + React + Rust` and embeds the official Typst compiler directly, so you can edit, preview, and export documents without relying on a separate Typst CLI install.

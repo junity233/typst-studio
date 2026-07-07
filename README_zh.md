@@ -10,6 +10,26 @@
 
 ![Typst Studio icon](app-icon.png)
 
+## 截图
+
+### 多页报告编辑视图
+
+![Typst Studio 编辑报告文档](assets/screenshots/project-report-window.png)
+
+### 海报式预览布局
+
+![Typst Studio 海报预览](assets/screenshots/poster-window.png)
+
+## 示例文档
+
+仓库现在包含一个用于冒烟测试与 README 演示的示例工作区：[`examples/readme-demo`](examples/readme-demo)
+
+- `quick-start.typ`：包含标题、引用、列表和表格的入门示例
+- `project-report.typ`：用于展示编辑器与预览联动的多页报告
+- `poster.typ`：更偏视觉排版的单页海报示例
+
+当你需要快速验证编辑、预览刷新和标签页切换时，可以直接打开这些文档。
+
 ## 项目简介
 
 **Typst Studio** 是一个为 [Typst](https://typst.app) 打造的跨平台桌面编辑器。它使用 `Tauri 2 + React + Rust` 构建，并直接内嵌官方 Typst 编译器，因此你在编辑、预览和导出文档时，不需要额外依赖 Typst CLI。

@@ -47,6 +47,7 @@ public/vendor/
 # Agent-generated session state, plans, and design notes — local-only.
 .omc/
 docs/superpowers/
+DESIGN.md
 
 # Lockfile kept local — dependency versions resolved per-install.
 package-lock.json
