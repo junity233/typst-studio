@@ -90,14 +90,23 @@ export function useAutosave(): void {
   // --- afterDelay: debounce-save on every document edit -------------------
   useEffect(() => {
     if (effectiveMode !== "afterDelay") return;
-    // Subscribe to document edits. The store bumps a revision on every
-    // updateContent; we re-arm the debounce each time it changes. Reading the
-    // full revision counter (sum across docs) gives a single signal that fires
-    // on any edit.
+    // Event-driven edit signal: subscribe to the documents store and re-arm
+    // the debounce timer whenever a document's revision changes (an edit
+    // happened). This replaces a previous 500ms `setInterval` poll: the
+    // store's `subscribe` fires only on actual state mutations, so there are
+    // NO background wake-ups while the user isn't typing.
+    //
+    // `subscribe(listener)` fires on EVERY store change (compile status,
+    // preview pages, conflict state — not just content edits), so we diff the
+    // summed revision counter inside the callback: if unchanged, this wasn't
+    // a content edit and we skip re-arming. The sum is cheap and only runs on
+    // a mutation, not on a timer. This mirrors MonacoEditor's discipline of
+    // subscribing to a narrow signal and reading the full map via `getState()`
+    // rather than over-subscribing.
     let lastRevision = totalRevision();
-    const interval = setInterval(() => {
+    const unsub = useDocumentsStore.subscribe(() => {
       const rev = totalRevision();
-      if (rev === lastRevision) return;
+      if (rev === lastRevision) return; // not a content edit
       lastRevision = rev;
       // Edit happened → (re)arm the debounce timer.
       if (timerRef.current !== null) clearTimeout(timerRef.current);
@@ -105,9 +114,9 @@ export function useAutosave(): void {
         timerRef.current = null;
         void autosaveDirtyDiskDocs();
       }, effectiveDelay);
-    }, 500);
+    });
     return () => {
-      clearInterval(interval);
+      unsub();
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current);
         timerRef.current = null;
