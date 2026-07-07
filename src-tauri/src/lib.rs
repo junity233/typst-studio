@@ -400,10 +400,11 @@ pub fn run() {
             let net = Arc::new(HttpClient::new());
 
             // Package service (Packages view): index cache + typst-kit handle.
-            // Index/thumbnail caches live under the app config dir (NOT typst's
-            // own dirs) so the two tools never disturb each other's state.
+            // The index cache lives under the app config dir (NOT typst's own
+            // dirs) so the two tools never disturb each other's state.
+            // (Template thumbnails are fetched on demand from the registry's
+            // thumbnails/ path — no on-disk thumbnail cache is needed.)
             let index_path = cfg_dir.join("cache").join("package-index.json");
-            let thumbnail_dir = cfg_dir.join("cache").join("thumbnails");
             let package_index = std::sync::Arc::new(
                 crate::fs::package_index::PackageIndex::new(net.clone(), index_path),
             );
@@ -411,7 +412,6 @@ pub fn run() {
                 crate::service::package_service::PackageService::new(
                     package_index,
                     crate::fs::packages::system_packages(),
-                    thumbnail_dir,
                 ),
             );
 

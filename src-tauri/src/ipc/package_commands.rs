@@ -158,33 +158,33 @@ pub async fn package_get_thumbnail(
     version: String,
     state: State<'_, AppState>,
 ) -> Result<Option<String>> {
-    let svc = state.packages.clone();
-    let res = tauri::async_runtime::spawn_blocking(move || svc.ensure_thumbnail(&name, &version))
+    // The registry hosts template preview images as small WebP files at a
+    // fixed URL pattern — they are NOT inside the package tarball (the tarball
+    // only carries typst.toml + source, despite the manifest's `thumbnail`
+    // field). Fetch the WebP directly and inline it as a data URI so it
+    // renders in <img> without configuring the Tauri asset protocol. Returns
+    // None on any miss (404 / network) so the gallery shows the placeholder.
+    let url = format!(
+        "https://packages.typst.org/preview/thumbnails/{name}-{version}-small.webp"
+    );
+    match state
+        .net
+        .fetch_bytes(
+            &url,
+            &crate::net::client::FetchOptions {
+                max_bytes: 2 * 1024 * 1024,
+                ..crate::net::client::FetchOptions::default()
+            },
+        )
         .await
-        .map_err(|e| AppError::Other(format!("thumbnail join: {e}")))?;
-    // Return a base64 data URI instead of a bare path. This sidesteps the
-    // Tauri asset-protocol (which needs an explicit scope + platform-specific
-    // URL scheme) and renders directly in an <img src>. Thumbnails are small
-    // (a few hundred KB at most), so the inlining cost is acceptable.
-    Ok(match res {
-        Some(path) => read_data_uri(&path),
-        None => None,
-    })
-}
-
-/// Read `path` into a `data:image/<ext>;base64,...` URI. `None` on read error
-/// or unknown extension (caller falls back to the placeholder).
-fn read_data_uri(path: &std::path::Path) -> Option<String> {
-    let mime = match path.extension().and_then(|e| e.to_str()) {
-        Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("webp") => "image/webp",
-        _ => "image/png", // default; typst thumbnails are PNG per the manifest spec
-    };
-    let bytes = std::fs::read(path).ok()?;
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Some(format!("data:{mime};base64,{b64}"))
+    {
+        Ok(bytes) => {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            Ok(Some(format!("data:image/webp;base64,{b64}")))
+        }
+        Err(_) => Ok(None),
+    }
 }
 
 fn map_op_err(e: PackageOpError) -> AppError {

@@ -7,6 +7,10 @@ import { packageGetThumbnail } from "../../../lib/tauri";
  * asset-protocol). Falls back to a parchment first-letter block when not
  * installed, has no thumbnail, or the image fails to load. The thumbnail is
  * the ONE element allowed `--shadow-product`.
+ *
+ * The image and fallback render inside ONE fixed-size `.pkg-thumb` container
+ * so the card layout is identical before/after load (no layout shift, no
+ * visual size difference between loaded and placeholder cards).
  */
 export function Thumbnail({
   name,
@@ -33,9 +37,8 @@ export function Thumbnail({
     };
   }, [seen, name, version, isTemplate]);
 
-  // IntersectionObserver drives `seen` — but only the fallback block carries
-  // the ref, so observe the wrapper the caller renders. We observe the
-  // fallback's parent via the closest gallery/body root.
+  // The container carries the ref so the observer stays mounted across the
+  // placeholder → image transition (no re-observe churn).
   useEffect(() => {
     if (!ref) return;
     const ob = new IntersectionObserver(
@@ -51,19 +54,20 @@ export function Thumbnail({
     return () => ob.disconnect();
   }, [ref]);
 
-  if (src) {
-    return (
-      <img
-        className="pkg-thumb-img"
-        src={src}
-        alt=""
-        onError={() => setSrc(null)}
-      />
-    );
-  }
   return (
-    <div className="pkg-thumb-fallback" ref={setRef}>
-      <span>{name.slice(0, 1).toUpperCase()}</span>
+    <div className="pkg-thumb" ref={setRef}>
+      {src ? (
+        <img
+          className="pkg-thumb-img"
+          src={src}
+          alt=""
+          onError={() => setSrc(null)}
+        />
+      ) : (
+        <div className="pkg-thumb-fallback">
+          <span>{name.slice(0, 1).toUpperCase()}</span>
+        </div>
+      )}
     </div>
   );
 }

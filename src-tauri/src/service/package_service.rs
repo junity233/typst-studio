@@ -46,7 +46,6 @@ enum InstallState {
 pub struct PackageService {
     index: Arc<PackageIndex>,
     packages: Arc<SystemPackages>,
-    thumbnail_dir: PathBuf,
     in_flight: Mutex<HashMap<(String, String), InstallState>>,
 }
 
@@ -54,13 +53,10 @@ impl PackageService {
     pub fn new(
         index: Arc<PackageIndex>,
         packages: Arc<SystemPackages>,
-        thumbnail_dir: PathBuf,
     ) -> Self {
-        let _ = std::fs::create_dir_all(&thumbnail_dir);
         Self {
             index,
             packages,
-            thumbnail_dir,
             in_flight: Mutex::new(HashMap::new()),
         }
     }
@@ -242,24 +238,6 @@ impl PackageService {
             }
         }
         None
-    }
-
-    /// Extract `template.thumbnail` from a cached package into the thumbnail
-    /// cache; return its absolute path. `None` if no thumbnail / not cached.
-    pub fn ensure_thumbnail(&self, name: &str, version: &str) -> Option<PathBuf> {
-        let pkg_dir = self.package_dir(name, version)?;
-        let manifest = read_manifest(&pkg_dir).ok()?;
-        let thumb_rel = manifest.template.as_ref()?.thumbnail.as_ref()?;
-        let src = pkg_dir.join(thumb_rel.as_str());
-        if !src.exists() {
-            return None;
-        }
-        let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("png");
-        let dest = self.thumbnail_dir.join(format!("{name}-{version}.{ext}"));
-        if !dest.exists() {
-            let _ = std::fs::copy(&src, &dest);
-        }
-        Some(dest)
     }
 }
 
