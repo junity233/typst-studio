@@ -442,6 +442,167 @@ button {
 }
 
 /* ============================================================================
+   Image viewer (DocumentKind === "image")
+   ========================================================================= */
+.image-viewer {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-canvas-parchment);
+}
+.image-viewer-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: safe center;
+  justify-content: safe center;
+  padding: var(--space-md);
+}
+.image-viewer-viewport img {
+  max-width: 100%;
+  /* Let the zoom transform scale beyond the viewport (scroll handles reach). */
+  transform-origin: center center;
+  box-shadow: var(--shadow-product);
+  background: var(--color-surface-pearl);
+}
+.image-viewer-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xxs) var(--space-sm);
+  border-top: 1px solid var(--color-hairline);
+  background: var(--color-surface-pearl);
+}
+.image-viewer-zoom {
+  min-width: 3.5em;
+  text-align: center;
+  font: var(--text-button-utility);
+  color: var(--color-ink-muted-48);
+}
+.image-viewer-reset {
+  margin-left: auto;
+  font: var(--text-button-utility);
+  color: var(--color-ink-muted-48);
+  background: transparent;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  padding: var(--space-xxs) var(--space-sm);
+  cursor: pointer;
+}
+.image-viewer-reset:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-alt);
+}
+.image-viewer-error {
+  flex-direction: column;
+  gap: var(--space-sm);
+  color: var(--color-error);
+}
+
+/* ============================================================================
+   PDF viewer (DocumentKind === "pdf")
+   ========================================================================= */
+.pdf-viewer {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  align-items: safe center;
+  gap: var(--space-sm);
+  background: var(--color-canvas-parchment);
+}
+.pdf-page {
+  box-shadow: var(--shadow-product);
+  background: #fff;
+}
+.pdf-viewer-error {
+  flex-direction: column;
+  gap: var(--space-sm);
+  color: var(--color-error);
+}
+
+/* ============================================================================
+   Markdown preview (DocumentKind === "markdown", rendered pane)
+   ========================================================================= */
+.markdown-preview {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-md) var(--space-lg);
+  background: var(--color-surface-pearl);
+  font: var(--text-body);
+  color: var(--color-ink);
+  line-height: 1.6;
+}
+.markdown-preview h1,
+.markdown-preview h2,
+.markdown-preview h3,
+.markdown-preview h4 {
+  margin: 1em 0 0.4em;
+  line-height: 1.25;
+}
+.markdown-preview h1 { font-size: 1.6em; }
+.markdown-preview h2 { font-size: 1.35em; }
+.markdown-preview h3 { font-size: 1.15em; }
+.markdown-preview p {
+  margin: 0.5em 0;
+}
+.markdown-preview ul,
+.markdown-preview ol {
+  margin: 0.5em 0;
+  padding-left: 1.6em;
+}
+.markdown-preview code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.9em;
+  background: var(--color-surface-alt);
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-xs);
+}
+.markdown-preview pre {
+  margin: 0.75em 0;
+  padding: var(--space-sm);
+  background: var(--color-surface-alt);
+  border-radius: var(--radius-sm);
+  overflow: auto;
+}
+.markdown-preview pre code {
+  background: transparent;
+  padding: 0;
+}
+.markdown-preview blockquote {
+  margin: 0.75em 0;
+  padding: 0 0 0 var(--space-sm);
+  border-left: 3px solid var(--color-hairline);
+  color: var(--color-ink-muted-48);
+}
+.markdown-preview a {
+  color: var(--color-primary);
+}
+.markdown-preview table {
+  border-collapse: collapse;
+  margin: 0.75em 0;
+}
+.markdown-preview th,
+.markdown-preview td {
+  border: 1px solid var(--color-hairline);
+  padding: var(--space-xxs) var(--space-xs);
+}
+.markdown-preview img {
+  max-width: 100%;
+}
+.markdown-preview hr {
+  border: none;
+  border-top: 1px solid var(--color-hairline);
+  margin: 1em 0;
+}
+
+/* ============================================================================
    Diagnostics panel
    ========================================================================= */
 .diagnostics {
@@ -3042,6 +3203,11 @@ button {
 }
 .path-add-btn:active {
   transform: scale(0.95);
+}
+.path-add-btn:disabled,
+.path-add-busy {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* ============================================================================

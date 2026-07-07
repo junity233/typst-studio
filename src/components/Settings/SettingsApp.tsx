@@ -22,6 +22,7 @@ import {
   openDevtools,
   openLogDir,
   openThemesDir,
+  pickPath,
 } from "../../lib/tauri";
 import { toIpcError } from "../../lib/ipc-error";
 import i18n from "../../i18n";
@@ -428,12 +429,37 @@ function PathsControl({ def }: { def: SettingDef }) {
       ? (def.default as string[])
       : [];
   const [draft, setDraft] = useState("");
+  const [browsing, setBrowsing] = useState(false);
 
   const add = () => {
     const trimmed = draft.trim();
     if (trimmed === "") return;
     setValue([...list, trimmed]);
     setDraft("");
+  };
+
+  // Open the native folder picker (same `pick_path` Rust command the path-type
+  // setting uses) and append the chosen folder, deduped. This is the
+  // discoverable affordance for the "Extra font directories" list — typing an
+  // absolute path by hand is error-prone, so the Browse button is primary.
+  const browse = async () => {
+    if (browsing) return;
+    setBrowsing(true);
+    try {
+      const chosen = await pickPath("folder");
+      if (chosen !== null && !list.includes(chosen)) {
+        setValue([...list, chosen]);
+      }
+    } catch (e) {
+      window.alert(
+        i18n.t("actionFailed", {
+          ns: "errors",
+          message: toIpcError(e).message,
+        }),
+      );
+    } finally {
+      setBrowsing(false);
+    }
   };
 
   const remove = (idx: number) => {
@@ -462,6 +488,14 @@ function PathsControl({ def }: { def: SettingDef }) {
       ))}
       {!readonly && (
         <div className="path-add">
+          <button
+            type="button"
+            className={"path-add-btn" + (browsing ? " path-add-busy" : "")}
+            onClick={() => void browse()}
+            disabled={browsing}
+          >
+            <FolderOpen size={13} /> {browsing ? t("working") : t("browseFolder")}
+          </button>
           <input
             className="setting-input path-add-input"
             type="text"
