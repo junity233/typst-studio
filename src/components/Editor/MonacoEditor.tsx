@@ -112,6 +112,13 @@ export interface MonacoEditorApi {
    *  receives no args (the toolbar re-queries `isInsideWrap`/`isLinePrefixActive`
    *  on each fire). Returns an unsubscribe function. Mirrors `onDidScrollChange`. */
   onDidChangeCursorPosition: (cb: () => void) => () => void;
+  /** Current caret position as `{ lineNumber, column }` (1-based, Monaco
+   *  convention), or `null` when no editor/model is live. Used by the Symbol
+   *  Panel's context-aware insertion (math-vs-markup detection). */
+  getCursorPosition: () => { lineNumber: number; column: number } | null;
+  /** The active model's text split into lines, or `null` when no editor/model
+   *  is live. Used together with `getCursorPosition` to detect math context. */
+  getModelLines: () => string[] | null;
   /**
    * Format the active document via Monaco's built-in
    * `editor.action.formatDocument` action. That action routes to tinymist's
@@ -955,6 +962,27 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
           d1.dispose();
           d2.dispose();
         };
+      },
+      // Symbol-panel context seam (Task 3): expose the caret position + model
+      // lines so the panel can run pure math-context detection at click time.
+      // Same getEditor() gating + thin-dispatcher shape as the edit seam above;
+      // null when the editor or its model is gone.
+      getCursorPosition: () => {
+        const editor = getEditor();
+        if (!editor) return null;
+        const pos = editor.getPosition();
+        if (!pos) return null;
+        return { lineNumber: pos.lineNumber, column: pos.column };
+      },
+      getModelLines: () => {
+        const editor = getEditor();
+        const model = editor?.getModel();
+        if (!model) return null;
+        // Monaco's model stores line endings internally; `getValue()` round-
+        // trips the buffer and split('\n') yields exactly one entry per logical
+        // line (the count matches `model.getLineCount()`), which is what the
+        // line-numbered math scanner expects.
+        return model.getValue().split("\n");
       },
       // Format seam (Task: Format Document): invokes Monaco's built-in
       // `editor.action.formatDocument`, which the LSP client wires to tinymist's

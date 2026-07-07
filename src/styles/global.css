@@ -3310,3 +3310,25 @@ button {
   font: var(--text-caption);
   color: var(--color-body-muted);
 }
+
+/* ============================================================================
+   Symbol panel (Task 3) — mirrors the packages-panel shell: a flex column with
+   a search field, a wrap of category chips, and a scrollable symbol grid.
+   ========================================================================= */
+.symbols-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.symbols-search { display: flex; align-items: center; gap: var(--space-xxs); padding: var(--space-xs) var(--space-sm); }
+.symbols-search-input { flex: 1; min-width: 0; height: 30px; padding: 0 var(--space-sm); font: var(--text-caption); color: var(--color-ink); background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: var(--radius-pill); outline: none; box-sizing: border-box; }
+.symbols-search-input:focus { border-color: var(--color-primary); }
+.symbols-search-input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.symbols-categories { display: flex; flex-wrap: wrap; gap: var(--space-xxs); padding: var(--space-xxs) var(--space-sm) var(--space-xs); border-bottom: 1px solid var(--color-divider-soft); }
+.symbols-chip { height: 24px; padding: 0 var(--space-sm); font: var(--text-fine-print); color: var(--color-ink-muted-80); background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: var(--radius-pill); cursor: pointer; white-space: nowrap; }
+.symbols-chip:hover:not(.active) { color: var(--color-ink); border-color: var(--color-primary); }
+.symbols-chip.active { color: var(--color-on-primary); background: var(--color-primary); border-color: var(--color-primary); }
+.symbols-body { flex: 1; min-height: 0; overflow-y: auto; }
+.symbols-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 1px; padding: var(--space-xxs); }
+.symbol-button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-xxs); padding: var(--space-xs) var(--space-xxs); min-height: 56px; color: var(--color-ink); background: var(--color-canvas); border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }
+.symbol-button:hover { background: var(--color-hover-soft); border-color: var(--color-hairline); }
+.symbol-button:active { background: var(--color-hover); }
+.symbol-glyph { font: 600 22px/1 var(--font-mono); color: var(--color-ink); }
+.symbol-name { font: var(--text-fine-print); font-family: var(--font-mono); color: var(--color-ink-muted-48); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.symbols-empty { margin: 0; padding: var(--space-lg) var(--space-sm); text-align: center; font: var(--text-caption); color: var(--color-ink-muted-48); }
