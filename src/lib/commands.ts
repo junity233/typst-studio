@@ -136,3 +136,65 @@ export async function closeTabWithConfirm(id: string): Promise<boolean> {
   await useTabsStore.getState().closeTab(id);
   return true;
 }
+
+/**
+ * Close every tab OTHER than `keepId`. Dirty tabs route through
+ * [`closeTabWithConfirm`] (Save / Don't Save / Cancel per tab); clean tabs
+ * close immediately. Iterates over a SNAPSHOT of the open tabs so the closing
+ * mutations don't race the loop. Returns true if every tab was closed (or
+ * already gone), false if the user cancelled any dirty-tab prompt.
+ */
+export async function closeOtherTabs(keepId: string): Promise<boolean> {
+  const ids = useTabsStore.getState().tabs.filter((id) => id !== keepId);
+  return closeMany(ids);
+}
+
+/**
+ * Close every tab to the RIGHT of `id` (exclusive). Same dirty-tab prompt
+ * semantics as [`closeOtherTabs`]. Returns true unless the user cancelled.
+ */
+export async function closeTabsToTheRight(id: string): Promise<boolean> {
+  const tabs = useTabsStore.getState().tabs;
+  const idx = tabs.indexOf(id);
+  if (idx < 0) return true;
+  return closeMany(tabs.slice(idx + 1));
+}
+
+/**
+ * Close every open tab. Same dirty-tab prompt semantics. Returns true unless
+ * the user cancelled a prompt (in which case the remaining tabs stay open).
+ */
+export async function closeAllTabs(): Promise<boolean> {
+  return closeMany([...useTabsStore.getState().tabs]);
+}
+
+/**
+ * Close every tab that is NOT dirty (clean tabs only, no prompt). Untitled-but-
+ * clean and saved-file tabs both close immediately; dirty tabs are left open.
+ * Returns the ids actually closed.
+ */
+export async function closeSavedTabs(): Promise<string[]> {
+  const docs = useDocumentsStore.getState().documents;
+  const ids = useTabsStore
+    .getState()
+    .tabs.filter((id) => !docs[id]?.dirty);
+  await closeMany(ids);
+  return ids;
+}
+
+/**
+ * Shared driver for the batch-close operations: closes each id via
+ * [`closeTabWithConfirm`] (so dirty tabs prompt), short-circuiting on the first
+ * user cancel. Tabs that vanish mid-loop (e.g. closed by a prior iteration's
+ * store mutation) are skipped. Returns false if any prompt was cancelled.
+ */
+async function closeMany(ids: string[]): Promise<boolean> {
+  for (const id of ids) {
+    // The tab may have been closed already (e.g. a shared store mutation).
+    if (!useTabsStore.getState().tabs.includes(id)) continue;
+    const closed = await closeTabWithConfirm(id);
+    if (!closed) return false;
+  }
+  return true;
+}
+

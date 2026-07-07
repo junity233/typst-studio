@@ -8,5 +8,17 @@
   "minimize": "最小化",
   "maximize": "最大化",
   "restore": "还原",
-  "close": "关闭"
+  "close": "关闭",
+  "tabClose": "关闭",
+  "tabCloseOthers": "关闭其他",
+  "tabCloseRight": "关闭右侧",
+  "tabCloseAll": "关闭全部",
+  "tabCloseSaved": "关闭已保存",
+  "tabReopenClosed": "重新打开已关闭的标签页",
+  "tabCopyPath": "复制路径",
+  "tabCopyName": "复制名称",
+  "tabCopyAbsolutePath": "复制绝对路径",
+  "tabRevealInFinder": "在访达中显示",
+  "tabRevealInFileExplorer": "在文件资源管理器中显示"
 }
+

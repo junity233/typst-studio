@@ -8,5 +8,17 @@
   "minimize": "Minimize",
   "maximize": "Maximize",
   "restore": "Restore",
-  "close": "Close"
+  "close": "Close",
+  "tabClose": "Close",
+  "tabCloseOthers": "Close Others",
+  "tabCloseRight": "Close to the Right",
+  "tabCloseAll": "Close All",
+  "tabCloseSaved": "Close Saved",
+  "tabReopenClosed": "Reopen Closed Tab",
+  "tabCopyPath": "Copy Path",
+  "tabCopyName": "Copy Name",
+  "tabCopyAbsolutePath": "Copy Absolute Path",
+  "tabRevealInFinder": "Reveal in Finder",
+  "tabRevealInFileExplorer": "Reveal in File Explorer"
 }
+
