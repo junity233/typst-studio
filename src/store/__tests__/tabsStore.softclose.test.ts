@@ -30,6 +30,7 @@ vi.mock("../../lib/tauri", () => ({
       origin: { kind: "looseFile", path: "/x.typ", root: "/" },
       revision: 0,
       conflict: "none",
+      kind: "typst",
       hidden: false,
     } satisfies OpenedDocument),
   ),

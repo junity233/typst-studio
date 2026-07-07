@@ -83,6 +83,7 @@ impl TabState {
             origin: DocumentOrigin::Untitled,
             revision: 0,
             conflict: ConflictState::None,
+            kind: crate::domain::document::DocumentKind::Typst,
             hidden: false,
         };
         Self::with_meta(meta, initial_text)

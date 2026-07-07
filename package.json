@@ -30,6 +30,7 @@
     "lucide-react": "^1.23.0",
     "monaco-languageclient": "^10.7.0",
     "openai": "^6.45.0",
+    "pdfjs-dist": "^6.1.200",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-i18next": "^17.0.8",

@@ -81,6 +81,12 @@ export interface OpenModelOptions {
   origin: DocumentOrigin;
   /** Current backend revision (§8.4 guard baseline). */
   revision: number;
+  /**
+   * Monaco language id for the model (e.g. `"typst"`, `"markdown"`,
+   * `"json"`, `"plaintext"`). Defaults to `"typst"` for the historical Typst
+   * behavior. Derived upstream by [`languageIdFor`](./languageId.ts).
+   */
+  languageId?: string;
 }
 
 /** Result of [`MonacoModelRegistry.activate`](Self.activate). */
@@ -204,10 +210,12 @@ class MonacoModelRegistry {
 
     // Truly new URI — create the model. If it still throws (genuinely
     // unreachable after the reconciliation above), neither map is touched
-    // (atomic).
+    // (atomic). The language id is chosen upstream by `languageIdFor` so non-
+    // Typst editable files (md/json/ts/...) get the right grammar; the default
+    // keeps the historical Typst behavior for any caller that omits it.
     const model = Monaco.editor.createModel(
       opts.content,
-      "typst",
+      opts.languageId ?? "typst",
       Uri.parse(uri),
     );
 
@@ -377,11 +385,14 @@ class MonacoModelRegistry {
     const oldUri = entry.uri;
     const oldModel = entry.model;
     const currentText = oldModel.getValue();
+    // Preserve the existing language across the URI migration (Save As / rename
+    // shouldn't change highlighting — a .md saved as .md stays markdown).
+    const languageId = oldModel.getLanguageId();
 
     // Create the new model FIRST; if it throws, neither map is touched.
     const newModel = Monaco.editor.createModel(
       currentText,
-      "typst",
+      languageId,
       Uri.parse(newUri),
     );
 

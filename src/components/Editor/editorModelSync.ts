@@ -1,5 +1,6 @@
 import type { Document } from "../../store/documentsStore";
 import type { DocumentOrigin } from "../../lib/types";
+import { languageIdForDocument } from "./languageId";
 
 /**
  * Pure planning seam for `MonacoEditor.tsx`'s model lifecycle (spec §8.3 /
@@ -38,6 +39,8 @@ export interface ModelSyncOpenEntry {
   content: string;
   origin: DocumentOrigin;
   revision: number;
+  /** Monaco language id (from `languageIdFor`); defaults to "typst". */
+  languageId: string;
 }
 
 /** The plan the component dispatches against `monacoModelRegistry`. */
@@ -66,11 +69,17 @@ export function computeModelSyncPlan(
   const toOpen: ModelSyncOpenEntry[] = [];
   for (const [id, doc] of Object.entries(currentDocs)) {
     if (prevSeenIds.has(id)) continue;
+    // Binary kinds (image/pdf) never get a Monaco model — they render in a
+    // dedicated viewer and are skipped by the editor entirely. Filtering them
+    // here keeps the model registry free of empty throwaway models.
+    const kind = doc.kind ?? "typst";
+    if (kind === "image" || kind === "pdf") continue;
     toOpen.push({
       id,
       content: doc.content,
       origin: doc.origin,
       revision: doc.revision,
+      languageId: languageIdForDocument(doc),
     });
   }
 

@@ -39,7 +39,6 @@ pub fn route_external_request(canon: &Path, registry: &DocumentRegistry) -> Rout
         Some(id) => RoutingDecision::FocusExisting(id),
         None => RoutingDecision::OpenNew(canon.to_path_buf()),
     }
-
 }
 
 /// Convenience wrapper over a `SharedRegistry` (the form held by
@@ -51,11 +50,12 @@ pub fn route_external_request_shared(canon: &Path, registry: &SharedRegistry) ->
 /// Handle a single-instance callback: extract the file path from `argv`,
 /// canonicalize, route it, emit the matching event, and focus the main window.
 ///
-/// `argv[0]` is the program path; a `.typ` argument may appear at any later
-/// position. The first `.typ` argument wins (matches the most common
+/// `argv[0]` is the program path; an openable-file argument (`.typ`, `.md`,
+/// `.pdf`, image, etc. — see [`extract_openable_arg`]) may appear at any later
+/// position. The first openable argument wins (matches the most common
 /// double-click scenario of a single file).
 pub fn handle_single_instance<R: Runtime>(app: &AppHandle<R>, argv: Vec<String>) {
-    if let Some(file) = extract_typ_arg(&argv) {
+    if let Some(file) = extract_openable_arg(&argv) {
         match resolve_and_route(app, &file) {
             Ok(RoutingDecision::FocusExisting(id)) => {
                 tracing::info!(?file, ?id, "single-instance: focusing existing view");
@@ -101,16 +101,18 @@ fn resolve_and_route<R: Runtime>(app: &AppHandle<R>, file: &str) -> Result<Routi
     Ok(route_external_request_shared(&canon, &registry))
 }
 
-/// Find the first `.typ` argument in an argv vector. Returns the raw string
-/// (not yet canonicalized). Used both by the live callback and tests.
-pub(crate) fn extract_typ_arg(argv: &[String]) -> Option<String> {
-    argv.iter().skip(1).find(|a| {
-        Path::new(a)
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("typ"))
-            .unwrap_or(false)
-    }).cloned()
+/// Find the first openable-file argument in an argv vector. Returns the raw
+/// string (not yet canonicalized). Used both by the live callback and tests.
+///
+/// "Openable" follows [`file_kind::is_openable`]: any path with a file
+/// extension (the single-instance double-click path covers `.typ` as well as
+/// the other supported types — `.md`, `.pdf`, images, etc.). A bare program
+/// name with no extension is skipped.
+pub(crate) fn extract_openable_arg(argv: &[String]) -> Option<String> {
+    argv.iter()
+        .skip(1)
+        .find(|a| crate::domain::file_kind::is_openable(Path::new(a)))
+        .cloned()
 }
 
 /// Payload of the `focus_view` event (§6.1): the frontend activates the tab
@@ -165,30 +167,43 @@ mod tests {
     }
 
     #[test]
-    fn extract_typ_picks_first_typ_argument() {
+    fn extract_openable_picks_first_openable_argument() {
         let argv = vec![
             "/Applications/Typst Studio.app/Contents/MacOS/typst-studio".to_string(),
             "/Users/x/notes.typ".to_string(),
             "/Users/x/other.md".to_string(),
         ];
-        assert_eq!(extract_typ_arg(&argv).as_deref(), Some("/Users/x/notes.typ"));
+        assert_eq!(extract_openable_arg(&argv).as_deref(), Some("/Users/x/notes.typ"));
     }
 
     #[test]
-    fn extract_typ_case_insensitive_extension() {
-        let argv = vec!["prog".to_string(), "/x/Y.TYP".to_string()];
-        assert_eq!(extract_typ_arg(&argv).as_deref(), Some("/x/Y.TYP"));
-    }
-
-    #[test]
-    fn extract_typ_none_when_no_typ() {
+    fn extract_openable_accepts_non_typ_files() {
+        // .md, .pdf, and images are now forwarded too (not just .typ).
         let argv = vec!["prog".to_string(), "/x/readme.md".to_string()];
-        assert!(extract_typ_arg(&argv).is_none());
+        assert_eq!(extract_openable_arg(&argv).as_deref(), Some("/x/readme.md"));
+        let argv = vec!["prog".to_string(), "/x/doc.pdf".to_string()];
+        assert_eq!(extract_openable_arg(&argv).as_deref(), Some("/x/doc.pdf"));
+        let argv = vec!["prog".to_string(), "/x/photo.png".to_string()];
+        assert_eq!(extract_openable_arg(&argv).as_deref(), Some("/x/photo.png"));
     }
 
     #[test]
-    fn extract_typ_none_for_lone_program() {
+    fn extract_openable_case_insensitive_extension() {
+        let argv = vec!["prog".to_string(), "/x/Y.TYP".to_string()];
+        assert_eq!(extract_openable_arg(&argv).as_deref(), Some("/x/Y.TYP"));
+    }
+
+    #[test]
+    fn extract_openable_none_when_no_extension() {
+        // A bare argument with no extension (e.g. a lone program name) is not
+        // forwarded — only files with extensions are openable.
+        let argv = vec!["prog".to_string(), "Makefile".to_string()];
+        assert!(extract_openable_arg(&argv).is_none());
+    }
+
+    #[test]
+    fn extract_openable_none_for_lone_program() {
         let argv = vec!["prog".to_string()];
-        assert!(extract_typ_arg(&argv).is_none());
+        assert!(extract_openable_arg(&argv).is_none());
     }
 }

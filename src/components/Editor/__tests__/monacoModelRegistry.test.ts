@@ -121,6 +121,8 @@ export interface MockModel {
   isDisposed: boolean;
   /** Canonical URI string the model was created with. */
   uri: string;
+  /** Language id the model was created with (mirrors ITextModel.getLanguageId). */
+  getLanguageId(): string;
   onDidChangeContent(listener: () => void): { dispose(): void };
 }
 
@@ -150,7 +152,7 @@ vi.mock("@codingame/monaco-vscode-editor-api", () => {
   // (vi.mock factories are hoisted and cannot close over top-level `let`).
   const modelsByUri = new Map<string, MockModel>();
 
-  function createMockModel(content: string, uri: string): MockModel {
+  function createMockModel(content: string, uri: string, languageId: string): MockModel {
     const listeners: Array<() => void> = [];
     let current = content;
     const model: MockModel = {
@@ -170,6 +172,9 @@ vi.mock("@codingame/monaco-vscode-editor-api", () => {
       },
       isDisposed: false,
       uri,
+      // Mirror ITextModel.getLanguageId so migrateUri can preserve the language
+      // across a Save-As / rename URI migration.
+      getLanguageId: () => languageId,
       onDidChangeContent: (listener: () => void) => {
         listeners.push(listener);
         return {
@@ -184,7 +189,7 @@ vi.mock("@codingame/monaco-vscode-editor-api", () => {
   }
 
   const createModel = vi.fn(
-    (content: string, _languageId: string, uri: { toString(): string }) => {
+    (content: string, languageId: string, uri: { toString(): string }) => {
       const uriStr = uri.toString();
       // Mirror real Monaco: a second createModel at the SAME URI throws
       // ("ModelService: Cannot add model because it already exists!"). This is
@@ -194,7 +199,7 @@ vi.mock("@codingame/monaco-vscode-editor-api", () => {
           "ModelService: Cannot add model because it already exists!",
         );
       }
-      const model = createMockModel(content, uriStr);
+      const model = createMockModel(content, uriStr, languageId);
       modelsByUri.set(uriStr, model);
       return model;
     },
@@ -405,6 +410,7 @@ describe("MonacoModelRegistry.openModel URI reconciliation", () => {
       },
       isDisposed: false,
       uri: orphanUri,
+      getLanguageId: () => "typst",
       onDidChangeContent: () => ({ dispose: () => {} }),
     };
     monacoMock.editor.modelsByUri.set(orphanUri, seeded);

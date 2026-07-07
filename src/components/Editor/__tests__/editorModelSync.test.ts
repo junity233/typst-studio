@@ -52,6 +52,8 @@ describe("computeModelSyncPlan", () => {
         content: a.content,
         origin: a.origin,
         revision: 0,
+        // Untitled docs with no kind default to "typst" → typst language id.
+        languageId: "typst",
       },
     ]);
     expect(plan.toClose).toEqual([]);
@@ -138,7 +140,7 @@ describe("computeModelSyncPlan", () => {
     const plan = computeModelSyncPlan(new Set(), { a }, "a", null);
 
     expect(plan.toOpen).toEqual([
-      { id: "a", content: a.content, origin: a.origin, revision: 0 },
+      { id: "a", content: a.content, origin: a.origin, revision: 0, languageId: "typst" },
     ]);
     expect(plan.toActivate).toBe("a");
   });
@@ -164,5 +166,56 @@ describe("computeModelSyncPlan", () => {
     const plan = computeModelSyncPlan(new Set(["a"]), { a }, null, null);
 
     expect(plan.toOpen).toEqual([]);
+  });
+
+  it("skips binary kinds (image/pdf) — they never get a Monaco model", () => {
+    // Image/PDF tabs render in a dedicated viewer, not Monaco. The sync plan
+    // must NOT open a model for them (an empty throwaway model would waste
+    // memory and could never display).
+    const img = makeDoc("img", {
+      kind: "image",
+      origin: { kind: "looseFile", path: "/x/photo.png", root: "/x" },
+    });
+    const pdf = makeDoc("pdf", {
+      kind: "pdf",
+      origin: { kind: "looseFile", path: "/x/doc.pdf", root: "/x" },
+    });
+    const plan = computeModelSyncPlan(new Set(), { img, pdf }, null, null);
+
+    expect(plan.toOpen).toEqual([]);
+  });
+
+  it("maps the language id from the path extension for text kinds", () => {
+    // A .json text tab opens with Monaco's built-in json grammar; a .py with
+    // python; an unknown extension falls back to plaintext. Markdown maps to
+    // "markdown" regardless of path.
+    const json = makeDoc("json", {
+      kind: "text",
+      origin: { kind: "looseFile", path: "/x/data.json", root: "/x" },
+    });
+    const py = makeDoc("py", {
+      kind: "text",
+      origin: { kind: "looseFile", path: "/x/run.py", root: "/x" },
+    });
+    const weird = makeDoc("weird", {
+      kind: "text",
+      origin: { kind: "looseFile", path: "/x/a.zzz", root: "/x" },
+    });
+    const md = makeDoc("md", {
+      kind: "markdown",
+      origin: { kind: "looseFile", path: "/x/README.md", root: "/x" },
+    });
+    const plan = computeModelSyncPlan(
+      new Set(),
+      { json, py, weird, md },
+      null,
+      null,
+    );
+
+    const byId = Object.fromEntries(plan.toOpen.map((o) => [o.id, o.languageId]));
+    expect(byId.json).toBe("json");
+    expect(byId.py).toBe("python");
+    expect(byId.weird).toBe("plaintext");
+    expect(byId.md).toBe("markdown");
   });
 });

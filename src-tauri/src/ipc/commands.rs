@@ -22,12 +22,6 @@ use crate::error::{AppError, Result};
 use crate::ipc::events::{LspStatusPayload, OpenedDocument};
 use crate::ipc::state::AppState;
 
-/// Upper bound on a source file we are willing to load into an editor tab. A
-/// legitimate `.typ` file is at most a few hundred KB; anything past 10 MiB is
-/// almost certainly a mis-picked binary or a generated blob that would stall or
-/// OOM the webview. Sized as a resource guard, not a user preference.
-const MAX_SOURCE_FILE_BYTES: u64 = 10 * 1024 * 1024;
-
 /// Create a new untitled tab. `content` defaults to the `document.defaultTemplate`
 /// setting (falling back to the built-in template if unset). The initial compile
 /// is spawned asynchronously — this returns immediately.
@@ -60,12 +54,25 @@ pub async fn open_file(
 ) -> Result<Option<OpenedDocument>> {
     // The dialog's blocking API runs the native panel on the main thread while
     // this worker thread waits — the webview's event loop is never stalled.
+    //
+    // Filters are grouped by category so the user can open any document the app
+    // supports: Typst sources (default), other editable text, images, and PDFs.
+    // Typst is listed first so it stays the OS-default filter on each launch.
     let app_for_dialog = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
         app_for_dialog
             .dialog()
             .file()
-            .add_filter("Typst", &["typ"])
+            .add_filter("Typst", &["typ", "typst"])
+            .add_filter(
+                "Documents",
+                &[
+                    "md", "markdown", "txt", "json", "csv", "log", "ts", "js", "py", "html", "css",
+                    "yaml", "yml", "toml", "xml",
+                ],
+            )
+            .add_filter("Images", &["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"])
+            .add_filter("PDF", &["pdf"])
             .blocking_pick_file()
     })
     .await
@@ -74,33 +81,11 @@ pub async fn open_file(
         return Ok(None);
     };
     let path = path_buf_from(picked)?;
-    // Read file on a blocking thread (large files shouldn't stall the async runtime).
-    let path_for_read = path.clone();
-    let content = tauri::async_runtime::spawn_blocking(move || -> std::result::Result<String, AppError> {
-        // Guard against accidentally opening a huge/binary file as a source tab:
-        // reading tens/hundreds of MiB into a string stalls the runtime and the
-        // resulting model would OOM the webview. Stat first, then read.
-        let len = std::fs::metadata(&path_for_read)
-            .map_err(|e| AppError::Other(format!("stat {path_for_read:?}: {e}")))?
-            .len();
-        if len > MAX_SOURCE_FILE_BYTES {
-            return Err(AppError::Other(format!(
-                "file too large to open as source ({} bytes; limit {} bytes): {path_for_read:?}",
-                len, MAX_SOURCE_FILE_BYTES
-            )));
-        }
-        std::fs::read_to_string(&path_for_read)
-            .map_err(|e| AppError::Other(format!("read {path_for_read:?}: {e}")))
-    })
-    .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
-    let editor = state.editor.clone();
-    let meta = editor.open_from_content(path, content.clone(), Some(&state.workspace))?;
-    // The open path deduplicates an already-open document. Its in-memory
-    // buffer may be newer than disk, so hydrate the frontend from the live tab
-    // rather than overwriting it with the just-read disk copy.
-    let content = editor.tab_text(meta.id).unwrap_or(content);
-    Ok(Some(OpenedDocument { meta, content }))
+    // Delegate to the shared classified open path (same code the file-tree and
+    // single-instance router use), so the dialog and the tree classify files
+    // identically and a file opened either way behaves the same.
+    let doc = crate::ipc::fs_commands::open_path_classified(&state, path).await?;
+    Ok(Some(doc))
 }
 
 /// Open a native image-picker dialog and return the chosen file's absolute

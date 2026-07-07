@@ -253,6 +253,63 @@ impl DocumentService {
         Ok(meta)
     }
 
+    /// Open a **non-Typst** tab backed by a real file on disk — an image or
+    /// PDF previewed in-app, or a plain-text/markdown file edited without the
+    /// Typst compile pipeline.
+    ///
+    /// Unlike [`open_from_disk`](Self::open_from_disk), this path:
+    /// - skips compile-worker creation (no `compile().create_worker`), so the
+    ///   backend never tries to compile a `.pdf`/`.png`/`.md` as Typst;
+    /// - skips VFS publishing and relative-resource resolution — non-Typst
+    ///   documents are not `#include` targets;
+    /// - for binary kinds ([`DocumentKind::is_binary_preview`]) does NOT read
+    ///   the bytes at all: the caller passes an empty `content` and the
+    ///   frontend fetches bytes on demand via `read_file_bytes`.
+    ///
+    /// For editable non-Typst text kinds (txt/md/json/...) the caller passes
+    /// the file's text as `content` so the buffer is editable; the only thing
+    /// skipped relative to Typst is compile/LSP/VFS.
+    ///
+    /// `kind` is stamped onto the meta so the frontend can dispatch to the
+    /// right viewer/editor. Dedup is by canonical path, identical to the Typst
+    /// open path (reopening focuses the existing tab).
+    pub fn open_non_typst_from_disk(
+        &self,
+        path: PathBuf,
+        kind: crate::domain::document::DocumentKind,
+        content: String,
+        workspace: Option<&WorkspaceService>,
+    ) -> Result<DocumentMeta> {
+        debug_assert!(
+            !kind.is_typst(),
+            "open_non_typst_from_disk is for non-Typst kinds; use open_from_disk for Typst"
+        );
+        let canon = canonicalize_for_identity(&path)?;
+        if let Some(existing) = find_existing(&self.store, &canon) {
+            // §B1 dedup invariant: a soft-closed (hidden) doc must be made
+            // visible on reopen (same as the Typst open path).
+            self.set_visibility(existing.id, false);
+            return Ok(self.tab_meta(existing.id).unwrap_or(existing));
+        }
+        let meta = classify_new(DocumentId::new(), canon.clone(), workspace).with_kind(kind);
+        let id = meta.id;
+        self.store.registry.write().register(meta.clone())?;
+        // A non-Typst tab still needs a TabState (for meta + dirty + the text
+        // buffer of editable kinds). The detached world (no resolver) is fine:
+        // these documents are never compiled, so the world is just a text
+        // container.
+        let tab = Arc::new(TabState::with_meta(meta.clone(), content));
+        self.store.tabs.write().insert(id, tab);
+        // Seed the disk version so external-change detection still works for
+        // editable text kinds (md/txt). For binary kinds the version is
+        // harmless (the frontend never writes), but we set it for uniformity.
+        self.set_disk_version_from_path(id, meta.origin.canonical_path());
+        self.ensure_dir_watched(id, &meta.origin, workspace);
+        // NOTE: deliberately NO compile().create_worker() and NO sync_vfs_for()
+        // — non-Typst documents do not compile and are not VFS-published.
+        Ok(meta)
+    }
+
     /// Build the initial [`TabState`] for a freshly-classified `meta`, picking
     /// the resolver that matches the origin: the workspace resolver for a
     /// `WorkspaceFile`, the cached parent resolver for a `LooseFile`, and a

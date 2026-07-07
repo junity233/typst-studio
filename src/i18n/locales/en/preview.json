@@ -4,5 +4,9 @@
   "refreshPreview": "Refresh preview",
   "page": "Page {{number}}",
   "jumpToSourceMac": "⌘ Click to jump to source",
-  "jumpToSourceOther": "Ctrl+Click to jump to source"
+  "jumpToSourceOther": "Ctrl+Click to jump to source",
+  "loading": "Loading…",
+  "zoomIn": "Zoom in",
+  "zoomOut": "Zoom out",
+  "actualSize": "Actual size"
 }

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { CompileStatus } from "../lib/ui-types";
 import type {
   ConflictState,
+  DocumentKind,
   DocumentOrigin,
   LineRect,
   OpenedDocument,
@@ -82,6 +83,18 @@ export interface Document {
    * resolved.
    */
   conflictDiskContent: string | null;
+  /**
+   * What kind of content this document holds — drives the EditorArea dispatch:
+   * `typst` → Monaco + Typst preview + compile; `text`/`markdown` → Monaco (no
+   * compile) with an optional rendered-markdown preview for `markdown`;
+   * `image`/`pdf` → preview-only viewer (no editor, no dirty, no save).
+   *
+   * Optional only so legacy test fixtures omitting it default to the historical
+   * `typst` behavior; production constructors ([`documentFromOpened`], the
+   * recovery dialog) always set it explicitly from the backend payload. Read it
+   * via [`documentKind`](Self.documentKind) to get the defaulted value.
+   */
+  kind?: DocumentKind;
   status: CompileStatus;
   durationMs: number | null;
   svgPages: string[];
@@ -113,12 +126,26 @@ export function documentFromOpened(doc: OpenedDocument): Document {
     // No external-modification conflict on open (§8.4).
     conflict: "none",
     conflictDiskContent: null,
+    // Content kind mirrored from the backend (the classifier is authoritative).
+    // Defaults to "typst" for legacy payloads via the backend's serde default.
+    kind: doc.kind ?? "typst",
     status: "idle",
     durationMs: null,
     svgPages: [],
     lineMap: [],
     outline: [],
   };
+}
+
+/**
+ * Read a document's [`DocumentKind`], defaulting to `"typst"` when unset.
+ *
+ * `Document.kind` is optional only to keep legacy test fixtures terse; every
+ * production document has it set by [`documentFromOpened`]. Centralizing the
+ * default here means dispatch sites don't each repeat `?? "typst"`.
+ */
+export function documentKind(doc: Pick<Document, "kind">): DocumentKind {
+  return doc.kind ?? "typst";
 }
 
 /**

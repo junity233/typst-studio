@@ -550,6 +550,7 @@ mod tests {
             origin: crate::domain::document::DocumentOrigin::Untitled,
             revision: 1,
             conflict: ConflictState::None,
+            kind: crate::domain::document::DocumentKind::Typst,
             hidden: false,
         };
         let tab = Arc::new(TabState::with_meta(meta, "Hello".into()));
@@ -603,6 +604,7 @@ mod tests {
             origin: crate::domain::document::DocumentOrigin::Untitled,
             revision: 1,
             conflict: ConflictState::None,
+            kind: crate::domain::document::DocumentKind::Typst,
             hidden: false,
         };
         tabs.write().insert(

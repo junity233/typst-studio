@@ -6,7 +6,7 @@
 //! thin adapters: argument conversion + delegating to the service layer, with
 //! blocking IO offloaded via `spawn_blocking` (same pattern as `commands.rs`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter as _, State};
@@ -492,18 +492,80 @@ pub async fn open_file_by_path(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<OpenedDocument> {
-    let path = PathBuf::from(path);
-    let path_for_read = path.clone();
-    // Read on a blocking thread. We surface the offending path alongside the
-    // OS error — the raw message (e.g. "invalid syntax (os error 123)") alone
-    // is useless for diagnosing which entry in the tree is bad. Routed through
-    // `Other` rather than `Io` so the path is part of the user-visible message;
-    // this is fine because invalid-name errors don't benefit from IoTransient's
-    // "retry might help" semantics.
+    open_path_classified(&state, PathBuf::from(path)).await
+}
+
+/// Shared open-by-path logic used by both [`open_file_by_path`] (tree /
+/// single-instance) and [`crate::ipc::commands::open_file`] (native dialog).
+///
+/// Classifies the path by extension (see [`file_kind::classify`]) and routes:
+/// - Typst → the existing `open_from_disk` path (read text, build a compile
+///   worker, seed the VFS — the historical behavior).
+/// - Markdown / Text → a new `open_non_typst_from_disk` path that still reads
+///   the text (editable) but skips compile / LSP / VFS.
+/// - Image / Pdf → `open_non_typst_from_disk` with NO byte read on the
+///   backend (content = ""): the frontend fetches bytes on demand via
+///   `read_file_bytes`.
+pub(crate) async fn open_path_classified(
+    state: &State<'_, AppState>,
+    path: PathBuf,
+) -> Result<OpenedDocument> {
+    use crate::domain::file_kind;
+
+    let kind = file_kind::classify(&path);
+
+    // Typst keeps the historical pipeline verbatim (read text + compile worker
+    // + VFS). Non-Typst text kinds read text too but skip compile/LSP/VFS via
+    // open_non_typst_from_disk. Binary kinds (image/pdf) read no bytes here.
+    if kind.is_typst() {
+        return open_typst_path(state, path).await;
+    }
+
+    // For editable text kinds, read the text (same guard as the Typst path).
+    let content = if kind.is_textual() {
+        Some(read_text_for_tab(&path).await?)
+    } else {
+        None
+    };
+
+    let editor = state.editor.clone();
+    let meta = editor.open_non_typst_from_disk(
+        path,
+        kind,
+        content.clone().unwrap_or_default(),
+        Some(&state.workspace),
+    )?;
+    // Dedup: reopening a live (possibly dirty) text tab returns its buffer.
+    // For binary kinds there is no buffer — return "".
+    let content = if kind.is_binary_preview() {
+        String::new()
+    } else {
+        editor.tab_text(meta.id).unwrap_or_else(|| content.unwrap_or_default())
+    };
+    Ok(OpenedDocument { meta, content })
+}
+
+/// The historical Typst open path: read text + `open_from_disk` (which builds
+/// a compile worker and seeds the VFS). Factored out of `open_file_by_path`
+/// so [`open_path_classified`] can keep the Typst behavior byte-for-byte
+/// identical while routing non-Typst kinds elsewhere.
+async fn open_typst_path(
+    state: &State<'_, AppState>,
+    path: PathBuf,
+) -> Result<OpenedDocument> {
+    let content = read_text_for_tab(&path).await?;
+    let editor = state.editor.clone();
+    let meta = editor.open_from_disk(path, content.clone(), Some(&state.workspace))?;
+    let content = editor.tab_text(meta.id).unwrap_or(content);
+    Ok(OpenedDocument { meta, content })
+}
+
+/// Read a file's text on a blocking thread with the source-file size guard.
+/// Shared by the Typst and editable-text open paths. Binary kinds bypass this.
+async fn read_text_for_tab(path: &Path) -> Result<String> {
+    let path_for_read = path.to_path_buf();
     let path_for_err = path.to_string_lossy().into_owned();
-    let content = tauri::async_runtime::spawn_blocking(move || {
-        // Size guard: see `commands::MAX_SOURCE_FILE_BYTES`. A huge file would
-        // stall the runtime on read and OOM the webview as a model.
+    tauri::async_runtime::spawn_blocking(move || -> std::result::Result<String, AppError> {
         let len = std::fs::metadata(&path_for_read)
             .map_err(|e| AppError::Other(format!("stat {path_for_err:?}: {e}")))?
             .len();
@@ -517,18 +579,45 @@ pub async fn open_file_by_path(
             .map_err(|e| AppError::Other(format!("read {path_for_err:?}: {e}")))
     })
     .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
+    .map_err(|e| AppError::Other(format!("join error: {e}")))?
+}
 
-    // The editor service classifies the file (loose vs workspace) and builds a
-    // resolver-anchored world accordingly. A workspace file gets the workspace
-    // resolver; a loose file gets the parent-rooted one.
-    let editor = state.editor.clone();
-    let meta = editor.open_from_disk(path, content.clone(), Some(&state.workspace))?;
-    // The open path deduplicates by canonical identity. When it reuses a live
-    // (possibly dirty) tab, return that tab's authoritative buffer rather than
-    // the stale bytes read from disk above.
-    let content = editor.tab_text(meta.id).unwrap_or(content);
-    Ok(OpenedDocument { meta, content })
+/// Upper bound on a binary file we are willing to read into the webview for
+/// in-app preview (image / pdf). Generous (a print-resolution PDF or a high-MP
+/// photo can be tens of MiB) but still bounded so a multi-GB file can't OOM
+/// the renderer. Distinct from the text-file limit because preview payloads
+/// are legitimately larger than source files.
+const MAX_BINARY_PREVIEW_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Read a binary file's raw bytes for in-app preview (image / PDF viewer).
+///
+/// The frontend's `@tauri-apps/plugin-fs` `readFile` is scope-limited to
+/// `$HOME/**` by `capabilities/default.json`, so it CANNOT read workspace
+/// files (e.g. `D:\code\...`). This command uses `std::fs::read` directly
+/// (same as the rest of the app's core I/O) and is therefore scope-unlimited
+/// — consistent with `open_file_by_path`, which also bypasses the fs plugin.
+///
+/// Guards against oversized files (`MAX_BINARY_PREVIEW_BYTES`). Returns the
+/// bytes as `Vec<u8>`; Tauri serializes that as a JSON number array, which the
+/// frontend wraps in a `Uint8Array` / `Blob`.
+#[tauri::command]
+pub async fn read_file_bytes(path: String) -> Result<Vec<u8>> {
+    let path = PathBuf::from(path);
+    let path_for_err = path.to_string_lossy().into_owned();
+    tauri::async_runtime::spawn_blocking(move || -> std::result::Result<Vec<u8>, AppError> {
+        let len = std::fs::metadata(&path)
+            .map_err(|e| AppError::Other(format!("stat {path_for_err:?}: {e}")))?
+            .len();
+        if len > MAX_BINARY_PREVIEW_BYTES {
+            return Err(AppError::Other(format!(
+                "file too large to preview ({} bytes; limit {} bytes): {path_for_err:?}",
+                len, MAX_BINARY_PREVIEW_BYTES
+            )));
+        }
+        std::fs::read(&path).map_err(|e| AppError::Other(format!("read {path_for_err:?}: {e}")))
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))?
 }
 
 /// Save As: write a tab's text to a new file chosen via a save dialog, then

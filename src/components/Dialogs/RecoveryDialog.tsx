@@ -110,6 +110,9 @@ function RecoveryRow({ snap }: { snap: RecoverableInfo }) {
         compiledRevision: -1,
         conflict: "none",
         conflictDiskContent: null,
+        // Recovered buffers are Typst source (recovery snapshots are of the
+        // Typst compile pipeline); open them as the historical default kind.
+        kind: "typst",
         status: "idle",
         durationMs: null,
         svgPages: [],

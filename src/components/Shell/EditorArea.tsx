@@ -6,8 +6,12 @@ import { MonacoEditor } from "../Editor/MonacoEditor";
 import { editorApiRef } from "../Editor/editorApiRef";
 import { FormatToolbar } from "../FormatToolbar/FormatToolbar";
 import { PreviewPane } from "../Preview/PreviewPane";
+import { MarkdownPreview } from "../Preview/MarkdownPreview";
+import { ImageViewer } from "../Preview/ImageViewer";
+import { PdfViewer } from "../Preview/PdfViewer";
 import { DiagnosticsPanel } from "../Diagnostics/DiagnosticsPanel";
 import { useTabsStore, useActiveDocument } from "../../store/tabsStore";
+import { documentKind } from "../../store/documentsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { useUiStore } from "../../store/uiStore";
 import { useSetting } from "../../hooks/useSetting";
@@ -118,6 +122,13 @@ function detachZoomListener(el: HTMLElement | null): void {
 export function EditorArea() {
   const { t } = useTranslation("editor");
   const activeTab = useActiveDocument();
+  // The active document's content kind (defaults to "typst"). Drives which
+  // editor/viewer is rendered and which Typst-specific chrome (preview pane,
+  // FormatToolbar, scroll-sync, diagnostics) is shown. Binary kinds (image/pdf)
+  // get a full-width viewer; markdown gets Monaco + a rendered preview; text
+  // gets Monaco only; typst keeps the full historical layout.
+  const activeKind = activeTab ? documentKind(activeTab) : "typst";
+  const isTypst = activeKind === "typst";
   const [previewHighlightState, setPreviewHighlightState] = useState<{
     tabId: string;
     lines: number[];
@@ -129,6 +140,12 @@ export function EditorArea() {
   const updateContent = useTabsStore((s) => s.updateContent);
   const previewVisible = useUiStore((s) => s.previewVisible);
   const setPreview = useUiStore((s) => s.setPreview);
+  // The split preview pane is shown only for kinds that have a rendered preview
+  // (typst SVG output, or rendered markdown), and only when the user hasn't
+  // hidden it via the eye toggle. Plain-text tabs have no preview; binary kinds
+  // render in a dedicated viewer and never reach this split.
+  const showPreviewPane =
+    (activeKind === "typst" || activeKind === "markdown") && previewVisible;
 
   const [diagsCollapsed, setDiagsCollapsed] = useState(false);
   // NOTE: `editorApiRef` is the module-scoped ref from ../Editor/editorApiRef,
@@ -868,33 +885,53 @@ export function EditorArea() {
     >
       <div className="editor-area-header">
         <TabStrip />
-        <button
-          className="scroll-sync-toggle"
-          type="button"
-          onClick={() => setScrollSync(!scrollSyncOn)}
-          title={scrollSyncOn ? t("preview.scrollSync.on") : t("preview.scrollSync.off")}
-          aria-pressed={scrollSyncOn}
-        >
-          {scrollSyncOn ? <Link size={14} /> : <Unlink size={14} />}
-        </button>
-        <button
-          className="preview-toggle"
-          type="button"
-          onClick={() => setPreview(!previewVisible)}
-          title={previewVisible ? t("preview.hide") : t("preview.show")}
-          aria-pressed={previewVisible}
-        >
-          {previewVisible ? <Eye size={14} /> : <EyeOff size={14} />}
-        </button>
+        {/* Scroll-sync only applies to the Typst preview (line-map based), so
+            hide the toggle for non-Typst tabs rather than disabling it. */}
+        {isTypst && (
+          <button
+            className="scroll-sync-toggle"
+            type="button"
+            onClick={() => setScrollSync(!scrollSyncOn)}
+            title={scrollSyncOn ? t("preview.scrollSync.on") : t("preview.scrollSync.off")}
+            aria-pressed={scrollSyncOn}
+          >
+            {scrollSyncOn ? <Link size={14} /> : <Unlink size={14} />}
+          </button>
+        )}
+        {/* The preview toggle is meaningful only for kinds that have a split
+            preview (typst SVG / rendered markdown). Binary viewers and plain
+            text have no toggle. */}
+        {(activeKind === "typst" || activeKind === "markdown") && (
+          <button
+            className="preview-toggle"
+            type="button"
+            onClick={() => setPreview(!previewVisible)}
+            title={previewVisible ? t("preview.hide") : t("preview.show")}
+            aria-pressed={previewVisible}
+          >
+            {previewVisible ? <Eye size={14} /> : <EyeOff size={14} />}
+          </button>
+        )}
       </div>
-      <FormatToolbar
-        api={editorApiRef.current}
-        tab={activeTab}
-        disabled={activeTab === null}
-      />
+      {/* The FormatToolbar inserts Typst markup; it's meaningless for non-Typst
+          documents, so skip it entirely (not just disabled). */}
+      {isTypst && (
+        <FormatToolbar
+          api={editorApiRef.current}
+          tab={activeTab}
+          disabled={activeTab === null}
+        />
+      )}
       <main className="editor-area-main">
         {activeTab === null ? (
           <div className="pane pane-empty">{t("noDocument")}</div>
+        ) : activeKind === "image" ? (
+          // Image tabs are preview-only: no editor, no preview split, no
+          // toolbar. The bytes are fetched on demand by ImageViewer.
+          <ImageViewer path={activeTab.path ?? ""} />
+        ) : activeKind === "pdf" ? (
+          // PDF tabs are preview-only, rendered in-app by pdf.js.
+          <PdfViewer path={activeTab.path ?? ""} />
         ) : (
           <div
             ref={containerRef}
@@ -910,37 +947,45 @@ export function EditorArea() {
                 }}
               />
             </div>
-            <div
-              className="editor-sash"
-              onPointerDown={startResize}
-              role="separator"
-              aria-orientation="vertical"
-            />
-            <div
-              className="pane pane-preview"
-              style={previewVisible ? { width: previewWidth, flex: "0 0 " + previewWidth + "px" } : undefined}
-              ref={(el) => {
-                // NOTE: this is the .pane-preview WRAPPER, not the scroll
-                // container. Only the zoom listener attaches here; the scroll
-                // ref is owned by PreviewPane's `paneRef` (→ .preview-pane) so
-                // the two can't clobber each other.
-                panePreviewWrapperRef.current = el;
-                previewPaneZoomRef(el);
-              }}
-            >
-              <PreviewPane
-                svgPages={activeTab.svgPages}
-                lineMap={activeTab.lineMap}
-                activeLines={activePreviewLines}
-                onRefresh={handleRefresh}
-                onJumpToLine={handleJumpToLine}
-                onScroll={handlePreviewScroll}
-                onPageImgLoad={handlePageImgLoad}
-                revision={activeTab.compiledRevision}
-                paneRef={previewPaneRef}
-                pageRefs={pageRefs}
-              />
-            </div>
+            {showPreviewPane && (
+              <>
+                <div
+                  className="editor-sash"
+                  onPointerDown={startResize}
+                  role="separator"
+                  aria-orientation="vertical"
+                />
+                <div
+                  className="pane pane-preview"
+                  style={previewVisible ? { width: previewWidth, flex: "0 0 " + previewWidth + "px" } : undefined}
+                  ref={(el) => {
+                    // NOTE: this is the .pane-preview WRAPPER, not the scroll
+                    // container. Only the zoom listener attaches here; the scroll
+                    // ref is owned by PreviewPane's `paneRef` (→ .preview-pane) so
+                    // the two can't clobber each other.
+                    panePreviewWrapperRef.current = el;
+                    previewPaneZoomRef(el);
+                  }}
+                >
+                  {activeKind === "markdown" ? (
+                    <MarkdownPreview source={activeTab.content} />
+                  ) : (
+                    <PreviewPane
+                      svgPages={activeTab.svgPages}
+                      lineMap={activeTab.lineMap}
+                      activeLines={activePreviewLines}
+                      onRefresh={handleRefresh}
+                      onJumpToLine={handleJumpToLine}
+                      onScroll={handlePreviewScroll}
+                      onPageImgLoad={handlePageImgLoad}
+                      revision={activeTab.compiledRevision}
+                      paneRef={previewPaneRef}
+                      pageRefs={pageRefs}
+                    />
+                  )}
+                </div>
+              </>
+            )}
           </div>
         )}
       </main>
@@ -949,24 +994,31 @@ export function EditorArea() {
         main area and the panel. The sash is hidden when the panel is collapsed
         (CSS `.editor-area.diags-collapsed .diagnostics-sash`) so a collapsed
         panel can't be accidentally dragged open. Mirrors the editor|preview sash.
+
+        Diagnostics (Typst compile + tinymist LSP) are Typst-only; non-Typst
+        tabs never compile and have no LSP, so the panel + sash are omitted.
       */}
-      <div
-        className="diagnostics-sash"
-        onPointerDown={startDiagResize}
-        role="separator"
-        aria-orientation="horizontal"
-        aria-label={t("diagnostics.resizeLabel", { defaultValue: "Resize diagnostics panel" })}
-      />
-      <DiagnosticsPanel
-        tabId={activeTab?.id}
-        collapsed={diagsCollapsed}
-        bodyHeight={diagsHeight}
-        dragging={diagsDragging}
-        onToggle={() => setDiagsCollapsed((c) => !c)}
-        onGoto={(range) =>
-          editorApiRef.current?.revealLine(range.start_line, range.start_column)
-        }
-      />
+      {isTypst && (
+        <>
+          <div
+            className="diagnostics-sash"
+            onPointerDown={startDiagResize}
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label={t("diagnostics.resizeLabel", { defaultValue: "Resize diagnostics panel" })}
+          />
+          <DiagnosticsPanel
+            tabId={activeTab?.id}
+            collapsed={diagsCollapsed}
+            bodyHeight={diagsHeight}
+            dragging={diagsDragging}
+            onToggle={() => setDiagsCollapsed((c) => !c)}
+            onGoto={(range) =>
+              editorApiRef.current?.revealLine(range.start_line, range.start_column)
+            }
+          />
+        </>
+      )}
     </div>
   );
 }

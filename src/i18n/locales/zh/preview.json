@@ -4,5 +4,9 @@
   "refreshPreview": "刷新预览",
   "page": "第 {{number}} 页",
   "jumpToSourceMac": "⌘ 点击跳转到源码",
-  "jumpToSourceOther": "Ctrl+点击跳转到源码"
+  "jumpToSourceOther": "Ctrl+点击跳转到源码",
+  "loading": "加载中…",
+  "zoomIn": "放大",
+  "zoomOut": "缩小",
+  "actualSize": "实际大小"
 }

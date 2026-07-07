@@ -136,6 +136,7 @@ pub fn run() {
             ipc::fs_commands::delete_entry_permanent,
             ipc::fs_commands::copy_entry,
             ipc::fs_commands::open_file_by_path,
+            ipc::fs_commands::read_file_bytes,
             ipc::fs_commands::reveal_in_finder,
             // Git (Source Control view, Phase 4).
             ipc::git_commands::git_status,

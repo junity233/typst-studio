@@ -214,6 +214,135 @@ impl<'de> serde::Deserialize<'de> for ConflictState {
     }
 }
 
+/// What kind of content an open document holds. Drives everything that should
+/// differ between Typst source and other openable files (PDF / image previews,
+/// plain-text/markdown editing, whether to compile, whether to attach the LSP).
+///
+/// Defaults to [`Typst`](Self::Typst) so existing constructors and any path
+/// that doesn't explicitly classify produce the historical behavior — the
+/// whole app remains a Typst editor unless a recognized non-`.typ` extension
+/// opts a document into another kind.
+///
+/// ## Wire format — bare lowercase string tag
+///
+/// On the wire this serializes as a **bare lowercase string** —
+/// `"typst" / "text" / "markdown" / "image" / "pdf"` — so the frontend treats
+/// `DocumentKind` as a simple string-literal union. The serialization is
+/// hand-written (custom `Serialize`/`Deserialize` impls below) rather than
+/// `#[serde(rename_all = "lowercase")]` because ts-rs's `type = ...` override
+/// (which keeps the generated TS as a literal union) is incompatible with
+/// serde's `rename_all` in the same attribute block. This mirrors how
+/// [`ConflictState`] achieves its bare-string-tag wire form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(
+        type = "\"typst\" | \"text\" | \"markdown\" | \"image\" | \"pdf\"",
+        export_to = "../../src/lib/types.ts"
+    )
+)]
+pub enum DocumentKind {
+    /// Typst source. Compiled on every edit; tinymist LSP attaches; the SVG
+    /// preview pane renders. The historical and default behavior.
+    #[default]
+    Typst,
+    /// Editable plain text that is NOT Typst (txt/json/csv/log/ts/py/...).
+    /// Opened in Monaco with per-extension syntax highlighting when Monaco
+    /// knows the language, `plaintext` otherwise. No compile, no LSP.
+    Text,
+    /// Markdown source. Edited in Monaco (language = `markdown`) and shown
+    /// beside a rendered-markdown preview. No Typst compile, no LSP.
+    Markdown,
+    /// A raster/vector image (png/jpg/jpeg/gif/svg/webp/bmp). Preview-only.
+    /// Bytes are read on demand by the frontend via the `read_file_bytes`
+    /// command — the backend never holds the bytes.
+    Image,
+    /// A PDF document. Preview-only, rendered in-app by pdf.js. Like `Image`,
+    /// bytes are read on demand by the frontend.
+    Pdf,
+}
+
+impl DocumentKind {
+    /// The bare lowercase string tag this variant serializes to on the wire
+    /// (single source of truth for the custom `Serialize`/`Deserialize` impls).
+    pub fn tag(self) -> &'static str {
+        match self {
+            DocumentKind::Typst => "typst",
+            DocumentKind::Text => "text",
+            DocumentKind::Markdown => "markdown",
+            DocumentKind::Image => "image",
+            DocumentKind::Pdf => "pdf",
+        }
+    }
+
+    /// Parse a wire tag into the variant. `None` for an unknown tag.
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        Some(match tag {
+            "typst" => DocumentKind::Typst,
+            "text" => DocumentKind::Text,
+            "markdown" => DocumentKind::Markdown,
+            "image" => DocumentKind::Image,
+            "pdf" => DocumentKind::Pdf,
+            _ => return None,
+        })
+    }
+
+    /// `true` for the preview-only kinds ([`Image`](Self::Image) /
+    /// [`Pdf`](Self::Pdf)). Such documents are not editable, never dirty, and
+    /// never compiled.
+    pub fn is_binary_preview(self) -> bool {
+        matches!(self, DocumentKind::Image | DocumentKind::Pdf)
+    }
+
+    /// `true` only for the historical Typst behavior. Used to gate compile /
+    /// LSP / VFS / worker creation so non-Typst documents skip that pipeline.
+    pub fn is_typst(self) -> bool {
+        matches!(self, DocumentKind::Typst)
+    }
+
+    /// `true` for the Monaco-editable text kinds ([`Text`](Self::Text) /
+    /// [`Markdown`](Self::Markdown)) plus Typst. Used to decide whether the
+    /// backend should keep a text buffer + accept `update_text`.
+    pub fn is_textual(self) -> bool {
+        matches!(
+            self,
+            DocumentKind::Typst | DocumentKind::Text | DocumentKind::Markdown
+        )
+    }
+}
+
+impl serde::Serialize for DocumentKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.tag())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for DocumentKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct DocumentKindVisitor;
+        impl<'de> serde::de::Visitor<'de> for DocumentKindVisitor {
+            type Value = DocumentKind;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a document-kind string tag")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                DocumentKind::from_tag(v)
+                    .ok_or_else(|| E::custom(format!("unknown document kind `{v}`")))
+            }
+        }
+        deserializer.deserialize_str(DocumentKindVisitor)
+    }
+}
+
 /// How a document is anchored on disk (§4.2).
 ///
 /// Drives relative-resource resolution (`#include`, `#image()`), file
@@ -313,6 +442,12 @@ pub struct DocumentMeta {
     /// change that could not be auto-applied (dirty buffer / deleted file).
     #[serde(default)]
     pub conflict: ConflictState,
+    /// What kind of content this document holds (Typst source, plain/markdown
+    /// text, image, pdf). Defaults to [`DocumentKind::Typst`] so legacy
+    /// payloads / constructors stay Typst. The open path classifies by file
+    /// extension; non-Typst kinds skip compile / LSP / VFS seeding.
+    #[serde(default)]
+    pub kind: DocumentKind,
     /// Whether this document is soft-closed (hidden from the tab strip but kept
     /// alive in the background for instant reactivation). Defaults to `false`.
     /// Soft-close preserves the worker, EditorWorld, cached compile result, and
@@ -342,6 +477,7 @@ impl DocumentMeta {
             origin: DocumentOrigin::Untitled,
             revision: 0,
             conflict: ConflictState::None,
+            kind: DocumentKind::Typst,
             hidden: false,
         }
     }
@@ -358,6 +494,7 @@ impl DocumentMeta {
             origin: DocumentOrigin::WorkspaceFile { path, workspace_id },
             revision: 0,
             conflict: ConflictState::None,
+            kind: DocumentKind::Typst,
             hidden: false,
         }
     }
@@ -374,8 +511,19 @@ impl DocumentMeta {
             origin: DocumentOrigin::LooseFile { path, root },
             revision: 0,
             conflict: ConflictState::None,
+            kind: DocumentKind::Typst,
             hidden: false,
         }
+    }
+
+    /// Builder-style: override the content kind. Used by the open path after
+    /// classifying the file by extension (e.g. a `.pdf` becomes
+    /// [`DocumentKind::Pdf`]). Returns a new meta; the default constructors
+    /// always set [`DocumentKind::Typst`], so this is the single mutation
+    /// point for non-Typst kinds.
+    pub fn with_kind(mut self, kind: DocumentKind) -> Self {
+        self.kind = kind;
+        self
     }
 
     /// **Deprecated for Save As.** Create a document from a filesystem path,
@@ -404,6 +552,7 @@ impl DocumentMeta {
             origin: DocumentOrigin::LooseFile { path, root },
             revision: 0,
             conflict: ConflictState::None,
+            kind: DocumentKind::Typst,
             hidden: false,
         }
     }
@@ -412,6 +561,86 @@ impl DocumentMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `DocumentKind` serializes as a bare lowercase string tag (mirroring
+    /// `ConflictState`'s wire contract), so the frontend keeps a simple
+    /// string-literal union.
+    #[test]
+    fn document_kind_serializes_as_bare_string_tag() {
+        assert_eq!(
+            serde_json::to_value(DocumentKind::Typst).unwrap(),
+            serde_json::Value::String("typst".into())
+        );
+        assert_eq!(
+            serde_json::to_value(DocumentKind::Text).unwrap(),
+            serde_json::Value::String("text".into())
+        );
+        assert_eq!(
+            serde_json::to_value(DocumentKind::Markdown).unwrap(),
+            serde_json::Value::String("markdown".into())
+        );
+        assert_eq!(
+            serde_json::to_value(DocumentKind::Image).unwrap(),
+            serde_json::Value::String("image".into())
+        );
+        assert_eq!(
+            serde_json::to_value(DocumentKind::Pdf).unwrap(),
+            serde_json::Value::String("pdf".into())
+        );
+    }
+
+    #[test]
+    fn document_kind_round_trips_through_the_string_tag() {
+        for original in [
+            DocumentKind::Typst,
+            DocumentKind::Text,
+            DocumentKind::Markdown,
+            DocumentKind::Image,
+            DocumentKind::Pdf,
+        ] {
+            let json = serde_json::to_string(&original).unwrap();
+            let back: DocumentKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, original, "round-trip via {json:?}");
+        }
+        // Unknown tag → error (not a silent default).
+        assert!(serde_json::from_str::<DocumentKind>("\"bogus\"").is_err());
+    }
+
+    #[test]
+    fn document_kind_tag_helpers_are_inverses() {
+        for tag in ["typst", "text", "markdown", "image", "pdf"] {
+            let parsed = DocumentKind::from_tag(tag).expect("known tag parses");
+            assert_eq!(parsed.tag(), tag);
+        }
+        assert!(DocumentKind::from_tag("nope").is_none());
+    }
+
+    #[test]
+    fn document_kind_classification_predicates() {
+        assert!(DocumentKind::Typst.is_typst());
+        assert!(DocumentKind::Typst.is_textual());
+        assert!(!DocumentKind::Typst.is_binary_preview());
+
+        assert!(!DocumentKind::Text.is_typst());
+        assert!(DocumentKind::Text.is_textual());
+        assert!(!DocumentKind::Text.is_binary_preview());
+
+        assert!(DocumentKind::Markdown.is_textual());
+        assert!(!DocumentKind::Markdown.is_typst());
+
+        assert!(DocumentKind::Image.is_binary_preview());
+        assert!(!DocumentKind::Image.is_textual());
+        assert!(DocumentKind::Pdf.is_binary_preview());
+        assert!(!DocumentKind::Pdf.is_textual());
+    }
+
+    /// `DocumentKind::default()` is `Typst` and `#[serde(default)]` on
+    /// `DocumentMeta.kind` means a legacy payload (no `kind` field) loads as
+    /// Typst — keeping the historical behavior for old session/recovery blobs.
+    #[test]
+    fn document_kind_defaults_to_typst() {
+        assert_eq!(DocumentKind::default(), DocumentKind::Typst);
+    }
 
     #[test]
     #[cfg(feature = "export-types")]
@@ -428,6 +657,8 @@ mod tests {
         // like DocumentOrigin, an un-exported referenced type would leave an
         // undefined name in types.ts.
         ConflictState::export(&cfg).unwrap();
+        // DocumentKind must be exported because DocumentMeta references it.
+        DocumentKind::export(&cfg).unwrap();
         DocumentMeta::export(&cfg).unwrap();
     }
 

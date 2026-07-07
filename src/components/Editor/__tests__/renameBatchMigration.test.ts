@@ -76,6 +76,8 @@ function openedDoc(over: Partial<OpenedDocument> = {}): OpenedDocument {
     origin: { kind: "untitled" },
     revision: 0,
     conflict: "none",
+    kind: "typst",
+    hidden: false,
     ...over,
   };
 }

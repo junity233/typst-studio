@@ -17,6 +17,7 @@ import {
 import { monacoModelRegistry } from "./monacoModelRegistry";
 import { installLspDiagnosticsBridge } from "./lspDiagnosticsBridge";
 import { computeModelSyncPlan } from "./editorModelSync";
+import { languageIdForDocument } from "./languageId";
 import {
   detectOriginTransition,
   migrateModelForSaveAs,
@@ -808,6 +809,7 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         content: doc.content,
         origin: doc.origin,
         revision: doc.revision,
+        languageId: languageIdForDocument(doc),
       });
       seenIdsRef.current.add(tab.id);
     }

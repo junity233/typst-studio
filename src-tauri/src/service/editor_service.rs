@@ -175,6 +175,21 @@ impl EditorService {
         self.document.open_from_disk(path, content, workspace)
     }
 
+    /// Delegates to [`DocumentService::open_non_typst_from_disk`]: open a
+    /// non-Typst file (image / pdf / plain-text / markdown) as a tab without
+    /// the Typst compile pipeline. See the document-service method for the
+    /// semantics of `kind` and `content`.
+    pub fn open_non_typst_from_disk(
+        &self,
+        path: PathBuf,
+        kind: crate::domain::document::DocumentKind,
+        content: String,
+        workspace: Option<&WorkspaceService>,
+    ) -> Result<DocumentMeta> {
+        self.document
+            .open_non_typst_from_disk(path, kind, content, workspace)
+    }
+
     /// Delegates to [`DocumentService::mark_saved`].
     pub fn mark_saved(&self, id: DocumentId, saved_revision: u64) {
         self.document.mark_saved(id, saved_revision);
@@ -292,7 +307,6 @@ impl EditorService {
         self.compile.get_diagnostics(id)
     }
 
-    /// Delegates to [`CompileService::last_doc`] via
     /// Delegates to [`CompileService::last_doc`].
     pub fn last_doc(&self, id: DocumentId) -> Option<PagedDocument> {
         self.compile.last_doc(id)

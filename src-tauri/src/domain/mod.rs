@@ -6,6 +6,7 @@ pub mod compile_status;
 pub mod diagnostics;
 pub mod disk_version;
 pub mod document;
+pub mod file_kind;
 pub mod git_status;
 pub mod path;
 pub mod outline;

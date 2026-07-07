@@ -175,6 +175,8 @@ function createBrowserUntitled(content?: string): OpenedDocument {
     origin: { kind: "untitled" },
     revision: 0,
     conflict: "none",
+    // Browser-fallback untitled docs are Typst source (the default template).
+    kind: "typst",
     hidden: false,
   };
 }
@@ -574,6 +576,20 @@ export async function revealInFinder(rel: string): Promise<void> {
  */
 export async function openFileByPath(path: string): Promise<OpenedDocument> {
   return invoke<OpenedDocument>("open_file_by_path", { path });
+}
+
+/**
+ * Read a binary file's raw bytes for in-app preview (image / PDF viewer).
+ *
+ * The backend uses `std::fs::read` directly (scope-unlimited, like
+ * `openFileByPath`), because the frontend `@tauri-apps/plugin-fs` `readFile` is
+ * capability-scoped to `$HOME/**` and cannot read arbitrary workspace paths.
+ * The returned `number[]` (Tauri serializes `Vec<u8>` as a JSON number array)
+ * is wrapped into a `Uint8Array` by the caller.
+ */
+export async function readFileBytes(path: string): Promise<Uint8Array> {
+  const bytes = await invoke<number[]>("read_file_bytes", { path });
+  return Uint8Array.from(bytes);
 }
 
 // --- Packages & templates ---------------------------------------------------

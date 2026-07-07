@@ -522,7 +522,9 @@ function TreeRow({
 
   const handleDoubleClick = async () => {
     if (renaming || isDir) return;
-    if (!entry.name.endsWith(".typ")) return;
+    // Any file is openable: .typ (compiled + edited), .md/.txt/.json/... (edited
+    // as text), and .pdf/.png/... (previewed). The backend classifies by
+    // extension in `open_file_by_path`. Directories are handled above.
     if (rootPath === null) return;
     try {
       setLoading(true);
