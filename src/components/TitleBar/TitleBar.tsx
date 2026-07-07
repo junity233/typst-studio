@@ -32,6 +32,7 @@ const PRODUCT_NAME = "Typst Studio";
 
 export function TitleBar() {
   const { t } = useTranslation("menu");
+  const { t: tTitlebar } = useTranslation("titlebar");
   const [maximized, setMaximized] = useState(false);
   const openMenu = useContextMenuStore((s) => s.open);
   // Which top-level menu's dropdown is currently open, if any. `null` when no
@@ -148,7 +149,8 @@ export function TitleBar() {
         <button
           type="button"
           className="titlebar-ctrl"
-          aria-label="Minimize"
+          aria-label={tTitlebar("minimize")}
+          title={tTitlebar("minimize")}
           onClick={onMinimize}
         >
           <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
@@ -158,7 +160,8 @@ export function TitleBar() {
         <button
           type="button"
           className="titlebar-ctrl"
-          aria-label={maximized ? "Restore" : "Maximize"}
+          aria-label={tTitlebar(maximized ? "restore" : "maximize")}
+          title={tTitlebar(maximized ? "restore" : "maximize")}
           onClick={onToggleMaximize}
         >
           {maximized ? (
@@ -201,7 +204,8 @@ export function TitleBar() {
         <button
           type="button"
           className="titlebar-ctrl titlebar-ctrl-close"
-          aria-label="Close"
+          aria-label={tTitlebar("close")}
+          title={tTitlebar("close")}
           onClick={onClose}
         >
           <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">

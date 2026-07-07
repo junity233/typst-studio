@@ -16,5 +16,7 @@
   "toolRunning": "运行中",
   "toolDone": "完成",
   "toolError": "出错",
+  "expandResult": "展开完整结果",
+  "collapseResult": "收起结果",
   "enterToSend": "回车发送 · Shift+Enter 换行"
 }

@@ -4,5 +4,9 @@
   "tabTooltip": "{{title}}{{dirty, client}}",
   "dirtyTooltip": " • 未保存",
   "closeTab": "关闭 {{title}}",
-  "newTab": "新建标签页"
+  "newTab": "新建标签页",
+  "minimize": "最小化",
+  "maximize": "最大化",
+  "restore": "还原",
+  "close": "关闭"
 }

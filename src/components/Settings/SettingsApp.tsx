@@ -444,6 +444,7 @@ function PathsControl({ def }: { def: SettingDef }) {
               type="button"
               className="path-chip-remove"
               aria-label={t("removePath", { path: p })}
+              title={t("removePath", { path: p })}
               onClick={() => remove(idx)}
             >
               <X size={12} />

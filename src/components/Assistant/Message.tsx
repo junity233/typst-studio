@@ -87,6 +87,7 @@ export function MessageView({
 
 /** Collapsible tool result. Collapsed shows a one-line summary; expanded shows the full text. */
 function ToolResult({ text }: { text: string }) {
+  const { t } = useTranslation("assistant");
   const [expanded, setExpanded] = useState(false);
   const summary = text.split("\n")[0].slice(0, 80);
   const isMulti = text.length > 80 || text.includes("\n");
@@ -96,6 +97,7 @@ function ToolResult({ text }: { text: string }) {
       {isMulti ? (
         <button
           className="assistant-tool__result-toggle"
+          title={expanded ? t("collapseResult") : t("expandResult")}
           onClick={() => setExpanded((v) => !v)}
         >
           <ChevronRight

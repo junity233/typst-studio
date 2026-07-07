@@ -4,5 +4,9 @@
   "tabTooltip": "{{title}}{{dirty, client}}",
   "dirtyTooltip": " • unsaved",
   "closeTab": "Close {{title}}",
-  "newTab": "New tab"
+  "newTab": "New tab",
+  "minimize": "Minimize",
+  "maximize": "Maximize",
+  "restore": "Restore",
+  "close": "Close"
 }
