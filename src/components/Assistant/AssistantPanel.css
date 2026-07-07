@@ -390,6 +390,22 @@
   font-style: italic;
   user-select: none;
 }
+/* Live (streaming) thinking — open + pulsing accent to signal active thought. */
+.assistant-thinking--live {
+  border-left-color: var(--color-primary);
+}
+.assistant-thinking--live summary {
+  color: var(--color-primary);
+  opacity: 0.8;
+}
+.assistant-thinking--live summary::after {
+  content: " ·";
+  animation: assistant-pulse 1.2s ease-in-out infinite;
+}
+@keyframes assistant-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
 .assistant-thinking__body {
   margin-top: 4px;
   white-space: pre-wrap;

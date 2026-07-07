@@ -12,6 +12,7 @@ export function AssistantPanel(_: { viewId: string }) {
   const messages = useAssistantStore((s) => s.messages);
   const status = useAssistantStore((s) => s.status);
   const streamingText = useAssistantStore((s) => s.streamingText);
+  const streamingThinking = useAssistantStore((s) => s.streamingThinking);
   const errorMessage = useAssistantStore((s) => s.errorMessage);
   const sendMessage = useAssistantStore((s) => s.sendMessage);
   const stop = useAssistantStore((s) => s.stop);
@@ -29,7 +30,7 @@ export function AssistantPanel(_: { viewId: string }) {
     const el = scrollRef.current;
     if (!el) return;
     if (atBottomRef.current) el.scrollTop = el.scrollHeight;
-  }, [messages, streamingText, errorMessage]);
+  }, [messages, streamingText, streamingThinking, errorMessage]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -66,7 +67,7 @@ export function AssistantPanel(_: { viewId: string }) {
         ref={scrollRef}
         onScroll={onScroll}
       >
-        {messages.length === 0 && !streamingText && (
+        {messages.length === 0 && !streamingText && !streamingThinking && (
           <div className="assistant-empty">{t("emptyState")}</div>
         )}
         {messages.map((m) => (
@@ -77,9 +78,17 @@ export function AssistantPanel(_: { viewId: string }) {
             onReject={reject}
           />
         ))}
-        {streamingText && (
+        {(streamingThinking || streamingText) && (
           <div className="assistant-msg assistant-msg--assistant">
-            <div className="assistant-streaming">{streamingText}</div>
+            {streamingThinking && (
+              <details className="assistant-thinking assistant-thinking--live" open>
+                <summary>{t("thinking")}</summary>
+                <div className="assistant-thinking__body">{streamingThinking}</div>
+              </details>
+            )}
+            {streamingText && (
+              <div className="assistant-streaming">{streamingText}</div>
+            )}
           </div>
         )}
         {errorMessage && (
