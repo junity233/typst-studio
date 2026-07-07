@@ -1981,20 +1981,6 @@ button {
   background: var(--color-scrollbar-thumb-hover);
 }
 
-.monaco-scrollable-element > .scrollbar.vertical,
-.monaco-scrollable-element > .scrollbar.horizontal {
-  background: var(--color-scrollbar-track) !important;
-}
-
-.monaco-scrollable-element > .scrollbar > .slider {
-  background: var(--color-scrollbar-thumb) !important;
-  border-radius: var(--radius-pill);
-}
-
-.monaco-scrollable-element > .scrollbar > .slider:hover,
-.monaco-scrollable-element > .scrollbar > .slider.active {
-  background: var(--color-scrollbar-thumb-hover) !important;
-}
 .format-toolbar-button:active {
   transform: scale(0.95);
 }
