@@ -102,6 +102,18 @@ async function driveStream(
   const modelId = readSetting<string>("ai.model", "gpt-4o");
   const temperature = options?.temperature ?? readSetting<number>("ai.temperature", 0.3);
   const maxTokens = readSetting<number>("ai.maxTokens", 4096);
+  console.log(
+    "[ai][stream] driveStream start: provider=",
+    provider,
+    "model=",
+    modelId,
+    "baseUrl=",
+    JSON.stringify(baseUrl),
+    "msgs=",
+    context.messages.length,
+    "tools=",
+    context.tools?.length ?? 0,
+  );
 
   if (provider === "anthropic") {
     const client = new Anthropic({
@@ -187,6 +199,7 @@ async function driveOpenAIChat(
   const messages = convertMessagesForOpenAI(context);
   const tools = convertToolsForOpenAI(context.tools);
 
+  console.log("[ai][stream] OpenAI: calling chat.completions.create...");
   const completion = await client.chat.completions.create(
     {
       model: modelId,
@@ -197,6 +210,7 @@ async function driveOpenAIChat(
     },
     { signal },
   );
+  console.log("[ai][stream] OpenAI: create() returned, iterating chunks");
 
   // Map OpenAI's tool_call index → our contentIndex (text is always 0).
   const openaiToolIndexToContentIndex: Map<number, number> = new Map();

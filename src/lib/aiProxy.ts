@@ -49,6 +49,7 @@ export async function* streamAiProxy(
 
   const channel = new Channel<ProxyEvent>();
   channel.onmessage = (msg) => {
+    console.log("[ai][proxy] channel msg:", msg.event, msg.event === "chunk" ? "" : "");
     if (msg.event === "error") {
       failure = new Error(msg.message ?? "proxy error");
       done = true;

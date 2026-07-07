@@ -43,6 +43,15 @@ export function createTauriFetch(
       );
     }
 
+    console.log(
+      "[ai][fetch] request url=",
+      url,
+      "bodyLen=",
+      init.body.length,
+      "scheme=",
+      authScheme,
+    );
+
     const proxy = streamAiProxy({
       url,
       body: init.body,
@@ -52,6 +61,7 @@ export function createTauriFetch(
 
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
+    let chunkCount = 0;
 
     // Drive the proxy in the background; the SDK reads `readable` via
     // `response.body.getReader()`. We don't await this — returning the
@@ -60,16 +70,24 @@ export function createTauriFetch(
       try {
         for await (const ev of proxy) {
           if (ev.event === "chunk" && ev.data) {
+            chunkCount++;
+            if (chunkCount === 1 || chunkCount % 20 === 0) {
+              console.log("[ai][fetch] chunk #", chunkCount, "bytes=", ev.data.length);
+            }
             // `ev.data` is a regular number array (serde serializes Vec<u8>
             // that way); convert to a Uint8Array for the stream.
             await writer.write(new Uint8Array(ev.data));
-          } else if (ev.event === "done") {
-            await writer.close();
-            return;
           }
-          // error events throw inside streamAiProxy and are caught below.
+          // `done` events are consumed by streamAiProxy's generator (it
+          // returns on done, so we never see one here). Error events throw
+          // inside streamAiProxy and land in the catch below.
         }
+        // Generator exhausted normally (Rust sent Done and the iterator
+        // returned). Close the writer so the SDK's reader sees end-of-stream.
+        console.log("[ai][fetch] stream ended; total chunks=", chunkCount, "— closing writer");
+        await writer.close();
       } catch (e) {
+        console.error("[ai][fetch] proxy stream errored:", e);
         await writer.abort(e);
       }
     })();

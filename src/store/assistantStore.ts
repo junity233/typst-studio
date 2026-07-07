@@ -100,8 +100,10 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
 
   sendMessage: async (text) => {
     if (get().status === "streaming" || get().status === "awaiting-approval") {
+      console.warn("[ai] sendMessage ignored — already busy");
       return;
     }
+    console.log("[ai] sendMessage start:", JSON.stringify(text));
     set((s) => ({
       messages: [...s.messages, { id: uid(), role: "user", text }],
       status: "streaming",
@@ -118,6 +120,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
 
     const requestApproval = (p: PendingApproval): Promise<string> =>
       new Promise<string>((resolve) => {
+        console.log("[ai][approval] requestApproval invoked, awaiting user:", p.kind, p.path);
         set((s) => ({
           status: "awaiting-approval",
           pendingApproval: p,
@@ -137,6 +140,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         localGate = {
           approval: p,
           resolve: (verdict) => {
+            console.log("[ai][approval] gate resolved with:", verdict);
             // Mark the card's verdict and clear the gate.
             const cardVerdict: "applied" | "rejected" =
               verdict === "approved" ? "applied" : "rejected";
@@ -181,11 +185,14 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     currentAgent = agent;
 
     agent.subscribe((event) => handleAgentEvent(event, set, get));
+    console.log("[ai] agent constructed + subscribed, calling prompt()");
 
     try {
       await agent.prompt(text);
+      console.log("[ai] agent.prompt() resolved (run complete)");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      console.error("[ai] agent.prompt() rejected:", msg);
       set((s) => ({
         status: "error",
         errorMessage: msg,
@@ -317,6 +324,14 @@ function handleAgentEvent(
   set: SetFn,
   get: () => AssistantState,
 ): void {
+  // Trace every lifecycle event so a hang can be localized to the last event
+  // that fired before the agent stopped making progress.
+  console.log(
+    "[ai][event]",
+    event.type,
+    "toolName" in event ? event.toolName : "",
+    "toolCallId" in event ? event.toolCallId : "",
+  );
   switch (event.type) {
     case "message_update": {
       const ev = event.assistantMessageEvent;
@@ -326,6 +341,7 @@ function handleAgentEvent(
       break;
     }
     case "tool_execution_start": {
+      console.log("[ai][event] tool_execution_start args:", JSON.stringify((event as { args?: unknown }).args));
       set((s) => ({
         messages: [
           ...s.messages,
@@ -341,6 +357,12 @@ function handleAgentEvent(
       break;
     }
     case "tool_execution_end": {
+      console.log(
+        "[ai][event] tool_execution_end isError=",
+        event.isError,
+        "result=",
+        JSON.stringify(event.result).slice(0, 200),
+      );
       set((s) => ({
         messages: s.messages.map((m) =>
           m.toolCallId === event.toolCallId && !m.approval
