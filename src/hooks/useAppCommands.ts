@@ -29,6 +29,30 @@ import { ensureActivated as ensureWorkbenchActivated } from "../extensions/workb
 const hostApi = createHostApi("workbench.dispatch");
 
 /**
+ * Whether a key event's target is a real editable control — an `<input>`,
+ * `<textarea>`, `<select>`, or any `[contenteditable]` element. When the user
+ * is typing in such a control (the Search panel input, the Assistant textarea,
+ * a contenteditable cell, …) it should own the keystrokes, so the app-global
+ * shortcuts below (save / find / format) must yield and NOT be intercepted.
+ * Defensive about non-Element targets: the listener is on `document`, so the
+ * target can be the `Document` itself or `null`.
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  ) {
+    return true;
+  }
+  // `isContentEditable` is defined on HTMLElement (not Element), so narrow
+  // further before reading it. SVGElement extends Element but not HTMLElement,
+  // and isn't relevant here anyway.
+  return target instanceof HTMLElement && target.isContentEditable === true;
+}
+
+/**
  * Centralized command dispatch for the native app menu. Subscribes to the
  * `menu_event` channel (emitted by the Rust menu handler) and routes each id to
  * the right store/service action. Mounted once at the app root.
@@ -54,6 +78,11 @@ export function useAppCommands(): void {
     // listener sits ahead of the editor, intercepts the save shortcut directly,
     // and dispatches our save — making Cmd+S reliable regardless of focus.
     const onKeyDown = (e: KeyboardEvent) => {
+      // A focused editable control (input, textarea, select, [contenteditable])
+      // owns the keystrokes — let it handle them, and skip every app-global
+      // shortcut below so typing in the Search panel or Assistant textarea does
+      // not trigger save / find / format.
+      if (isEditableTarget(e.target)) return;
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === "s" && !e.shiftKey) {
         e.preventDefault();
