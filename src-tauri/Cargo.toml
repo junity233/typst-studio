@@ -67,6 +67,12 @@ typst-kit = { version = "0.15", features = ["embedded-fonts", "scan-fonts", "sys
 # pulls in no new code (dedupes to the same 0.10.x), it only makes the
 # `hayagriva` API nameable from our code. Pinned to 0.10 to match Cargo.lock.
 hayagriva = "0.10"
+# `biblatex` is a transitive dep of `hayagriva` (via its default `biblatex`
+# feature). Declaring it directly makes the `biblatex::Bibliography` /
+# `biblatex::Entry` API nameable so the save path can round-trip `.bib` files
+# with full fidelity (preserving journal/volume/pages/... that hayagriva's
+# lossy `Entry` projection would drop). Dedupes to the same 0.12.x — no new code.
+biblatex = "0.12"
 toml = "0.8"
 base64 = "0.21"
 comemo = "0.4"

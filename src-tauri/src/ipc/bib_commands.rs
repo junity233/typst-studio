@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::async_runtime;
 
-use crate::domain::bib_entry::{self, BibEntry, BibFormat};
+use crate::domain::bib_entry::{self, BibEntry, BibEntryEditable, BibFormat};
 use crate::error::{AppError, Result};
 
 /// Metadata about a discovered bibliography file. The path is absolute
@@ -75,6 +75,50 @@ pub async fn bibliography_discover(root_path: Option<String>) -> Result<Vec<BibF
         .await
         .map_err(|e| AppError::Other(format!("bibliography_discover join: {e}")))??;
     Ok(files)
+}
+
+/// Parse a bibliography file at `path` into the full-field [`BibEntryEditable`]
+/// form used by the edit modal. Unlike [`bibliography_parse`] (the 5-field
+/// panel-list projection), this surfaces every set field so the edit form can
+/// render and round-trip journal/volume/pages/url/publisher/… generically via
+/// the `extra` list.
+///
+/// Mirrors `bibliography_parse`: stateless, format sniffed from the extension
+/// (with a content fallback), file read off the async worker via
+/// `spawn_blocking` so a slow disk never stalls the runtime.
+#[tauri::command]
+pub async fn bibliography_parse_full(path: String) -> Result<Vec<BibEntryEditable>> {
+    let p = PathBuf::from(&path);
+    let content = async_runtime::spawn_blocking(move || std::fs::read_to_string(&p))
+        .await
+        .map_err(|e| AppError::Other(format!("bibliography_parse_full join: {e}")))?
+        .map_err(|e| AppError::Io(e))?;
+
+    let format = sniff_for_path(&path, &content);
+    bib_entry::parse_bibliography_editable(&content, format)
+        .map_err(|e| AppError::Other(format!("{e}")))
+}
+
+/// Save a bibliography file: `content` is the full, already-serialized file
+/// text (produced by the frontend from the edited `BibEntryEditable` list via
+/// [`bib_entry::serialize_bibliography`], or a hand-edited buffer). Written
+/// atomically via [`crate::persistence::atomic::write_bytes`] so a crash mid-write
+/// never leaves a half-written file — the original is untouched on any failure.
+///
+/// The serialization (re-parse original → apply edits → re-serialize) is
+/// expected to happen on the frontend side OR a future `bibliography_serialize`
+/// command; this command is the dumb, durable write primitive. It is format-
+/// agnostic: it writes the bytes verbatim regardless of `.bib`/`.yml`.
+#[tauri::command]
+pub async fn bibliography_save(path: String, content: String) -> Result<()> {
+    let p = PathBuf::from(&path);
+    // Atomic write is blocking std::fs; run it off the async worker.
+    async_runtime::spawn_blocking(move || {
+        crate::persistence::atomic::write_bytes(&p, content.as_bytes())
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("bibliography_save join: {e}")))?
+    .map_err(|e| AppError::Other(format!("{e}")))
 }
 
 /// Synchronous discovery: walk `root`, collect `.bib`/`.yml`/`.yaml` files,

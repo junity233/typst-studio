@@ -34,6 +34,52 @@ authors: Array<string>,
 year: number | null, };
 
 /**
+ * A bibliography entry with ALL editable fields, for the edit modal.
+ *
+ * Unlike the lossy 5-field [`BibEntry`] projection (which exists only for the
+ * panel list), this carries every set field so the edit form can surface and
+ * round-trip them. `extra` holds every field beyond the 5 core ones
+ * (journal, volume, pages, url, publisher, ...) as `(field_name, value)`
+ * pairs, so the edit form can render them generically without a fixed schema.
+ *
+ * The save path ([`serialize_bibliography`]) re-parses the ORIGINAL file text
+ * and applies these entries on top, preserving untouched fields and entries —
+ * serializing `BibEntryEditable` directly would NOT be enough because `extra`
+ * is a flat string list and would lose typed structure (e.g. a `Date` with a
+ * month). See that function's docs for the fidelity strategy.
+ */
+export type BibEntryEditable = { 
+/**
+ * The citation key — what goes inside `#cite(<key>)`.
+ */
+key: string, 
+/**
+ * The entry type as a kebab-case string (e.g. "article", "book"), matching
+ * the [`BibEntry::entry_type`] format.
+ */
+entryType: string, 
+/**
+ * The full formatted title, if present.
+ */
+title: string | null, 
+/**
+ * Author display names ("Given Family"), in order. Empty when absent.
+ */
+authors: Array<string>, 
+/**
+ * The 4-digit publication year, if a date is present.
+ */
+year: number | null, 
+/**
+ * Remaining fields as `(name, value)` pairs. Names are lowercase BibLaTeX
+ * field names (journal, volume, pages, url, publisher, ...). Values are the
+ * display strings (the `Display` impl of the underlying hayagriva type).
+ * The 5 core fields (title/authors/date/key/type) are NEVER present here —
+ * they live in the dedicated fields above.
+ */
+extra: Array<[string, string]>, };
+
+/**
  * Metadata about a discovered bibliography file. The path is absolute
  * (workspace-rooted). `entryCount` is a fast, approximate count used to show
  * the user how many references each file holds without parsing the full

@@ -199,6 +199,9 @@ pub fn run() {
             // Bibliography panel (native hayagriva parse + workspace discovery).
             ipc::bib_commands::bibliography_parse,
             ipc::bib_commands::bibliography_discover,
+            // Bibliography edit modal: full-field parse + atomic save.
+            ipc::bib_commands::bibliography_parse_full,
+            ipc::bib_commands::bibliography_save,
             // AI Assistant proxy (streaming LLM calls; key injected in Rust).
             ipc::ai_commands::ai_proxy_stream,
         ])

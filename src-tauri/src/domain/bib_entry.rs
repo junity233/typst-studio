@@ -59,7 +59,52 @@ pub struct BibEntry {
     pub year: Option<i32>,
 }
 
-/// Errors raised by [`parse_bibliography`]. The IPC layer maps these into
+/// A bibliography entry with ALL editable fields, for the edit modal.
+///
+/// Unlike the lossy 5-field [`BibEntry`] projection (which exists only for the
+/// panel list), this carries every set field so the edit form can surface and
+/// round-trip them. `extra` holds every field beyond the 5 core ones
+/// (journal, volume, pages, url, publisher, ...) as `(field_name, value)`
+/// pairs, so the edit form can render them generically without a fixed schema.
+///
+/// The save path ([`serialize_bibliography`]) re-parses the ORIGINAL file text
+/// and applies these entries on top, preserving untouched fields and entries —
+/// serializing `BibEntryEditable` directly would NOT be enough because `extra`
+/// is a flat string list and would lose typed structure (e.g. a `Date` with a
+/// month). See that function's docs for the fidelity strategy.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct BibEntryEditable {
+    /// The citation key — what goes inside `#cite(<key>)`.
+    pub key: String,
+    /// The entry type as a kebab-case string (e.g. "article", "book"), matching
+    /// the [`BibEntry::entry_type`] format.
+    pub entry_type: String,
+    /// The full formatted title, if present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Author display names ("Given Family"), in order. Empty when absent.
+    #[serde(default)]
+    pub authors: Vec<String>,
+    /// The 4-digit publication year, if a date is present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year: Option<i32>,
+    /// Remaining fields as `(name, value)` pairs. Names are lowercase BibLaTeX
+    /// field names (journal, volume, pages, url, publisher, ...). Values are the
+    /// display strings (the `Display` impl of the underlying hayagriva type).
+    /// The 5 core fields (title/authors/date/key/type) are NEVER present here —
+    /// they live in the dedicated fields above.
+    #[serde(default)]
+    pub extra: Vec<(String, String)>,
+}
+
+/// Errors raised by [`parse_bibliography`] / [`parse_bibliography_editable`] /
+/// [`serialize_bibliography`]. The IPC layer maps these into
 /// [`AppError`](crate::error::AppError).
 #[derive(Debug, Error)]
 pub enum BibParseError {
@@ -78,6 +123,12 @@ pub enum BibParseError {
     /// branch total rather than `unwrap`-ing.
     #[error("internal: entry-type serialization failed: {0}")]
     Json(String),
+
+    /// Serializing back to Hayagriva YAML failed (`to_yaml_str` is serde_yaml
+    /// based and can fail on non-string map keys, though our entries are always
+    /// string-keyed — included for totality).
+    #[error("failed to serialize Hayagriva YAML: {0}")]
+    YamlSerialize(String),
 }
 
 /// Parse bibliography `content` (already-read file text) into [`BibEntry`]s.
@@ -128,6 +179,499 @@ fn entry_to_bib(entry: &hayagriva::Entry) -> Result<BibEntry, BibParseError> {
         authors,
         year,
     })
+}
+
+/// Parse bibliography `content` into the full-field [`BibEntryEditable`] form
+/// used by the edit modal. Both formats parse into a `hayagriva::Library`
+/// (BibLaTeX via `from_biblatex_str`, YAML via `from_yaml_str`), then each
+/// `Entry` is projected into the 5 core fields (reusing [`entry_to_bib`]'s
+/// extraction logic) PLUS every other set field into `extra`.
+///
+/// `extra` enumeration: hayagriva's `Entry` has no "list all set fields" API,
+/// so each known field is probed via its typed getter and, when `Some`,
+/// `(field_name, display_string)` is pushed. Field names mirror the BibLaTeX
+/// convention (journal→"journal" via the parent, volume→"volume", url→"url",
+/// …) so the edit form labels match what users see in `.bib` files. Only the
+/// 5 core fields (title/authors/date/key/type) are excluded — they already live
+/// in the dedicated fields.
+pub fn parse_bibliography_editable(
+    content: &str,
+    format: BibFormat,
+) -> Result<Vec<BibEntryEditable>, BibParseError> {
+    let library = match format {
+        BibFormat::BibLatex => hayagriva::io::from_biblatex_str(content).map_err(|errs| {
+            BibParseError::BibLatex(
+                errs.into_iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        })?,
+        BibFormat::HayagrivaYaml => {
+            hayagriva::io::from_yaml_str(content).map_err(|e| BibParseError::Yaml(e.to_string()))?
+        }
+    };
+
+    Ok(library.iter().map(entry_to_editable).collect())
+}
+
+/// Convert a single `hayagriva::Entry` into a [`BibEntryEditable`], extracting
+/// the 5 core fields (same logic as [`entry_to_bib`]) plus every other set
+/// field into `extra`.
+fn entry_to_editable(entry: &hayagriva::Entry) -> BibEntryEditable {
+    // Core fields — identical extraction to `entry_to_bib` (kept in sync so the
+    // panel list and the edit modal agree on key/type/title/authors/year).
+    let entry_type = serde_json::to_value(entry.entry_type())
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "misc".to_string());
+
+    let title = entry.title().map(|t| t.to_string());
+
+    let authors = entry
+        .authors()
+        .map(|persons| persons.iter().map(|p| p.given_first(false)).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    let year = entry.date_any().map(|d| d.year);
+
+    // Extra fields. Each getter returns `Option<&T>`; when `Some` we stringify
+    // via the type's `Display` impl. The probe list covers the fields a user is
+    // likely to edit in a reference (journal comes from the parent `Periodical`
+    // title for `Article` entries — surfaced via `map_parents` so the edit form
+    // shows the journal name the user expects).
+    let mut extra: Vec<(String, String)> = Vec::new();
+
+    // Journal: for an Article, the parent Periodical/Proceedings holds the
+    // journal title. Walk parents looking for a title.
+    if let Some(journal) = entry.map_parents(|e| e.title().map(|t| t.to_string())) {
+        extra.push(("journal".to_string(), journal));
+    }
+
+    if let Some(p) = entry.publisher() {
+        // `Publisher` has no `Display` impl; surface its name (the part a user
+        // edits). Location is a separate `location` field below.
+        if let Some(name) = p.name() {
+            let s = name.to_string();
+            if !s.is_empty() {
+                extra.push(("publisher".to_string(), s));
+            }
+        }
+    }
+    if let Some(l) = entry.location() {
+        let s = l.to_string();
+        if !s.is_empty() {
+            extra.push(("location".to_string(), s));
+        }
+    }
+    if let Some(o) = entry.organization() {
+        let s = o.to_string();
+        if !s.is_empty() {
+            extra.push(("organization".to_string(), s));
+        }
+    }
+    // Volume/issue/edition may live on the parent (e.g. a journal's volume).
+    // `map` checks self then parents (BFS), matching how hayagriva resolves
+    // inherited fields for citation formatting.
+    if let Some(v) = entry.map(|e| e.volume().map(|v| v.to_string())) {
+        extra.push(("volume".to_string(), v));
+    }
+    if let Some(i) = entry.map(|e| e.issue().map(|i| i.to_string())) {
+        extra.push(("issue".to_string(), i));
+    }
+    if let Some(e) = entry.map(|e| e.edition().map(|e| e.to_string())) {
+        extra.push(("edition".to_string(), e));
+    }
+    if let Some(pr) = entry.map(|e| e.page_range().map(|pr| pr.to_string())) {
+        extra.push(("pages".to_string(), pr));
+    }
+    if let Some(u) = entry.url_any() {
+        extra.push(("url".to_string(), u.to_string()));
+    }
+    if let Some(doi) = entry.doi() {
+        extra.push(("doi".to_string(), doi.to_string()));
+    }
+    if let Some(isbn) = entry.isbn() {
+        extra.push(("isbn".to_string(), isbn.to_string()));
+    }
+    if let Some(issn) = entry.issn() {
+        extra.push(("issn".to_string(), issn.to_string()));
+    }
+    if let Some(lang) = entry.language() {
+        extra.push(("language".to_string(), lang.to_string()));
+    }
+    if let Some(n) = entry.note() {
+        let s = n.to_string();
+        if !s.is_empty() {
+            extra.push(("note".to_string(), s));
+        }
+    }
+    if let Some(a) = entry.abstract_() {
+        let s = a.to_string();
+        if !s.is_empty() {
+            extra.push(("abstract".to_string(), s));
+        }
+    }
+    if let Some(g) = entry.genre() {
+        let s = g.to_string();
+        if !s.is_empty() {
+            extra.push(("genre".to_string(), s));
+        }
+    }
+
+    BibEntryEditable {
+        key: entry.key().to_string(),
+        entry_type,
+        title,
+        authors,
+        year,
+        extra,
+    }
+}
+
+/// Serialize edited entries back to bibliography source text, preserving
+/// untouched entries and untouched fields.
+///
+/// **Fidelity strategy (critical):** `BibEntryEditable` is a flat projection —
+/// serializing it directly would destroy typed structure (a `Date` with a month,
+/// a `PageRanges` set, a parent `Periodical`, …). So this function instead
+/// RE-PARSES the `original` file text into the rich structure, then applies the
+/// user's edits to the targeted entries only, and re-serializes the WHOLE
+/// structure. Untouched entries and untouched fields on edited entries survive
+/// verbatim.
+///
+/// Per format:
+/// - **BibLaTeX** (`.bib`): uses `biblatex::Bibliography` directly (NOT
+///   hayagriva) because biblatex preserves `.bib` field fidelity far better
+///   than hayagriva's lossy `Entry`. Edited core fields are applied via the
+///   typed setters; `extra` fields via `Entry::set`. New entries are
+///   `Entry::new`-constructed; deleted entries are `bib.remove`-d.
+/// - **Hayagriva YAML** (`.yml`): re-parses into a `hayagriva::Library`, and
+///   for each edited entry clones the matching original `Entry` then applies
+///   only the changed core fields via setters (preserving all other typed
+///   fields). New entries are built fresh; deleted entries are `library.remove`-d.
+pub fn serialize_bibliography(
+    original: &str,
+    format: BibFormat,
+    entries: &[BibEntryEditable],
+) -> Result<String, BibParseError> {
+    match format {
+        BibFormat::BibLatex => serialize_biblatex(original, entries),
+        BibFormat::HayagrivaYaml => serialize_yaml(original, entries),
+    }
+}
+
+/// Serialize `.bib` via `biblatex::Bibliography` (full fidelity). See
+/// [`serialize_bibliography`].
+fn serialize_biblatex(
+    original: &str,
+    entries: &[BibEntryEditable],
+) -> Result<String, BibParseError> {
+    let mut bib = biblatex::Bibliography::parse(original)
+        .map_err(|e| BibParseError::BibLatex(e.to_string()))?;
+
+    // Index the edited entries by key for O(1) lookup.
+    let edited_by_key: std::collections::HashMap<&str, &BibEntryEditable> =
+        entries.iter().map(|e| (e.key.as_str(), e)).collect();
+
+    // 1. Apply edits to existing entries + collect keys to know the kept set.
+    //    We iterate over the bibliography's current keys (collected first to
+    //    avoid borrow issues while mutating).
+    let existing_keys: Vec<String> = bib.keys().map(str::to_string).collect();
+    for key in &existing_keys {
+        if let Some(edited) = edited_by_key.get(key.as_str()) {
+            // Apply edits to the matching entry in place.
+            if let Some(entry) = bib.get_mut(key) {
+                apply_biblatex_edits(entry, edited);
+            }
+        } else {
+            // In original but NOT in edited list → user deleted it.
+            bib.remove(key);
+        }
+    }
+
+    // 2. Add new entries (key not in original).
+    for edited in entries {
+        if !existing_keys.iter().any(|k| k == &edited.key) {
+            let entry_type = biblatex::EntryType::new(&edited.entry_type);
+            let mut entry = biblatex::Entry::new(edited.key.clone(), entry_type);
+            apply_biblatex_edits(&mut entry, edited);
+            bib.insert(entry);
+        }
+    }
+
+    Ok(bib.to_biblatex_string())
+}
+
+/// Apply the edited core fields + `extra` to a `biblatex::Entry` in place.
+///
+/// Core fields use the typed setters (`set_title`, `set_author`, `set_date`).
+/// `extra` uses `Entry::set(key, Chunks)` so arbitrary fields (journal, volume,
+/// pages, url, …) round-trip as raw chunk strings. The 5 core field names are
+/// skipped from `extra` (they can't appear there per `entry_to_editable`, but we
+/// guard anyway so a hand-crafted payload can't clobber the typed core fields).
+fn apply_biblatex_edits(entry: &mut biblatex::Entry, edited: &BibEntryEditable) {
+    use biblatex::{Chunk, Spanned};
+
+    // Title.
+    if let Some(title) = &edited.title {
+        entry.set_title(vec![Spanned::detached(Chunk::Normal(title.clone()))]);
+    } else {
+        entry.remove("title");
+    }
+
+    // Authors. "Given Family" is split on the last space (the natural reading
+    // order produced by `entry_to_editable`). Single-token names (institutions,
+    // or "Family" only) go into `name` with an empty given name.
+    if edited.authors.is_empty() {
+        entry.remove("author");
+    } else {
+        let persons: Vec<biblatex::Person> = edited
+            .authors
+            .iter()
+            .map(|display| {
+                let trimmed = display.trim();
+                match trimmed.rfind(' ') {
+                    Some(idx) => biblatex::Person {
+                        name: trimmed[idx + 1..].to_string(),
+                        given_name: trimmed[..idx].trim().to_string(),
+                        prefix: String::new(),
+                        suffix: String::new(),
+                        id: None,
+                        prefix_initials: None,
+                        given_initials: None,
+                        use_prefix: None,
+                    },
+                    None => biblatex::Person {
+                        name: trimmed.to_string(),
+                        given_name: String::new(),
+                        prefix: String::new(),
+                        suffix: String::new(),
+                        id: None,
+                        prefix_initials: None,
+                        given_initials: None,
+                        use_prefix: None,
+                    },
+                }
+            })
+            .collect();
+        entry.set_author(persons);
+    }
+
+    // Year → date. `biblatex::Date` has no public year-only constructor, so we
+    // set the date as a `PermissiveType::Chunks` year string. `set_date` writes
+    // the `date` field AND removes legacy `year`/`month`/`day` fields, keeping
+    // the entry consistent. A richer original date (e.g. 2020-05-01) is
+    // overwritten with just the year — acceptable since the edit form surfaces
+    // only the year as the date proxy.
+    if let Some(year) = edited.year {
+        let year_chunks: biblatex::Chunks =
+            vec![Spanned::detached(Chunk::Normal(year.to_string()))];
+        entry.set_date(biblatex::PermissiveType::Chunks(year_chunks));
+    } else {
+        // No year → drop any date/year fields so we don't leave stale data.
+        entry.remove("date");
+        entry.remove("year");
+    }
+
+    // Extra fields. Skip the 5 core names (defensive — they never appear here
+    // from `entry_to_editable`, but a hand-crafted payload might include them).
+    const CORE_FIELDS: &[&str] = &["title", "author", "date", "year", "type"];
+    for (name, value) in &edited.extra {
+        let lower = name.to_lowercase();
+        if CORE_FIELDS.contains(&lower.as_str()) {
+            continue;
+        }
+        // `journal` in the editable maps to `journaltitle` in .bib (biblatex's
+        // canonical name); `journal` is an alias but we write the canonical key
+        // so re-parsing yields the same field. `set` lowercases the key.
+        let key = match lower.as_str() {
+            "journal" => "journaltitle",
+            "address" => "location",
+            "school" => "institution",
+            other => other,
+        };
+        let chunks: biblatex::Chunks = vec![Spanned::detached(Chunk::Normal(value.clone()))];
+        entry.set(key, chunks);
+    }
+}
+
+/// Serialize `.yml` via `hayagriva::Library` (re-parse original, apply edits to
+/// clones, preserve untouched fields). See [`serialize_bibliography`].
+fn serialize_yaml(
+    original: &str,
+    entries: &[BibEntryEditable],
+) -> Result<String, BibParseError> {
+    let mut library = hayagriva::io::from_yaml_str(original)
+        .map_err(|e| BibParseError::Yaml(e.to_string()))?;
+
+    let edited_by_key: std::collections::HashMap<&str, &BibEntryEditable> =
+        entries.iter().map(|e| (e.key.as_str(), e)).collect();
+
+    // 1. Remove deleted entries (in original but not in edited list).
+    let original_keys: Vec<String> = library.keys().map(str::to_string).collect();
+    for key in &original_keys {
+        if !edited_by_key.contains_key(key.as_str()) {
+            library.remove(key);
+        }
+    }
+
+    // 2. Apply edits: for entries that existed, clone the original (preserving
+    //    all typed fields) and overwrite only the changed core fields. For new
+    //    entries, build a fresh `Entry` and set core + extra.
+    for edited in entries {
+        let new_entry_type = parse_entry_type(&edited.entry_type);
+        if let Some(original_entry) = library.get(&edited.key).cloned() {
+            // Did the entry TYPE change? `entry_type` is a private field with no
+            // public setter, so a type change requires rebuilding via
+            // `Entry::new` (which loses the typed non-core fields — an
+            // acceptable trade-off since changing an entry's type is rare and
+            // the user is re-keying the fields anyway). When the type is
+            // UNCHANGED we clone-and-patch, preserving every typed field.
+            let type_changed = *original_entry.entry_type() != new_entry_type;
+            let mut updated = if type_changed {
+                hayagriva::Entry::new(&edited.key, new_entry_type)
+            } else {
+                original_entry
+            };
+            apply_hayagriva_core_edits(&mut updated, edited);
+            if type_changed {
+                // A rebuild dropped the typed fields; re-apply the known extras.
+                apply_hayagriva_extra(&mut updated, edited);
+            }
+            library.push(&updated);
+        } else {
+            // New entry: build fresh. Extra fields are best-effort (hayagriva's
+            // typed setters can't cover every field without a fixed schema, so
+            // only the well-known ones are mapped; the rest are dropped, which
+            // is acceptable for a freshly-created entry).
+            let mut fresh = hayagriva::Entry::new(&edited.key, new_entry_type);
+            apply_hayagriva_core_edits(&mut fresh, edited);
+            apply_hayagriva_extra(&mut fresh, edited);
+            library.push(&fresh);
+        }
+    }
+
+    hayagriva::io::to_yaml_str(&library).map_err(|e| BibParseError::YamlSerialize(e.to_string()))
+}
+
+/// Parse a kebab-case entry-type string back into a `hayagriva::types::EntryType`.
+/// `EntryType` deserializes from its kebab-case name (with PascalCase aliases),
+/// so we round-trip through serde. Falls back to `Misc` for unknown types
+/// (matching the `entry_to_bib` fallback) rather than erroring, so an exotic
+/// type string never blocks a save.
+fn parse_entry_type(s: &str) -> hayagriva::types::EntryType {
+    serde_json::from_value(serde_json::Value::String(s.to_string()))
+        .unwrap_or(hayagriva::types::EntryType::Misc)
+}
+
+/// Apply the 5 core field edits to a `hayagriva::Entry` in place. Only the
+/// core fields are touched — every other typed field (journal, volume, pages,
+/// parents, …) on a cloned original is preserved untouched. The `entry_type`
+/// is NOT handled here (it's a private field with no setter); the caller
+/// rebuilds via `Entry::new` when the type changed.
+fn apply_hayagriva_core_edits(entry: &mut hayagriva::Entry, edited: &BibEntryEditable) {
+    if let Some(title) = &edited.title {
+        entry.set_title(hayagriva::types::FormatString::with_value(title.clone()));
+    }
+    // Note: there is no `clear_title`; setting is the only option. When the user
+    // clears the title we can't null it through the public API, so we leave the
+    // previous title. This is an acceptable limitation for the edit modal
+    // (clearing a title is uncommon and the field stays editable).
+
+    if !edited.authors.is_empty() {
+        let persons: Vec<hayagriva::types::Person> = edited
+            .authors
+            .iter()
+            .filter_map(|display| display.parse().ok())
+            .collect();
+        entry.set_authors(persons);
+    }
+
+    if let Some(year) = edited.year {
+        entry.set_date(hayagriva::types::Date::from_year(year));
+    }
+}
+
+/// Best-effort application of `extra` fields to a fresh `hayagriva::Entry`.
+/// Only the well-known fields with dedicated setters are mapped; unknown names
+/// are dropped (a freshly-created entry has no prior fields to lose). This is
+/// intentionally conservative — hayagriva's typed setters can't cover arbitrary
+/// fields without a fixed schema.
+fn apply_hayagriva_extra(entry: &mut hayagriva::Entry, edited: &BibEntryEditable) {
+    for (name, value) in &edited.extra {
+        match name.to_lowercase().as_str() {
+            "url" => {
+                if let Ok(url) = value.parse() {
+                    entry.set_url(hayagriva::types::QualifiedUrl::new(url, None));
+                }
+            }
+            "publisher" => {
+                if let Ok(p) = value.parse() {
+                    entry.set_publisher(p);
+                }
+            }
+            "location" => {
+                if let Ok(l) = value.parse() {
+                    entry.set_location(l);
+                }
+            }
+            "organization" => {
+                if let Ok(o) = value.parse() {
+                    entry.set_organization(o);
+                }
+            }
+            // `MaybeTyped` impls `FromStr` with `Err = Infallible` for the
+            // typed Numeric / PageRanges fields, so `.parse()` always succeeds
+            // — values that don't fit the typed shape fall back to the `String`
+            // variant. We collapse the infallible error with `unwrap_or_else`.
+            "volume" => {
+                let v = value
+                    .parse()
+                    .unwrap_or_else(|e: std::convert::Infallible| match e {});
+                entry.set_volume(v);
+            }
+            "issue" => {
+                let i = value
+                    .parse()
+                    .unwrap_or_else(|e: std::convert::Infallible| match e {});
+                entry.set_issue(i);
+            }
+            "edition" => {
+                let e = value
+                    .parse()
+                    .unwrap_or_else(|e: std::convert::Infallible| match e {});
+                entry.set_edition(e);
+            }
+            "pages" => {
+                let pr = value
+                    .parse()
+                    .unwrap_or_else(|e: std::convert::Infallible| match e {});
+                entry.set_page_range(pr);
+            }
+            "note" => {
+                if let Ok(n) = value.parse() {
+                    entry.set_note(n);
+                }
+            }
+            "abstract" => {
+                if let Ok(a) = value.parse() {
+                    entry.set_abstract_(a);
+                }
+            }
+            "genre" => {
+                if let Ok(g) = value.parse() {
+                    entry.set_genre(g);
+                }
+            }
+            "doi" => entry.set_doi(value.clone()),
+            "isbn" => entry.set_isbn(value.clone()),
+            "issn" => entry.set_issn(value.clone()),
+            // journal/language/etc. would need a parent entry (Periodical) or a
+            // language identifier parse; left out of the best-effort fresh path.
+            _ => {}
+        }
+    }
 }
 
 /// Sniff the format from a file extension, falling back to a content heuristic
@@ -181,6 +725,7 @@ mod tests {
         use ts_rs::TS;
         let cfg = ts_rs::Config::default();
         BibEntry::export(&cfg).unwrap();
+        BibEntryEditable::export(&cfg).unwrap();
     }
 
     /// Two-entry BibLaTeX fixture covering the common fields we extract.
@@ -302,5 +847,275 @@ knuth1984:
         assert!(first.contains_key("title"));
         assert!(first.contains_key("authors"));
         assert!(first.contains_key("year"));
+    }
+
+    // --- Full-field editable parse + serialize ------------------------------
+
+    /// BibLaTeX fixture with rich fields (journal, volume, pages, publisher)
+    /// so the field-preservation assertions below are meaningful.
+    const BIB_EDITABLE_FIXTURE: &str = r#"
+@article{einstein1905,
+  author  = {Albert Einstein},
+  title   = {On the Electrodynamics of Moving Bodies},
+  year    = {1905},
+  journal = {Annalen der Physik},
+  volume  = {322},
+  number  = {10},
+  pages   = {891--921}
+}
+
+@book{knuth1984,
+  author    = {Donald E. Knuth},
+  title     = {The TeXbook},
+  year      = {1984},
+  publisher = {Addison-Wesley},
+  address   = {Reading, MA}
+}
+"#;
+
+    /// YAML fixture with rich fields (parent journal + volume, publisher).
+    const YAML_EDITABLE_FIXTURE: &str = r#"
+einstein1905:
+  type: Article
+  title: On the Electrodynamics of Moving Bodies
+  author: Albert Einstein
+  date: 1905
+  parent:
+    type: Periodical
+    title: Annalen der Physik
+    volume: 322
+knuth1984:
+  type: Book
+  title: The TeXbook
+  author: Donald E. Knuth
+  date: 1984
+  publisher: Addison-Wesley
+"#;
+
+    /// Helper: find an editable entry by key, panicking if absent.
+    fn find_editable<'a>(entries: &'a [BibEntryEditable], key: &str) -> &'a BibEntryEditable {
+        entries
+            .iter()
+            .find(|e| e.key == key)
+            .unwrap_or_else(|| panic!("entry `{key}` present in {entries:?}"))
+    }
+
+    /// Helper: get the value of an `extra` field by name.
+    fn extra_value<'a>(entry: &'a BibEntryEditable, name: &str) -> Option<&'a str> {
+        entry
+            .extra
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn parse_editable_biblatex_extracts_extra_fields() {
+        let entries = parse_bibliography_editable(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex)
+            .expect("bib parses");
+        assert_eq!(entries.len(), 2);
+
+        let einstein = find_editable(&entries, "einstein1905");
+        assert_eq!(einstein.entry_type, "article");
+        assert_eq!(
+            einstein.title.as_deref(),
+            Some("On the Electrodynamics of Moving Bodies")
+        );
+        assert_eq!(einstein.authors, vec!["Albert Einstein".to_string()]);
+        assert_eq!(einstein.year, Some(1905));
+        // Extra fields surface the journal/volume/pages the edit form needs.
+        assert_eq!(extra_value(einstein, "journal"), Some("Annalen der Physik"));
+        assert_eq!(extra_value(einstein, "volume"), Some("322"));
+        // PageRanges Display joins a range with a plain hyphen (891-921).
+        assert_eq!(extra_value(einstein, "pages"), Some("891-921"));
+
+        let knuth = find_editable(&entries, "knuth1984");
+        assert_eq!(extra_value(knuth, "publisher"), Some("Addison-Wesley"));
+    }
+
+    #[test]
+    fn parse_editable_yaml_extracts_extra_fields() {
+        let entries =
+            parse_bibliography_editable(YAML_EDITABLE_FIXTURE, BibFormat::HayagrivaYaml)
+                .expect("yaml parses");
+        assert_eq!(entries.len(), 2);
+
+        let einstein = find_editable(&entries, "einstein1905");
+        assert_eq!(einstein.entry_type, "article");
+        assert_eq!(einstein.year, Some(1905));
+        // The journal lives on the parent Periodical — surfaced via parents.
+        assert_eq!(extra_value(einstein, "journal"), Some("Annalen der Physik"));
+        assert_eq!(extra_value(einstein, "volume"), Some("322"));
+
+        let knuth = find_editable(&entries, "knuth1984");
+        assert_eq!(extra_value(knuth, "publisher"), Some("Addison-Wesley"));
+    }
+
+    #[test]
+    fn roundtrip_biblatex_preserves_core_fields() {
+        // Parse → serialize → re-parse, asserting no core-field loss.
+        let entries =
+            parse_bibliography_editable(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex).unwrap();
+        let serialized =
+            serialize_bibliography(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex, &entries)
+                .expect("serialize");
+        let reparsed =
+            parse_bibliography_editable(&serialized, BibFormat::BibLatex).expect("reparse");
+
+        assert_eq!(reparsed.len(), entries.len(), "entry count must match");
+        for original in &entries {
+            let back = find_editable(&reparsed, &original.key);
+            assert_eq!(back.entry_type, original.entry_type, "type for {}", original.key);
+            assert_eq!(back.title, original.title, "title for {}", original.key);
+            assert_eq!(back.authors, original.authors, "authors for {}", original.key);
+            assert_eq!(back.year, original.year, "year for {}", original.key);
+        }
+    }
+
+    #[test]
+    fn roundtrip_yaml_preserves_core_fields() {
+        let entries = parse_bibliography_editable(YAML_EDITABLE_FIXTURE, BibFormat::HayagrivaYaml)
+            .unwrap();
+        let serialized =
+            serialize_bibliography(YAML_EDITABLE_FIXTURE, BibFormat::HayagrivaYaml, &entries)
+                .expect("serialize");
+        let reparsed =
+            parse_bibliography_editable(&serialized, BibFormat::HayagrivaYaml).expect("reparse");
+
+        assert_eq!(reparsed.len(), entries.len());
+        for original in &entries {
+            let back = find_editable(&reparsed, &original.key);
+            assert_eq!(back.entry_type, original.entry_type, "type for {}", original.key);
+            assert_eq!(back.title, original.title, "title for {}", original.key);
+            assert_eq!(back.authors, original.authors, "authors for {}", original.key);
+            assert_eq!(back.year, original.year, "year for {}", original.key);
+        }
+    }
+
+    #[test]
+    fn edit_biblatex_preserves_other_fields() {
+        // Edit ONLY the title of one entry; journal/volume/pages must survive
+        // because serialize re-parses the original and patches the single entry.
+        let mut entries =
+            parse_bibliography_editable(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex).unwrap();
+        let einstein = entries
+            .iter_mut()
+            .find(|e| e.key == "einstein1905")
+            .expect("einstein1905");
+        einstein.title = Some("A New Title".to_string());
+
+        let serialized =
+            serialize_bibliography(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex, &entries).unwrap();
+        let reparsed =
+            parse_bibliography_editable(&serialized, BibFormat::BibLatex).expect("reparse");
+
+        let back = find_editable(&reparsed, "einstein1905");
+        assert_eq!(back.title.as_deref(), Some("A New Title"), "title was edited");
+        // Untouched fields preserved (the fidelity contract).
+        assert_eq!(extra_value(back, "journal"), Some("Annalen der Physik"));
+        assert_eq!(extra_value(back, "volume"), Some("322"));
+        assert_eq!(extra_value(back, "pages"), Some("891-921"));
+        assert_eq!(back.year, Some(1905));
+        assert_eq!(back.authors, vec!["Albert Einstein".to_string()]);
+    }
+
+    #[test]
+    fn edit_yaml_preserves_other_fields() {
+        let mut entries =
+            parse_bibliography_editable(YAML_EDITABLE_FIXTURE, BibFormat::HayagrivaYaml).unwrap();
+        let einstein = entries
+            .iter_mut()
+            .find(|e| e.key == "einstein1905")
+            .expect("einstein1905");
+        einstein.title = Some("A New Title".to_string());
+
+        let serialized =
+            serialize_bibliography(YAML_EDITABLE_FIXTURE, BibFormat::HayagrivaYaml, &entries)
+                .unwrap();
+        let reparsed =
+            parse_bibliography_editable(&serialized, BibFormat::HayagrivaYaml).expect("reparse");
+
+        let back = find_editable(&reparsed, "einstein1905");
+        assert_eq!(back.title.as_deref(), Some("A New Title"));
+        // The parent journal/volume survive (cloned from the original).
+        assert_eq!(extra_value(back, "journal"), Some("Annalen der Physik"));
+        assert_eq!(extra_value(back, "volume"), Some("322"));
+        assert_eq!(back.year, Some(1905));
+    }
+
+    #[test]
+    fn add_entry_biblatex() {
+        let mut entries =
+            parse_bibliography_editable(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex).unwrap();
+        entries.push(BibEntryEditable {
+            key: "new2024".to_string(),
+            entry_type: "misc".to_string(),
+            title: Some("A Fresh Entry".to_string()),
+            authors: vec!["Jane Doe".to_string()],
+            year: Some(2024),
+            extra: vec![("note".to_string(), "added by test".to_string())],
+        });
+
+        let serialized =
+            serialize_bibliography(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex, &entries).unwrap();
+        let reparsed =
+            parse_bibliography_editable(&serialized, BibFormat::BibLatex).expect("reparse");
+
+        assert_eq!(reparsed.len(), 3, "new entry added");
+        let new = find_editable(&reparsed, "new2024");
+        assert_eq!(new.entry_type, "misc");
+        assert_eq!(new.title.as_deref(), Some("A Fresh Entry"));
+        assert_eq!(new.authors, vec!["Jane Doe".to_string()]);
+        assert_eq!(new.year, Some(2024));
+        assert_eq!(extra_value(new, "note"), Some("added by test"));
+    }
+
+    #[test]
+    fn delete_entry_biblatex() {
+        let entries: Vec<BibEntryEditable> =
+            parse_bibliography_editable(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex)
+                .unwrap()
+                .into_iter()
+                .filter(|e| e.key != "knuth1984")
+                .collect();
+        assert_eq!(entries.len(), 1);
+
+        let serialized =
+            serialize_bibliography(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex, &entries).unwrap();
+        let reparsed =
+            parse_bibliography_editable(&serialized, BibFormat::BibLatex).expect("reparse");
+
+        assert_eq!(reparsed.len(), 1, "entry deleted");
+        assert!(reparsed.iter().all(|e| e.key != "knuth1984"));
+        // The kept entry is untouched.
+        let einstein = find_editable(&reparsed, "einstein1905");
+        assert_eq!(extra_value(einstein, "journal"), Some("Annalen der Physik"));
+    }
+
+    #[test]
+    fn add_entry_yaml() {
+        let mut entries =
+            parse_bibliography_editable(YAML_EDITABLE_FIXTURE, BibFormat::HayagrivaYaml).unwrap();
+        entries.push(BibEntryEditable {
+            key: "new2024".to_string(),
+            entry_type: "misc".to_string(),
+            title: Some("A Fresh Entry".to_string()),
+            authors: vec!["Jane Doe".to_string()],
+            year: Some(2024),
+            extra: Vec::new(),
+        });
+
+        let serialized =
+            serialize_bibliography(YAML_EDITABLE_FIXTURE, BibFormat::HayagrivaYaml, &entries)
+                .unwrap();
+        let reparsed =
+            parse_bibliography_editable(&serialized, BibFormat::HayagrivaYaml).expect("reparse");
+
+        assert_eq!(reparsed.len(), 3, "new entry added");
+        let new = find_editable(&reparsed, "new2024");
+        assert_eq!(new.entry_type, "misc");
+        assert_eq!(new.title.as_deref(), Some("A Fresh Entry"));
+        assert_eq!(new.authors, vec!["Jane Doe".to_string()]);
+        assert_eq!(new.year, Some(2024));
     }
 }
