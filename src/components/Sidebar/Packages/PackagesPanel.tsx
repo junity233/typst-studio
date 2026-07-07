@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
 import { selectCategories, usePackagesStore } from "../../../store/packagesStore";
@@ -66,9 +66,15 @@ export function PackagesPanel() {
       : "";
 
   // Category options come from the FULL index (selectCategories), so the
-  // dropdown keeps every category regardless of the current selection.
+  // dropdown keeps every category regardless of the current selection. Derived
+  // via useMemo — selectCategories returns a fresh array each call, which would
+  // loop useSyncExternalStore if used directly as a selector.
   const isTemplateView = activeTab === "templates";
-  const categories = usePackagesStore((s) => selectCategories(s, isTemplateView));
+  const index = usePackagesStore((s) => s.index);
+  const categories = useMemo(
+    () => selectCategories({ index }, isTemplateView),
+    [index, isTemplateView],
+  );
   const selectedCategory = filter.categories[0] ?? "";
   const showCategoryFilter = activeTab !== "installed" && categories.length > 0;
 

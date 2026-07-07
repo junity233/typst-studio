@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { selectFiltered, usePackagesStore } from "../../../store/packagesStore";
 import { Thumbnail } from "./Thumbnail";
@@ -5,9 +6,12 @@ import { Thumbnail } from "./Thumbnail";
 export function TemplateGallery() {
   const { t } = useTranslation("packages");
   const setSelected = usePackagesStore((s) => s.setSelected);
-  // Client-side filter over the full index (templates view). selectFiltered
-  // applies the current query + category filter.
-  const templates = usePackagesStore((s) => selectFiltered(s, true));
+  // Derive the filtered view with useMemo (NOT inside the store selector):
+  // selectFiltered returns a fresh array each call, so using it as a selector
+  // breaks useSyncExternalStore's Object.is stability check and loops forever.
+  const index = usePackagesStore((s) => s.index);
+  const filter = usePackagesStore((s) => s.filter);
+  const templates = useMemo(() => selectFiltered({ index, filter }, true), [index, filter]);
 
   if (templates.length === 0) {
     return <p className="packages-empty">{t("empty")}</p>;

@@ -1,11 +1,15 @@
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { selectFiltered, usePackagesStore } from "../../../store/packagesStore";
 
 export function PackageList() {
   const { t } = useTranslation("packages");
   const setSelected = usePackagesStore((s) => s.setSelected);
-  // Client-side filter over the full index (packages view).
-  const packages = usePackagesStore((s) => selectFiltered(s, false));
+  // Derive via useMemo — see TemplateGallery for why the selector must not
+  // return a fresh array (useSyncExternalStore Object.is loop).
+  const index = usePackagesStore((s) => s.index);
+  const filter = usePackagesStore((s) => s.filter);
+  const packages = useMemo(() => selectFiltered({ index, filter }, false), [index, filter]);
 
   if (packages.length === 0) {
     return <p className="packages-empty">{t("empty")}</p>;
