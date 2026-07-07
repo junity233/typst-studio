@@ -1,0 +1,7 @@
+{
+  "__smoke__": "commandPalette zh ok",
+  "title": "命令面板",
+  "placeholder": "输入命令名称...",
+  "emptyState": "没有匹配的命令",
+  "openCommandPalette": "打开命令面板"
+}

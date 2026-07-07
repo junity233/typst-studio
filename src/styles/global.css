@@ -3189,3 +3189,124 @@ button {
 /* compiler-compat warning (§4.3) — gray, not red, per the single-accent rule */
 .pkg-compat-warn { color: var(--color-ink-muted-48); cursor: help; }
 .pkg-compat-line { margin: 0; padding: var(--space-xxs) var(--space-sm); font: var(--text-fine-print); color: var(--color-ink-muted-48); background: var(--color-canvas-parchment); border-radius: var(--radius-sm); }
+
+/* ============================================================================
+   Command Palette (CmdOrCtrl+Shift+P)
+   A top-center overlay that fuzzy-searches every registered command. Z-index
+   1150 sits above dialogs (1000) and the context menu (1100) but below the
+   Settings window scrim (2000). All colors are tokens — never hardcoded — so
+   theme hot-reload recolors the palette automatically.
+   ========================================================================= */
+.command-palette-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--color-scrim);
+  z-index: 1150;
+  display: flex;
+  /* Anchored near the top-center (VS Code placement), not vertically centered. */
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+.command-palette {
+  background: var(--color-canvas);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-elevated);
+  width: min(640px, 90vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Reuses the same entrance curve as .context-menu. */
+  animation: command-palette-in 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-origin: top center;
+}
+@keyframes command-palette-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+/* Borderless top input — only a bottom hairline separates it from the list. */
+.command-palette-input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--color-hairline);
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font: var(--text-body);
+  letter-spacing: -0.224px;
+  padding: var(--space-sm) var(--space-md);
+  outline: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.command-palette-input::placeholder {
+  color: var(--color-body-muted);
+}
+.command-palette-input:focus {
+  /* Focus ring replaces the hairline so the active field reads as primary. */
+  border-color: var(--color-primary);
+  box-shadow: 0 2px 0 -1px var(--color-primary);
+}
+.command-palette-list {
+  max-height: 400px;
+  overflow-y: auto;
+  padding: var(--space-xxs);
+  /* Keep the panel's rounded corners by clipping the scroll surface. */
+  overscroll-behavior: contain;
+}
+.command-palette-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.08s ease;
+}
+.command-palette-item:hover {
+  background: var(--color-hover);
+}
+.command-palette-item.active {
+  background: var(--color-primary-soft);
+}
+.command-palette-item.active .command-palette-category {
+  /* Slightly stronger than the resting muted tone so the active row reads as
+     selected, while staying secondary to the title. */
+  color: var(--color-ink-muted-80);
+}
+.command-palette-item-label {
+  flex: 1 1 auto;
+  font: var(--text-caption);
+  color: var(--color-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.command-palette-category {
+  flex: 0 0 auto;
+  font: var(--text-fine-print);
+  color: var(--color-body-muted);
+}
+.command-palette-kbd {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--color-ink-muted-80);
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-xs);
+  padding: 3px 6px;
+  white-space: nowrap;
+}
+.command-palette-empty {
+  padding: var(--space-md);
+  text-align: center;
+  font: var(--text-caption);
+  color: var(--color-body-muted);
+}

@@ -7,6 +7,7 @@ import { ConfirmDialog } from "./components/Dialogs/ConfirmDialog";
 import { RecoveryDialog } from "./components/Dialogs/RecoveryDialog";
 import { ConflictDialog } from "./components/Dialogs/ConflictDialog";
 import { ContextMenu } from "./components/Sidebar/ContextMenu";
+import { CommandPalette } from "./components/CommandPalette/CommandPalette";
 import { useTypstCompile } from "./hooks/useTypstCompile";
 import { useAppCommands } from "./hooks/useAppCommands";
 import { useExternalFileRouting } from "./hooks/useExternalFileRouting";
@@ -116,6 +117,7 @@ export default function App() {
       <RecoveryDialog />
       <ConflictDialog />
       <ContextMenu />
+      <CommandPalette />
       {settingsOpen && (
         <div
           className="settings-modal-overlay"

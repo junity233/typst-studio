@@ -82,6 +82,14 @@ export function useAppCommands(): void {
         e.stopPropagation();
         void dispatch("workbench.view.outline");
       }
+      // Cmd/Ctrl+Shift+P → Open Command Palette. Same capture-phase rationale
+      // as the other Shift shortcuts: Monaco can swallow the keystroke before
+      // the OS menu accelerator fires, so intercept it directly and dispatch.
+      if (mod && e.shiftKey && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        e.stopPropagation();
+        void dispatch("workbench.action.openCommandPalette");
+      }
     };
     document.addEventListener("keydown", onKeyDown, true);
 

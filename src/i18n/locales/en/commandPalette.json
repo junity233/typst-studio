@@ -1,0 +1,7 @@
+{
+  "__smoke__": "commandPalette en ok",
+  "title": "Command Palette",
+  "placeholder": "Type a command name...",
+  "emptyState": "No matching commands",
+  "openCommandPalette": "Open Command Palette"
+}
