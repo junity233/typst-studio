@@ -35,6 +35,16 @@ function loadFontList(): Promise<string[]> {
  * Each option renders in its own typeface for live preview. The value set is
  * not whitelisted — a name typed/selected that isn't installed is stored
  * verbatim; the editor falls back at render time.
+ *
+ * Interaction model (kept simple to avoid value-clobbering races):
+ * - The input is a controlled view of the *committed* value when closed, and a
+ *   throwaway search box when open. `query` never flows back into the store.
+ * - A value is committed ONLY by an explicit selection (clicking an option,
+ *   pressing Enter on a highlighted option, or the clear-X). Typing in the box
+ *   filters the list but does not write — so a half-typed query that gets
+ *   abandoned (blur / Esc) can never wipe the saved font.
+ * - Closing (blur / Esc / outside-click) always restores the input to the
+ *   committed value, dropping any in-flight query.
  */
 export function FontControl({ def }: { def: SettingDef }) {
   const { t } = useTranslation("settings");
@@ -59,25 +69,6 @@ export function FontControl({ def }: { def: SettingDef }) {
     };
   }, []);
 
-  // Close on outside click / Escape.
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   const filtered = useMemo(() => {
     if (fonts === null) return [];
     const q = query.trim().toLowerCase();
@@ -85,15 +76,37 @@ export function FontControl({ def }: { def: SettingDef }) {
     return fonts.filter((f) => f.toLowerCase().includes(q));
   }, [fonts, query]);
 
-  // Keep the highlighted index in range as the filter shrinks.
+  // Keep the highlighted index sensible as the filter changes:
+  // - No query → rest on "(Default)" (index 0); Enter commits the empty value,
+  //   which is the natural "clear back to default" gesture.
+  // - A query is typed → jump to the first matching font (index 1) so Enter
+  //   selects the visible match instead of wiping the value via "(Default)".
+  // Indices: 0 = "(Default)", 1..filtered.length = real fonts.
   useEffect(() => {
-    if (open) setHighlight(0);
-  }, [open, query]);
+    if (!open) return;
+    setHighlight(query.trim() === "" || filtered.length === 0 ? 0 : 1);
+  }, [open, query, filtered.length]);
 
+  /** Commit a selection and collapse back to the closed (display) state. */
   const choose = (name: string) => {
     setValue(name);
     setOpen(false);
     setQuery("");
+  };
+
+  /**
+   * Collapse without committing — drops the in-flight query and restores the
+   * committed value to the display. Deferred a tick so a simultaneous option
+   * click (whose `mousedown` runs just before this blur) can commit first:
+   * `choose` flips `open` to false, and by the time this runs the guard below
+   * is already a no-op. Without the deferral, blur fires first on some
+   * platforms and races the selection.
+   */
+  const scheduleClose = () => {
+    setTimeout(() => {
+      setOpen(false);
+      setQuery("");
+    }, 0);
   };
 
   // The list has a synthetic "(Default)" row at index 0; real fonts occupy
@@ -121,13 +134,31 @@ export function FontControl({ def }: { def: SettingDef }) {
           if (picked !== undefined) choose(picked);
         }
       }
+    } else if (e.key === "Escape") {
+      if (open) {
+        e.preventDefault();
+        scheduleClose();
+      }
     }
   };
 
+  // Outside-click closes (mousedown so it fires before blur reshuffles focus).
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        scheduleClose();
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+    };
+  }, [open]);
+
+  // Closed → show the committed value; open → show the live search query.
   const displayValue = open ? query : current;
-  // When the field is open we prompt for a search; when closed, an unset value
-  // shows "(Default)" and a set value renders the family name itself (displayValue).
-  const placeholder = open ? t("searchFonts") : t("fontDefault");
+  const placeholder = open ? t("searchFonts") : current === "" ? t("fontDefault") : current;
 
   return (
     <div className="font-combobox" ref={rootRef}>
@@ -143,6 +174,11 @@ export function FontControl({ def }: { def: SettingDef }) {
             setOpen(true);
             setQuery("");
           }}
+          // Blur without a selection → abandon the query, keep the value.
+          // Deferred (see scheduleClose) so an option click committing on
+          // mousedown wins the race; by the time the close runs the field is
+          // already collapsed and this is a no-op.
+          onBlur={() => scheduleClose()}
           onChange={(e) => {
             setQuery(e.target.value);
             if (!open) setOpen(true);
@@ -159,6 +195,9 @@ export function FontControl({ def }: { def: SettingDef }) {
             className="font-combobox-clear"
             aria-label={t("clearFont")}
             title={t("clearFont")}
+            // preventDefault on mousedown so the input's onBlur doesn't fire
+            // first and call close() (which would no-op the clear).
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => choose("")}
           >
             <X size={13} />
@@ -178,8 +217,10 @@ export function FontControl({ def }: { def: SettingDef }) {
             aria-selected={current === ""}
             className={"font-combobox-option" + (highlight === 0 ? " font-combobox-active" : "")}
             onMouseEnter={() => setHighlight(0)}
+            // mousedown (not click) + preventDefault keeps focus on the input,
+            // so the selection commits before any blur can abandon it.
             onMouseDown={(e) => {
-              e.preventDefault(); // keep input focus
+              e.preventDefault();
               choose("");
             }}
           >
