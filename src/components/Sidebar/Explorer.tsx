@@ -23,7 +23,7 @@ import { useTabsStore, readAllDocuments } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { useFileClipboardStore, readClipboard } from "../../store/fileClipboardStore";
 import { useExplorerSelectionStore } from "../../store/explorerSelectionStore";
-import { openFileByPath, revealInFinder } from "../../lib/tauri";
+import { openFileByPath, revealInFinder, updateText } from "../../lib/tauri";
 import { toIpcError } from "../../lib/ipc-error";
 import i18n from "../../i18n";
 import { isMac } from "../../lib/platform";
@@ -538,6 +538,11 @@ function TreeRow({
           await useTabsStore.getState().reactivate(existing.id);
         } else {
           useTabsStore.getState().activate(existing.id);
+        }
+        if (existing.kind === "typst") {
+          void updateText(existing.id, existing.content, existing.revision).catch((e) =>
+            console.warn("[Explorer] recompile existing file failed:", e),
+          );
         }
         return;
       }

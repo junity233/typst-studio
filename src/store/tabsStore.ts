@@ -3,6 +3,7 @@ import type { CompileStatus } from "../lib/ui-types";
 import type {
   ChangedPage,
   ConflictState,
+  DocumentKind,
   LineRect,
   OpenedDocument,
   OutlineNode,
@@ -357,6 +358,8 @@ export function readAllDocuments(): {
   path: string | null;
   content: string;
   dirty: boolean;
+  revision: number;
+  kind: DocumentKind;
   hidden: boolean;
 }[] {
   const { tabs, hidden } = useTabsStore.getState();
@@ -369,6 +372,8 @@ export function readAllDocuments(): {
       path: d.path,
       content: d.content,
       dirty: d.dirty,
+      revision: d.revision,
+      kind: d.kind ?? "typst",
       hidden: isHidden,
     };
   };

@@ -11,15 +11,18 @@ import type { OpenedDocument } from "../../lib/types";
 // can be exercised without a live Tauri runtime. The mocks resolve cleanly; the
 // cross-store cleanup coordination is what we assert.
 vi.mock("../../lib/tauri", () => ({
+  newTab: vi.fn(),
   closeTab: vi.fn(() => Promise.resolve()),
   softCloseTab: vi.fn(() => Promise.resolve()),
   reactivateTab: vi.fn(() => Promise.resolve()),
   hardCloseTab: vi.fn(() => Promise.resolve()),
+  updateText: vi.fn(() => Promise.resolve(0)),
 }));
 vi.mock("../../lib/session", () => ({
   captureAndSaveSession: vi.fn(() => Promise.resolve()),
   recordFile: vi.fn(),
 }));
+import { updateText } from "../../lib/tauri";
 
 /**
  * Revision coherence (§7 / §16 #5): a stale-revision compile result must never
@@ -308,6 +311,20 @@ describe("views store (tabsStore) operates on an id list (§10)", () => {
     expect(tabs).toEqual(["a", "b", "c"]);
     // Every entry is a plain string id (a view reference), not an object.
     expect(tabs.every((t) => typeof t === "string")).toBe(true);
+  });
+
+  it("openPath triggers an initial recompile for Typst files", () => {
+    const doc = openedDoc({
+      id: "d1",
+      content: "#let x = 1",
+      path: "/x/main.typ",
+      revision: 4,
+      kind: "typst",
+    });
+
+    useTabsStore.getState().openPath(doc);
+
+    expect(updateText).toHaveBeenCalledWith("d1", "#let x = 1", 4);
   });
 
   it("updateContent delegates to documentsStore (cross-store write)", () => {

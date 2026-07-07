@@ -1,6 +1,7 @@
 import { useTabsStore, readAllDocuments } from "../store/tabsStore";
-import { openFileByPath } from "./tauri";
+import { openFileByPath, updateText } from "./tauri";
 import { toIpcError } from "./ipc-error";
+import { workspacePathsEqual } from "./workspacePath";
 import i18n from "../i18n";
 
 /**
@@ -20,12 +21,19 @@ import i18n from "../i18n";
  */
 export async function openFile(absPath: string): Promise<string | null> {
   try {
-    const existing = readAllDocuments().find((t) => t.path === absPath);
+    const existing = readAllDocuments().find((t) =>
+      workspacePathsEqual(t.path, absPath),
+    );
     if (existing) {
       if (existing.hidden) {
         await useTabsStore.getState().reactivate(existing.id);
       } else {
         useTabsStore.getState().activate(existing.id);
+      }
+      if (existing.kind === "typst") {
+        void updateText(existing.id, existing.content, existing.revision).catch((e) =>
+          console.warn("[openFile] recompile existing file failed:", e),
+        );
       }
       return existing.id;
     }
