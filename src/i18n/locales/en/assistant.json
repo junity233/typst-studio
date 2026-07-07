@@ -21,5 +21,7 @@
   "expandDiff": "View full diff",
   "noChanges": "No changes",
   "close": "Close",
+  "autoApprove": "Auto-accept edits",
+  "autoApproveHint": "When on, all edit proposals are applied automatically without asking",
   "enterToSend": "Enter to send · Shift+Enter for newline"
 }

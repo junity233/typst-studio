@@ -21,5 +21,7 @@
   "expandDiff": "查看完整 diff",
   "noChanges": "无变更",
   "close": "关闭",
+  "autoApprove": "自动接受编辑",
+  "autoApproveHint": "开启后,所有编辑提议将自动应用,无需逐一确认",
   "enterToSend": "回车发送 · Shift+Enter 换行"
 }

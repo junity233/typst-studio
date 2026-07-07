@@ -34,6 +34,35 @@
   font-size: 14px;
   letter-spacing: -0.01em;
 }
+.assistant-panel__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+/* Auto-approve toggle: dim when off, Action Blue when on */
+.assistant-toggle-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 5px;
+  border-radius: 7px;
+  color: var(--color-body-muted);
+  opacity: 0.45;
+  display: flex;
+  align-items: center;
+  transition: opacity 0.15s, background 0.12s, color 0.12s;
+}
+.assistant-toggle-btn:hover {
+  background: var(--color-hover-soft);
+  opacity: 0.8;
+}
+.assistant-toggle-btn:active {
+  transform: scale(0.92);
+}
+.assistant-toggle-btn--on {
+  color: var(--color-primary);
+  opacity: 1;
+}
 .assistant-icon-btn {
   background: transparent;
   border: none;

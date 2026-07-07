@@ -56,12 +56,15 @@ interface AssistantState {
   streamingThinking: string;
   /** The approval currently awaiting a user decision, if any. */
   pendingApproval: PendingApproval | null;
+  /** When true, edit/write_file approvals auto-accept without user interaction. */
+  autoApprove: boolean;
 
   sendMessage: (text: string) => Promise<void>;
   stop: () => void;
   clearConversation: () => void;
   approve: () => Promise<void>;
   reject: () => Promise<void>;
+  toggleAutoApprove: () => void;
 }
 
 // --- module-scoped run state ---------------------------------------------
@@ -141,6 +144,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   streamingText: "",
   streamingThinking: "",
   pendingApproval: null,
+  autoApprove: false,
 
   sendMessage: async (text) => {
     if (get().status === "streaming" || get().status === "awaiting-approval") {
@@ -172,6 +176,35 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     const requestApproval = (p: PendingApproval): Promise<string> =>
       new Promise<string>((resolve) => {
         console.log("[ai][approval] requestApproval invoked, awaiting user:", p.kind, p.path);
+
+        // Auto-approve: skip the gate entirely, apply immediately.
+        if (get().autoApprove) {
+          console.log("[ai][approval] auto-approve ON — applying without user gate");
+          set((s) => ({
+            messages: [
+              ...s.messages,
+              {
+                id: uid(),
+                role: "tool",
+                toolName: p.kind,
+                approval: { ...p, verdict: "applied" },
+                toolStatus: "running",
+              },
+            ],
+          }));
+          void applyApproval(p).then((result) => {
+            set((s) => ({
+              messages: s.messages.map((m) =>
+                m.approval && m.approval.path === p.path
+                  ? { ...m, toolStatus: "ok" }
+                  : m,
+              ),
+            }));
+            resolve(result);
+          });
+          return;
+        }
+
         set((s) => ({
           status: "awaiting-approval",
           pendingApproval: p,
@@ -330,6 +363,9 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   },
   reject: async () => {
     approvalGate?.resolve("rejected");
+  },
+  toggleAutoApprove: () => {
+    set((s) => ({ autoApprove: !s.autoApprove }));
   },
 }));
 

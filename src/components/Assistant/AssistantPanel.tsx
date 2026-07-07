@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowUp, Square, Trash2 } from "lucide-react";
+import { ArrowUp, Square, Trash2, Zap } from "lucide-react";
 import { useAssistantStore } from "../../store/assistantStore";
 import { useSetting } from "../../hooks/useSetting";
 import { openSettings } from "../../lib/tauri";
@@ -19,6 +19,8 @@ export function AssistantPanel(_: { viewId: string }) {
   const clear = useAssistantStore((s) => s.clearConversation);
   const approve = useAssistantStore((s) => s.approve);
   const reject = useAssistantStore((s) => s.reject);
+  const autoApprove = useAssistantStore((s) => s.autoApprove);
+  const toggleAutoApprove = useAssistantStore((s) => s.toggleAutoApprove);
 
   const [apiKey] = useSetting<string>("ai.apiKey");
   const [input, setInput] = useState("");
@@ -52,14 +54,25 @@ export function AssistantPanel(_: { viewId: string }) {
     <div className="assistant-panel">
       <div className="assistant-panel__header">
         <span className="assistant-panel__title">{t("title")}</span>
-        <button
-          className="assistant-icon-btn"
-          onClick={clear}
-          title={t("clear")}
-          aria-label={t("clear")}
-        >
-          <Trash2 size={15} />
-        </button>
+        <div className="assistant-panel__header-actions">
+          <button
+            className={`assistant-toggle-btn${autoApprove ? " assistant-toggle-btn--on" : ""}`}
+            onClick={toggleAutoApprove}
+            title={t("autoApproveHint")}
+            aria-label={t("autoApprove")}
+            aria-pressed={autoApprove}
+          >
+            <Zap size={13} />
+          </button>
+          <button
+            className="assistant-icon-btn"
+            onClick={clear}
+            title={t("clear")}
+            aria-label={t("clear")}
+          >
+            <Trash2 size={15} />
+          </button>
+        </div>
       </div>
 
       <div
