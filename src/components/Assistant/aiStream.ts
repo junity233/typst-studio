@@ -114,6 +114,17 @@ async function driveStream(
     "tools=",
     context.tools?.length ?? 0,
   );
+  // Log message roles + toolCall/toolResult ids to spot missing tool_results.
+  for (let i = 0; i < context.messages.length; i++) {
+    const m = context.messages[i];
+    const meta =
+      m.role === "assistant"
+        ? m.content.filter((c) => c.type === "toolCall").map((c) => (c as { id?: string }).id)
+        : m.role === "toolResult"
+          ? m.toolCallId
+          : "";
+    console.log(`  [msg ${i}] role=${m.role}`, meta);
+  }
 
   if (provider === "anthropic") {
     const client = new Anthropic({
@@ -444,10 +455,16 @@ function convertMessagesForAnthropic(
         .filter((c): c is { type: "text"; text: string } => c.type === "text")
         .map((c) => c.text)
         .join("");
-      out.push({
-        role: "user",
-        content: [{ type: "tool_result", tool_use_id: m.toolCallId, content: text, is_error: m.isError }],
-      });
+      const block = { type: "tool_result" as const, tool_use_id: m.toolCallId, content: text, is_error: m.isError };
+      // Anthropic requires all tool_results for a batch of tool_use blocks to be
+      // in a SINGLE user message. Merge consecutive toolResult messages into the
+      // previous user message if it already carries tool_result blocks.
+      const prev = out[out.length - 1];
+      if (prev && prev.role === "user" && Array.isArray(prev.content) && prev.content.length > 0 && prev.content[0].type === "tool_result") {
+        (prev.content as typeof prev.content).push(block);
+      } else {
+        out.push({ role: "user", content: [block] });
+      }
     }
   }
   return { messages: out, system: context.systemPrompt };
