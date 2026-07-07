@@ -6,7 +6,6 @@ import { useWorkspaceStore } from "../../../store/workspaceStore";
 import {
   packageCompilerVersion,
   packageDirIsEmpty,
-  packageGetReadme,
   packageImportSnippet,
   packageInitTemplate,
   openFileByPath,
@@ -14,6 +13,7 @@ import {
 } from "../../../lib/tauri";
 import { toIpcError } from "../../../lib/ipc-error";
 import { Thumbnail } from "./Thumbnail";
+import { PackageReadme } from "./PackageReadme";
 
 /** Parse "major.minor.patch" → [major,minor,patch] (best-effort). */
 function parseVer(s: string): [number, number, number] | null {
@@ -28,19 +28,12 @@ export function PackageDetail() {
   const setSelected = usePackagesStore((s) => s.setSelected);
   const install = usePackagesStore((s) => s.install);
   const hydrate = useWorkspaceStore((s) => s.hydrate);
-  const [readme, setReadme] = useState<string | null>(null);
   const [compilerVersion, setCompilerVersion] = useState<string | null>(null);
 
   const entry = useMemo(
     () => catalog.find((e) => `${e.name}@${e.version}` === selectedKey) ?? null,
     [catalog, selectedKey],
   );
-
-  useEffect(() => {
-    setReadme(null);
-    if (!entry) return;
-    void packageGetReadme(entry.name, entry.version).then(setReadme);
-  }, [entry]);
 
   // Fetch the embedded compiler version once for the compat warning (§4.3).
   useEffect(() => {
@@ -151,7 +144,7 @@ export function PackageDetail() {
           ⚠ {t("compatWarn", { required: entry.compiler, actual: compilerVersion })}
         </p>
       )}
-      {readme && <pre className="pkg-readme">{readme}</pre>}
+      <PackageReadme name={entry.name} version={entry.version} />
       <div className="pkg-detail-actions">
         {isTemplate && (
           <button className="pkg-btn-primary" onClick={applyTemplate}>

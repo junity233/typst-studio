@@ -21,6 +21,7 @@
   "install": "Install",
   "uninstall": "Uninstall",
   "copyImport": "Copy import",
+  "noReadme": "No description available.",
   "confirmUninstall": "Uninstall {{name}} {{version}}? This deletes it from the local cache.",
   "confirmNonEmptyDest": "The chosen folder is not empty. Continuing may merge or overwrite files. Proceed?",
   "pickTemplateDir": "Choose a folder for the new project"

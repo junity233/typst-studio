@@ -25,8 +25,10 @@ export function TemplateGallery() {
             onClick={() => setSelected(`${e.name}@${e.version}`)}
           >
             <Thumbnail name={e.name} version={e.version} isTemplate={e.template != null} />
-            <span className="pkg-card-name">{e.name}</span>
-            <span className="pkg-card-cat">{e.categories[0] ?? ""}</span>
+            <span className="pkg-card-info">
+              <span className="pkg-card-name">{e.name}</span>
+              <span className="pkg-card-cat">{e.categories[0] ?? ""}</span>
+            </span>
           </button>
         </li>
       ))}

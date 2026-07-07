@@ -3092,19 +3092,20 @@ button {
 .packages-body { flex: 1; min-height: 0; overflow-y: auto; }
 .packages-empty { padding: var(--space-lg); text-align: center; font: var(--text-caption); color: var(--color-ink-muted-48); }
 
-/* gallery cards (templates) */
+/* gallery cards (templates) — banner layout: image on top, text below */
 .pkg-gallery { list-style: none; margin: 0; padding: var(--space-xs) var(--space-sm); display: grid; grid-template-columns: 1fr; gap: var(--space-xs); }
 .pkg-gallery > li { width: 100%; }
-.pkg-card { display: flex; flex-direction: column; gap: var(--space-xxs); width: 100%; padding: var(--space-xs); background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: 12px; cursor: pointer; transition: transform 0.08s ease; text-align: left; }
+.pkg-card { display: flex; flex-direction: column; width: 100%; background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: var(--radius-md); overflow: hidden; cursor: pointer; transition: transform 0.08s ease, border-color 0.08s ease; text-align: left; }
 .pkg-card:hover { border-color: var(--color-primary); }
-.pkg-card:active { transform: scale(0.95); }
-/* Thumbnails are the ONE element allowed the product shadow. The fixed-size
-   `.pkg-thumb` container holds aspect-ratio + shadow + radius; the inner
-   img/fallback fill it so loaded and placeholder cards are visually
-   identical and never shift on load. */
-.pkg-thumb { position: relative; width: 100%; aspect-ratio: 3 / 2; border-radius: var(--radius-sm); box-shadow: var(--shadow-product); overflow: hidden; }
+.pkg-card:active { transform: scale(0.98); }
+/* Thumbnail banner: spans the full card width and keeps a fixed aspect ratio
+   (16:9) so it scales responsively with the card — no fixed pixel size, no
+   max-height. The ONE element allowed the product shadow. */
+.pkg-thumb { position: relative; width: 100%; aspect-ratio: 16 / 9; box-shadow: var(--shadow-product); overflow: hidden; }
 .pkg-thumb-img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .pkg-thumb-fallback { position: absolute; inset: 0; display: grid; place-items: center; background: var(--color-canvas-parchment); color: var(--color-ink-muted-48); font: var(--text-body-strong); }
+/* Text region under the banner. */
+.pkg-card-info { display: flex; flex-direction: column; gap: 2px; padding: var(--space-xs); }
 .pkg-card-name { font: var(--text-caption-strong); color: var(--color-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pkg-card-cat { font: var(--text-nav-link); color: var(--color-ink-muted-48); }
 
@@ -3131,7 +3132,25 @@ button {
 .pkg-detail-desc { font: var(--text-caption); color: var(--color-ink-muted-80); margin: 0; }
 .pkg-detail-meta { display: grid; grid-template-columns: auto 1fr; gap: 0 var(--space-xs); font: var(--text-caption); margin: 0; }
 .pkg-detail-meta dt { color: var(--color-ink-muted-48); }
-.pkg-readme { flex: 1; min-height: 0; overflow: auto; font: var(--text-caption); white-space: pre-wrap; background: var(--color-canvas-parchment); padding: var(--space-sm); border-radius: var(--radius-sm); }
+.pkg-readme { flex: 1; min-height: 40px; max-height: 50%; overflow: auto; font: var(--text-caption); line-height: 1.5; color: var(--color-ink); background: var(--color-canvas-parchment); padding: var(--space-sm); border-radius: var(--radius-sm); }
+.pkg-readme-empty { margin: 0; padding: var(--space-sm); font: var(--text-caption); color: var(--color-ink-muted-48); text-align: center; }
+/* Markdown element styling inside the README region. */
+.pkg-readme > :first-child { margin-top: 0; }
+.pkg-readme > :last-child { margin-bottom: 0; }
+.pkg-readme h1, .pkg-readme h2, .pkg-readme h3 { font: var(--text-body-strong); margin: var(--space-xs) 0 var(--space-xxs); }
+.pkg-readme p { margin: 0 0 var(--space-xs); }
+.pkg-readme ul, .pkg-readme ol { margin: 0 0 var(--space-xs); padding-left: var(--space-md); }
+.pkg-readme li { margin: 2px 0; }
+.pkg-readme a { color: var(--color-primary); text-decoration: none; }
+.pkg-readme a:hover { text-decoration: underline; }
+.pkg-readme code { font: var(--text-caption) var(--font-mono); background: var(--color-surface-alt); padding: 1px 4px; border-radius: var(--radius-xs); }
+.pkg-readme pre { background: var(--color-surface-alt); padding: var(--space-xs); border-radius: var(--radius-sm); overflow-x: auto; margin: 0 0 var(--space-xs); }
+.pkg-readme pre code { background: none; padding: 0; }
+.pkg-readme img { max-width: 100%; border-radius: var(--radius-xs); }
+.pkg-readme hr { border: 0; border-top: 1px solid var(--color-divider-soft); margin: var(--space-xs) 0; }
+.pkg-readme blockquote { margin: 0 0 var(--space-xs); padding-left: var(--space-sm); color: var(--color-ink-muted-80); border-left: 3px solid var(--color-divider-soft); }
+.pkg-readme table { border-collapse: collapse; width: 100%; margin: 0 0 var(--space-xs); }
+.pkg-readme th, .pkg-readme td { border: 1px solid var(--color-hairline); padding: var(--space-xxs) var(--space-xs); text-align: left; }
 .pkg-detail-actions { display: flex; gap: var(--space-xs); }
 .pkg-btn-primary { flex: 1; font: var(--text-caption-strong); color: var(--color-on-primary); background: var(--color-primary); border: 0; border-radius: var(--radius-pill); padding: var(--space-xxs) var(--space-sm); cursor: pointer; }
 .pkg-btn-primary:active { transform: scale(0.95); }
