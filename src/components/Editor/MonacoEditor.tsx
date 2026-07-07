@@ -576,7 +576,20 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
       prevTabId,
     );
 
-    // 1. Open newly-appeared docs (§10.1). openModel is idempotent per id;
+    // 1. Close gone docs FIRST (§10.4). closeModel disposes the model; the
+    //    CALLER (a future task) is responsible for the LSP didClose
+    //    notification. Closing before opening matters when a single store
+    //    update drops an old id and adds a new id for the SAME path: closing
+    //    the old id first disposes its model (freeing that URI in Monaco's
+    //    ModelService) before the open touches the same URI. (openModel itself
+    //    is URI-aware and resilient to a collision, but ordering the close
+    //    first removes the divergence at its source.)
+    for (const id of plan.toClose) {
+      monacoModelRegistry.closeModel(id);
+      seenIdsRef.current.delete(id);
+    }
+
+    // 2. Open newly-appeared docs (§10.1). openModel is idempotent per id;
     //    the plan only lists ids absent from seenIdsRef, so each is opened once.
     for (const entry of plan.toOpen) {
       monacoModelRegistry.openModel(entry.id, {
@@ -585,13 +598,6 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         revision: entry.revision,
       });
       seenIdsRef.current.add(entry.id);
-    }
-
-    // 2. Close gone docs (§10.4). closeModel disposes the model; the CALLER
-    //    (a future task) is responsible for the LSP didClose notification.
-    for (const id of plan.toClose) {
-      monacoModelRegistry.closeModel(id);
-      seenIdsRef.current.delete(id);
     }
 
     // 3. Activate the active tab's model in the editor (§10.5): swap the
@@ -955,8 +961,27 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   // status is stable (available⇒wsUrl non-empty, OR confirmed !available),
   // the first mount sees the final languageClientConfig and the freeze keeps
   // it (and editorAppConfig) stable for the wrapper's lifetime.
+  //
+  // STICKY MOUNT: the gate defers the FIRST mount only. Once the wrapper has
+  // mounted, we keep it mounted across transient `lspReady` false-flips (an
+  // LSP restart republishing an intermediate `lsp_status` with `available:
+  // false` / empty wsUrl). Unmounting DirectMonacoEditor on every reconnect
+  // is destructive: the singleton monacoModelRegistry (and Monaco's own
+  // ModelService) outlive the unmount, so a remount racing a fresh backend
+  // document id can trip Monaco's "Cannot add model because it already
+  // exists!" assertion. LSP recovery is driven by the appLanguageClient.start
+  // effect below and useLspWorkspaceReconnect — neither needs the editor to
+  // remount.
   const lspReady =
     !lspLoading && (lspStatus.available ? wsUrl !== null : true);
+  const editorGate =
+    lspReady && vscodeApiReady && typstHighlightingReady;
+  const [editorMountedOnce, setEditorMountedOnce] = useState(false);
+  useEffect(() => {
+    if (editorGate && !editorMountedOnce) {
+      setEditorMountedOnce(true);
+    }
+  }, [editorGate, editorMountedOnce]);
   useEffect(() => {
     if (!editorRuntimeReady) return;
     if (!lspReady) return;
@@ -980,7 +1005,9 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     );
   }
 
-  if (!lspReady || !vscodeApiReady || !typstHighlightingReady) {
+  // Show the loading placeholder only BEFORE the first successful mount. Once
+  // mounted, stay mounted (sticky) even if the gate transiently fails.
+  if (!editorMountedOnce && !editorGate) {
     return <div className="editor-pane">{t("loading")}</div>;
   }
 

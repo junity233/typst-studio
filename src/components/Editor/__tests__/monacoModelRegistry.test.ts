@@ -128,14 +128,28 @@ export interface MockModel {
  * The live mock module object. Typed loosely — it carries the same `editor`
  * shape the registry imports, but the model/editor instances it produces are
  * our hand-rolled mocks (cast to the real Monaco types inside the registry).
+ *
+ * `editor.modelsByUri` is a module-level map the mock uses to mirror Monaco's
+ * URI-keyed ModelService: `createModel` throws on a duplicate URI (so tests
+ * exercise the registry's reconciliation branches against real collision
+ * semantics), and `getModel(uri)` returns the tracked model. The map is
+ * attached to the module (not a closed-over `let`) because vi.mock factories
+ * are hoisted and cannot close over top-level declarations.
  */
 interface MonacoMockModule {
   editor: {
     createModel: ReturnType<typeof vi.fn>;
+    getModel: ReturnType<typeof vi.fn>;
+    /** URI string → live mock model. Reset in beforeEach. */
+    modelsByUri: Map<string, MockModel>;
   };
 }
 
 vi.mock("@codingame/monaco-vscode-editor-api", () => {
+  // Attached to the returned module so the test body can reset/inspect it
+  // (vi.mock factories are hoisted and cannot close over top-level `let`).
+  const modelsByUri = new Map<string, MockModel>();
+
   function createMockModel(content: string, uri: string): MockModel {
     const listeners: Array<() => void> = [];
     let current = content;
@@ -148,6 +162,10 @@ vi.mock("@codingame/monaco-vscode-editor-api", () => {
         for (const l of [...listeners]) l();
       },
       dispose: () => {
+        // Mirror real Monaco: a disposed model is removed from the URI→model
+        // index so a subsequent getModel(uri) returns null (and createModel at
+        // the same URI succeeds again).
+        modelsByUri.delete(uri);
         model.isDisposed = true;
       },
       isDisposed: false,
@@ -166,11 +184,27 @@ vi.mock("@codingame/monaco-vscode-editor-api", () => {
   }
 
   const createModel = vi.fn(
-    (content: string, _languageId: string, uri: { toString(): string }) =>
-      createMockModel(content, uri.toString()),
+    (content: string, _languageId: string, uri: { toString(): string }) => {
+      const uriStr = uri.toString();
+      // Mirror real Monaco: a second createModel at the SAME URI throws
+      // ("ModelService: Cannot add model because it already exists!"). This is
+      // what the registry's reconciliation defends against in production.
+      if (modelsByUri.has(uriStr)) {
+        throw new Error(
+          "ModelService: Cannot add model because it already exists!",
+        );
+      }
+      const model = createMockModel(content, uriStr);
+      modelsByUri.set(uriStr, model);
+      return model;
+    },
   );
 
-  const mockModule: MonacoMockModule = { editor: { createModel } };
+  const getModel = vi.fn((uri: { toString(): string }) => {
+    return modelsByUri.get(uri.toString()) ?? null;
+  });
+
+  const mockModule: MonacoMockModule = { editor: { createModel, getModel, modelsByUri } };
   return mockModule;
 });
 
@@ -254,6 +288,8 @@ function openOpts(
 beforeEach(() => {
   monacoModelRegistry.resetForTest();
   monacoMock.editor.createModel.mockClear();
+  monacoMock.editor.getModel.mockClear();
+  monacoMock.editor.modelsByUri.clear();
 });
 
 // ---------------------------------------------------------------------------
@@ -313,6 +349,98 @@ describe("MonacoModelRegistry.openModel (§8.1, §8.2)", () => {
     );
     expect(entry.uri).toBe("file:///home/me/notes.typ");
     expect(entry.lastSyncedRevision).toBe(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1b. openModel URI reconciliation (the "Cannot add model" defense).
+// These cases exercise the reconciliation branches that make openModel TOTAL
+// on URI: it never throws when Monaco already holds a model at the target URI.
+// ---------------------------------------------------------------------------
+describe("MonacoModelRegistry.openModel URI reconciliation", () => {
+  it("(a) rebinding: opening a NEW id at an already-open URI reuses the model", () => {
+    // Backend reissues a fresh id for a path whose model is still alive (e.g.
+    // after an LSP restart). id-A is opened first; id-B targets the same path.
+    const entryA = monacoModelRegistry.openModel(
+      "id-A",
+      openOpts("body", fileOrigin, 3),
+    );
+    expect(monacoMock.editor.createModel).toHaveBeenCalledTimes(1);
+    const originalModel = entryA.model;
+
+    // id-B is unknown to the registry, but its URI collides with id-A's.
+    const entryB = monacoModelRegistry.openModel(
+      "id-B",
+      openOpts("body", fileOrigin, 3),
+    );
+
+    // The SAME model object is reused — no second createModel call.
+    expect(entryB.model).toBe(originalModel);
+    expect(monacoMock.editor.createModel).toHaveBeenCalledTimes(1);
+
+    // byId is now keyed by id-B only (id-A is gone); idByUri points at id-B.
+    expect(monacoModelRegistry.getModel("id-A")).toBeUndefined();
+    expect(monacoModelRegistry.getModel("id-B")).toBe(entryB);
+    expect(monacoModelRegistry.resolveDocumentId(entryB.uri)).toBe("id-B");
+
+    // The model itself was never disposed.
+    expect(originalModel.isDisposed).toBe(false);
+    expect(monacoModelRegistry.snapshot()).toHaveLength(1);
+  });
+
+  it("(b) orphan adoption: a Monaco model with no registry entry is adopted", () => {
+    // Simulate divergence: Monaco holds a model the registry doesn't know
+    // (e.g. HMR re-imported the registry module and emptied its maps while
+    // Monaco kept its models). Seed the mock's URI→model index directly so
+    // getModel(uri) returns the orphan, WITHOUT going through createModel
+    // (so we can assert createModel was not called by openModel).
+    const orphanUri = "file:///home/me/notes.typ";
+    // Hand-build a mock model at the orphan URI (the factory's createMockModel
+    // is not exported, so a minimal inline stub is enough for this assertion).
+    const seeded: MockModel = {
+      getValue: () => "seeded",
+      setValue: () => {},
+      dispose: () => {
+        seeded.isDisposed = true;
+      },
+      isDisposed: false,
+      uri: orphanUri,
+      onDidChangeContent: () => ({ dispose: () => {} }),
+    };
+    monacoMock.editor.modelsByUri.set(orphanUri, seeded);
+    monacoMock.editor.createModel.mockClear();
+
+    // openModel for a brand-new id at the orphan URI must ADOPT it, not throw.
+    const entry = monacoModelRegistry.openModel(
+      "fresh-id",
+      openOpts("ignored", fileOrigin, 0),
+    );
+
+    expect(entry.model).toBe(seeded);
+    // createModel was NOT called — the orphan was reused.
+    expect(monacoMock.editor.createModel).not.toHaveBeenCalled();
+    expect(entry.documentId).toBe("fresh-id");
+    expect(entry.uri).toBe(orphanUri);
+    expect(monacoModelRegistry.getModel("fresh-id")).toBe(entry);
+  });
+
+  it("(c) idempotency preserved: re-opening the SAME id + origin is a no-op", () => {
+    const first = monacoModelRegistry.openModel(
+      "same",
+      openOpts("body", fileOrigin, 0),
+    );
+    const second = monacoModelRegistry.openModel(
+      "same",
+      openOpts("body", fileOrigin, 0),
+    );
+    expect(second).toBe(first);
+    expect(monacoMock.editor.createModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("(d) truly new URI still calls createModel (happy path unchanged)", () => {
+    monacoModelRegistry.openModel("a", openOpts("a", untitledOrigin));
+    monacoModelRegistry.openModel("b", openOpts("b", fileOrigin));
+    expect(monacoMock.editor.createModel).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -123,6 +123,23 @@ class MonacoModelRegistry {
    * [`migrateUri`](Self.migrateUri) (used by Task 9's Save As). For Task 2 the
    * migration primitive itself is correct; the LSP didClose/didOpen sequencing
    * is layered on by Task 9.
+   *
+   * TOTAL on URI: this method NEVER throws on a URI collision even when the
+   * registry's id-keyed view disagrees with Monaco's URI-keyed view. Monaco's
+   * `ModelService` tracks models by URI; this registry tracks them by
+   * `documentId`. The two stay consistent under normal flows
+   * (open/close/migrate all update BOTH maps atomically), but divergence is
+   * reachable in real life — e.g. the backend reissuing a fresh `documentId`
+   * for a path whose model is still alive after an LSP restart, a React remount
+   * resetting component refs while this singleton (and Monaco's models)
+   * persist, or an HMR re-import emptying this registry's maps while Monaco
+   * keeps its models. Without reconciliation, reaching `createModel` for a URI
+   * Monaco already holds throws `ModelService: Cannot add model because it
+   * already exists!`, which propagates out of a React effect and tears the
+   * editor tree down. So before creating, we reconcile against BOTH the
+   * `idByUri` map and (belt-and-suspenders) `Monaco.editor.getModel(uri)` and
+   * adopt/rebind the existing model instead of recreating it. The happy path
+   * (truly new URI) is unchanged.
    */
   openModel(documentId: string, opts: OpenModelOptions): ModelEntry {
     const existing = this.byId.get(documentId);
@@ -139,7 +156,55 @@ class MonacoModelRegistry {
     }
 
     const uri = originToUri(opts.origin, documentId as DocumentId);
-    // Create the model FIRST; if it throws, neither map is touched (atomic).
+
+    // URI reconciliation — see the method doc. We are about to create a model
+    // at `uri`, but Monaco's ModelService is URI-keyed and may already hold a
+    // live model there even though THIS registry's id-keyed map does not know
+    // `documentId`. Check both sides and adopt the existing model instead of
+    // recreating (which would throw).
+    const ownerOfUri = this.idByUri.get(uri);
+    if (ownerOfUri !== undefined && ownerOfUri !== documentId) {
+      const owned = this.byId.get(ownerOfUri);
+      if (owned !== undefined) {
+        // Rebind the live entry to the new id (e.g. backend reissued an id for
+        // the same path). Preserves model/diagnostics/view-state/undo history.
+        // Drop the old id everywhere we track it; this branch only fires under
+        // divergence, so a stale oldId is expected.
+        this.byId.delete(ownerOfUri);
+        this.suppressForward.delete(ownerOfUri);
+        owned.documentId = documentId;
+        this.byId.set(documentId, owned);
+        // idByUri already maps uri → ownerOfUri; rewrite to the new id.
+        this.idByUri.set(uri, documentId);
+        return owned;
+      }
+      // Stale idByUri row (its byId entry was already removed, e.g. a partial
+      // close). Drop the stale row and fall through to create / adopt below.
+      this.idByUri.delete(uri);
+    }
+
+    // Belt-and-suspenders: even if our idByUri map missed it, Monaco itself may
+    // still hold a model at `uri` (e.g. HMR re-imported this module and emptied
+    // our maps while Monaco kept its models). Adopt the orphan — recreating
+    // would throw. The caller drives content/revision via applyExternalContent
+    // / edits, so we do NOT clobber the adopted model's text here.
+    const orphan = Monaco.editor.getModel(Uri.parse(uri));
+    if (orphan !== null && this.idByUri.get(uri) === undefined) {
+      const entry: ModelEntry = {
+        model: orphan,
+        uri,
+        documentId,
+        viewState: null,
+        lastSyncedRevision: opts.revision,
+      };
+      this.byId.set(documentId, entry);
+      this.idByUri.set(uri, documentId);
+      return entry;
+    }
+
+    // Truly new URI — create the model. If it still throws (genuinely
+    // unreachable after the reconciliation above), neither map is touched
+    // (atomic).
     const model = Monaco.editor.createModel(
       opts.content,
       "typst",
