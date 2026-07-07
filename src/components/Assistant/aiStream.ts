@@ -122,9 +122,16 @@ async function driveStream(
         ? m.content.filter((c) => c.type === "toolCall").map((c) => (c as { id?: string }).id)
         : m.role === "toolResult"
           ? m.toolCallId
-          : "";
+          : m.role === "user"
+            ? JSON.stringify(
+                typeof m.content === "string"
+                  ? m.content.slice(0, 60)
+                  : m.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("").slice(0, 60),
+              )
+            : "";
     console.log(`  [msg ${i}] role=${m.role}`, meta);
   }
+  console.log("[ai][stream] systemPrompt set:", !!context.systemPrompt, "len=", context.systemPrompt?.length ?? 0);
 
   if (provider === "anthropic") {
     const client = new Anthropic({
@@ -308,7 +315,17 @@ function convertMessagesForOpenAI(context: Context): ChatCompletionMessageParam[
   const out: ChatCompletionMessageParam[] = [];
   for (const m of context.messages) {
     if (m.role === "user") {
-      out.push({ role: "user", content: typeof m.content === "string" ? m.content : "" });
+      // UserMessage.content can be a string OR a (TextContent|ImageContent)[]
+      // array. Extract text from either shape — the old code dropped arrays
+      // to "", which meant the user's actual message never reached the LLM.
+      const text =
+        typeof m.content === "string"
+          ? m.content
+          : m.content
+              .filter((c): c is { type: "text"; text: string } => c.type === "text")
+              .map((c) => c.text)
+              .join("");
+      out.push({ role: "user", content: text });
     } else if (m.role === "assistant") {
       const text = m.content
         .filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -460,7 +477,17 @@ function convertMessagesForAnthropic(
   const out: AnthropicMessageParam[] = [];
   for (const m of context.messages) {
     if (m.role === "user") {
-      out.push({ role: "user", content: typeof m.content === "string" ? m.content : "" });
+      // UserMessage.content can be string OR (TextContent|ImageContent)[].
+      // Extract text from either shape — dropping arrays to "" loses the user's
+      // actual question.
+      const text =
+        typeof m.content === "string"
+          ? m.content
+          : m.content
+              .filter((c): c is { type: "text"; text: string } => c.type === "text")
+              .map((c) => c.text)
+              .join("");
+      out.push({ role: "user", content: text });
     } else if (m.role === "assistant") {
       const text = m.content
         .filter((c): c is { type: "text"; text: string } => c.type === "text")
