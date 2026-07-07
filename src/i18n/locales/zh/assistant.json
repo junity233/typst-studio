@@ -18,5 +18,8 @@
   "toolError": "出错",
   "expandResult": "展开完整结果",
   "collapseResult": "收起结果",
+  "expandDiff": "查看完整 diff",
+  "noChanges": "无变更",
+  "close": "关闭",
   "enterToSend": "回车发送 · Shift+Enter 换行"
 }

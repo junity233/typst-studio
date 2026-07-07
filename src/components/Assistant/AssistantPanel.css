@@ -248,6 +248,21 @@
 }
 .assistant-diff-card__tool {
   font-family: var(--font-mono, ui-monospace, monospace);
+  flex: 1;
+}
+.assistant-diff-card__expand {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 5px;
+  color: var(--color-body-muted);
+  display: flex;
+  align-items: center;
+}
+.assistant-diff-card__expand:hover {
+  background: var(--color-hover-soft);
+  color: var(--color-primary);
 }
 .assistant-diff-card__body {
   margin: 0;
@@ -258,6 +273,10 @@
   max-height: 240px;
   overflow-y: auto;
   line-height: 1.5;
+}
+.assistant-diff-line--empty {
+  opacity: 0.5;
+  font-style: italic;
 }
 .assistant-diff-line {
   display: flex;
@@ -472,4 +491,92 @@
   font-weight: 600;
   margin: 10px 0 4px;
   color: var(--color-ink);
+}
+
+/* --- Diff modal (pop-out) --- */
+.assistant-diff-modal-overlay {
+  z-index: 1000;
+}
+.assistant-diff-modal {
+  background: var(--color-canvas);
+  border: 1px solid var(--color-hairline);
+  border-radius: 14px;
+  width: min(720px, 90vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.assistant-diff-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--color-hairline);
+  flex-shrink: 0;
+}
+.assistant-diff-modal__title {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.assistant-diff-modal__close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  color: var(--color-body-muted);
+  display: flex;
+}
+.assistant-diff-modal__close:hover {
+  background: var(--color-hover-soft);
+  color: var(--color-body);
+}
+.assistant-diff-modal__body {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+.assistant-diff-modal__pre {
+  margin: 0;
+  padding: 8px 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow: auto;
+  max-height: 100%;
+  white-space: pre;
+}
+.assistant-diff-modal__pre .assistant-diff-line {
+  padding: 0 16px;
+}
+/* Line-number columns in the modal (before / after) */
+.assistant-diff-line__num {
+  width: 3em;
+  flex-shrink: 0;
+  text-align: right;
+  padding-right: 8px;
+  color: var(--color-body-muted);
+  opacity: 0.4;
+  font-size: 11px;
+  user-select: none;
+}
+.assistant-diff-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--color-hairline);
+  flex-shrink: 0;
+}
+.assistant-diff-modal__verdict {
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--color-body-muted);
+  border-top: 1px solid var(--color-hairline);
+  font-style: italic;
+  text-align: center;
+  flex-shrink: 0;
 }
