@@ -102,9 +102,10 @@ export function BibliographyPanel() {
             />
           </div>
           {error && (
-            <p className="bibliography-status bibliography-status-error">
-              {t("parseError")}
-            </p>
+            <div className="bibliography-status bibliography-status-error">
+              <p>{t("parseError")}</p>
+              <p className="bibliography-status-detail">{error}</p>
+            </div>
           )}
           <div className="bibliography-body">
             {loading && entries.length === 0 ? (

@@ -8,6 +8,49 @@
 export type AffectedDoc = { id: DocumentId, path: string, };
 
 /**
+ * One bibliography entry surfaced to the Bibliography panel. CamelCase on the
+ * wire to match the frontend TS interface (`{ key, entryType, title?, authors, year? }`).
+ */
+export type BibEntry = { 
+/**
+ * The citation key — what goes inside `#cite(<key>)`.
+ */
+key: string, 
+/**
+ * The entry type as a kebab-case string (e.g. "article", "book").
+ */
+entryType: string, 
+/**
+ * The full formatted title, if present.
+ */
+title: string | null, 
+/**
+ * Author display names ("Given Family"), in order. Empty when absent.
+ */
+authors: Array<string>, 
+/**
+ * The 4-digit publication year, if a date is present.
+ */
+year: number | null, };
+
+/**
+ * Metadata about a discovered bibliography file. The path is absolute
+ * (workspace-rooted). `entryCount` is a fast, approximate count used to show
+ * the user how many references each file holds without parsing the full
+ * payload (it counts top-level BibLaTeX `@` records or YAML top-level keys).
+ */
+export type BibFileInfo = { 
+/**
+ * Absolute filesystem path to the `.bib`/`.yml`/`.yaml` file.
+ */
+path: string, 
+/**
+ * Approximate entry count (records/keys), for a quick size signal in the UI.
+ * `null` when the count could not be cheaply determined.
+ */
+entryCount: number | null, };
+
+/**
  * Query parameters for `package_list_catalog`.
  */
 export type CatalogFilter = { 

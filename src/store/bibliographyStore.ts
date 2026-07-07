@@ -7,6 +7,15 @@ import {
 import { toIpcError } from "../lib/ipc-error";
 
 /**
+ * Monotonic generation counter guarding `discoverFiles` against the
+ * workspace-switch race (I1). Each call increments it and captures the value;
+ * an in-flight discovery whose captured generation is no longer the latest
+ * discards its result so a slow `discoverFiles(A)` can't clobber a fresher
+ * `discoverFiles(B)`'s file list.
+ */
+let discoverGen = 0;
+
+/**
  * Bibliography panel store (Task 4). Holds the discovered bib files in the
  * workspace, the entries of the currently-selected file, the search query, and
  * loading/error state. Mirrors the shape of `packagesStore`.
@@ -51,11 +60,16 @@ export const useBibliographyStore = create<BibliographyState>((set) => ({
     // A new discovery invalidates the previous selection: the old active file
     // belongs to the (now-replaced) workspace, so reset it + its entries so the
     // panel auto-selects a fresh file from the new list.
+    const gen = ++discoverGen;
     set({ loading: true, error: null, activeFilePath: null, entries: [] });
     try {
       const files = await bibliographyDiscoverBE(rootPath);
+      // Staleness guard (I1): a newer discovery (workspace switch) supersedes
+      // this one — drop the result so it can't overwrite the fresher list.
+      if (gen !== discoverGen) return;
       set({ discoveredFiles: files, loading: false });
     } catch (e) {
+      if (gen !== discoverGen) return;
       set({ loading: false, error: toIpcError(e).message });
     }
   },
@@ -66,7 +80,10 @@ export const useBibliographyStore = create<BibliographyState>((set) => ({
       const entries = await bibliographyParseBE(path);
       set({ entries, loading: false });
     } catch (e) {
-      set({ loading: false, error: toIpcError(e).message });
+      // Reset the selection (M2): the optimistic `activeFilePath: path` above
+      // pointed at the failed file; leaving it would show a broken file as
+      // active with no entries. Null it so the UI can re-pick a valid file.
+      set({ loading: false, activeFilePath: null, error: toIpcError(e).message });
     }
   },
 

@@ -38,6 +38,11 @@ pub enum BibFormat {
 /// wire to match the frontend TS interface (`{ key, entryType, title?, authors, year? }`).
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
 pub struct BibEntry {
     /// The citation key — what goes inside `#cite(<key>)`.
     pub key: String,
@@ -167,6 +172,16 @@ fn sniff_from_content(content: &str) -> Option<BibFormat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two-entry BibLaTeX fixture covering the common fields we extract.
+
+    #[test]
+    #[cfg(feature = "export-types")]
+    fn export_types() {
+        use ts_rs::TS;
+        let cfg = ts_rs::Config::default();
+        BibEntry::export(&cfg).unwrap();
+    }
 
     /// Two-entry BibLaTeX fixture covering the common fields we extract.
     const BIB_FIXTURE: &str = r#"

@@ -25,6 +25,11 @@ use crate::error::{AppError, Result};
 /// payload (it counts top-level BibLaTeX `@` records or YAML top-level keys).
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
 pub struct BibFileInfo {
     /// Absolute filesystem path to the `.bib`/`.yml`/`.yaml` file.
     pub path: String,
@@ -185,6 +190,14 @@ fn sniff_for_path(path: &str, content: &str) -> BibFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(feature = "export-types")]
+    fn export_types() {
+        use ts_rs::TS;
+        let cfg = ts_rs::Config::default();
+        BibFileInfo::export(&cfg).unwrap();
+    }
 
     #[test]
     fn count_entries_biblatex_counts_at_records() {
