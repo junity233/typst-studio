@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import { onFocusView, onOpenExternalFile, openFileByPath } from "../lib/tauri";
 import { useTabsStore } from "../store/tabsStore";
+import { toIpcError } from "../lib/ipc-error";
+import i18n from "../i18n";
 
 /**
  * Single-instance file routing (§6.1). Mounted once at the app root.
@@ -29,7 +31,13 @@ export function useExternalFileRouting(): void {
         const doc = await openFileByPath(payload.path);
         useTabsStore.getState().openPath(doc);
       } catch (e) {
-        console.error("[useExternalFileRouting] open failed:", e);
+        // Surface failures to the user instead of silently dropping them —
+        // every other open path (openFile.ts, Explorer) alerts on failure, and
+        // a silent "double-click did nothing" is the worst UX here. A Cancelled
+        // IPC code stays silent (matches openFile.ts).
+        const ipc = toIpcError(e);
+        if (ipc.code === "cancelled") return;
+        window.alert(i18n.t("couldNotOpen", { ns: "errors", message: ipc.message }));
       }
     }).then((fn) => unlisteners.push(fn));
 

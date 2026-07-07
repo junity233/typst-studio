@@ -3,6 +3,7 @@ import { ChevronRight, ChevronsDownUp, ChevronsUpDown, FileText } from "lucide-r
 import { useTranslation } from "react-i18next";
 import { useSearchStore } from "../../store/searchStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
+import { useTabsStore } from "../../store/tabsStore";
 import { useSetting } from "../../hooks/useSetting";
 import { openFile } from "../../lib/openFile";
 import { editorApiRef } from "../Editor/editorApiRef";
@@ -261,7 +262,16 @@ function renderHitText(line: string, start: number, end: number) {
   );
 }
 
-/** Open the hit's file (or activate an existing tab) and reveal the line. */
+/**
+ * Open the hit's file (or activate an existing tab) and reveal the line.
+ *
+ * Reveal must wait for the target doc's model to actually attach to the editor:
+ * `revealLine` operates on the currently-attached model, and the model swap for
+ * a freshly-activated tab happens later, in MonacoEditor's model-sync effect.
+ * So for a hit in a non-active file we stash a pending reveal (keyed by doc id)
+ * that the effect flushes once the right model is attached. When the file is
+ * ALREADY active (no model swap will follow), we reveal immediately.
+ */
 async function handleHitClick(
   rootPath: string | null,
   relative: string,
@@ -270,6 +280,15 @@ async function handleHitClick(
 ): Promise<void> {
   if (!rootPath) return;
   const abs = joinWorkspacePath(rootPath, relative);
-  await openFile(abs);
-  editorApiRef.current?.revealLine(line, column);
+  const docId = await openFile(abs);
+  if (docId === null) return;
+  // Stash first (covers the common case: a different file → a model swap will
+  // follow → the effect flushes this). Then, if the doc is ALREADY active, no
+  // swap will follow, so reveal now and clear the stash.
+  editorApiRef.pendingReveal = { docId, line, column };
+  const activeId = useTabsStore.getState().activeId;
+  if (activeId === docId && editorApiRef.current) {
+    editorApiRef.pendingReveal = null;
+    editorApiRef.current.revealLine(line, column);
+  }
 }

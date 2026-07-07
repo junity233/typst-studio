@@ -17,6 +17,7 @@ import {
 import { monacoModelRegistry } from "./monacoModelRegistry";
 import { installLspDiagnosticsBridge } from "./lspDiagnosticsBridge";
 import { computeModelSyncPlan } from "./editorModelSync";
+import { editorApiRef } from "./editorApiRef";
 import { languageIdForDocument } from "./languageId";
 import {
   detectOriginTransition,
@@ -635,6 +636,26 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         );
         if (result.viewState !== null) {
           editor.restoreViewState(result.viewState);
+        }
+        // Flush a cross-component pending reveal (e.g. a Search-panel hit click
+        // on a different file). `revealLine` operates on the currently-attached
+        // model, so a caller that just activated this doc would otherwise have
+        // its reveal land on the OLD model (or no-op). Now that plan.toActivate's
+        // model is attached, the line/column finally target the right document.
+        // The docId guard prevents a stale stash for a different doc from ever
+        // misfiring. See editorApiRef.ts PendingReveal.
+        const pending = editorApiRef.pendingReveal;
+        if (pending !== null && pending.docId === plan.toActivate) {
+          editorApiRef.pendingReveal = null;
+          editor.revealLineInCenterIfOutsideViewport(
+            pending.line,
+            SCROLL_IMMEDIATE,
+          );
+          editor.setPosition({
+            lineNumber: pending.line,
+            column: pending.column,
+          });
+          editor.focus();
         }
       }
     }
