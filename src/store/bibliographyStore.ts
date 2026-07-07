@@ -37,6 +37,9 @@ export interface BibliographyState {
   loading: boolean;
   /** Last error message, or null. Shown as a status line in the panel. */
   error: string | null;
+  /** Paths that failed to parse — auto-select skips these so a single broken
+   *  file can't loop (load → error → activeFilePath=null → auto-select → load …). */
+  failedPaths: string[];
 
   /** Walk the workspace root for bibliography files. No-op-ish when closed. */
   discoverFiles: (rootPath: string | null) => Promise<void>;
@@ -48,20 +51,29 @@ export interface BibliographyState {
   clear: () => void;
 }
 
-export const useBibliographyStore = create<BibliographyState>((set) => ({
+export const useBibliographyStore = create<BibliographyState>((set, get) => ({
   discoveredFiles: [],
   activeFilePath: null,
   entries: [],
   query: "",
   loading: false,
   error: null,
+  failedPaths: [],
 
   discoverFiles: async (rootPath) => {
     // A new discovery invalidates the previous selection: the old active file
     // belongs to the (now-replaced) workspace, so reset it + its entries so the
-    // panel auto-selects a fresh file from the new list.
+    // panel auto-selects a fresh file from the new list. Failed-path memory is
+    // also cleared — a re-discovery (e.g. after the user fixes the file on
+    // disk) deserves a clean retry.
     const gen = ++discoverGen;
-    set({ loading: true, error: null, activeFilePath: null, entries: [] });
+    set({
+      loading: true,
+      error: null,
+      activeFilePath: null,
+      entries: [],
+      failedPaths: [],
+    });
     try {
       const files = await bibliographyDiscoverBE(rootPath);
       // Staleness guard (I1): a newer discovery (workspace switch) supersedes
@@ -80,10 +92,18 @@ export const useBibliographyStore = create<BibliographyState>((set) => ({
       const entries = await bibliographyParseBE(path);
       set({ entries, loading: false });
     } catch (e) {
-      // Reset the selection (M2): the optimistic `activeFilePath: path` above
-      // pointed at the failed file; leaving it would show a broken file as
-      // active with no entries. Null it so the UI can re-pick a valid file.
-      set({ loading: false, activeFilePath: null, error: toIpcError(e).message });
+      // Record the failure so the panel's auto-select skips this path on the
+      // next pick (otherwise: load → error → activeFilePath=null → auto-select
+      // → load the SAME broken file → infinite loop). Clear activeFilePath so
+      // the <select> doesn't keep showing the broken file as selected.
+      set((s) => ({
+        loading: false,
+        activeFilePath: null,
+        error: toIpcError(e).message,
+        failedPaths: s.failedPaths.includes(path)
+          ? s.failedPaths
+          : [...s.failedPaths, path],
+      }));
     }
   },
 
@@ -97,5 +117,6 @@ export const useBibliographyStore = create<BibliographyState>((set) => ({
       query: "",
       loading: false,
       error: null,
+      failedPaths: [],
     }),
 }));

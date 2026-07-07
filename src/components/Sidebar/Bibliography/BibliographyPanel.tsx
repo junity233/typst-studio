@@ -51,12 +51,15 @@ export function BibliographyPanel() {
   // Auto-select the first discovered file so the panel shows references
   // immediately without requiring a manual pick (matches the "just works"
   // expectation from the Packages/Symbols panels). Re-runs when discovery
-  // resolves a new file list and nothing is active yet.
+  // resolves a new file list and nothing is active yet. Skips files that
+  // previously failed to parse so a single broken file can't loop
+  // (load → error → activeFilePath=null → auto-select → reload same file).
+  const failedPaths = useBibliographyStore((s) => s.failedPaths);
   useEffect(() => {
-    if (activeFilePath === null && discoveredFiles.length > 0) {
-      void loadFile(discoveredFiles[0].path);
-    }
-  }, [discoveredFiles, activeFilePath, loadFile]);
+    if (activeFilePath !== null) return;
+    const next = discoveredFiles.find((f) => !failedPaths.includes(f.path));
+    if (next) void loadFile(next.path);
+  }, [discoveredFiles, activeFilePath, failedPaths, loadFile]);
 
   const handleCite = useCallback((key: string) => {
     editorApiRef.current?.replaceSelection(`#cite(<${key}>)`);
@@ -83,12 +86,16 @@ export function BibliographyPanel() {
               onChange={(e) => void loadFile(e.target.value)}
               aria-label={t("selectFile")}
             >
-              {discoveredFiles.map((f) => (
-                <option key={f.path} value={f.path}>
-                  {displayName(f.path)}
-                  {f.entryCount != null ? ` (${f.entryCount})` : ""}
-                </option>
-              ))}
+              {discoveredFiles.map((f) => {
+                const failed = failedPaths.includes(f.path);
+                return (
+                  <option key={f.path} value={f.path}>
+                    {displayName(f.path)}
+                    {f.entryCount != null ? ` (${f.entryCount})` : ""}
+                    {failed ? " ⚠" : ""}
+                  </option>
+                );
+              })}
             </select>
           </div>
           <div className="bibliography-search">
