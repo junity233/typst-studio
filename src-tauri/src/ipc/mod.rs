@@ -4,6 +4,7 @@
 
 pub mod commands;
 pub mod ai_commands;
+pub mod bib_commands;
 pub mod conflict_commands;
 pub mod error;
 pub mod events;

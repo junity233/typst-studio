@@ -16,6 +16,8 @@ import sepiaCss from "../../src-tauri/themes/sepia/theme.css?raw";
 import type {
   CatalogFilter,
   CatalogListingPayload,
+  BibEntry,
+  BibFileInfo,
   ConflictPayload,
   DeleteResult,
   DirEntry,
@@ -267,6 +269,10 @@ async function browserInvoke<T>(
     case "package_get_readme":
     case "package_get_thumbnail":
       return null as T;
+    case "bibliography_parse":
+      return [] as T;
+    case "bibliography_discover":
+      return [] as T;
     default:
       throw new Error(`[tauri] command "${command}" is unavailable in browser mode`);
   }
@@ -637,6 +643,26 @@ export async function packageGetThumbnail(
   version: string,
 ): Promise<string | null> {
   return invoke<string | null>("package_get_thumbnail", { name, version });
+}
+
+// --- Bibliography (native hayagriva parse + discovery) ---------------------
+
+/**
+ * Parse a `.bib`/`.yml`/`.yaml` file into reference entries (native hayagriva).
+ * The format is sniffed from the extension with a content-heuristic fallback.
+ */
+export async function bibliographyParse(path: string): Promise<BibEntry[]> {
+  return invoke<BibEntry[]>("bibliography_parse", { path });
+}
+
+/**
+ * Discover bibliography files under a workspace root. Pass `null` for a closed
+ * workspace (returns `[]`). Files are capped at a safe depth/count.
+ */
+export async function bibliographyDiscover(
+  rootPath: string | null,
+): Promise<BibFileInfo[]> {
+  return invoke<BibFileInfo[]>("bibliography_discover", { rootPath });
 }
 
 // --- Event subscriptions ----------------------------------------------------

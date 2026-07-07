@@ -7405,6 +7405,7 @@ dependencies = [
  "dunce",
  "futures-util",
  "gix",
+ "hayagriva",
  "http",
  "mockito",
  "notify",

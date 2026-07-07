@@ -195,6 +195,9 @@ pub fn run() {
             ipc::package_commands::package_dir_is_empty,
             ipc::package_commands::package_get_readme,
             ipc::package_commands::package_get_thumbnail,
+            // Bibliography panel (native hayagriva parse + workspace discovery).
+            ipc::bib_commands::bibliography_parse,
+            ipc::bib_commands::bibliography_discover,
             // AI Assistant proxy (streaming LLM calls; key injected in Rust).
             ipc::ai_commands::ai_proxy_stream,
         ])

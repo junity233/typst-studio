@@ -1,0 +1,11 @@
+{
+  "title": "参考文献",
+  "searchPlaceholder": "搜索参考文献…",
+  "noFiles": "工作区中未找到参考文献文件",
+  "noEntries": "无参考文献",
+  "loading": "加载中…",
+  "selectFile": "选择参考文献文件",
+  "parseError": "解析参考文献文件失败",
+  "citeAria": "引用 {{key}}",
+  "__smoke__": "ok"
+}

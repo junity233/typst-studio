@@ -44,6 +44,9 @@
   "symbols": {
     "title": "符号"
   },
+  "bibliography": {
+    "title": "参考文献"
+  },
   "emptyWorkspace": {
     "title": "未打开文件夹",
     "body": "打开一个文件夹，以工作区树的形式浏览其中的文件，并解析 <code>#include</code> 和 <code>#image()</code>。",

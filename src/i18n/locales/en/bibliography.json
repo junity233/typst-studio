@@ -1,0 +1,11 @@
+{
+  "title": "Bibliography",
+  "searchPlaceholder": "Search references…",
+  "noFiles": "No bibliography files found in workspace",
+  "noEntries": "No references",
+  "loading": "Loading…",
+  "selectFile": "Select a bibliography file",
+  "parseError": "Failed to parse bibliography file",
+  "citeAria": "Cite {{key}}",
+  "__smoke__": "ok"
+}

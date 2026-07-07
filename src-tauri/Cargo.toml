@@ -62,6 +62,11 @@ typst-svg = "0.15"
 typst-pdf = "0.15"
 typst-render = "0.15"
 typst-kit = { version = "0.15", features = ["embedded-fonts", "scan-fonts", "system-files"] }
+# Bibliography parsing (BibLaTeX `.bib` + Hayagriva YAML) for the Bibliography
+# panel. Already a transitive dep of typst-library; declaring it directly here
+# pulls in no new code (dedupes to the same 0.10.x), it only makes the
+# `hayagriva` API nameable from our code. Pinned to 0.10 to match Cargo.lock.
+hayagriva = "0.10"
 toml = "0.8"
 base64 = "0.21"
 comemo = "0.4"

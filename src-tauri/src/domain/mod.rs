@@ -1,5 +1,6 @@
 //! Domain layer — pure data models, no IO.
 
+pub mod bib_entry;
 pub mod compile_result;
 pub mod compile_status;
 pub mod diagnostics;

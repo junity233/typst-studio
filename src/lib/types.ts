@@ -928,7 +928,7 @@ export type WorkspaceId = string;
 /**
  * The currently open workspace, if any.
  */
-export type WorkspaceMeta = { 
+export type WorkspaceMeta = {
 /**
  * Absolute path to the workspace root.
  */
@@ -937,3 +937,32 @@ root: string,
  * Display name (the root folder's basename).
  */
 name: string, };
+
+/**
+ * One parsed bibliography entry (Task 4 — Bibliography panel). Mirrors the Rust
+ * `BibEntry` payload (camelCase on the wire) produced by native hayagriva
+ * parsing of `.bib` / `.yml` / `.yaml` files.
+ */
+export interface BibEntry {
+  /** The citation key — what goes inside `#cite(<key>)`. */
+  key: string;
+  /** The entry type as a kebab-case string (e.g. "article", "book"). */
+  entryType: string;
+  /** The full formatted title, if present. */
+  title?: string;
+  /** Author display names ("Given Family"), in order. Empty when absent. */
+  authors: string[];
+  /** The 4-digit publication year, if a date is present. */
+  year?: number;
+}
+
+/**
+ * Metadata about a discovered bibliography file. `entryCount` is an approximate
+ * record count (a cheap pre-parse heuristic) shown as a size hint in the UI.
+ */
+export interface BibFileInfo {
+  /** Absolute filesystem path to the `.bib`/`.yml`/`.yaml` file. */
+  path: string;
+  /** Approximate entry count (records/keys), for a quick size signal. */
+  entryCount?: number;
+}
