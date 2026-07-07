@@ -1,6 +1,6 @@
 {
   "title": "助手",
-  "placeholder": "问我任何关于这份文档的问题,或让我帮你修改…",
+  "placeholder": "输入消息…",
   "emptyState": "问我任何关于这份文档的问题,或让我帮你修改。",
   "configRequired": "请先配置 AI provider。",
   "openSettings": "打开设置",

@@ -1,6 +1,6 @@
 {
   "title": "Assistant",
-  "placeholder": "Ask anything about this document, or let me make a change…",
+  "placeholder": "Ask anything…",
   "emptyState": "Ask anything about this document, or let me make a change.",
   "configRequired": "Configure an AI provider first.",
   "openSettings": "Open Settings",

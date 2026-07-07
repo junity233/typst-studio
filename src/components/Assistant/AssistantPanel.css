@@ -407,6 +407,12 @@
   outline: none;
   box-sizing: border-box;
   line-height: 1.4;
+  /* Hide scrollbar — the container clips, content auto-grows via rows. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.assistant-input::-webkit-scrollbar {
+  display: none;
 }
 .assistant-input::placeholder {
   color: var(--color-body-muted);
