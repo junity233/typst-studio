@@ -20,6 +20,8 @@
     "core:window:allow-set-fullscreen",
     "opener:default",
     "dialog:default",
+    "dialog:allow-confirm",
+    "dialog:allow-ask",
     "fs:default",
     {
       "identifier": "fs:allow-read-text-file",

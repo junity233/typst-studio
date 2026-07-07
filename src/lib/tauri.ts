@@ -309,18 +309,42 @@ async function listen<T>(
   handler: (event: { payload: T }) => void,
 ): Promise<UnlistenFn> {
   try {
-    return tauriListen<T>(eventName, handler).catch((error) => {
-      if (typeof window === "undefined" || !isMissingTauriRuntimeError(error)) {
-        throw error;
-      }
-      return browserListen<T>(eventName, handler);
-    });
+    const unlisten = await tauriListen<T>(eventName, handler);
+    return safeUnlisten(eventName, unlisten);
   } catch (error) {
     if (typeof window === "undefined" || !isMissingTauriRuntimeError(error)) {
       throw error;
     }
+    const unlisten = await browserListen<T>(eventName, handler);
+    return safeUnlisten(eventName, unlisten);
   }
-  return browserListen<T>(eventName, handler);
+}
+
+function safeUnlisten(eventName: string, unlisten: UnlistenFn): UnlistenFn {
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    try {
+      const result = (unlisten as () => unknown)();
+      if (isPromiseLike(result)) {
+        void result.catch((error) => {
+          console.warn(`[tauri] failed to unlisten "${eventName}":`, error);
+        });
+      }
+    } catch (error) {
+      console.warn(`[tauri] failed to unlisten "${eventName}":`, error);
+    }
+  };
+}
+
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "catch" in value &&
+    typeof (value as { catch?: unknown }).catch === "function"
+  );
 }
 
 function isMissingTauriRuntimeError(error: unknown): boolean {
