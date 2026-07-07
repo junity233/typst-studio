@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
 import { usePackagesStore } from "../../../store/packagesStore";
@@ -66,6 +66,21 @@ export function PackagesPanel() {
       ? new Date(indexFetchedAt * 1000).toLocaleDateString()
       : "";
 
+  // Distinct categories for the current view (templates-only or packages-only),
+  // so the category dropdown reflects what's actually available in each tab.
+  // The filter stores categories as an array (match-any); the UI is single-select,
+  // so we read/write the first element.
+  const categories = useMemo(() => {
+    const isTemplateView = activeTab === "templates";
+    const set = new Set<string>();
+    for (const e of catalog) {
+      if ((e.template != null) !== isTemplateView) continue;
+      for (const c of e.categories) set.add(c);
+    }
+    return [...set].sort();
+  }, [catalog, activeTab]);
+  const selectedCategory = filter.categories[0] ?? "";
+  const showCategoryFilter = activeTab !== "installed" && categories.length > 0;
   return (
     <div className="packages">
       {selectedKey ? (
@@ -106,18 +121,36 @@ export function PackagesPanel() {
           {isLoading && catalog.length === 0 && (
             <p className="packages-status">{t("loading")}</p>
           )}
-          <div className="packages-tabs" role="tablist">
-            {(["templates", "packages", "installed"] as const).map((tab) => (
-              <button
-                key={tab}
-                role="tab"
-                aria-selected={activeTab === tab}
-                className={`packages-tab${activeTab === tab ? " active" : ""}`}
-                onClick={() => setActiveTab(tab)}
+          <div className="packages-filterrow">
+            <select
+              className="packages-select"
+              value={activeTab}
+              onChange={(e) => setActiveTab(e.target.value as typeof activeTab)}
+              aria-label={t("view")}
+            >
+              <option value="templates">{t("tabs.templates")}</option>
+              <option value="packages">{t("tabs.packages")}</option>
+              <option value="installed">{t("tabs.installed")}</option>
+            </select>
+            {showCategoryFilter && (
+              <select
+                className="packages-select packages-select-cat"
+                value={selectedCategory}
+                onChange={(e) =>
+                  setFilter({
+                    categories: e.target.value ? [e.target.value] : [],
+                  })
+                }
+                aria-label={t("category")}
               >
-                {t(`tabs.${tab}`)}
-              </button>
-            ))}
+                <option value="">{t("allCategories")}</option>
+                {categories.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
           <div className="packages-body">
             {activeTab === "templates" && <TemplateGallery />}
