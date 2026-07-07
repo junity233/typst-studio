@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { Agent, type AgentEvent, type AgentMessage } from "@earendil-works/pi-agent-core";
 
+import { aiLog } from "../lib/aiLog";
 import { readSetting } from "../hooks/useSetting";
 import { resolveLanguage } from "../i18n";
 import { useWorkspaceStore } from "./workspaceStore";
@@ -151,7 +152,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       console.warn("[ai] sendMessage ignored — already busy");
       return;
     }
-    console.log("[ai] sendMessage start:", JSON.stringify(text));
+    aiLog("sendMessage start:", text);
 
     // Auto-inject editor context (selection + diagnostics) so the agent can
     // "see" what the user is looking at. Prepended as tagged blocks; the user's
@@ -175,11 +176,11 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
 
     const requestApproval = (p: PendingApproval): Promise<string> =>
       new Promise<string>((resolve) => {
-        console.log("[ai][approval] requestApproval invoked, awaiting user:", p.kind, p.path);
+        aiLog("[approval] requestApproval invoked, awaiting user:", p.kind, p.path);
 
         // Auto-approve: skip the gate entirely, apply immediately.
         if (get().autoApprove) {
-          console.log("[ai][approval] auto-approve ON — applying without user gate");
+          aiLog("[approval] auto-approve ON — applying without user gate");
           set((s) => ({
             messages: [
               ...s.messages,
@@ -222,7 +223,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         localGate = {
           approval: p,
           resolve: async (verdict) => {
-            console.log("[ai][approval] gate resolved with:", verdict);
+            aiLog("[approval] gate resolved with:", verdict);
             const cardVerdict: "applied" | "rejected" =
               verdict === "approved" ? "applied" : "rejected";
             // Update the card's verdict. Match by path (the unique key on the
@@ -273,14 +274,14 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         toolExecution: "sequential",
       });
       persistentAgent.subscribe((event) => handleAgentEvent(event, set, get));
-      console.log("[ai] persistent agent created + subscribed");
+      aiLog("persistent agent created + subscribed");
     }
     const agent = persistentAgent;
-    console.log("[ai] calling agent.prompt()");
+    aiLog("calling agent.prompt()");
 
     try {
       await agent.prompt(fullMessage);
-      console.log("[ai] agent.prompt() resolved (turn complete)");
+      aiLog("agent.prompt() resolved (turn complete)");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[ai] agent.prompt() rejected:", msg);
@@ -457,8 +458,8 @@ function handleAgentEvent(
 ): void {
   // Trace every lifecycle event so a hang can be localized to the last event
   // that fired before the agent stopped making progress.
-  console.log(
-    "[ai][event]",
+  aiLog(
+    "[event]",
     event.type,
     "toolName" in event ? event.toolName : "",
     "toolCallId" in event ? event.toolCallId : "",
@@ -474,7 +475,7 @@ function handleAgentEvent(
       break;
     }
     case "tool_execution_start": {
-      console.log("[ai][event] tool_execution_start args:", JSON.stringify((event as { args?: unknown }).args));
+      aiLog("[event] tool_execution_start args:", (event as { args?: unknown }).args);
       set((s) => ({
         messages: [
           ...s.messages,
@@ -490,11 +491,11 @@ function handleAgentEvent(
       break;
     }
     case "tool_execution_end": {
-      console.log(
-        "[ai][event] tool_execution_end isError=",
+      aiLog(
+        "[event] tool_execution_end isError=",
         event.isError,
         "result=",
-        JSON.stringify(event.result).slice(0, 200),
+        event.result,
       );
       set((s) => ({
         messages: s.messages.map((m) =>

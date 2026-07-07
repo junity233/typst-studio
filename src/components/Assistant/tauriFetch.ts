@@ -1,3 +1,4 @@
+import { aiLog } from "../../lib/aiLog";
 import { streamAiProxy, type AuthScheme } from "../../lib/aiProxy";
 
 /**
@@ -43,8 +44,8 @@ export function createTauriFetch(
       );
     }
 
-    console.log(
-      "[ai][fetch] request url=",
+    aiLog(
+      "[fetch] request url=",
       url,
       "bodyLen=",
       init.body.length,
@@ -72,7 +73,7 @@ export function createTauriFetch(
           if (ev.event === "chunk" && ev.data) {
             chunkCount++;
             if (chunkCount === 1 || chunkCount % 20 === 0) {
-              console.log("[ai][fetch] chunk #", chunkCount, "bytes=", ev.data.length);
+              aiLog("[fetch] chunk #", chunkCount, "bytes=", ev.data.length);
             }
             // `ev.data` is a regular number array (serde serializes Vec<u8>
             // that way); convert to a Uint8Array for the stream.
@@ -84,7 +85,7 @@ export function createTauriFetch(
         }
         // Generator exhausted normally (Rust sent Done and the iterator
         // returned). Close the writer so the SDK's reader sees end-of-stream.
-        console.log("[ai][fetch] stream ended; total chunks=", chunkCount, "— closing writer");
+        aiLog("[fetch] stream ended; total chunks=", chunkCount, "— closing writer");
         await writer.close();
       } catch (e) {
         console.error("[ai][fetch] proxy stream errored:", e);

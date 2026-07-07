@@ -1,5 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
+import { aiLog } from "./aiLog";
+
 /** How Rust should authenticate the proxied request. */
 export type AuthScheme = "bearer" | "x-api-key";
 
@@ -49,7 +51,7 @@ export async function* streamAiProxy(
 
   const channel = new Channel<ProxyEvent>();
   channel.onmessage = (msg) => {
-    console.log("[ai][proxy] channel msg:", msg.event, msg.event === "chunk" ? "" : "");
+    aiLog("[proxy] channel msg:", msg.event, msg);
     if (msg.event === "error") {
       failure = new Error(msg.message ?? "proxy error");
       done = true;

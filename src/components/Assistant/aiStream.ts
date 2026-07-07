@@ -38,6 +38,7 @@ import {
   type ToolCall,
 } from "@earendil-works/pi-ai";
 import { readSetting } from "../../hooks/useSetting";
+import { aiLog } from "../../lib/aiLog";
 import { createTauriFetch } from "./tauriFetch";
 
 import type {
@@ -102,13 +103,13 @@ async function driveStream(
   const modelId = readSetting<string>("ai.model", "gpt-4o");
   const temperature = options?.temperature ?? readSetting<number>("ai.temperature", 0.3);
   const maxTokens = readSetting<number>("ai.maxTokens", 4096);
-  console.log(
-    "[ai][stream] driveStream start: provider=",
+  aiLog(
+    "[stream] driveStream start: provider=",
     provider,
     "model=",
     modelId,
     "baseUrl=",
-    JSON.stringify(baseUrl),
+    baseUrl,
     "msgs=",
     context.messages.length,
     "tools=",
@@ -123,15 +124,13 @@ async function driveStream(
         : m.role === "toolResult"
           ? m.toolCallId
           : m.role === "user"
-            ? JSON.stringify(
-                typeof m.content === "string"
-                  ? m.content.slice(0, 60)
-                  : m.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("").slice(0, 60),
-              )
+            ? typeof m.content === "string"
+              ? m.content.slice(0, 60)
+              : m.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("").slice(0, 60)
             : "";
-    console.log(`  [msg ${i}] role=${m.role}`, meta);
+    aiLog(`  [msg ${i}] role=${m.role}`, meta);
   }
-  console.log("[ai][stream] systemPrompt set:", !!context.systemPrompt, "len=", context.systemPrompt?.length ?? 0);
+  aiLog("[stream] systemPrompt set:", !!context.systemPrompt, "len=", context.systemPrompt?.length ?? 0);
 
   if (provider === "anthropic") {
     const client = new Anthropic({
@@ -217,7 +216,7 @@ async function driveOpenAIChat(
   const messages = convertMessagesForOpenAI(context);
   const tools = convertToolsForOpenAI(context.tools);
 
-  console.log("[ai][stream] OpenAI: calling chat.completions.create...");
+  aiLog("[stream] OpenAI: calling chat.completions.create...");
   const completion = await client.chat.completions.create(
     {
       model: modelId,
@@ -228,7 +227,7 @@ async function driveOpenAIChat(
     },
     { signal },
   );
-  console.log("[ai][stream] OpenAI: create() returned, iterating chunks");
+  aiLog("[stream] OpenAI: create() returned, iterating chunks");
 
   // Map OpenAI's tool_call index → the contentIndex (position in acc.content)
   // of the tool-call block we created for it. contentIndex MUST be the real
