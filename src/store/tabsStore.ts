@@ -12,6 +12,7 @@ import {
   newTab as newTabBE,
   reactivateTab as reactivateTabBE,
   softCloseTab as softCloseTabBE,
+  updateText,
 } from "../lib/tauri";
 import { useDiagnosticsStore } from "./diagnosticsStore";
 import { captureAndSaveSession, recordFile } from "../lib/session";
@@ -162,6 +163,20 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
     // Remember the opened file so it can be restored on next launch.
     if (doc.path) recordFile(doc.path);
     void captureAndSaveSession();
+    // Guarantee a compile fires whose result the frontend can receive. The
+    // backend already triggers an initial compile on open (create_worker →
+    // recompile), but the frontend's `compiled` listener attaches
+    // asynchronously (useTypstCompile awaits onCompiled), so it may miss that
+    // first event — leaving the preview empty until the user types. Re-pushing
+    // the same content+revision makes the backend treat it as a recompile
+    // (same revision + same content → refresh, document_service.rs:1256), so
+    // no spurious edit/revision bump occurs. Skipped for non-Typst kinds
+    // (image/pdf/text/markdown don't compile).
+    if ((doc.kind ?? "typst") === "typst") {
+      void updateText(doc.id, doc.content, doc.revision).catch((e) =>
+        console.warn("[openPath] initial recompile failed:", e),
+      );
+    }
   },
 
   closeTab: async (id) => {
