@@ -14,6 +14,8 @@ import graphiteCss from "../../src-tauri/themes/graphite/theme.css?raw";
 import sepiaMeta from "../../src-tauri/themes/sepia/theme.json";
 import sepiaCss from "../../src-tauri/themes/sepia/theme.css?raw";
 import type {
+  CatalogFilter,
+  CatalogListingPayload,
   ConflictPayload,
   DeleteResult,
   DirEntry,
@@ -23,6 +25,7 @@ import type {
   EntryKind,
   FocusViewPayload,
   FsChangedPayload,
+  InstalledPackage,
   LayoutState,
   OpenExternalFilePayload,
   OpenedDocument,
@@ -240,6 +243,23 @@ async function browserInvoke<T>(
       return "src-tauri/themes" as T;
     case "open_log_dir":
       return "logs" as T;
+    case "package_list_catalog":
+      return { entries: [], fetchedAt: null, stale: true } as T;
+    case "package_refresh_index":
+    case "package_install":
+    case "package_uninstall":
+      return undefined as T;
+    case "package_list_installed":
+      return [] as T;
+    case "package_init_template":
+      return "main.typ" as T;
+    case "package_compiler_version":
+      return "0.15.0" as T;
+    case "package_dir_is_empty":
+      return true as T;
+    case "package_get_readme":
+    case "package_get_thumbnail":
+      return null as T;
     default:
       throw new Error(`[tauri] command "${command}" is unavailable in browser mode`);
   }
@@ -522,6 +542,75 @@ export async function revealInFinder(rel: string): Promise<void> {
  */
 export async function openFileByPath(path: string): Promise<OpenedDocument> {
   return invoke<OpenedDocument>("open_file_by_path", { path });
+}
+
+// --- Packages & templates ---------------------------------------------------
+
+/** Read the filtered catalog from the cached index. */
+export async function packageListCatalog(
+  filter: CatalogFilter,
+): Promise<CatalogListingPayload> {
+  return invoke<CatalogListingPayload>("package_list_catalog", { filter });
+}
+
+/** Refresh the index from the network (full replace). */
+export async function packageRefreshIndex(): Promise<void> {
+  await invoke("package_refresh_index");
+}
+
+/** Pre-download a package into the standard typst cache. */
+export async function packageInstall(name: string, version: string): Promise<void> {
+  await invoke("package_install", { name, version });
+}
+
+/** Delete a package version from the cache. */
+export async function packageUninstall(name: string, version: string): Promise<void> {
+  await invoke("package_uninstall", { name, version });
+}
+
+/** Scan the cache dir for installed @preview packages. */
+export async function packageListInstalled(): Promise<InstalledPackage[]> {
+  return invoke<InstalledPackage[]>("package_list_installed");
+}
+
+/** Apply a template into `dest` (absolute path); returns the entrypoint filename. */
+export async function packageInitTemplate(
+  name: string,
+  version: string,
+  dest: string,
+): Promise<string> {
+  return invoke<string>("package_init_template", { name, version, dest });
+}
+
+/** Build the `#import "@preview/name:version": *` snippet (pure, no IPC). */
+export function packageImportSnippet(name: string, version: string): string {
+  return `#import "@preview/${name}:${version}": *`;
+}
+
+/** The embedded Typst compiler version (e.g. "0.15.0"), for the compat warning. */
+export async function packageCompilerVersion(): Promise<string> {
+  return invoke<string>("package_compiler_version");
+}
+
+/** Whether the absolute `path` directory is empty (Rust-backed; no fs-plugin scope). */
+export async function packageDirIsEmpty(path: string): Promise<boolean> {
+  return invoke<boolean>("package_dir_is_empty", { path });
+}
+
+/** Read a cached package's README (markdown). */
+export async function packageGetReadme(
+  name: string,
+  version: string,
+): Promise<string | null> {
+  return invoke<string | null>("package_get_readme", { name, version });
+}
+
+/** Extract the template thumbnail; returns its absolute path or null. */
+export async function packageGetThumbnail(
+  name: string,
+  version: string,
+): Promise<string | null> {
+  return invoke<string | null>("package_get_thumbnail", { name, version });
 }
 
 // --- Event subscriptions ----------------------------------------------------

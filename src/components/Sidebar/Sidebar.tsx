@@ -41,6 +41,7 @@ const VIEW_TITLE_KEYS: Record<string, string> = {
   "workbench.explorer": "sidebar:explorer.title",
   "workbench.outline": "sidebar:outline.title",
   "workbench.search": "sidebar:search.title",
+  "workbench.packages": "packages:title",
 };
 
 /** Whether a contributed view may be shown in the current host state. */

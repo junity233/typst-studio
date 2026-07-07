@@ -17,6 +17,7 @@
 
 pub mod downloader;
 pub mod packages;
+pub mod package_index;
 pub mod resolver;
 pub mod search;
 pub mod tree;

@@ -130,4 +130,6 @@ pub struct AppState {
     /// re-checks open docs' DiskVersions as a safety net for a silent/dead
     /// native watcher, plus the watcher-failed flag the frontend warns on.
     pub watcher_health: Arc<crate::service::watcher_health::WatcherHealth>,
+    /// Package catalog + install orchestration (Packages view).
+    pub packages: Arc<crate::service::package_service::PackageService>,
 }

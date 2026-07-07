@@ -1,0 +1,20 @@
+{
+  "title": "Packages",
+  "tabs": { "templates": "Templates", "packages": "Packages", "installed": "Installed" },
+  "searchPlaceholder": "Search packages or templates…",
+  "empty": "No packages found.",
+  "installedEmpty": "No packages installed yet. Browse the Templates or Packages tab.",
+  "notFound": "Package not found.",
+  "back": "Back",
+  "version": "Version",
+  "requires": "Requires",
+  "license": "License",
+  "compatWarn": "Requires Typst {{required}} (current {{actual}}); may be incompatible.",
+  "useTemplate": "Use template",
+  "install": "Install",
+  "uninstall": "Uninstall",
+  "copyImport": "Copy import",
+  "confirmUninstall": "Uninstall {{name}} {{version}}? This deletes it from the local cache.",
+  "confirmNonEmptyDest": "The chosen folder is not empty. Continuing may merge or overwrite files. Proceed?",
+  "pickTemplateDir": "Choose a folder for the new project"
+}

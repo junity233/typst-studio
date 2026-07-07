@@ -283,7 +283,7 @@ export type EntryKind = "file" | "dir";
  * as `snake_case` so the wire value (`"permission_denied"`) matches the
  * generated TypeScript literal union.
  */
-export type ErrorCode = "permission_denied" | "read_only" | "disk_full" | "target_missing" | "parent_missing" | "path_occupied" | "external_conflict" | "already_open" | "invalid_path" | "delete_blocked" | "io_transient" | "not_found" | "invalid_input" | "compile" | "export" | "cancelled" | "other";
+export type ErrorCode = "permission_denied" | "read_only" | "disk_full" | "target_missing" | "parent_missing" | "path_occupied" | "external_conflict" | "already_open" | "invalid_path" | "delete_blocked" | "io_transient" | "not_found" | "invalid_input" | "compile" | "export" | "cancelled" | "package_not_found" | "package_install_failed" | "package_uninstall_failed" | "index_fetch_failed" | "template_init_failed" | "other";
 
 /**
  * Payload of the `focus_view` event (§6.1): the frontend activates the tab
@@ -408,6 +408,76 @@ numbering: string | null,
  * Index into the same array of this node's parent; null for top-level.
  */
 parent: number | null,
+};
+
+/**
+ * Packages & templates feature types. Hand-written here (matching the
+ * OutlineNode convention above) so the file stays consistent with the
+ * manually-maintained master shape; the backend structs carry matching
+ * ts-rs annotations for when auto-regeneration becomes feasible.
+ */
+
+/** A template's `[template]` table from `index.json` / `typst.toml`. */
+export type TemplateMeta = {
+/** Directory within the package holding the template files. */
+path: string,
+/** File relative to `path` that is the compile entrypoint. */
+entrypoint: string,
+/** Optional path (relative to package root) to a PNG/WebP thumbnail. */
+thumbnail?: string | null,
+};
+
+/** One entry from the Universe `index.json`. Also a template when `template` is set. */
+export type PackageEntry = {
+name: string,
+version: string,
+entrypoint: string,
+description?: string | null,
+authors: Array<string>,
+license?: string | null,
+repository?: string | null,
+homepage?: string | null,
+keywords: Array<string>,
+categories: Array<string>,
+disciplines: Array<string>,
+/** Minimum required compiler version, e.g. "0.13.0". */
+compiler?: string | null,
+/** Unix seconds (the registry's `updatedAt` field). */
+updatedAt: number,
+/** `Some` ⇒ this entry is also a template. */
+template?: TemplateMeta | null,
+};
+
+/** A package found in the local cache dir (from `package_list_installed`). */
+export type InstalledPackage = {
+name: string,
+version: string,
+/** Fixed `"preview"` in v1. */
+namespace: string,
+sizeBytes: number,
+/** True when the on-disk `typst.toml` has a `[template]` table. */
+hasTemplate: boolean,
+/** Dir mtime as Unix seconds (best-effort). */
+installedAt?: number | null,
+};
+
+/** Query parameters for `package_list_catalog`. */
+export type CatalogFilter = {
+/** Fuzzy on name/description/keywords/authors. */
+query?: string | null,
+onlyTemplates?: boolean | null,
+onlyPackages?: boolean | null,
+/** Match-any category filter. */
+categories: Array<string>,
+/** Dedupe to the highest version per name. Default `true`. */
+latestOnly?: boolean | null,
+};
+
+/** Filtered catalog listing from `package_list_catalog`. */
+export type CatalogListingPayload = {
+entries: Array<PackageEntry>,
+fetchedAt: number | null,
+stale: boolean,
 };
 
 /**
