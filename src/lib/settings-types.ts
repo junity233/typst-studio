@@ -13,7 +13,9 @@ export type SettingType =
   | "string"
   | "boolean"
   | "paths"
-  | "select";
+  | "select"
+  | "font"
+  | "path";
 
 /** A single setting descriptor — one row in a category. */
 export interface SettingDef {
@@ -44,6 +46,12 @@ export interface SettingDef {
    * input. See SettingsApp's ActionControl.
    */
   action?: string;
+  /**
+   * Picker kind for `path`-type settings: `"folder"` opens a folder picker,
+   * `"file"` opens a file picker. Ignored by other types. Defaults to
+   * `"folder"` when omitted.
+   */
+  pick?: "folder" | "file";
   /** Optional one-line description shown under the label. */
   help?: string;
 }

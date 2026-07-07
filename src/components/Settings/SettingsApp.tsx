@@ -32,6 +32,8 @@ import {
   localizedSettingLabel,
 } from "../../i18n/settingsManifest";
 import { Toggle } from "./Toggle";
+import { FontControl } from "./FontControl";
+import { PathControl } from "./PathControl";
 
 /** Icon + accent hue per category id. Falls back to a gear. */
 const CATEGORY_ICON: Record<string, LucideIcon> = {
@@ -210,6 +212,10 @@ function SettingControl({ def }: { def: SettingDef }) {
       return <SelectControl def={def} />;
     case "paths":
       return <PathsControl def={def} />;
+    case "font":
+      return <FontControl def={def} />;
+    case "path":
+      return <PathControl def={def} />;
   }
 }
 
@@ -284,7 +290,9 @@ function ActionControl({ def }: { def: SettingDef }) {
   );
 }
 
-const SETTING_ID = (key: string) => `setting-${key}`;
+/** Stable DOM id for a setting's primary control, used by the row label's
+ *  `htmlFor` for accessibility. Shared with the font/path controls. */
+export const SETTING_ID = (key: string) => `setting-${key}`;
 
 function NumberControl({ def, integer }: { def: SettingDef; integer: boolean }) {
   const [value, setValue] = useSetting<number>(def.key);

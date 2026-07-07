@@ -3,7 +3,8 @@
   "categories": [
     { "id": "editor", "label": "Editor", "settings": [
         { "key": "editor.fontSize",   "type": "number",  "label": "Font size",    "default": 14, "min": 8, "max": 32 },
-        { "key": "editor.fontFamily", "type": "string",  "label": "Font family",  "default": "" },
+        { "key": "editor.fontFamily", "type": "font",    "label": "Font family",  "default": "",
+          "help": "Pick the editor font. Leave blank to use the built-in default." },
         { "key": "editor.lineHeight", "type": "number",  "label": "Line height",  "default": 0, "min": 0, "max": 3,
           "help": "Use 0 for the editor default." },
         { "key": "editor.fontLigatures",  "type": "boolean", "label": "Font ligatures",     "default": true },

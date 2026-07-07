@@ -185,6 +185,19 @@ fn validate(def: &SettingDef, value: &Value) -> Result<()> {
                 )));
             }
         }
+        // `font` and `path` are string-valued (font family name / filesystem
+        // path) but rendered with specialized pickers. We don't whitelist the
+        // value set: a `font` may be a system font not present on this machine
+        // (e.g. a config carried over from another OS), and a `path` may point
+        // anywhere the OS allows. Empty string = "unset" (use the default
+        // stack / no path). Only the type is enforced here.
+        "font" | "path" => {
+            if !value.is_string() {
+                return Err(AppError::InvalidInput(format!(
+                    "{key} expects a string"
+                )));
+            }
+        }
         "boolean" => {
             if value.as_bool().is_none() {
                 return Err(AppError::InvalidInput(format!(
@@ -380,6 +393,51 @@ mod tests {
         let svc = make_service();
         assert!(svc.set("compiler.extraFontDirs", json!(["/a", 3])).is_err());
         assert!(svc.set("compiler.extraFontDirs", json!(["/a", "/b"])).is_ok());
+    }
+
+    /// `font` is a string-valued type (rendered as a font picker). Any string
+    /// is accepted — including one not on this machine (a config ported from
+    /// another OS) and the empty string (= unset, use the default stack). Only
+    /// the type is enforced; no whitelist.
+    #[test]
+    fn font_setting_accepts_string() {
+        let svc = make_service();
+        assert!(svc.set("editor.fontFamily", json!("Fira Code")).is_ok());
+        // Empty string = unset.
+        assert!(svc.set("editor.fontFamily", json!("")).is_ok());
+        // A family that doesn't exist on this machine is still stored verbatim;
+        // the editor/typst fall back at render time.
+        assert!(svc.set("editor.fontFamily", json!("Imaginary Font XYZ")).is_ok());
+    }
+
+    #[test]
+    fn font_setting_rejects_non_string() {
+        let svc = make_service();
+        assert!(svc.set("editor.fontFamily", json!(14)).is_err());
+        assert!(svc.set("editor.fontFamily", json!(true)).is_err());
+        assert!(svc.set("editor.fontFamily", json!(["Fira Code"])).is_err());
+    }
+
+    /// `path` is a string-valued type rendered with a native path picker. No
+    /// `path` setting exists in the manifest yet (the type ships available but
+    /// unused), so we validate directly against a hand-built descriptor rather
+    /// than round-tripping through `SettingsService::set` (which would reject
+    /// the unknown key).
+    #[test]
+    fn path_setting_validates_string_values() {
+        use super::{validate, SettingDef};
+        let def = SettingDef {
+            key: "demo.path".into(),
+            setting_type: "path".into(),
+            label: "Demo".into(),
+            default: json!(""),
+            extra: serde_json::Map::new(),
+        };
+        assert!(validate(&def, &json!("/home/user/docs")).is_ok());
+        assert!(validate(&def, &json!("")).is_ok()); // empty = unset
+        assert!(validate(&def, &json!(42)).is_err());
+        assert!(validate(&def, &json!(null)).is_err());
+        assert!(validate(&def, &json!([ "/a" ])).is_err());
     }
 
     #[test]

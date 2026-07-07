@@ -412,7 +412,8 @@ pub async fn restart_lsp(state: State<'_, AppState>) -> Result<()> {
 }
 
 /// Convert a dialog `FilePath` into a `PathBuf`, rejecting URLs we can't resolve.
-fn path_buf_from(picked: tauri_plugin_fs::FilePath) -> Result<PathBuf> {
+/// Shared by the image/path pickers and the settings path picker.
+pub(crate) fn path_buf_from(picked: tauri_plugin_fs::FilePath) -> Result<PathBuf> {
     picked
         .into_path()
         .map_err(|e| AppError::InvalidInput(format!("invalid file path: {e}")))

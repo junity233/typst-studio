@@ -218,6 +218,13 @@ async function browserInvoke<T>(
       return clone(browserManifest) as T;
     case "list_themes":
       return browserThemes.map((theme) => clone(theme.info)) as T;
+    // Font enumeration + native path picker are unavailable in the browser
+    // shim (no system font scan, no native dialog). Return empty/none so the
+    // Settings UI still renders its states.
+    case "list_fonts":
+      return [] as T;
+    case "pick_path":
+      return null as T;
     case "get_theme_css": {
       const id = String(args.id ?? "default");
       return (browserThemeMap.get(id)?.css ?? null) as T;
@@ -743,6 +750,26 @@ export async function setSetting(
 /** Fetch the settings manifest (the descriptor that drives the settings UI). */
 export async function getSettingsManifest(): Promise<Manifest> {
   return invoke<Manifest>("get_settings_manifest");
+}
+
+/**
+ * Enumerate the font families available to the typst engine (embedded +
+ * system + any configured extra dirs), for the Settings font picker. The list
+ * is stable for the process lifetime (changing extra font dirs needs a
+ * restart), so callers cache it for the window session.
+ */
+export async function listFonts(): Promise<string[]> {
+  return invoke<string[]>("list_fonts");
+}
+
+/**
+ * Open a native folder/file picker and return the chosen absolute path, or
+ * `null` if the user cancelled. `kind` selects the dialog. Implemented as a
+ * Rust command (not the frontend dialog plugin) because the settings window
+ * grants no `dialog:default` capability.
+ */
+export async function pickPath(kind: "folder" | "file"): Promise<string | null> {
+  return invoke<string | null>("pick_path", { kind });
 }
 
 /** Create or focus the dedicated settings window. */

@@ -154,6 +154,12 @@ pub fn run() {
             // Open WebView devtools (F12 console) on the main window — lets
             // users self-diagnose in shipped builds.
             ipc::settings_commands::open_devtools,
+            // Font enumeration + native path picker for the Settings window.
+            // Implemented as Rust commands because the settings window grants
+            // no dialog/fs plugin capability (minimal blast radius); the Rust
+            // DialogExt path bypasses the frontend permission gate.
+            ipc::settings_commands::list_fonts,
+            ipc::settings_commands::pick_path,
             // Theme commands (appearance.theme).
             ipc::theme_commands::list_themes,
             ipc::theme_commands::get_theme_css,

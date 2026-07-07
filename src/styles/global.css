@@ -3045,6 +3045,139 @@ button {
 }
 
 /* ============================================================================
+   Font combobox (font-type setting) — a searchable dropdown whose options each
+   render in their own typeface for live preview. Mirrors .setting-input chrome
+   for the field; the floating list reuses the .table-grid-picker floating
+   surface treatment (white canvas, hairline, radius-sm, elevated shadow).
+   ========================================================================= */
+.font-combobox {
+  position: relative;
+  display: inline-block;
+  min-width: 220px;
+}
+.font-combobox-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.font-combobox-input {
+  width: 100%;
+  padding-right: 56px; /* room for clear-X + chevron */
+}
+.font-combobox-chevron {
+  position: absolute;
+  right: 10px;
+  pointer-events: none;
+  color: var(--color-ink-muted-48);
+}
+.font-combobox-clear {
+  position: absolute;
+  right: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-ink-muted-48);
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+.font-combobox-clear:hover {
+  background: var(--color-hover);
+  color: var(--color-ink);
+}
+.font-combobox-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 50; /* above sibling setting rows within the card */
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-elevated);
+  max-height: 280px;
+  overflow-y: auto;
+  /* Let the list scroll without clipping the focus ring of options. */
+  scroll-padding-block: 4px;
+}
+.font-combobox-option {
+  display: block;
+  padding: 7px 11px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--color-ink);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.font-combobox-option.font-combobox-active {
+  background: var(--color-hover);
+}
+.font-combobox-option.font-combobox-selected {
+  font-weight: 600;
+}
+/* The synthetic "(Default)" row renders in the UI font, not a font preview. */
+.font-combobox-default-label {
+  font-style: italic;
+  color: var(--color-ink-muted-48);
+}
+.font-combobox-empty {
+  padding: 10px 12px;
+  font-size: 13px;
+  font-style: italic;
+  color: var(--color-ink-muted-48);
+}
+
+/* ============================================================================
+   Path control (path-type setting) — read-only field + native "Browse…"
+   button + clear-X. The field is read-only because the value must be a real
+   filesystem path chosen through the OS dialog. The Browse button reuses
+   .setting-action-btn (identical Action-Blue affordance); only the field +
+   clear-X below are path-specific.
+   ========================================================================= */
+.path-control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 280px;
+}
+.path-control-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: default; /* read-only — typing is not the affordance */
+  font-family: var(--font-mono); /* paths read better in mono */
+  font-size: 12px;
+}
+.path-control-clear {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  color: var(--color-ink-muted-48);
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.path-control-clear:hover {
+  border-color: var(--color-primary);
+  color: var(--color-ink);
+}
+
+/* ============================================================================
    Format toolbar — table grid picker (insert table)
    An 8×8 hover-grid popup, portal-rendered into document.body (like
    .context-menu). Surface treatment mirrors .context-menu: white canvas,

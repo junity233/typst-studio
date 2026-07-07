@@ -81,6 +81,22 @@ fn store() -> Arc<FontStore> {
         .clone()
 }
 
+/// All known font family names (original case, sorted, deduped), drawn from the
+/// process-wide warmed font store. Used by the Settings font picker so the user
+/// can choose from the same set the compiler sees. Cheap after the first World
+/// build (the scan ran at startup via [`warm`]); before that it lazily builds
+/// an empty-extra-dirs store via the [`store`] safety net.
+pub fn list_families() -> Vec<String> {
+    let mut names: Vec<String> = store()
+        .book()
+        .families()
+        .map(|(name, _)| name.to_string())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// A [`FontLoader`] backed by typst-kit's embedded fonts + a system font scan.
 ///
 /// Cheap to clone (the underlying `FontStore` is shared via `Arc`) — every

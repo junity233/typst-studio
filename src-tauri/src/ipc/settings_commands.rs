@@ -118,6 +118,52 @@ pub async fn open_devtools(app: AppHandle) -> Result<()> {
     Ok(())
 }
 
+/// List the available font families (embedded + system + extra dirs) for the
+/// Settings font picker. Drawn from the process-wide warmed `FontStore`, so it
+/// matches exactly what the compiler can resolve. Returns the names in display
+/// case, sorted and deduped. The list is the same for every call within a
+/// process (changing extra font dirs needs an app restart), so the frontend
+/// caches the result for the window's lifetime.
+#[tauri::command]
+pub async fn list_fonts() -> Result<Vec<String>> {
+    Ok(crate::typst_engine::font_loader::list_families())
+}
+
+/// Open a native folder/file picker and return the chosen absolute path as a
+/// string, or `None` if the user cancelled. `kind` selects the dialog:
+/// `"folder"` (default for unknown values) opens a folder picker, anything else
+/// opens a file picker.
+///
+/// Implemented as a Rust command (not the frontend dialog plugin) because the
+/// settings window deliberately grants no `dialog:default` capability — its
+/// blast radius is intentionally minimal. The Rust `DialogExt` path bypasses
+/// the frontend permission gate, exactly like `open_log_dir` / `open_themes_dir`
+/// use `app.opener()`. The blocking dialog runs on `spawn_blocking` so it
+/// doesn't stall the webview (mirrors `pick_image_file` / `open_workspace`).
+#[tauri::command]
+pub async fn pick_path(app: AppHandle, kind: String) -> Result<Option<String>> {
+    use crate::ipc::commands::path_buf_from;
+    use tauri_plugin_dialog::DialogExt;
+    let app_for_dialog = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        let dialog = app_for_dialog.dialog().file();
+        if kind == "folder" {
+            dialog.blocking_pick_folder()
+        } else {
+            dialog.blocking_pick_file()
+        }
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
+    match picked {
+        None => Ok(None),
+        Some(file_path) => {
+            let path = path_buf_from(file_path)?;
+            Ok(Some(path.to_string_lossy().into_owned()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::should_restart_for_setting;
