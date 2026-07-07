@@ -4,7 +4,8 @@
   "noDocument": "未打开文档",
   "preview": {
     "show": "显示预览",
-    "hide": "隐藏预览"
+    "hide": "隐藏预览",
+    "scrollSync": { "on": "同步滚动已开启", "off": "同步滚动已关闭" }
   },
   "diagnostics": {
     "resizeLabel": "调整诊断面板大小"

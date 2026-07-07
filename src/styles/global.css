@@ -1714,7 +1714,8 @@ button {
   flex: 1 1 auto;
   min-width: 0;
 }
-.preview-toggle {
+.preview-toggle,
+.scroll-sync-toggle {
   flex: 0 0 auto;
   align-self: center;
   margin-right: var(--space-xs);
@@ -1730,14 +1731,20 @@ button {
   color: var(--color-ink-muted-48);
   cursor: pointer;
 }
-.preview-toggle:hover {
+.scroll-sync-toggle {
+  margin-right: var(--space-xxs);
+}
+.preview-toggle:hover,
+.scroll-sync-toggle:hover {
   background: var(--color-canvas-parchment);
   color: var(--color-ink);
 }
-.preview-toggle[aria-pressed="true"] {
+.preview-toggle[aria-pressed="true"],
+.scroll-sync-toggle[aria-pressed="true"] {
   color: var(--color-ink);
 }
-.preview-toggle:active {
+.preview-toggle:active,
+.scroll-sync-toggle:active {
   transform: scale(0.95);
 }
 .editor-area-main {

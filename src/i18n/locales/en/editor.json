@@ -4,7 +4,8 @@
   "noDocument": "No document open",
   "preview": {
     "show": "Show preview",
-    "hide": "Hide preview"
+    "hide": "Hide preview",
+    "scrollSync": { "on": "Scroll sync on", "off": "Scroll sync off" }
   },
   "diagnostics": {
     "resizeLabel": "Resize diagnostics panel"

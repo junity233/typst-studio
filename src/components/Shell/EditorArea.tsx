@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, Link, Unlink } from "lucide-react";
 import { TabStrip } from "../TitleBar/TabStrip";
 import { MonacoEditor } from "../Editor/MonacoEditor";
 import { editorApiRef } from "../Editor/editorApiRef";
@@ -155,7 +155,7 @@ export function EditorArea() {
   diagsHeightRef.current = diagsHeight;
 
   // --- Scroll-sync & click-to-source wiring -------------------------------
-  const [scrollSync] = useSetting<boolean>("preview.scrollSync");
+  const [scrollSync, setScrollSync] = useSetting<boolean>("preview.scrollSync");
   // The preview-pane padding (user setting, default 4px) is also the anchor
   // offset for scroll-sync: the synced line/rect sits this many px below the
   // pane's top edge. Reading it here keeps the anchor in lockstep with the
@@ -868,6 +868,15 @@ export function EditorArea() {
     >
       <div className="editor-area-header">
         <TabStrip />
+        <button
+          className="scroll-sync-toggle"
+          type="button"
+          onClick={() => setScrollSync(!scrollSyncOn)}
+          title={scrollSyncOn ? t("preview.scrollSync.on") : t("preview.scrollSync.off")}
+          aria-pressed={scrollSyncOn}
+        >
+          {scrollSyncOn ? <Link size={14} /> : <Unlink size={14} />}
+        </button>
         <button
           className="preview-toggle"
           type="button"
