@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, ZoomIn, ZoomOut } from "lucide-react";
-import { readFileBytes } from "../../lib/tauri";
+import { readFileBytesCached } from "../../lib/viewerByteCache";
 import { toIpcError } from "../../lib/ipc-error";
 import i18n from "../../i18n";
 
@@ -37,7 +37,10 @@ export function ImageViewer({ path }: { path: string }): React.JSX.Element {
 
     (async () => {
       try {
-        const bytes = await readFileBytes(path);
+        // Cached by path: switching away from this tab and back is instant
+        // (bytes already in memory; only the Blob/object URL rebuilds, which
+        // is cheap relative to the IPC disk read).
+        const bytes = await readFileBytesCached(path);
         if (revoked) return;
         const isSvg = path.toLowerCase().endsWith(".svg");
         const blob = new Blob([bytes], {
