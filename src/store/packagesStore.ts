@@ -59,6 +59,12 @@ export const usePackagesStore = create<PackagesState>((set, get) => ({
         indexStatus: payload.stale ? "stale" : "fresh",
         error: null,
       });
+      // §3.2 / §6.1: when there is no cached index yet (stale=true with an
+      // empty result), kick off a network refresh so first-use isn't a blank
+      // list. Avoid recursing if a refresh is already in flight.
+      if (payload.stale && payload.entries.length === 0 && get().indexStatus !== "loading") {
+        void get().refreshIndex();
+      }
     } catch (e) {
       set({ indexStatus: "error", error: toIpcError(e).message });
     }

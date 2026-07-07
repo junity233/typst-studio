@@ -124,8 +124,10 @@ time = { version = "=0.3.36", default-features = false, features = ["std", "macr
 # HTTP client for remote image fetch (paste feature) + package downloads
 # (typst-kit Downloader). `blocking` is needed for the synchronous Downloader
 # trait used by typst's package resolver; the async client covers the paste
-# feature. Both share reqwest's core, so the cost is a thin sync adapter.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+# feature. `stream` enables `Response::bytes_stream()` used by the AI proxy to
+# pipe LLM responses to the webview chunk-by-chunk. All three share reqwest's
+# core, so the cost is a thin sync adapter + the stream feature's glue.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "stream"] }
 
 # Stable FFI for GetFileInformationByHandle — used by FileIdentity on Windows
 # (std's volume_serial_number/file_index are nightly-only behind windows_by_handle).

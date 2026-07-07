@@ -1,0 +1,20 @@
+{
+  "title": "助手",
+  "placeholder": "问我任何关于这份文档的问题,或让我帮你修改…",
+  "emptyState": "问我任何关于这份文档的问题,或让我帮你修改。",
+  "configRequired": "请先配置 AI provider。",
+  "openSettings": "打开设置",
+  "stop": "停止",
+  "send": "发送",
+  "clear": "清空对话",
+  "retry": "重试",
+  "apply": "应用",
+  "reject": "拒绝",
+  "applied": "已应用",
+  "rejected": "已拒绝",
+  "thinking": "思考中",
+  "toolRunning": "运行中",
+  "toolDone": "完成",
+  "toolError": "出错",
+  "enterToSend": "回车发送 · Shift+Enter 换行"
+}

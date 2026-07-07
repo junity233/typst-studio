@@ -187,6 +187,8 @@ pub fn run() {
             ipc::package_commands::package_dir_is_empty,
             ipc::package_commands::package_get_readme,
             ipc::package_commands::package_get_thumbnail,
+            // AI Assistant proxy (streaming LLM calls; key injected in Rust).
+            ipc::ai_commands::ai_proxy_stream,
         ])
         .setup(|app| {
             use std::sync::Arc;

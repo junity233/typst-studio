@@ -11,7 +11,7 @@ use crate::net::error::NetError;
 impl HttpClient {
     /// Reject anything that isn't an http(s) URL. Done before any network IO
     /// so `file://`, `data:`, etc. never reach reqwest.
-    fn validate_scheme(url: &str) -> Result<(), NetError> {
+    pub(crate) fn validate_scheme(url: &str) -> Result<(), NetError> {
         let lower = url.to_ascii_lowercase();
         if !(lower.starts_with("http://") || lower.starts_with("https://")) {
             return Err(NetError::BadScheme(url.to_string()));

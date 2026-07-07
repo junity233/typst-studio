@@ -3072,10 +3072,18 @@ button {
 
 /* ====================== Packages view (DESIGN.md grammar) =================== */
 .packages { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.packages-search { padding: var(--space-xs) var(--space-sm); }
-.packages-search-input { width: 100%; height: 30px; padding: 0 var(--space-sm); font: var(--text-caption); color: var(--color-ink); background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: var(--radius-pill); outline: none; box-sizing: border-box; }
+.packages-search { display: flex; align-items: center; gap: var(--space-xxs); padding: var(--space-xs) var(--space-sm); }
+.packages-search-input { flex: 1; min-width: 0; height: 30px; padding: 0 var(--space-sm); font: var(--text-caption); color: var(--color-ink); background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: var(--radius-pill); outline: none; box-sizing: border-box; }
 .packages-search-input:focus { border-color: var(--color-primary); }
 .packages-search-input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.packages-refresh { flex: none; display: grid; place-items: center; width: 30px; height: 30px; color: var(--color-ink-muted-48); background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: var(--radius-pill); cursor: pointer; }
+.packages-refresh:hover:not(:disabled) { color: var(--color-ink); border-color: var(--color-primary); }
+.packages-refresh:disabled { opacity: 0.6; cursor: default; }
+.packages-refresh .spin { animation: pkg-spin 0.9s linear infinite; }
+@keyframes pkg-spin { to { transform: rotate(360deg); } }
+.packages-status { margin: 0; padding: var(--space-xxs) var(--space-sm); font: var(--text-fine-print); color: var(--color-ink-muted-48); text-align: center; }
+.packages-status-error { color: var(--color-ink-muted-80); }
+.packages-status-stale { color: var(--color-ink-muted-48); background: var(--color-canvas-parchment); }
 .packages-tabs { display: flex; gap: 2px; padding: 0 var(--space-sm); border-bottom: 1px solid var(--color-divider-soft); }
 .packages-tab { flex: 1; padding: var(--space-xs) 0; font: var(--text-caption); color: var(--color-ink-muted-48); background: transparent; border: 0; border-bottom: 2px solid transparent; cursor: pointer; }
 .packages-tab:hover { color: var(--color-ink-muted-80); }

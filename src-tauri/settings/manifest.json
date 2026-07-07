@@ -67,6 +67,27 @@
           "optionLabels": { "off": "Off", "afterDelay": "After delay", "onFocusChange": "On focus change" } },
         { "key": "autosave.delayMs",    "type": "integer", "label": "Autosave delay (ms)", "default": 3000, "min": 500, "max": 30000 }
     ]},
+    { "id": "ai", "label": "AI Assistant", "settings": [
+        { "key": "ai.provider",  "type": "select", "label": "Provider",
+          "default": "openai",
+          "options": ["openai", "anthropic"],
+          "optionLabels": { "openai": "OpenAI / compatible", "anthropic": "Anthropic" },
+          "help": "OpenAI-compatible covers OpenAI, DeepSeek, Moonshot, local Ollama, etc." },
+        { "key": "ai.baseUrl",   "type": "string",  "label": "Base URL", "default": "",
+          "help": "Leave empty for provider default (e.g. https://api.openai.com/v1)." },
+        { "key": "ai.apiKey",    "type": "string",  "label": "API key", "default": "" },
+        { "key": "ai.model",     "type": "string",  "label": "Model",   "default": "gpt-4o" },
+        { "key": "ai.openaiApi", "type": "select",  "label": "OpenAI API style",
+          "default": "chat",
+          "options": ["responses", "chat"],
+          "optionLabels": { "responses": "Responses API", "chat": "Chat Completions" },
+          "help": "Only Chat Completions is currently implemented; the Responses API path is tracked as a follow-up." },
+        { "key": "ai.maxTokens", "type": "integer", "label": "Max output tokens",
+          "default": 4096, "min": 256, "max": 65536,
+          "help": "Anthropic requires this; OpenAI ignores it unless you raise it." },
+        { "key": "ai.temperature", "type": "number", "label": "Temperature",
+          "default": 0.3, "min": 0, "max": 2, "step": 0.1 }
+    ]},
     { "id": "data", "label": "Data & Diagnostics", "settings": [
         { "key": "action.clearRecentWorkspaces", "type": "string", "label": "Clear recent workspaces", "default": "", "readonly": true, "action": "clearRecentWorkspaces",
           "help": "Remove the list of recently-opened workspace folders." },

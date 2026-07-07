@@ -7,6 +7,7 @@ const VIEW_TITLE_KEYS: Record<string, string> = {
   "workbench.explorer": "sidebar:explorer.title",
   "workbench.outline": "sidebar:outline.title",
   "workbench.search": "sidebar:search.title",
+  "workbench.assistant": "sidebar:assistant.title",
   "workbench.scm": "sidebar:sourceControl.title",
 };
 

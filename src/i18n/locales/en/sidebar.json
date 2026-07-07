@@ -29,6 +29,9 @@
   "search": {
     "title": "Search"
   },
+  "assistant": {
+    "title": "Assistant"
+  },
   "emptyWorkspace": {
     "title": "No folder open",
     "body": "Open a folder to browse its files as a workspace tree, with <code>#include</code> and <code>#image()</code> resolution.",
