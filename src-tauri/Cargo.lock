@@ -7436,6 +7436,7 @@ dependencies = [
  "typst-pdf",
  "typst-render",
  "typst-svg",
+ "url",
  "uuid",
  "walkdir",
  "which",
