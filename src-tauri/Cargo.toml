@@ -1,6 +1,6 @@
 [package]
 name = "typst-studio"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Typst visual editor with live SVG preview"
 authors = ["Typst Studio"]
 edition = "2021"
