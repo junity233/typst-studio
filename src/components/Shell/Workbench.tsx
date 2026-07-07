@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Allotment } from "allotment";
 import "allotment/dist/style.css";
 import { Sidebar } from "../Sidebar/Sidebar";
@@ -10,6 +10,30 @@ import { useSettingsStore } from "../../store/settingsStore";
 import { getByPath } from "../../hooks/useSetting";
 import { loadSession } from "../../lib/session";
 import { effectiveLayout } from "../../lib/layoutState";
+
+// Sidebar-pane width persistence. Mirrors the preview-pane width's two-tier
+// model (§7.2): localStorage `ts-sidebar-width` is the live store — read into
+// the pane's preferredSize at first render, written on sash drag — and the
+// session-v2 `layout.sidebarWidth` is the cross-restart source of truth,
+// seeded into localStorage on startup (useWindowRestore) and captured on close
+// (useAppCommands). The default/min match the pane's maxSize [0,520] bounds;
+// the clamp on read guarantees a stale snapshot can't collapse the sidebar.
+const SIDEBAR_WIDTH_KEY = "ts-sidebar-width";
+const SIDEBAR_WIDTH_DEFAULT = 280;
+const SIDEBAR_WIDTH_MIN = 0;
+
+function loadSidebarWidth(): number {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    if (raw) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= SIDEBAR_WIDTH_MIN) return n;
+    }
+  } catch {
+    // ignore
+  }
+  return SIDEBAR_WIDTH_DEFAULT;
+}
 
 /**
  * One-shot guard for the window-settings seed. Module-scoped (not a ref) so it
@@ -29,10 +53,30 @@ export function Workbench() {
   const setSidebar = useUiStore((s) => s.setSidebar);
   const setPreview = useUiStore((s) => s.setPreview);
 
+  // Persisted sidebar width. Read once at first render (the session's value
+  // has already been seeded into localStorage by useWindowRestore, which runs
+  // near the app root before this mounts).
+  const [sidebarWidth] = useState<number>(loadSidebarWidth);
+
   // The sidebar shows whenever the user hasn't hidden it (View → Toggle
   // Sidebar / Cmd+B). With no workspace open it renders the EmptyWorkspace
   // prompt (the Open Folder entry point) — so first-run users always see it.
   const showSidebar = sidebarVisible;
+
+  // Persist the sidebar pane width on sash drag. Allotment fires onChange with
+  // the full pane-size array on every layout change; the sidebar is index 0.
+  // Best-effort: a quota/privacy-mode failure is swallowed so a drag never
+  // throws into React's event loop. The write per move is cheap (a single
+  // localStorage key), matching the preview sash's persist-on-drag behavior.
+  const handleAllotmentChange = useCallback((sizes: number[]) => {
+    const w = sizes[0];
+    if (typeof w !== "number" || !Number.isFinite(w)) return;
+    try {
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w));
+    } catch {
+      // ignore
+    }
+  }, []);
 
   // On first mount, hydrate any workspace the backend already has open (e.g.
   // across a dev reload). Safe to call repeatedly — it's a read-then-load.
@@ -92,7 +136,7 @@ export function Workbench() {
   return (
     <div className="workbench">
       <ActivityBar />
-      <Allotment proportionalLayout={false}>
+      <Allotment proportionalLayout={false} onChange={handleAllotmentChange}>
         {/*
           Sidebar pane. CRITICAL: min/max/preferredSize stay CONSTANT regardless
           of `visible`. Allotment restores a re-shown pane by clamping its
@@ -104,7 +148,7 @@ export function Workbench() {
         */}
         <Allotment.Pane
           minSize={0}
-          preferredSize={220}
+          preferredSize={sidebarWidth}
           maxSize={520}
           visible={showSidebar}
           snap

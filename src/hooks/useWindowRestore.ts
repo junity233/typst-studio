@@ -44,6 +44,16 @@ export function useWindowRestore(): void {
             // ignore quota / privacy-mode failures
           }
         }
+        // Seed the sidebar-pane width the same way, for Workbench's startup
+        // read of `ts-sidebar-width`.
+        const sw = session.layout?.sidebarWidth;
+        if (typeof sw === "number" && sw >= 0) {
+          try {
+            localStorage.setItem("ts-sidebar-width", String(sw));
+          } catch {
+            // ignore quota / privacy-mode failures
+          }
+        }
         await restoreWindowBounds(session.windowBounds ?? null);
       } catch (e) {
         console.warn("[windowState] startup restore failed:", e);

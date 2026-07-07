@@ -322,6 +322,7 @@ export async function captureAndSaveWindowState(): Promise<void> {
       sidebarVisible: ui.sidebarVisible,
       previewVisible: ui.previewVisible,
       diagnosticsVisible: readDiagnosticsVisible(),
+      sidebarWidth: readSidebarWidth(),
       previewWidth: readPreviewWidth(),
     });
     await saveSession({ windowBounds, layout });
@@ -341,6 +342,25 @@ function readPreviewWidth(): number | null {
     if (raw) {
       const n = Number(raw);
       if (Number.isFinite(n) && n >= 240) return n;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+/**
+ * Read the persisted sidebar-pane width from localStorage (the Workbench
+ * manages it there as `ts-sidebar-width`). Returns null when unset/invalid so
+ * the session layout omits it (the component default applies on restore).
+ * Mirrors {@link readPreviewWidth}.
+ */
+function readSidebarWidth(): number | null {
+  try {
+    const raw = localStorage.getItem("ts-sidebar-width");
+    if (raw) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 0) return n;
     }
   } catch {
     // ignore
