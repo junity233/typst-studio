@@ -33,6 +33,7 @@ import {
   getSelectionText,
   getSelectedLines as getSelectedLinesHelper,
 } from "./editorEdit";
+import { shouldDisableOccurrencesHighlight } from "./editorOptions";
 import { registerTypstHighlighting, applyTypstTokenTheme } from "./typstHighlighting";
 import { useThemeStore } from "../../store/themeStore";
 import { usePasteConvert } from "./usePasteConvert";
@@ -282,17 +283,13 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
   const previewVisibleRef = useRef(previewVisible);
   previewVisibleRef.current = previewVisible;
 
-  // Whether the ACTIVE document is untitled. The "highlight all occurrences of
-  // the word under the cursor" feature (wordHighlighter) resolves the current
+  // The "highlight all occurrences of the word under the cursor" feature
+  // (wordHighlighter) resolves the current
   // model via the workbench's TextModelResolverService on every cursor move,
-  // which tries to READ the model's resource from disk. For an untitled doc
-  // whose model URI the workbench classifies as a `file:` path
-  // (Documents/typst/Untitled.typ), that read throws "Unable to resolve
-  // nonexistent file" — a noisy, recurring uncaught-promise error. Disk files
-  // resolve fine, so we keep the feature ON for them (Monaco default
-  // 'singleFile') and disable it ONLY for untitled docs. Subscribing to the
-  // active doc's origin signature means the option re-applies on tab switch and
-  // on Save As (untitled → looseFile turns it back on).
+  // which can READ the model's resource through VS Code's browser FileService.
+  // Typst Studio's real document bytes live in the backend and Monaco model
+  // registry, not in that FileService overlay, so disable this feature for
+  // Typst models to avoid noisy "Unable to read file" promise rejections.
   const activeOriginKind = useDocumentsStore(
     (s) => s.documents[tab.id]?.origin.kind ?? "untitled",
   );
@@ -344,9 +341,9 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
       if (scrollBeyondLastLine !== undefined)
         opts.scrollBeyondLastLine = scrollBeyondLastLine;
       if (lineHeight !== undefined && lineHeight > 0) opts.lineHeight = lineHeight;
-      // Disable occurrence highlighting only for untitled docs (see
-      // `activeOriginKind` above for why). Disk files keep Monaco's default.
-      if (activeOriginKind === "untitled") opts.occurrencesHighlight = "off";
+      if (shouldDisableOccurrencesHighlight(activeOriginKind)) {
+        opts.occurrencesHighlight = "off";
+      }
       return opts;
     }, [
       fontSize,
