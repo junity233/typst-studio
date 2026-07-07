@@ -536,7 +536,8 @@
 }
 .assistant-diff-modal__body {
   flex: 1;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   min-height: 0;
 }
 .assistant-diff-modal__pre {
@@ -545,8 +546,6 @@
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12px;
   line-height: 1.6;
-  overflow: auto;
-  max-height: 100%;
   white-space: pre;
 }
 .assistant-diff-modal__pre .assistant-diff-line {

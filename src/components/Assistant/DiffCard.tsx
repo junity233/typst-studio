@@ -129,7 +129,7 @@ export function DiffCard({ approval, onApply, onReject }: DiffCardProps) {
 
       {poppedOut && (
         <DiffModal
-          diff={diff}
+          diff={changedLines}
           path={path}
           verdict={approval.verdict}
           onApply={onApply}
@@ -181,12 +181,6 @@ function DiffModal({
                 key={i}
                 className={`assistant-diff-line assistant-diff-line--${line.kind}`}
               >
-                <span className="assistant-diff-line__num">
-                  {line.kind === "add" ? "" : line.beforeLine > 0 ? line.beforeLine : ""}
-                </span>
-                <span className="assistant-diff-line__num">
-                  {line.kind === "del" ? "" : line.afterLine > 0 ? line.afterLine : ""}
-                </span>
                 <span className="assistant-diff-line__sign">
                   {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
                 </span>
