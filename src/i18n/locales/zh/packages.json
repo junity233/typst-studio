@@ -23,7 +23,7 @@
   "installed": "已安装",
   "installFailed": "安装失败。请检查网络后重试。",
   "uninstall": "卸载",
-  "copyImport": "复制 import",
+  "insertImport": "插入 import",
   "noReadme": "暂无描述。",
   "confirmUninstall": "卸载 {{name}} {{version}}？这会从本地缓存删除它。",
   "confirmOverwrite": "所选文件夹中已存在部分文件。是否用模板的文件覆盖它们？",

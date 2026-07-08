@@ -14,6 +14,7 @@ import {
   openWorkspaceByPath,
 } from "../../../lib/tauri";
 import { toIpcError } from "../../../lib/ipc-error";
+import { editorApiRef } from "../../Editor/editorApiRef";
 import i18n from "../../../i18n";
 import { Thumbnail } from "./Thumbnail";
 import { PackageReadme } from "./PackageReadme";
@@ -219,10 +220,12 @@ export function PackageDetail() {
         })()}
         <button
           className="pkg-btn-secondary"
-          onClick={() => navigator.clipboard.writeText(importText)}
+          onClick={() => {
+            editorApiRef.current?.insertAtTop(importText);
+          }}
           title={importText}
         >
-          {t("copyImport")}
+          {t("insertImport")}
         </button>
       </div>
     </div>

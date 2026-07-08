@@ -87,6 +87,10 @@ export interface MonacoEditorApi {
    *  range. Used for snippets where we don't wrap (code block, HR, image,
    *  table produce a block to drop in). */
   replaceSelection: (text: string) => void;
+  /** Insert `text` at the very top of the document (before line 1), as a
+   *  single undo step, then move the caret to the end of the inserted text.
+   *  Used by the Packages panel to drop a `#import` snippet at the top. */
+  insertAtTop: (text: string) => void;
   /**
    * Replace the unique first occurrence of `oldString` with `newString` in the
    * active model. Used by the AI assistant's `edit` tool. Returns false (and
@@ -963,6 +967,32 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         const editor = getEditor();
         if (!editor) return;
         applyReplaceSelection(editor, text);
+      },
+      insertAtTop: (text) => {
+        const editor = getEditor();
+        if (!editor) return;
+        const model = editor.getModel();
+        if (!model) return;
+        // Insert the text + a trailing newline at the start of line 1 so it
+        // becomes the new first line(s), pushing the original content down.
+        const insertText = text.endsWith("\n") ? text : text + "\n";
+        editor.executeEdits("insertAtTop", [
+          {
+            range: new Monaco.Range(1, 1, 1, 1),
+            text: insertText,
+            forceMoveMarkers: true,
+          },
+        ]);
+        // Place the caret at the end of the inserted snippet (the line just
+        // before the original first line) and reveal + focus.
+        const insertedLines = insertText.split("\n").length - 1;
+        const lastInsertedLine = Math.max(1, insertedLines);
+        editor.setPosition({
+          lineNumber: lastInsertedLine,
+          column: model.getLineMaxColumn(lastInsertedLine),
+        });
+        editor.revealLineInCenter(lastInsertedLine);
+        editor.focus();
       },
       strReplace: (oldString, newString) => {
         const editor = getEditor();

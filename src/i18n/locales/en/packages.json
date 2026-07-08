@@ -23,7 +23,7 @@
   "installed": "Installed",
   "installFailed": "Installation failed. Check your network and try again.",
   "uninstall": "Uninstall",
-  "copyImport": "Copy import",
+  "insertImport": "Insert import",
   "noReadme": "No description available.",
   "confirmUninstall": "Uninstall {{name}} {{version}}? This deletes it from the local cache.",
   "confirmOverwrite": "Some files at the chosen folder already exist. Overwrite them with the template's files?",
