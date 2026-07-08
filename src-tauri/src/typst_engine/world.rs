@@ -82,14 +82,17 @@ pub struct EditorWorld {
 
 impl EditorWorld {
     /// Create a new world seeded with the given source text, using the full
-    /// system + embedded font set. No workspace resolver — `#include` is
-    /// disabled (untitled / single-file mode).
+    /// system + embedded font set. No workspace resolver, so workspace-relative
+    /// `#include` / `#image()` are disabled (untitled / single-file mode) — but
+    /// `@preview`/`@local` package imports still resolve (packages are global,
+    /// not workspace-relative), via a package-only resolver.
     pub fn new(initial_text: impl Into<String>) -> Self {
         Self::with_font_loader(initial_text, SystemFontLoader::new())
     }
 
     /// Create a world backed by a specific font loader. Useful for tests
-    /// that want the deterministic, embedded-only set. No workspace resolver.
+    /// that want the deterministic, embedded-only set. Package imports resolve
+    /// (via a package-only resolver); workspace-relative includes do not.
     pub fn with_font_loader(initial_text: impl Into<String>, fonts: SystemFontLoader) -> Self {
         let source = Source::detached(initial_text.into());
         let source_id = source.id();
@@ -97,7 +100,13 @@ impl EditorWorld {
             library: LazyHash::new(Library::default()),
             source: RwLock::new(source),
             source_id,
-            resolver: None,
+            // A package-only resolver: the root is a throwaway (it's only used
+            // for the Project branch, which never runs for a detached world —
+            // the main source is `Source::detached`, so no FileId is ever
+            // Project-rooted here). The Package branch needs only the
+            // process-wide SystemPackages handle, which the resolver owns.
+            // This lets `#import "@preview/..."` work in untitled tabs.
+            resolver: Some(crate::fs::FileResolver::new(std::env::temp_dir())),
             vfs: None,
             fonts,
         }
@@ -341,7 +350,11 @@ mod tests {
     }
 
     #[test]
-    fn source_returns_not_found_for_other_files_without_resolver() {
+    fn source_returns_not_found_for_project_rooted_other_file_in_detached_world() {
+        // A detached world (untitled tab) now has a package-only resolver, so
+        // `@preview` imports resolve. But a Project-rooted FileId (a workspace
+        // #include) still can't resolve — the resolver's root is a throwaway
+        // temp dir, and the file doesn't exist there.
         let world = embedded_world("Hi");
         let other = FileId::new(RootedPath::new(
             VirtualRoot::Project,
@@ -349,14 +362,18 @@ mod tests {
         ));
         assert_ne!(other, world.main());
         let err = world.source(other);
-        assert!(err.is_err(), "non-main files must not resolve without a workspace");
+        assert!(err.is_err(), "project-rooted non-main files must not resolve in a detached world");
     }
 
     #[test]
-    fn file_is_disabled_without_resolver() {
+    fn file_returns_main_text_in_detached_world() {
+        // With the package-only resolver, file(main) serves the live buffer
+        // (it is no longer "disabled"). Package-rooted imports resolve too;
+        // only project-rooted workspace includes are unavailable.
         let world = embedded_world("Hi");
         let res = world.file(world.main());
-        assert!(res.is_err(), "#include / #read must be disabled without a workspace");
+        assert!(res.is_ok(), "file(main) must serve the live buffer");
+        assert_eq!(res.unwrap().as_str(), Ok("Hi"));
     }
 
     #[test]

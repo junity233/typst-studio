@@ -30,6 +30,8 @@ export function PackageDetail() {
   const index = usePackagesStore((s) => s.index);
   const setSelected = usePackagesStore((s) => s.setSelected);
   const install = usePackagesStore((s) => s.install);
+  const installed = usePackagesStore((s) => s.installed);
+  const installing = usePackagesStore((s) => s.installing);
   const hydrate = useWorkspaceStore((s) => s.hydrate);
   const setActiveView = useUiStore((s) => s.setActiveView);
   const [compilerVersion, setCompilerVersion] = useState<string | null>(null);
@@ -192,12 +194,29 @@ export function PackageDetail() {
             {t("useTemplate")}
           </button>
         )}
-        <button
-          className={isTemplate ? "pkg-btn-secondary" : "pkg-btn-primary"}
-          onClick={() => install(entry.name, entry.version)}
-        >
-          {t("install")}
-        </button>
+        {(() => {
+          const key = `${entry.name}@${entry.version}`;
+          const isInstalled = installed.some(
+            (p) => p.name === entry.name && p.version === entry.version,
+          );
+          const isInstalling = !!installing[key];
+          return (
+            <button
+              className={isTemplate ? "pkg-btn-secondary" : "pkg-btn-primary"}
+              disabled={isInstalled || isInstalling}
+              onClick={async () => {
+                const ok = await install(entry.name, entry.version);
+                if (!ok) alert(t("installFailed"));
+              }}
+            >
+              {isInstalled
+                ? t("installed")
+                : isInstalling
+                  ? t("installing")
+                  : t("install")}
+            </button>
+          );
+        })()}
         <button
           className="pkg-btn-secondary"
           onClick={() => navigator.clipboard.writeText(importText)}
