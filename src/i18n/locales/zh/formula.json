@@ -1,0 +1,15 @@
+{
+  "__smoke__": "formula zh 就绪",
+  "title": "插入公式",
+  "mode": "模式",
+  "inline": "行内",
+  "display": "独立行",
+  "latex": "LaTeX",
+  "latexPlaceholder": "\\frac{a}{b} + \\sum_{i=1}^n x_i",
+  "preview": "预览",
+  "cancel": "取消",
+  "insert": "插入",
+  "inserting": "插入中…",
+  "noEditor": "没有活动的编辑器。",
+  "convertedWithWarnings": "转换完成，但有 {{count}} 条警告。请检查插入的公式。"
+}

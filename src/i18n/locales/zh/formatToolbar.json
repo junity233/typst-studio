@@ -15,6 +15,7 @@
   "horizontalRule": "分隔线",
   "image": "插入图片",
   "table": "插入表格",
+  "formula": "插入公式",
   "linkModal": {
     "title": "插入链接",
     "url": "URL",

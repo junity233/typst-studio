@@ -35,7 +35,7 @@ import type { Tab } from "../../../store/tabsStore";
  *  2. The rendered toolbar. `@testing-library/react` isn't a dependency here,
  *     so we render via `react-dom/client`'s `createRoot` (jsdom is configured
  *     globally in `vitest.config.ts`) and assert on the DOM directly. This
- *     pins the structural contract: 15 buttons, 3 dividers, disabled-state
+ *     pins the structural contract: 16 buttons, 3 dividers, disabled-state
  *     propagation, label-as-title tooltips, and that a click threads through
  *     to the right `FormatApi` method.
  */
@@ -133,6 +133,7 @@ describe("dispatchAction — per-kind dispatch", () => {
     workspace: "/ws",
     insertImagePathTemplate: undefined,
     openModal: vi.fn(),
+    openFormula: vi.fn(),
     insertImage: vi.fn(async () => {}),
   };
 
@@ -240,7 +241,7 @@ describe("dispatchAction — per-kind dispatch", () => {
 });
 
 // ----------------------------------------------------------------------------
-// Rendered structure (15 buttons, 3 dividers, labels)
+// Rendered structure (16 buttons, 3 dividers, labels)
 // ----------------------------------------------------------------------------
 
 describe("FormatToolbar — rendered structure", () => {
@@ -260,7 +261,7 @@ describe("FormatToolbar — rendered structure", () => {
     expect(toolbar!.getAttribute("aria-label")).toBe("Text formatting");
   });
 
-  it("renders exactly 15 buttons", () => {
+  it("renders exactly 16 buttons", () => {
     const c = render(
       <FormatToolbar
         api={makeMockApi()}
@@ -269,7 +270,7 @@ describe("FormatToolbar — rendered structure", () => {
       />,
     );
     const buttons = c.querySelectorAll("button.format-toolbar-button");
-    expect(buttons.length).toBe(15);
+    expect(buttons.length).toBe(16);
   });
 
   it("renders exactly 3 dividers (between 4 groups)", () => {
@@ -332,7 +333,7 @@ describe("FormatToolbar — disabled state", () => {
       />,
     );
     const buttons = c.querySelectorAll("button.format-toolbar-button");
-    expect(buttons.length).toBe(15);
+    expect(buttons.length).toBe(16);
     for (const b of Array.from(buttons)) {
       expect((b as HTMLButtonElement).disabled).toBe(true);
     }

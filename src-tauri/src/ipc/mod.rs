@@ -8,6 +8,7 @@ pub mod bib_commands;
 pub mod conflict_commands;
 pub mod error;
 pub mod events;
+pub mod formula_commands;
 pub mod fs_commands;
 pub mod git_commands;
 pub mod menu;

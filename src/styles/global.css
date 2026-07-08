@@ -2670,6 +2670,106 @@ button {
   color: var(--color-ink-muted-48);
 }
 
+/* ---- Formula modal (Insert Formula: LaTeX → Typst math) -------------------
+   Reuses .dialog-overlay / .dialog chrome; this widens the box for the LaTeX
+   textarea + live KaTeX preview, and styles the inline/display segmented
+   toggle. Per DESIGN.md: a single Action Blue accent, pill-shaped interactive
+   chips, no decorative shadows (the dialog's own elevation comes from
+   --shadow-elevated on .dialog), scale(0.95) press micro-interaction. The
+   inputs reuse .link-modal-input's focus ring so every text field in the app
+   focuses identically. */
+.formula-modal {
+  width: min(480px, 92vw);
+}
+.formula-mode-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-canvas-parchment);
+  border-radius: var(--radius-pill);
+  align-self: flex-start;
+}
+.formula-mode-btn {
+  font: var(--text-caption);
+  letter-spacing: -0.224px;
+  color: var(--color-ink-muted-80);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-pill);
+  padding: 4px 14px;
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease, transform 0.1s ease;
+}
+.formula-mode-btn:hover {
+  color: var(--color-ink);
+}
+.formula-mode-btn.active {
+  /* Selected segment: Action Blue fill, per the single-accent rule. */
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+.formula-mode-btn:active {
+  transform: scale(0.95);
+}
+.formula-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.formula-label {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-80);
+}
+.formula-textarea {
+  resize: vertical;
+  min-height: 64px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 11px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.formula-textarea:hover {
+  border-color: var(--color-ink-muted-48);
+}
+.formula-textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-focus-ring);
+}
+.formula-preview {
+  min-height: 56px;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas-parchment);
+  color: var(--color-ink);
+  overflow-x: auto;
+  /* KaTeX renders inline math inline; display math centered. Centered display
+     avoids left-justified big formulas in a narrow modal. */
+  display: flex;
+  align-items: center;
+}
+.formula-preview.display {
+  justify-content: center;
+}
+/* KaTeX's own font sizing is fine inline; bump display-mode renders slightly
+   so the preview reads as a real display equation. */
+.formula-preview.display .katex-display {
+  margin: 0;
+}
+.formula-error {
+  margin: 0;
+  font: var(--text-caption);
+  color: var(--color-error);
+}
+
 /* ============================================================================
    Recovery dialog (§5.1.3) — wider than the confirm dialog; lists docs.
    ========================================================================= */

@@ -208,6 +208,8 @@ pub fn run() {
             ipc::bib_commands::bibliography_save_entries,
             // AI Assistant proxy (streaming LLM calls; key injected in Rust).
             ipc::ai_commands::ai_proxy_stream,
+            // Insert Formula: LaTeX → Typst math conversion (tylax).
+            ipc::formula_commands::convert_latex_to_typst,
         ])
         .setup(|app| {
             use std::sync::Arc;

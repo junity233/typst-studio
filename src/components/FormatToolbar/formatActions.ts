@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   Bold,
   Code,
+  FunctionSquare,
   Heading1,
   Heading2,
   Heading3,
@@ -67,6 +68,14 @@ export interface ActionContext {
    * the table button, which predates this mechanism).
    */
   openModal: (kind: "link") => void;
+  /**
+   * Open the Insert Formula modal (LaTeX → Typst math via the `tylax` backend).
+   * Store-driven (`useFormulaModalStore`), so unlike `openModal` this needs no
+   * local modal state in the toolbar — the global `FormulaModal` (mounted at
+   * the app root) renders itself. The current selection is passed through as
+   * the initial LaTeX so the user can convert an existing fragment in place.
+   */
+  openFormula: (initialLatex?: string) => void;
   /**
    * Kick off the insert-image flow (open native picker → copy into assets →
    * insert `#image("…")`). Async (Tauri IPC) but not React UI, so it runs
@@ -224,6 +233,17 @@ export const FORMAT_BUTTON_GROUPS: FormatButtonGroup[] = [
         // insert `#image("…")`). Image flow is async (Tauri IPC) but not React
         // UI, so `run` works cleanly without openModal / a ternary.
         action: { kind: "custom", run: (api, ctx) => { void ctx.insertImage(api); } },
+      },
+      {
+        id: "formula",
+        icon: FunctionSquare,
+        label: "Insert formula",
+        // Opens the Insert Formula modal via ActionContext.openFormula (which
+        // drives useFormulaModalStore). The modal is mounted globally at the
+        // app root, so no local modal state is needed here — unlike the link
+        // flow (openModal) which the toolbar owns. Conversion runs in the Rust
+        // backend (tylax); the modal handles preview (KaTeX) + insertion.
+        action: { kind: "custom", run: (_api, ctx) => { ctx.openFormula(); } },
       },
       {
         id: TABLE_BUTTON_ID,

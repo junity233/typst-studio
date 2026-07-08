@@ -15,6 +15,7 @@
   "horizontalRule": "Horizontal rule",
   "image": "Insert image",
   "table": "Insert table",
+  "formula": "Insert formula",
   "linkModal": {
     "title": "Insert link",
     "url": "URL",

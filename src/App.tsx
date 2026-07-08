@@ -6,6 +6,7 @@ import { StartupProblemsPanel } from "./components/StatusBar/StartupProblemsPane
 import { ConfirmDialog } from "./components/Dialogs/ConfirmDialog";
 import { RecoveryDialog } from "./components/Dialogs/RecoveryDialog";
 import { ConflictDialog } from "./components/Dialogs/ConflictDialog";
+import { FormulaModal } from "./components/FormulaModal/FormulaModal";
 import { ContextMenu } from "./components/Sidebar/ContextMenu";
 import { CommandPalette } from "./components/CommandPalette/CommandPalette";
 import { useTypstCompile } from "./hooks/useTypstCompile";
@@ -116,6 +117,9 @@ export default function App() {
       <ConfirmDialog />
       <RecoveryDialog />
       <ConflictDialog />
+      {/* Store-driven (useFormulaModalStore); opened by the toolbar button and
+          the Ctrl+Alt+M command. Renders nothing when closed. */}
+      <FormulaModal />
       <ContextMenu />
       <CommandPalette />
       {settingsOpen && (

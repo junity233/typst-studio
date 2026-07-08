@@ -538,7 +538,24 @@ previewWidth?: number | null, };
  * `page` is 0-indexed; `line` is 1-indexed (matching Monaco). Geometry is in
  * points, relative to the page's top-left corner.
  */
-export type LineRect = { 
+/**
+ * One conversion warning from LaTeX → Typst math conversion (Insert Formula
+ * feature, backed by the `tylax` Rust crate). `kind` is a short stable slug
+ * (e.g. `"unsupported macro"`, `"parse error"`); `message` is human-readable
+ * detail. Non-fatal — the conversion still produces output, the modal surfaces
+ * these as a hint.
+ */
+export type LatexConvertWarning = { kind: string, message: string, };
+
+/**
+ * Result of converting a LaTeX math snippet to Typst math source. `output` is
+ * the Typst math body WITHOUT surrounding `$` — the modal adds those based on
+ * inline/display mode and the current math context (inside `$…$` already → no
+ * re-wrapping). `warnings` is empty on a clean conversion.
+ */
+export type LatexConvertResult = { output: string, warnings: Array<LatexConvertWarning>, };
+
+export type LineRect = {
 /**
  * 1-indexed source line.
  */

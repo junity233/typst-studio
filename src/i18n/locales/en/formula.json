@@ -1,0 +1,15 @@
+{
+  "__smoke__": "formula en ok",
+  "title": "Insert formula",
+  "mode": "Mode",
+  "inline": "Inline",
+  "display": "Display",
+  "latex": "LaTeX",
+  "latexPlaceholder": "\\frac{a}{b} + \\sum_{i=1}^n x_i",
+  "preview": "Preview",
+  "cancel": "Cancel",
+  "insert": "Insert",
+  "inserting": "Inserting…",
+  "noEditor": "No active editor.",
+  "convertedWithWarnings": "Converted with {{count}} warning(s). Please review the inserted math."
+}

@@ -73,6 +73,14 @@ hayagriva = "0.10"
 # with full fidelity (preserving journal/volume/pages/... that hayagriva's
 # lossy `Entry` projection would drop). Dedupes to the same 0.12.x — no new code.
 biblatex = "0.12"
+# LaTeX ↔ Typst math conversion for the Insert Formula feature. We call only
+# the LaTeX→Typst math path (`latex_to_typst_with_diagnostics`). default-features
+# is disabled: the default `cli` feature pulls in `clap` (unused here), `wasm`
+# is for browser builds, and `data-loading`/`batch` are for the standalone CLI.
+# NOTE: tylax 0.3.x depends on typst-syntax 0.14, while this app pins typst 0.15.
+# Cargo resolves them as two separate copies (semver-incompatible), so this adds
+# compile time but does not conflict. Verified at the T0 risk gate (cargo check).
+tylax = { version = "0.3.6", default-features = false }
 toml = "0.8"
 base64 = "0.21"
 comemo = "0.4"

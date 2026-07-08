@@ -16,6 +16,7 @@ import { buildTableSnippet } from "./buildTableSnippet";
 import { LinkModal } from "./LinkModal";
 import { escapeTypstStr } from "../../lib/htmlToTypst/escape";
 import { useInsertImage } from "./useInsertImage";
+import { useFormulaModalStore } from "../../store/formulaModalStore";
 
 /**
  * Dispatch a single button action against a {@link FormatApi} (+ the optional
@@ -179,6 +180,12 @@ export function FormatToolbar({
       workspace,
       insertImagePathTemplate,
       openModal,
+      // Open the Insert Formula modal via the global store; pre-fill with the
+      // current selection so the user can convert an existing fragment in place.
+      openFormula: (initialLatex) =>
+        useFormulaModalStore
+          .getState()
+          .open(initialLatex ?? api?.getSelectionText() ?? ""),
       insertImage,
     };
     dispatchAction(action, api, actionCtx);

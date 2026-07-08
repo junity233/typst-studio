@@ -59,15 +59,15 @@ describe("FORMAT_BUTTON_GROUPS — structure", () => {
     }
   });
 
-  it("has exactly 15 buttons total", () => {
-    expect(ALL_BUTTONS.length).toBe(15);
+  it("has exactly 16 buttons total", () => {
+    expect(ALL_BUTTONS.length).toBe(16);
   });
 
   it.each([
     ["structure", 3],
     ["inline", 5],
     ["blocks", 5],
-    ["insert", 2],
+    ["insert", 3],
   ] as const)("group %s has %i buttons", (groupId, count) => {
     const group = FORMAT_BUTTON_GROUPS.find((g) => g.id === groupId);
     expect(group).toBeDefined();
@@ -266,7 +266,7 @@ describe("FORMAT_BUTTON_GROUPS — actions", () => {
   });
 
   describe("custom actions (placeholders for later tasks)", () => {
-    it.each(["link", "image", "table"] as const)(
+    it.each(["link", "image", "formula", "table"] as const)(
       "%s action is custom with a callable run (impl deferred)",
       (id) => {
         const a = buttonById(id).action as Extract<
@@ -299,16 +299,18 @@ describe("exported types are usable", () => {
     expect(typeof api.wrapSelection).toBe("function");
   });
 
-  it("ActionContext carries tab + workspace + image template + openModal + insertImage", () => {
+  it("ActionContext carries tab + workspace + image template + openModal + openFormula + insertImage", () => {
     const ctx: ActionContext = {
       tab: { id: "t1", path: null } as ActionContext["tab"],
       workspace: null,
       insertImagePathTemplate: undefined,
       openModal: () => {},
+      openFormula: () => {},
       insertImage: async () => {},
     };
     expect(ctx.tab.id).toBe("t1");
     expect(typeof ctx.openModal).toBe("function");
+    expect(typeof ctx.openFormula).toBe("function");
     expect(typeof ctx.insertImage).toBe("function");
   });
 

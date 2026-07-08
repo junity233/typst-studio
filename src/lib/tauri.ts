@@ -30,6 +30,7 @@ import type {
   FsChangedPayload,
   InstalledPackage,
   LayoutState,
+  LatexConvertResult,
   OpenExternalFilePayload,
   OpenedDocument,
   OpenDocRecord,
@@ -286,6 +287,11 @@ async function browserInvoke<T>(
     case "bibliography_save":
     case "bibliography_save_entries":
       return undefined as T;
+    case "convert_latex_to_typst":
+      // tylax (LaTeX→Typst) runs only in the Rust backend; no JS fallback.
+      throw new Error(
+        `[tauri] command "${command}" is unavailable in browser mode`,
+      );
     default:
       throw new Error(`[tauri] command "${command}" is unavailable in browser mode`);
   }
@@ -743,6 +749,23 @@ export async function bibliographySaveEntries(
   entries: BibEntryEditable[],
 ): Promise<void> {
   await invoke<void>("bibliography_save_entries", { path, entries });
+}
+
+// --- Insert Formula (LaTeX → Typst math via the `tylax` Rust crate) --------
+
+/**
+ * Convert a LaTeX math snippet to Typst math source. Input is raw LaTeX math
+ * (no surrounding `$`/`\begin{equation}` — just the body, e.g.
+ * `\frac{a}{b} + \sum_{i=1}^n x_i`). Returns the Typst math body (no `$`) plus
+ * any non-fatal warnings. The modal wraps `output` in `$…$` based on the chosen
+ * inline/display mode and whether the cursor is already inside math.
+ *
+ * Browser-mode (test/dev without Tauri) throws — tylax runs only in Rust.
+ */
+export async function convertLatexToTypst(
+  latex: string,
+): Promise<LatexConvertResult> {
+  return invoke<LatexConvertResult>("convert_latex_to_typst", { latex });
 }
 
 // --- Event subscriptions ----------------------------------------------------

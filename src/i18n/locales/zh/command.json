@@ -11,5 +11,6 @@
   "togglePreview": "切换预览",
   "openSettings": "打开设置",
   "formatDocument": "格式化文档",
-  "formatRequiresLsp": "格式化需要 tinymist 语言服务器。请安装后重启，或在状态栏点击重启语言服务器。"
+  "formatRequiresLsp": "格式化需要 tinymist 语言服务器。请安装后重启，或在状态栏点击重启语言服务器。",
+  "insertFormula": "插入公式"
 }
