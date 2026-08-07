@@ -124,6 +124,29 @@ pub struct ReplaceOutcome {
     /// — the buffer must NOT be re-synced via `update_text` from the JS side,
     /// or the revision will desync and the user's next keystroke is dropped.
     pub open_docs: Vec<OpenDocReplacement>,
+    /// Closed files that could NOT be written (permission denied, disk full,
+    /// vanishing mid-batch, …). The replace is best-effort across the workspace:
+    /// a failure on one file does not roll back the others. Each entry carries
+    /// the path + a short reason so the UI can surface a partial-failure summary
+    /// rather than silently dropping files.
+    #[serde(default)]
+    pub failed: Vec<ReplaceFailure>,
+}
+
+/// One file that failed to write during a replace run.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct ReplaceFailure {
+    /// Path relative to workspace root (forward-slash separators), when known.
+    pub relative: String,
+    /// Short human-readable reason (e.g. "permission denied"). Not localized —
+    /// the frontend may map known fragments to translated messages.
+    pub reason: String,
 }
 
 /// One open document whose buffer was replaced. Carries the new content + the
@@ -161,6 +184,7 @@ mod tests {
         super::ReplaceRequest::export(&cfg).unwrap();
         super::TargetRef::export(&cfg).unwrap();
         super::ReplaceOutcome::export(&cfg).unwrap();
+        super::ReplaceFailure::export(&cfg).unwrap();
         super::OpenDocReplacement::export(&cfg).unwrap();
     }
 }

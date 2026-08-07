@@ -72,7 +72,7 @@ describe("searchStore replace", () => {
   });
 
   it("replaceAll builds a ReplaceRequest with target=null and re-runs search", async () => {
-    mocks.replaceInFiles.mockResolvedValue({ closedFilesWritten: 1, openDocs: [] });
+    mocks.replaceInFiles.mockResolvedValue({ closedFilesWritten: 1, openDocs: [], failed: [] });
     mocks.searchWorkspace.mockResolvedValue([]);
 
     await useSearchStore.getState().replaceAll();
@@ -90,6 +90,7 @@ describe("searchStore replace", () => {
   it("replaceAll applies a controlled replace to each open doc (Monaco + store)", async () => {
     mocks.replaceInFiles.mockResolvedValue({
       closedFilesWritten: 0,
+      failed: [],
       openDocs: [
         { id: "doc-a", newContent: "pin", newRevision: 7, path: "/x/a.typ" },
         { id: "doc-b", newContent: "pin pin", newRevision: 3, path: "/x/b.typ" },
@@ -115,7 +116,7 @@ describe("searchStore replace", () => {
   });
 
   it("replaceOne pins a target at the hit's line/column", async () => {
-    mocks.replaceInFiles.mockResolvedValue({ closedFilesWritten: 0, openDocs: [] });
+    mocks.replaceInFiles.mockResolvedValue({ closedFilesWritten: 0, openDocs: [], failed: [] });
     mocks.searchWorkspace.mockResolvedValue([]);
     const hit: SearchHit = {
       relative: "main.typ",
@@ -135,7 +136,7 @@ describe("searchStore replace", () => {
 
   it("preserveCase is forced false when isRegex (regex ignores it)", async () => {
     useSearchStore.setState({ isRegex: true, preserveCase: true });
-    mocks.replaceInFiles.mockResolvedValue({ closedFilesWritten: 0, openDocs: [] });
+    mocks.replaceInFiles.mockResolvedValue({ closedFilesWritten: 0, openDocs: [], failed: [] });
     mocks.searchWorkspace.mockResolvedValue([]);
 
     await useSearchStore.getState().replaceAll();
@@ -148,7 +149,7 @@ describe("searchStore replace", () => {
     // The replace's trailing run() must be discardable if the user (or a newer
     // search) bumped runSeq while it was in flight.
     const staleSearch = deferred<SearchHit[]>();
-    mocks.replaceInFiles.mockResolvedValue({ closedFilesWritten: 0, openDocs: [] });
+    mocks.replaceInFiles.mockResolvedValue({ closedFilesWritten: 0, openDocs: [], failed: [] });
     mocks.searchWorkspace.mockReturnValueOnce(staleSearch.promise);
 
     const replaceP = useSearchStore.getState().replaceAll();

@@ -197,6 +197,108 @@ fn build_matcher(query: &SearchQuery) -> Result<Matcher> {
     }
 }
 
+/// Validate a regex replacement string against the compiled regex. `regex`'s
+/// `expand` / `replace_all` **panic** when the replacement references a capture
+/// group that doesn't exist (e.g. pattern `World` + replacement `$1`, or
+/// `(a)` + `$5`, or `${oops}`). That panic would unwind inside `spawn_blocking`
+/// and surface as an opaque IPC error with no hint that the *replacement* was
+/// the problem. This pre-flight check parses the `$name` / `${name}` / `$N`
+/// references in `replacement` and rejects any that don't resolve to a real
+/// capture index or name — turning a runtime panic into a clean, actionable
+/// error before any file is read or written.
+fn validate_regex_replacement(re: &Regex, replacement: &str) -> Result<()> {
+    // Collect the set of valid capture names + the highest numeric index.
+    let mut max_index = 0usize; // $0 (whole match) is always valid.
+    let mut names: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (i, name) in re.capture_names().enumerate() {
+        max_index = i.saturating_sub(1).max(max_index); // enumerate includes $0
+        if let Some(n) = name {
+            names.insert(n);
+        }
+    }
+    // capture_names() yields Some(name) for named groups; the count of slots is
+    // re.captures_len(). Numeric refs must be < captures_len (0-indexed, $0 ok).
+    let captures_len = re.captures_len();
+
+    let bytes = replacement.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'$' {
+            i += 1;
+            continue;
+        }
+        // $$ is an escaped literal dollar.
+        if i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+            i += 2;
+            continue;
+        }
+        i += 1;
+        // ${...} braced form.
+        if i < bytes.len() && bytes[i] == b'{' {
+            let start = i + 1;
+            let end = match bytes[start..].iter().position(|&b| b == b'}') {
+                Some(p) => start + p,
+                None => {
+                    // Unterminated ${ — regex would panic; reject with a clear msg.
+                    return Err(anyhow::anyhow!(
+                        "replacement has unterminated `${{'` — use `${{name}}` or `$$` for a literal dollar"
+                    ));
+                }
+            };
+            let name = &replacement[start..end];
+            validate_one_ref(name, captures_len, &names)?;
+            i = end + 1;
+            continue;
+        }
+        // Bare $name / $N: read consecutive word chars ([A-Za-z0-9_]).
+        let start = i;
+        while i < bytes.len()
+            && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+        {
+            i += 1;
+        }
+        if i == start {
+            // Lone `$` followed by a non-word char — regex treats `$x` where x
+            // isn't a valid name char as a literal `$`; not a panic. Skip.
+            continue;
+        }
+        let name = &replacement[start..i];
+        validate_one_ref(name, captures_len, &names)?;
+    }
+    let _ = max_index;
+    Ok(())
+}
+
+/// Check a single capture-group reference (the text inside `$…` or `${…}`).
+fn validate_one_ref(
+    name: &str,
+    captures_len: usize,
+    names: &std::collections::HashSet<&str>,
+) -> Result<()> {
+    // Empty (${}) — invalid.
+    if name.is_empty() {
+        return Err(anyhow::anyhow!("replacement has empty capture reference `${{}}`"));
+    }
+    // All-digits → numeric index. Must be < captures_len ($0 is the whole match).
+    if name.bytes().all(|b| b.is_ascii_digit()) {
+        let n: usize = name.parse().unwrap_or(usize::MAX);
+        if n >= captures_len {
+            return Err(anyhow::anyhow!(
+                "replacement `${{{name}}}` references capture group {n}, but the pattern only has {} group(s)",
+                captures_len.saturating_sub(1)
+            ));
+        }
+        return Ok(());
+    }
+    // Otherwise a named group.
+    if !names.contains(name) {
+        return Err(anyhow::anyhow!(
+            "replacement `${{{name}}}` references a capture group that doesn't exist in the pattern"
+        ));
+    }
+    Ok(())
+}
+
 /// Whether the slice `[start, end)` of `s` is bounded by non-word characters
 /// (or the string ends). Used for `whole_word` matching (ASCII only — the
 /// Search view's whole-word is a simple, fast check, not full Unicode UAX-29).
@@ -270,6 +372,12 @@ pub fn replace_compute(root: &Path, req: &ReplaceRequest) -> Result<Vec<FileRepl
     let query = &req.query;
     let matcher = build_matcher(query)?;
     let replacement = req.replacement.as_str();
+    // Pre-validate a regex replacement so a bad capture reference ($5 on a
+    // pattern with fewer groups) becomes a clean error instead of a panic
+    // inside spawn_blocking. Literal mode needs no validation.
+    if let Matcher::Regex(re) = &matcher {
+        validate_regex_replacement(re, replacement)?;
+    }
     let preserve_case = req.preserve_case;
     let target = req.target.as_ref();
     let ignored: HashSet<&'static str> = crate::fs::tree::IGNORED_DIRS.iter().copied().collect();
@@ -314,6 +422,18 @@ pub fn replace_compute(root: &Path, req: &ReplaceRequest) -> Result<Vec<FileRepl
             }
         }
         // Skip non-UTF-8 / unreadable files (best-effort, same as `search`).
+        // Also skip files larger than the byte guard: a multi-MB generated
+        // file (JSON/CSV checked into the workspace) would otherwise be read
+        // wholesale, rebuilt in memory, and written back — slow and memory-
+        // hungry. The search hit caps protect the result LIST, but replace
+        // walks every matching file regardless, so this is the only ceiling.
+        // Mirrors fs_commands.rs::MAX_SOURCE_FILE_BYTES (10 MiB).
+        const REPLACE_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() > REPLACE_MAX_FILE_BYTES {
+                continue;
+            }
+        }
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(_) => continue,
@@ -332,7 +452,6 @@ pub fn replace_compute(root: &Path, req: &ReplaceRequest) -> Result<Vec<FileRepl
         let mut any_change = false;
         // Preserve the trailing newline shape: iterate with line endings kept.
         let lines = split_lines_with_endings(&text);
-        let nlines = lines.len();
         for (line_idx, (line, ending)) in lines.into_iter().enumerate() {
             // SearchHit.line is 1-indexed.
             let line_no = line_idx + 1;
@@ -364,7 +483,6 @@ pub fn replace_compute(root: &Path, req: &ReplaceRequest) -> Result<Vec<FileRepl
             total_matches += matched_count;
             any_change = true;
         }
-        let _ = nlines; // (kept for clarity; nothing to assert post-loop)
 
         if any_change {
             out.push(FileReplacement {
@@ -761,6 +879,58 @@ mod tests {
         let out = replace_compute(dir.path(), &req).unwrap();
         let a = out.iter().find(|f| f.relative == "a.txt").unwrap();
         assert_eq!(a.new_content, "foo[bar] baz[qux]\n");
+    }
+
+    /// A replacement that references a capture group the pattern doesn't have
+    /// must be rejected with a clear error, NOT panic inside spawn_blocking.
+    /// (regex's expand/replace_all panic on a missing group reference.)
+    #[test]
+    fn replace_regex_bad_capture_ref_is_rejected_not_panicked() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "World\n").unwrap();
+        // Pattern has NO capture groups, but the replacement references $1.
+        let mut q = query("World");
+        q.is_regex = true;
+        let req = replace_req(q, "$1");
+        let err = replace_compute(dir.path(), &req).unwrap_err();
+        assert!(
+            err.to_string().contains("capture group"),
+            "expected a capture-group error, got: {err}"
+        );
+        // Numeric out-of-range: pattern has one group, replacement asks for $5.
+        let mut q2 = query(r"(World)");
+        q2.is_regex = true;
+        let req2 = replace_req(q2, "$5");
+        let err2 = replace_compute(dir.path(), &req2).unwrap_err();
+        assert!(
+            err2.to_string().contains("capture group"),
+            "expected a capture-group error, got: {err2}"
+        );
+        // Named group that doesn't exist.
+        let mut q3 = query(r"(World)");
+        q3.is_regex = true;
+        let req3 = replace_req(q3, "${oops}");
+        let err3 = replace_compute(dir.path(), &req3).unwrap_err();
+        assert!(
+            err3.to_string().contains("doesn't exist"),
+            "expected a missing-named-group error, got: {err3}"
+        );
+    }
+
+    /// A valid replacement (including $$ literal dollar and named groups) is
+    /// accepted — guards against the validator being over-eager.
+    #[test]
+    fn replace_regex_valid_references_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "World\n").unwrap();
+        // One named group `w`; replacement uses both the named ref and an
+        // escaped dollar ($$ → literal $). Both are valid references.
+        let mut q = query(r"(?P<w>World)");
+        q.is_regex = true;
+        let req = replace_req(q, "[${w}] $$");
+        let out = replace_compute(dir.path(), &req).unwrap();
+        let a = out.iter().find(|f| f.relative == "a.txt").unwrap();
+        assert_eq!(a.new_content, "[World] $\n");
     }
 
     #[test]

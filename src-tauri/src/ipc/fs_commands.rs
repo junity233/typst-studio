@@ -335,6 +335,7 @@ pub async fn replace_in_files(
         return Ok(crate::domain::search::ReplaceOutcome {
             closed_files_written: 0,
             open_docs: Vec::new(),
+            failed: Vec::new(),
         });
     }
 
@@ -351,9 +352,15 @@ pub async fn replace_in_files(
     }
 
     // 3. Route each file: open doc → buffer update (capture new revision);
-    //    closed file → disk write.
+    //    closed file → atomic disk write. The disk writes are blocking IO, so
+    //    they're batched into one spawn_blocking. A single closed-file failure
+    //    (permission denied, disk full, vanished mid-batch) does NOT abort the
+    //    rest: we record it in `failed` and continue, so the user gets a
+    //    partial-success summary instead of a half-applied batch with no detail.
+    //    Open-doc updates stay here (they touch AppState and must run off the
+    //    blocking pool).
     let mut open_results: Vec<crate::domain::search::OpenDocReplacement> = Vec::new();
-    let mut closed_written: u32 = 0;
+    let mut closed: Vec<crate::fs::search::FileReplacement> = Vec::new();
     for c in computed {
         // Canonicalize the walked path the same way docs_at_paths did so the
         // join succeeds regardless of symlinks/`..` in the abs path.
@@ -377,15 +384,46 @@ pub async fn replace_in_files(
                 path: canon.to_string_lossy().into_owned(),
             });
         } else {
-            // Closed: write straight to disk. No dirty buffer can disagree.
-            std::fs::write(&c.abs_path, &c.new_content).map_err(crate::error::AppError::from)?;
-            closed_written += 1;
+            // Closed: defer to the blocking batch below. Keep the relative path
+            // (computed by the walker) so a failure can be reported back in
+            // workspace-relative form.
+            closed.push(c);
         }
     }
+
+    // 4. Atomic-write every closed file on the blocking pool, collecting
+    //    failures. We use the project's atomic write (temp + fsync + rename +
+    //    perm-preserve) — the same protocol Saves use — so a crash mid-batch
+    //    can never truncate a workspace file, and a 0600 file stays 0600.
+    let closed_written: u32;
+    let failed: Vec<crate::domain::search::ReplaceFailure> = if closed.is_empty() {
+        closed_written = 0;
+        Vec::new()
+    } else {
+        let written = tauri::async_runtime::spawn_blocking(move || {
+            let mut ok = 0u32;
+            let mut failures: Vec<crate::domain::search::ReplaceFailure> = Vec::new();
+            for c in &closed {
+                match crate::persistence::atomic::write_bytes(&c.abs_path, c.new_content.as_bytes()) {
+                    Ok(()) => ok += 1,
+                    Err(e) => failures.push(crate::domain::search::ReplaceFailure {
+                        relative: c.relative.clone(),
+                        reason: e.to_string(),
+                    }),
+                }
+            }
+            (ok, failures)
+        })
+        .await
+        .map_err(|e| AppError::Other(format!("join error: {e}")))?;
+        closed_written = written.0;
+        written.1
+    };
 
     Ok(crate::domain::search::ReplaceOutcome {
         closed_files_written: closed_written,
         open_docs: open_results,
+        failed,
     })
 }
 

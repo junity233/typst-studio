@@ -14,5 +14,7 @@
   "collapseAllFiles": "Collapse all files",
   "expandAllFiles": "Expand all files",
   "summary_one": "{{resultCount}} result in {{fileCount}} file",
-  "summary_other": "{{resultCount}} results in {{fileCount}} files"
+  "summary_other": "{{resultCount}} results in {{fileCount}} files",
+  "replaceFailedCount_one": "{{count}} file could not be written (check permissions/disk).",
+  "replaceFailedCount_other": "{{count}} files could not be written (check permissions/disk)."
 }

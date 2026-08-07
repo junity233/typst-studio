@@ -809,6 +809,20 @@ origin: string, };
 export type RecoveryAvailablePayload = { snapshots: Array<RecoverableInfo>, };
 
 /**
+ * One file that failed to write during a replace run.
+ */
+export type ReplaceFailure = { 
+/**
+ * Path relative to workspace root (forward-slash separators), when known.
+ */
+relative: string, 
+/**
+ * Short human-readable reason (e.g. "permission denied"). Not localized —
+ * the frontend may map known fragments to translated messages.
+ */
+reason: string, };
+
+/**
  * Result of a replace-in-files run.
  */
 export type ReplaceOutcome = { 
@@ -822,7 +836,15 @@ closedFilesWritten: number,
  * — the buffer must NOT be re-synced via `update_text` from the JS side,
  * or the revision will desync and the user's next keystroke is dropped.
  */
-openDocs: Array<OpenDocReplacement>, };
+openDocs: Array<OpenDocReplacement>, 
+/**
+ * Closed files that could NOT be written (permission denied, disk full,
+ * vanishing mid-batch, …). The replace is best-effort across the workspace:
+ * a failure on one file does not roll back the others. Each entry carries
+ * the path + a short reason so the UI can surface a partial-failure summary
+ * rather than silently dropping files.
+ */
+failed: Array<ReplaceFailure>, };
 
 /**
  * Cross-file replace request (§Search view → Replace). Pairs a search query

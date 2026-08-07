@@ -45,6 +45,7 @@ export function SearchPanel(_props: { viewId?: string }) {
   const replaceValue = useSearchStore((s) => s.replaceValue);
   const preserveCase = useSearchStore((s) => s.preserveCase);
   const replacing = useSearchStore((s) => s.replacing);
+  const replaceFailures = useSearchStore((s) => s.replaceFailures);
   const setQuery = useSearchStore((s) => s.setQuery);
   const setOption = useSearchStore((s) => s.setOption);
   const run = useSearchStore((s) => s.run);
@@ -249,7 +250,13 @@ export function SearchPanel(_props: { viewId?: string }) {
           </div>
         )}
         {searching && <div className="search-status">{t("searching")}</div>}
+        {replacing && <div className="search-status">{t("replacing")}</div>}
         {error && <div className="search-error">{error}</div>}
+        {replaceFailures.length > 0 && (
+          <div className="search-error" title={replaceFailures.map((f) => `${f.relative}: ${f.reason}`).join("\n")}>
+            {t("replaceFailedCount", { count: replaceFailures.length })}
+          </div>
+        )}
         {!searching && !error && results.length === 0 && query.trim() && (
           <div className="search-status">{t("noResults")}</div>
         )}

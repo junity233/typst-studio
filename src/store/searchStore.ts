@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type {
   OpenDocReplacement,
+  ReplaceFailure,
   SearchHit,
   SearchQuery,
   ReplaceRequest,
@@ -40,6 +41,14 @@ export interface SearchState {
   preserveCase: boolean;
   /** True while a replace-all / per-hit replace is in flight. */
   replacing: boolean;
+  /**
+   * Closed files that could not be written during the last replace (permission
+   * denied, disk full, vanished mid-batch, …). The backend is best-effort
+   * across the workspace — a failure on one file doesn't roll back the others —
+   * so we surface this list so the user knows not every match was applied.
+   * Cleared at the start of each replace; empty after a fully-successful run.
+   */
+  replaceFailures: ReplaceFailure[];
 
   setQuery: (q: string) => void;
   setOption: (key: "isRegex" | "caseSensitive" | "wholeWord", v: boolean) => void;
@@ -72,6 +81,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   replaceValue: "",
   preserveCase: false,
   replacing: false,
+  replaceFailures: [],
 
   setQuery: (q) => set({ query: q }),
   setOption: (key, v) => set({ [key]: v } as Pick<SearchState, typeof key>),
@@ -127,7 +137,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     const { query, isRegex, caseSensitive, wholeWord, preserveCase, replaceValue } = get();
     if (!query.trim()) return;
     const seq = ++runSeq;
-    set({ replacing: true, error: null });
+    set({ replacing: true, error: null, replaceFailures: [] });
     try {
       const req: ReplaceRequest = {
         query: {
@@ -148,6 +158,9 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       // (controlled replace). Closed files were already written to disk.
       await applyReplaceOutcome(outcome.openDocs);
       if (seq !== runSeq) return;
+      // Surface any closed-file write failures (best-effort batch: partial
+      // successes are kept, failures are listed, not rolled back).
+      set({ replaceFailures: outcome.failed });
       // Re-run the search so the result list reflects the replacements.
       await get().run();
     } catch (e) {
@@ -167,7 +180,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     const { query, isRegex, caseSensitive, wholeWord, preserveCase, replaceValue } = get();
     if (!query.trim()) return;
     const seq = ++runSeq;
-    set({ replacing: true, error: null });
+    set({ replacing: true, error: null, replaceFailures: [] });
     try {
       const target: TargetRef = {
         relative: hit.relative,
@@ -191,6 +204,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       const outcome = await replaceInFiles(req);
       await applyReplaceOutcome(outcome.openDocs);
       if (seq !== runSeq) return;
+      set({ replaceFailures: outcome.failed });
       await get().run();
     } catch (e) {
       if (seq !== runSeq) return;
