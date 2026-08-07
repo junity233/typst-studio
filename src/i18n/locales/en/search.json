@@ -1,8 +1,13 @@
 {
   "placeholder": "Search in workspace…",
+  "replacePlaceholder": "Replace…",
   "matchCase": "Match Case",
   "wholeWord": "Whole Word",
   "regex": "Regex",
+  "preserveCase": "Preserve Case",
+  "replaceAll": "Replace All",
+  "replaceOne": "Replace",
+  "replacing": "Replacing…",
   "searching": "Searching…",
   "noResults": "No results",
   "actionsAriaLabel": "Result actions",

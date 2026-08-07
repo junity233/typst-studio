@@ -538,24 +538,7 @@ previewWidth?: number | null, };
  * `page` is 0-indexed; `line` is 1-indexed (matching Monaco). Geometry is in
  * points, relative to the page's top-left corner.
  */
-/**
- * One conversion warning from LaTeX → Typst math conversion (Insert Formula
- * feature, backed by the `tylax` Rust crate). `kind` is a short stable slug
- * (e.g. `"unsupported macro"`, `"parse error"`); `message` is human-readable
- * detail. Non-fatal — the conversion still produces output, the modal surfaces
- * these as a hint.
- */
-export type LatexConvertWarning = { kind: string, message: string, };
-
-/**
- * Result of converting a LaTeX math snippet to Typst math source. `output` is
- * the Typst math body WITHOUT surrounding `$` — the modal adds those based on
- * inline/display mode and the current math context (inside `$…$` already → no
- * re-wrapping). `warnings` is empty on a clean conversion.
- */
-export type LatexConvertResult = { output: string, warnings: Array<LatexConvertWarning>, };
-
-export type LineRect = {
+export type LineRect = { 
 /**
  * 1-indexed source line.
  */
@@ -630,6 +613,23 @@ generation: number, wsUrl: string, restartReason: LspRestartReason | null, messa
  * had unsaved edits at shutdown that are now lost" — see the restore path).
  */
 export type OpenDocRecord = { "kind": "disk", path: string, dirty: boolean, } | { "kind": "untitled", content: string, dirty: boolean, };
+
+/**
+ * One open document whose buffer was replaced. Carries the new content + the
+ * backend-allocated revision so the frontend can sync Monaco and the document
+ * store in one atomic step.
+ */
+export type OpenDocReplacement = { id: string, newContent: string, 
+/**
+ * Backend-allocated revision. `u64` maps to `bigint` by default in ts-rs,
+ * but Tauri serializes it as a JSON number — override to match the wire
+ * format (same as `DocumentMeta::revision`).
+ */
+newRevision: number, 
+/**
+ * Absolute path (stringified) — informational; the frontend keys off `id`.
+ */
+path: string, };
 
 /**
  * Payload of the `open_external_file` event (§6.1): the frontend opens a new
@@ -808,6 +808,49 @@ origin: string, };
  */
 export type RecoveryAvailablePayload = { snapshots: Array<RecoverableInfo>, };
 
+/**
+ * Result of a replace-in-files run.
+ */
+export type ReplaceOutcome = { 
+/**
+ * Number of not-currently-open files written directly to disk.
+ */
+closedFilesWritten: number, 
+/**
+ * Open documents whose in-memory buffer was updated. The frontend mirrors
+ * each into Monaco via a "controlled replace" (see SearchPanel handshake)
+ * — the buffer must NOT be re-synced via `update_text` from the JS side,
+ * or the revision will desync and the user's next keystroke is dropped.
+ */
+openDocs: Array<OpenDocReplacement>, };
+
+/**
+ * Cross-file replace request (§Search view → Replace). Pairs a search query
+ * with a replacement string plus a few replace-specific options.
+ */
+export type ReplaceRequest = { 
+/**
+ * The search query that locates the matches to replace.
+ */
+query: SearchQuery, 
+/**
+ * Replacement text. Empty = delete the match. For `is_regex`, `$1`/`$name`
+ * capture-group interpolation is supported (via `regex::replace_all`).
+ */
+replacement: string, 
+/**
+ * When true, the replacement is cased to mirror the matched text (literal
+ * mode only): `World` + `earth` → `Earth`, `WORLD` + `earth` → `EARTH`.
+ * Ignored for regex mode.
+ */
+preserveCase: boolean, 
+/**
+ * When set, only the single match at this exact source location is
+ * replaced; every other match is left untouched. Drives the per-hit
+ * "Replace" button (which targets one specific hit).
+ */
+target: TargetRef | null, };
+
 export type ResolveConflictUseDiskResult = { content: string, revision: number, };
 
 /**
@@ -978,6 +1021,23 @@ export type StartupProblemsPayload = { problems: Array<StartupProblem>, };
  * `Success` / `Error`. `revision` (§7) tags the buffer revision.
  */
 export type StatusPayload = { id: DocumentId, revision: number, status: CompileStatus, durationMs: number | null, };
+
+/**
+ * Pinpoints a single match in a single file, used by `ReplaceRequest::target`.
+ */
+export type TargetRef = { 
+/**
+ * Path relative to workspace root (forward-slash separators).
+ */
+relative: string, 
+/**
+ * 1-indexed source line.
+ */
+line: number, 
+/**
+ * 1-indexed column (in Unicode scalar values).
+ */
+column: number, };
 
 /**
  * A template's `[template]` table from `index.json` / `typst.toml`.

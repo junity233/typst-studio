@@ -39,6 +39,8 @@ import type {
   RecoveryAvailablePayload,
   CompareRecovery,
   ReboundDoc,
+  ReplaceRequest,
+  ReplaceOutcome,
   ResolveConflictUseDiskResult,
   SaveAllResult,
   SearchHit,
@@ -555,6 +557,22 @@ export async function readDir(rel?: string): Promise<DirEntry[]> {
  */
 export async function searchWorkspace(query: SearchQuery): Promise<SearchHit[]> {
   return invoke<SearchHit[]>("search_workspace", { query });
+}
+
+/**
+ * Replace matches across the workspace (§Search view → Replace). The backend
+ * walks files (same traversal as `searchWorkspace`), computes per-file
+ * replacement text, and routes each affected file to the right sink:
+ * - **Open doc** → its in-memory buffer is updated and the new content +
+ *   revision are returned in `openDocs` (the frontend mirrors each into Monaco
+ *   via a "controlled replace"; see `searchStore.applyReplaceOutcome`).
+ * - **Closed file** → written directly to disk (`closedFilesWritten` count).
+ *
+ * Honors `req.preserveCase` (literal mode only) and `req.target` (restricts to
+ * a single match at an exact line/column — drives the per-hit Replace button).
+ */
+export async function replaceInFiles(req: ReplaceRequest): Promise<ReplaceOutcome> {
+  return invoke<ReplaceOutcome>("replace_in_files", { req });
 }
 
 /** Create a file or directory at a workspace-relative path. */

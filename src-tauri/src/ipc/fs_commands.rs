@@ -299,6 +299,96 @@ pub async fn search_workspace(
     Ok(hits)
 }
 
+/// Replace matches across the workspace (§Search view → Replace). Runs the
+/// same file-walk as [`search_workspace`] to compute per-file replacement text,
+/// then routes each affected file to the right sink:
+/// - **Open document** → `update_text` bumps the in-memory buffer's revision
+///   and marks it dirty (the user's edits persist; they can save/close as
+///   usual). The new content + revision are returned so the frontend can mirror
+///   them into Monaco via a "controlled replace" (see SearchPanel handshake) —
+///   the frontend MUST NOT re-sync via its own `updateText`, or the revision
+///   desyncs and the user's next keystroke is dropped.
+/// - **Not open** → written directly to disk.
+///
+/// Conflicted open docs are NOT skipped: their buffer is still updated (the
+/// user explicitly asked to replace), preserving the "edit the buffer" decision
+/// the user made. Disk writes for non-open files never race with a dirty
+/// buffer.
+#[tauri::command]
+pub async fn replace_in_files(
+    state: State<'_, AppState>,
+    req: crate::domain::search::ReplaceRequest,
+) -> Result<crate::domain::search::ReplaceOutcome> {
+    let ws = state.workspace.clone();
+    // 1. Compute replacements (pure: walk + match + splice, no writes).
+    let computed = {
+        let req = req.clone();
+        let root = ws.root().ok_or_else(|| {
+            AppError::InvalidInput("no workspace open".into())
+        })?;
+        tauri::async_runtime::spawn_blocking(move || crate::fs::search::replace_compute(&root, &req))
+            .await
+            .map_err(|e| AppError::Other(format!("join error: {e}")))?
+            .map_err(|e| AppError::Other(e.to_string()))?
+    };
+    if computed.is_empty() {
+        return Ok(crate::domain::search::ReplaceOutcome {
+            closed_files_written: 0,
+            open_docs: Vec::new(),
+        });
+    }
+
+    // 2. Preflight: which of these files are open? docs_at_paths canonicalizes
+    //    both the inputs and each doc's identity path before matching, so we
+    //    feed it the (possibly non-canonical) abs_paths straight from the walk.
+    let abs_paths: Vec<PathBuf> = computed.iter().map(|c| c.abs_path.clone()).collect();
+    let open_docs = state.editor.document().docs_at_paths(&abs_paths);
+    // Index open docs by canonical path for O(1) join against FileReplacement.
+    let mut open_by_canon: std::collections::HashMap<PathBuf, DocumentId> =
+        std::collections::HashMap::new();
+    for d in &open_docs {
+        open_by_canon.insert(d.path.clone(), d.id);
+    }
+
+    // 3. Route each file: open doc → buffer update (capture new revision);
+    //    closed file → disk write.
+    let mut open_results: Vec<crate::domain::search::OpenDocReplacement> = Vec::new();
+    let mut closed_written: u32 = 0;
+    for c in computed {
+        // Canonicalize the walked path the same way docs_at_paths did so the
+        // join succeeds regardless of symlinks/`..` in the abs path.
+        let canon = crate::domain::path::canonicalize_for_identity(&c.abs_path)
+            .unwrap_or_else(|_| c.abs_path.clone());
+        if let Some(id) = open_by_canon.get(&canon).copied() {
+            // Open: update the in-memory buffer. update_text auto-bumps the
+            // revision, marks dirty, publishes to VFS, and signals the compile
+            // worker — exactly what we want for a buffer edit. We then read the
+            // fresh revision back so the frontend can sync Monaco.
+            state.editor.document().update_text(id, c.new_content.clone())?;
+            let new_revision = state
+                .editor
+                .document()
+                .tab_revision(id)
+                .ok_or_else(|| AppError::Other(format!("doc {id} vanished after update_text")))?;
+            open_results.push(crate::domain::search::OpenDocReplacement {
+                id,
+                new_content: c.new_content,
+                new_revision,
+                path: canon.to_string_lossy().into_owned(),
+            });
+        } else {
+            // Closed: write straight to disk. No dirty buffer can disagree.
+            std::fs::write(&c.abs_path, &c.new_content).map_err(crate::error::AppError::from)?;
+            closed_written += 1;
+        }
+    }
+
+    Ok(crate::domain::search::ReplaceOutcome {
+        closed_files_written: closed_written,
+        open_docs: open_results,
+    })
+}
+
 /// Create a file or directory at a workspace-relative path.
 #[tauri::command]
 pub async fn create_entry(

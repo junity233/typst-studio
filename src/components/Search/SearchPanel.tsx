@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, ChevronsDownUp, ChevronsUpDown, FileText } from "lucide-react";
+import {
+  ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  FileText,
+  Replace,
+  ReplaceAll,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useSearchStore } from "../../store/searchStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
@@ -35,11 +42,18 @@ export function SearchPanel(_props: { viewId?: string }) {
   const results = useSearchStore((s) => s.results);
   const searching = useSearchStore((s) => s.searching);
   const error = useSearchStore((s) => s.error);
+  const replaceValue = useSearchStore((s) => s.replaceValue);
+  const preserveCase = useSearchStore((s) => s.preserveCase);
+  const replacing = useSearchStore((s) => s.replacing);
   const setQuery = useSearchStore((s) => s.setQuery);
   const setOption = useSearchStore((s) => s.setOption);
   const run = useSearchStore((s) => s.run);
   const invalidateResults = useSearchStore((s) => s.invalidateResults);
   const clear = useSearchStore((s) => s.clear);
+  const setReplaceValue = useSearchStore((s) => s.setReplaceValue);
+  const setPreserveCase = useSearchStore((s) => s.setPreserveCase);
+  const replaceAll = useSearchStore((s) => s.replaceAll);
+  const replaceOne = useSearchStore((s) => s.replaceOne);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const [debounceMs] = useSetting<number>("search.debounceMs");
 
@@ -113,45 +127,93 @@ export function SearchPanel(_props: { viewId?: string }) {
   const hasFiles = allFiles.length > 0;
   const allCollapsed = hasFiles && allFiles.every((f) => collapsed.has(f));
 
+  // Replace All is enabled only when there's a real query, results to act on,
+  // and no replace already in flight.
+  const canReplace =
+    query.trim().length > 0 && results.length > 0 && !replacing;
+
   return (
     <div className="search-panel">
       <div className="search-header">
-        <input
-          className="search-input"
-          placeholder={t("placeholder")}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void run();
-            if (e.key === "Escape") clear();
-          }}
-          autoFocus
-        />
-        <div className="search-options">
-          <button
-            type="button"
-            className={caseSensitive ? "active" : ""}
-            onClick={() => setOption("caseSensitive", !caseSensitive)}
-            title={t("matchCase")}
-          >
-            Aa
-          </button>
-          <button
-            type="button"
-            className={wholeWord ? "active" : ""}
-            onClick={() => setOption("wholeWord", !wholeWord)}
-            title={t("wholeWord")}
-          >
-            W
-          </button>
-          <button
-            type="button"
-            className={isRegex ? "active" : ""}
-            onClick={() => setOption("isRegex", !isRegex)}
-            title={t("regex")}
-          >
-            .*
-          </button>
+        <div className="search-row">
+          <input
+            className="search-input"
+            placeholder={t("placeholder")}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void run();
+              if (e.key === "Escape") clear();
+            }}
+            autoFocus
+          />
+          <div className="search-options">
+            <button
+              type="button"
+              className={caseSensitive ? "active" : ""}
+              onClick={() => setOption("caseSensitive", !caseSensitive)}
+              title={t("matchCase")}
+            >
+              Aa
+            </button>
+            <button
+              type="button"
+              className={wholeWord ? "active" : ""}
+              onClick={() => setOption("wholeWord", !wholeWord)}
+              title={t("wholeWord")}
+            >
+              W
+            </button>
+            <button
+              type="button"
+              className={isRegex ? "active" : ""}
+              onClick={() => setOption("isRegex", !isRegex)}
+              title={t("regex")}
+            >
+              .*
+            </button>
+          </div>
+        </div>
+        <div className="replace-row">
+          <input
+            className="search-input replace-input"
+            placeholder={t("replacePlaceholder")}
+            value={replaceValue}
+            onChange={(e) => setReplaceValue(e.target.value)}
+            onKeyDown={(e) => {
+              // Cmd/Ctrl+Enter → replace all (VS Code convention).
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                if (canReplace) void replaceAll();
+              }
+            }}
+            spellCheck={false}
+          />
+          <div className="search-options">
+            {/* Preserve-case toggle. Disabled under regex (regex ignores it). */}
+            <button
+              type="button"
+              className={preserveCase && !isRegex ? "active" : ""}
+              disabled={isRegex}
+              onClick={() => setPreserveCase(!preserveCase)}
+              title={t("preserveCase")}
+              aria-label={t("preserveCase")}
+            >
+              AB
+            </button>
+            {/* Replace All. Disabled while a replace is in flight, with no
+                query, or with no results. */}
+            <button
+              type="button"
+              className="replace-all-btn"
+              onClick={() => void replaceAll()}
+              disabled={!canReplace}
+              title={t("replaceAll")}
+              aria-label={t("replaceAll")}
+            >
+              <ReplaceAll size={14} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -219,20 +281,48 @@ export function SearchPanel(_props: { viewId?: string }) {
               {!isCollapsed && (
                 <div className="search-hits" role="group">
                   {hits.map((h, i) => (
-                    <button
+                    // Outer row is a div (not a button) so the per-hit Replace
+                    // button can nest inside (HTML forbids <button> in <button>).
+                    // Keyboard accessibility is preserved via role + tabIndex +
+                    // Enter/Space handling. Click outside the Replace button
+                    // opens the file at the hit (jump-to-location).
+                    <div
                       key={i}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
                       className="search-hit-row"
                       title={`${file}:${h.line}`}
                       onClick={() =>
                         handleHitClick(rootPath, h.relative, h.line, h.column)
                       }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          handleHitClick(rootPath, h.relative, h.line, h.column);
+                        }
+                      }}
                     >
                       <span className="search-hit-line">{h.line}</span>
                       <span className="search-hit-text">
                         {renderHitText(h.lineText, h.matchStart, h.matchEnd)}
                       </span>
-                    </button>
+                      {/* Per-hit Replace. stopPropagation so the row's
+                          jump-on-click doesn't also fire. Disabled while a
+                          replace is in flight. */}
+                      <button
+                        type="button"
+                        className="hit-replace-btn"
+                        title={t("replaceOne")}
+                        aria-label={t("replaceOne")}
+                        disabled={replacing}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void replaceOne(h);
+                        }}
+                      >
+                        <Replace size={13} />
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}

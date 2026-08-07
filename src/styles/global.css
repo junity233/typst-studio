@@ -824,6 +824,79 @@ button {
   color: var(--color-ink);
 }
 
+.search-options button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Search row + replace row: each is an input + a cluster of option toggles.
+   The replace row sits under the search row, mirroring its layout. */
+.search-row,
+.replace-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+/* Replace All button — the primary action in the replace row. Solid Action
+   Blue (it's a commit), disabled when there's nothing to act on. */
+.search-options button.replace-all-btn {
+  min-width: 28px;
+  height: 24px;
+  padding: 0 var(--space-xs);
+  border: 1px solid transparent;
+  background: var(--color-primary);
+  color: var(--color-canvas);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 100ms ease;
+}
+
+.search-options button.replace-all-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.search-options button.replace-all-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Per-hit Replace button — revealed on row hover, tucked to the right edge.
+   Ghost by default so it doesn't clutter the result list; gains a soft
+   parchment surface on hover. */
+.search-hit-row .hit-replace-btn {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 20px;
+  margin-left: auto;
+  padding: 0;
+  display: none; /* shown on row hover (see .search-hit-row:hover below) */
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-ink-muted-48);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.search-hit-row:hover .hit-replace-btn {
+  display: inline-flex;
+}
+
+.search-hit-row .hit-replace-btn:hover:not(:disabled) {
+  background: var(--color-canvas-parchment);
+  color: var(--color-ink);
+}
+
+.search-hit-row .hit-replace-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .search-results {
   flex: 1 1 auto;
   min-height: 0;
@@ -940,10 +1013,16 @@ button {
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.4;
+  outline: none;
 }
 
 .search-hit-row:hover {
   background: var(--color-canvas-parchment);
+}
+
+.search-hit-row:focus-visible {
+  /* keyboard focus on the now-div hit row (a11y: role=button + tabIndex). */
+  box-shadow: inset 0 0 0 1px var(--color-primary);
 }
 
 .search-hit-line {

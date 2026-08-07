@@ -1,4 +1,4 @@
-//! Cross-file search engine (§Search view).
+//! Cross-file search + replace engine (§Search view).
 //!
 //! Recursively walks the workspace root, skipping the same `IGNORED_DIRS` the
 //! Explorer tree skips, and matches each line of each UTF-8 file against a
@@ -8,12 +8,18 @@
 //!
 //! Non-UTF-8 / unreadable files are silently skipped (best-effort: the Search
 //! view is informational, never blocking).
+//!
+//! Replace (`replace_compute`) reuses the same walker + matcher to compute the
+//! post-replacement text for every hit file. It deliberately does NOT write to
+//! disk or touch open documents — that coordination (open-doc buffer vs. raw
+//! disk write) belongs to the IPC layer, which has `AppState`. Here we stay
+//! pure: walk, match, splice, return.
 
-use crate::domain::search::{SearchHit, SearchQuery};
+use crate::domain::search::{ReplaceRequest, SearchHit, SearchQuery, TargetRef};
 use anyhow::Result;
 use regex::Regex;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Recursively search `root` for lines matching `query`.
 ///
@@ -236,6 +242,318 @@ fn matches_simple_glob(glob: &str, name: &str) -> bool {
     name == glob
 }
 
+// ─── Replace engine ──────────────────────────────────────────────────────
+
+/// One file's computed replacement (the IPC layer writes this to disk or into
+/// the open doc's buffer). `new_content` is the full file text with all
+/// requested matches spliced out/in; `match_count` is how many matches were
+/// replaced (for the summary toast).
+#[derive(Debug, Clone)]
+pub struct FileReplacement {
+    pub relative: String,
+    pub abs_path: PathBuf,
+    pub new_content: String,
+    pub match_count: usize,
+}
+
+/// Walk `root` (same traversal as [`search`]) and, for every file that has at
+/// least one match under `req.query`, compute the post-replacement text. Does
+/// NOT write to disk or touch open documents — returns the computed content so
+/// the IPC layer can route each file to the right sink.
+///
+/// Honors `req.replacement`, `req.preserve_case` (literal mode only), and
+/// `req.target` (restricts to a single match at an exact location).
+///
+/// Line-based: matches and replacements are applied independently per line
+/// (same constraint as `search`). Cross-line patterns are not supported.
+pub fn replace_compute(root: &Path, req: &ReplaceRequest) -> Result<Vec<FileReplacement>> {
+    let query = &req.query;
+    let matcher = build_matcher(query)?;
+    let replacement = req.replacement.as_str();
+    let preserve_case = req.preserve_case;
+    let target = req.target.as_ref();
+    let ignored: HashSet<&'static str> = crate::fs::tree::IGNORED_DIRS.iter().copied().collect();
+    let include = query.include_glob.as_deref();
+    let mut out: Vec<FileReplacement> = Vec::new();
+
+    for entry in walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.file_type().is_dir() {
+                let name = e.file_name();
+                if ignored.contains(name.to_string_lossy().as_ref()) {
+                    return false;
+                }
+            }
+            true
+        })
+    {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if let Some(glob) = include {
+            let name = entry.file_name().to_string_lossy();
+            if !matches_simple_glob(glob, &name) {
+                continue;
+            }
+        }
+        let path = entry.path();
+        let rel = match path.strip_prefix(root) {
+            Ok(r) => r.to_string_lossy().replace('\\', "/").to_string(),
+            Err(_) => continue,
+        };
+        // If a target is set, skip every file that isn't it.
+        if let Some(t) = target {
+            if t.relative != rel {
+                continue;
+            }
+        }
+        // Skip non-UTF-8 / unreadable files (best-effort, same as `search`).
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+
+        // Match the target against (line, column) BEFORE we decide whether this
+        // file has a relevant match. `column` is 1-indexed scalar values; we
+        // compare against the matcher's per-line match ranges (byte offsets →
+        // char offsets). If the target doesn't resolve to a real match, the
+        // file produces no replacement.
+        let target_match_line = target.and_then(|t| if t.line >= 1 { Some(t.line as usize) } else { None });
+        let target_match_col = target.and_then(|t| if t.column >= 1 { Some(t.column as u32) } else { None });
+
+        let mut rebuilt = String::with_capacity(text.len());
+        let mut total_matches = 0usize;
+        let mut any_change = false;
+        // Preserve the trailing newline shape: iterate with line endings kept.
+        let lines = split_lines_with_endings(&text);
+        let nlines = lines.len();
+        for (line_idx, (line, ending)) in lines.into_iter().enumerate() {
+            // SearchHit.line is 1-indexed.
+            let line_no = line_idx + 1;
+            let ranges = matcher.find(line);
+            if ranges.is_empty() {
+                rebuilt.push_str(line);
+                rebuilt.push_str(&ending);
+                continue;
+            }
+            // Resolve which ranges to replace.
+            let (to_replace, matched_count) = select_ranges(
+                &ranges,
+                line,
+                line_no,
+                target,
+                target_match_line,
+                target_match_col,
+            );
+            if to_replace.is_empty() {
+                // Matches present but none selected (target didn't line up on
+                // this line) — keep line verbatim.
+                rebuilt.push_str(line);
+                rebuilt.push_str(&ending);
+                continue;
+            }
+            let replaced = splice_replacements(line, &to_replace, replacement, preserve_case, &matcher);
+            rebuilt.push_str(&replaced);
+            rebuilt.push_str(&ending);
+            total_matches += matched_count;
+            any_change = true;
+        }
+        let _ = nlines; // (kept for clarity; nothing to assert post-loop)
+
+        if any_change {
+            out.push(FileReplacement {
+                relative: rel.clone(),
+                abs_path: path.to_path_buf(),
+                new_content: rebuilt,
+                match_count: total_matches,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Decide which match ranges in a line get replaced, honoring an optional
+/// `target` (single-match pin). Returns the selected ranges + how many matches
+/// they represent (for the count).
+fn select_ranges(
+    ranges: &[std::ops::Range<usize>],
+    line: &str,
+    line_no: usize,
+    target: Option<&TargetRef>,
+    target_line: Option<usize>,
+    target_col: Option<u32>,
+) -> (Vec<std::ops::Range<usize>>, usize) {
+    if let (Some(_), Some(want_line), Some(want_col)) = (target, target_line, target_col) {
+        // Only the single range whose char-start column == target.column on the
+        // target line. Lines other than the target contribute nothing.
+        if line_no != want_line {
+            return (Vec::new(), 0);
+        }
+        for r in ranges {
+            let col = char_column_at(line, r.start);
+            if col == want_col {
+                return (vec![r.clone()], 1);
+            }
+        }
+        return (Vec::new(), 0);
+    }
+    // No target: replace every match on the line.
+    (ranges.to_vec(), ranges.len())
+}
+
+/// Char-offset → 1-indexed column (scalar values). Mirrors the search column
+/// math in `search()`.
+fn char_column_at(line: &str, byte_offset: usize) -> u32 {
+    line[..byte_offset].chars().count() as u32 + 1
+}
+
+/// Splice `replacement` into `line` at each range in `ranges` (which must be
+/// sorted, non-overlapping, ascending by start — true of both `Matcher::find`
+/// and our target selection). For literal mode + `preserve_case`, the
+/// replacement is recased per-range to match the matched text's casing.
+fn splice_replacements(
+    line: &str,
+    ranges: &[std::ops::Range<usize>],
+    replacement: &str,
+    preserve_case: bool,
+    matcher: &Matcher,
+) -> String {
+    if ranges.is_empty() {
+        return line.to_string();
+    }
+    // Regex mode → delegate to regex::replace_all for capture-group support.
+    // (preserve_case is ignored for regex by design.)
+    if let Matcher::Regex(re) = matcher {
+        // Single pinned range (target case, or a line with exactly one match):
+        // expand $1/$name against the one match whose start aligns with the
+        // range. We scan captures_iter (cheap: one line) rather than guess at
+        // captures_at semantics.
+        if ranges.len() == 1 {
+            let want = ranges[0].start;
+            for caps in re.captures_iter(line) {
+                if caps.get(0).map(|m| m.start()).unwrap_or(usize::MAX) == want {
+                    let r = &ranges[0];
+                    let mut out = String::with_capacity(line.len() + replacement.len());
+                    out.push_str(&line[..r.start]);
+                    // expand() writes $1/$name interpolation into `out`.
+                    caps.expand(replacement, &mut out);
+                    out.push_str(&line[r.end..]);
+                    return out;
+                }
+            }
+            // No aligned capture (shouldn't happen): literal splice.
+            let r = &ranges[0];
+            let mut out = String::with_capacity(line.len() + replacement.len());
+            out.push_str(&line[..r.start]);
+            out.push_str(replacement);
+            out.push_str(&line[r.end..]);
+            return out;
+        }
+        // Replace-all path: every match on the line, capture-group aware.
+        return re.replace_all(line, replacement).into_owned();
+    }
+    // Literal mode: stitch by ranges, optionally recasing each replacement.
+    let mut out = String::with_capacity(line.len() + replacement.len() * ranges.len());
+    let mut cursor = 0usize;
+    for r in ranges {
+        if r.start < cursor {
+            continue; // overlap guard (shouldn't happen for literal finds)
+        }
+        out.push_str(&line[cursor..r.start]);
+        if preserve_case {
+            let matched = &line[r.start..r.end];
+            out.push_str(&apply_preserve_case(matched, replacement));
+        } else {
+            out.push_str(replacement);
+        }
+        cursor = r.end;
+        // Empty-match avoidance: if the range is zero-width, force forward
+        // progress so we can't loop. (Literal finds are never zero-width, so
+        // this is defensive only.)
+        if r.end == r.start {
+            if let Some((b, _)) = line[r.end..].char_indices().next() {
+                cursor = r.end + b;
+            }
+        }
+    }
+    out.push_str(&line[cursor..]);
+    out
+}
+
+/// Recase `replacement` to mirror the casing of `matched` (preserve-case mode,
+/// literal only). Three shapes:
+/// - All-upper (e.g. `WORLD`) → uppercase replacement.
+/// - Capitalized-first (e.g. `World`) → capitalize first char of replacement.
+/// - Otherwise → replacement unchanged (also covers all-lower).
+fn apply_preserve_case(matched: &str, replacement: &str) -> String {
+    let mut chars = matched.chars();
+    let first = match chars.next() {
+        Some(c) => c,
+        None => return replacement.to_string(),
+    };
+    let rest_upper = matched.chars().skip(1).all(|c| !c.is_lowercase());
+    let rest_has_alpha = matched.chars().skip(1).any(|c| c.is_alphabetic());
+    if first.is_uppercase() && rest_upper && rest_has_alpha {
+        // ALL UPPER
+        return replacement.to_uppercase();
+    }
+    if first.is_uppercase() {
+        // Title-case first char only.
+        let mut r = replacement.chars();
+        match r.next() {
+            Some(c) => {
+                let mut out = String::new();
+                for u in c.to_uppercase() {
+                    out.push(u);
+                }
+                out.push_str(r.as_str());
+                out
+            }
+            None => replacement.to_string(),
+        }
+    } else {
+        replacement.to_string()
+    }
+}
+
+/// Split `text` into `(line_without_ending, ending)` pairs, preserving the
+/// original line terminators (and any trailing partial line). This keeps the
+/// rebuilt text byte-identical to the original except where we splice. Handles
+/// both LF and CRLF.
+fn split_lines_with_endings(text: &str) -> Vec<(&str, String)> {
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    let bytes = text.as_bytes();
+    while cursor < bytes.len() {
+        // Find next LF relative to `cursor`.
+        match text[cursor..].find('\n') {
+            Some(i) => {
+                let line_end = cursor + i; // absolute index of the LF byte
+                // A preceding CR (CRLF) is part of the ending, not the content.
+                let has_cr = line_end > cursor && bytes[line_end - 1] == b'\r';
+                let content_end = if has_cr { line_end - 1 } else { line_end };
+                let line = &text[cursor..content_end];
+                // Ending spans [\r? then \n] = text[content_end .. line_end+1].
+                let ending = &text[content_end..line_end + 1];
+                out.push((line, ending.to_string()));
+                cursor = line_end + 1;
+            }
+            None => {
+                // Last partial line, no terminator.
+                out.push((&text[cursor..], String::new()));
+                break;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +661,170 @@ mod tests {
             assert!(h.line >= 1);
             assert!(h.column >= 1);
         }
+    }
+
+    // ── replace_compute tests ───────────────────────────────────────────
+
+    fn query(pattern: &str) -> SearchQuery {
+        SearchQuery {
+            pattern: pattern.into(),
+            is_regex: false,
+            case_sensitive: true,
+            whole_word: false,
+            include_glob: None,
+            max_per_file: 100,
+            max_total: 100,
+        }
+    }
+
+    fn replace_req(q: SearchQuery, replacement: &str) -> ReplaceRequest {
+        ReplaceRequest {
+            query: q,
+            replacement: replacement.into(),
+            preserve_case: false,
+            target: None,
+        }
+    }
+
+    fn read_file(dir: &tempfile::TempDir, rel: &str) -> String {
+        std::fs::read_to_string(dir.path().join(rel)).unwrap()
+    }
+
+    #[test]
+    fn replace_literal_all_matches_in_file() {
+        let dir = make_fixture();
+        let req = replace_req(
+            query("World"),
+            "Earth",
+        );
+        let out = replace_compute(dir.path(), &req).unwrap();
+        // main.typ had 2 hits, sub/nested.typ had 1 → both files replaced.
+        let main = out.iter().find(|f| f.relative == "main.typ").unwrap();
+        assert_eq!(main.match_count, 2);
+        assert!(main.new_content.contains("Hello Earth"));
+        assert!(main.new_content.contains("Earth peace"));
+        assert!(!main.new_content.contains("World"));
+        let nested = out.iter().find(|f| f.relative == "sub/nested.typ").unwrap();
+        assert_eq!(nested.match_count, 1);
+        assert!(nested.new_content.contains("another Earth here"));
+    }
+
+    #[test]
+    fn replace_case_insensitive_uses_replacement_verbatim() {
+        let dir = make_fixture();
+        let mut q = query("world");
+        q.case_sensitive = false;
+        let req = replace_req(q, "earth");
+        let out = replace_compute(dir.path(), &req).unwrap();
+        let main = out.iter().find(|f| f.relative == "main.typ").unwrap();
+        assert!(main.new_content.contains("Hello earth"));
+        assert!(main.new_content.contains("earth peace"));
+    }
+
+    #[test]
+    fn replace_preserve_case_mirrors_match_casing() {
+        let dir = make_fixture();
+        let q = query("World");
+        // No need to change case sensitivity: pattern matches only "World".
+        let mut req = replace_req(q, "earth");
+        req.preserve_case = true;
+        let out = replace_compute(dir.path(), &req).unwrap();
+        let main = out.iter().find(|f| f.relative == "main.typ").unwrap();
+        // "World" is title-cased → replacement becomes "Earth".
+        assert!(main.new_content.contains("Hello Earth"));
+        assert!(main.new_content.contains("Earth peace"));
+    }
+
+    #[test]
+    fn replace_preserve_case_all_upper() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "WORLD world\n").unwrap();
+        let req = ReplaceRequest {
+            query: query("WORLD"),
+            replacement: "earth".into(),
+            preserve_case: true,
+            target: None,
+        };
+        let out = replace_compute(dir.path(), &req).unwrap();
+        let a = out.iter().find(|f| f.relative == "a.txt").unwrap();
+        // "WORLD" all-upper → "EARTH"; "world" untouched (didn't match).
+        assert_eq!(a.new_content, "EARTH world\n");
+    }
+
+    #[test]
+    fn replace_regex_expands_capture_groups() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "foo(bar) baz(qux)\n").unwrap();
+        let mut q = query(r"\((\w+)\)");
+        q.is_regex = true;
+        let req = replace_req(q, "[$1]");
+        let out = replace_compute(dir.path(), &req).unwrap();
+        let a = out.iter().find(|f| f.relative == "a.txt").unwrap();
+        assert_eq!(a.new_content, "foo[bar] baz[qux]\n");
+    }
+
+    #[test]
+    fn replace_empty_replacement_deletes_match() {
+        let dir = make_fixture();
+        let req = replace_req(query("World"), "");
+        let out = replace_compute(dir.path(), &req).unwrap();
+        let main = out.iter().find(|f| f.relative == "main.typ").unwrap();
+        assert!(main.new_content.contains("Hello "));
+        assert!(!main.new_content.contains("World"));
+    }
+
+    #[test]
+    fn replace_target_pins_single_match() {
+        let dir = make_fixture();
+        // "World peace" — line 3, the match "World" starts at column 1.
+        let mut req = replace_req(query("World"), "Earth");
+        req.target = Some(TargetRef {
+            relative: "main.typ".into(),
+            line: 3,
+            column: 1,
+        });
+        let out = replace_compute(dir.path(), &req).unwrap();
+        let main = out.iter().find(|f| f.relative == "main.typ").unwrap();
+        assert_eq!(main.match_count, 1);
+        // Only the line-3 match replaced; the line-2 one is intact.
+        assert!(main.new_content.contains("Hello World"));
+        assert!(main.new_content.contains("Earth peace"));
+    }
+
+    #[test]
+    fn replace_target_wrong_column_is_noop() {
+        let dir = make_fixture();
+        let mut req = replace_req(query("World"), "Earth");
+        req.target = Some(TargetRef {
+            relative: "main.typ".into(),
+            line: 3,
+            column: 99, // no match starts here
+        });
+        let out = replace_compute(dir.path(), &req).unwrap();
+        // No file qualifies → empty outcome.
+        assert!(out.is_empty(), "expected no replacements, got {:?}", out);
+    }
+
+    #[test]
+    fn replace_preserves_trailing_newline_shape() {
+        // No trailing newline at EOF must be preserved as "no trailing newline".
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "ab ab").unwrap(); // no trailing \n
+        let req = replace_req(query("ab"), "X");
+        let out = replace_compute(dir.path(), &req).unwrap();
+        let a = out.iter().find(|f| f.relative == "a.txt").unwrap();
+        assert_eq!(a.new_content, "X X");
+        assert!(!a.new_content.ends_with('\n'));
+    }
+
+    #[test]
+    fn replace_preserves_crlf_endings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"World\r\nWorld\r\n").unwrap();
+        let req = replace_req(query("World"), "Earth");
+        let out = replace_compute(dir.path(), &req).unwrap();
+        let a = out.iter().find(|f| f.relative == "a.txt").unwrap();
+        assert_eq!(a.new_content, "Earth\r\nEarth\r\n");
+        let _ = read_file; // silence unused if no other reader test
     }
 }
