@@ -12,5 +12,12 @@
   "openSettings": "打开设置",
   "formatDocument": "格式化文档",
   "formatRequiresLsp": "格式化需要 tinymist 语言服务器。请安装后重启，或在状态栏点击重启语言服务器。",
-  "insertFormula": "插入公式"
+  "insertFormula": "插入公式",
+  "bold": "加粗",
+  "italic": "斜体",
+  "strikethrough": "删除线",
+  "inlineCode": "行内代码",
+  "heading1": "标题 1",
+  "heading2": "标题 2",
+  "heading3": "标题 3"
 }

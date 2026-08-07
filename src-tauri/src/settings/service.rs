@@ -198,6 +198,24 @@ fn validate(def: &SettingDef, value: &Value) -> Result<()> {
                 )));
             }
         }
+        // `keybinding` is a string-valued VS Code / Tauri accelerator, e.g.
+        // "CmdOrCtrl+Shift+P" or "Ctrl+B". Empty string = "disabled" (no
+        // shortcut bound) and is allowed. A non-empty value must parse to
+        // exactly one main key plus zero or more modifiers — a bare
+        // "Ctrl+Shift" (no key) or a malformed "Ctrl++B" is rejected. This
+        // mirrors the frontend parseKeybinding; we keep the Rust check lighter
+        // (no per-platform CmdOrCtrl resolution) since the frontend re-validates
+        // at match time.
+        "keybinding" => {
+            let s = value.as_str().ok_or_else(|| {
+                AppError::InvalidInput(format!("{key} expects a string"))
+            })?;
+            if !validate_keybinding(s) {
+                return Err(AppError::InvalidInput(format!(
+                    "{key} '{s}' is not a valid keybinding (use e.g. 'Ctrl+B'; empty to disable)"
+                )));
+            }
+        }
         "boolean" => {
             if value.as_bool().is_none() {
                 return Err(AppError::InvalidInput(format!(
@@ -269,6 +287,43 @@ fn check_range(extra: &serde_json::Map<String, Value>, key: &str, f: f64) -> Res
         }
     }
     Ok(())
+}
+
+/// Recognized keybinding modifier tokens (matched case-insensitively).
+const KEYBINDING_MODIFIERS: &[&str] = &["cmdorctrl", "ctrl", "cmd", "shift", "alt"];
+
+/// Validate a `keybinding`-type setting value: empty (disabled) is allowed;
+/// otherwise it must be `mod(+mod)*+key` with exactly one non-modifier part.
+/// Mirrors the frontend `parseKeybinding` grammar — kept lightweight (no
+/// per-platform CmdOrCtrl resolution, no named-key table) since the frontend
+/// re-validates at match time and the input was authored by our own control.
+fn validate_keybinding(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return true; // empty = disabled
+    }
+    let mut has_key = false;
+    for part in trimmed.split('+') {
+        let p = part.trim();
+        if p.is_empty() {
+            return false; // "Ctrl++B" or leading/trailing "+"
+        }
+        let lower = p.to_ascii_lowercase();
+        if KEYBINDING_MODIFIERS.contains(&lower.as_str()) {
+            continue;
+        }
+        // First non-modifier token is the main key; a second one is malformed.
+        if has_key {
+            return false;
+        }
+        // Require a single character key (letters/digits/punctuation). A future
+        // named-key table ("Enter", "F1", …) would slot in here.
+        if p.chars().count() != 1 {
+            return false;
+        }
+        has_key = true;
+    }
+    has_key
 }
 
 #[cfg(test)]
@@ -438,6 +493,33 @@ mod tests {
         assert!(validate(&def, &json!(42)).is_err());
         assert!(validate(&def, &json!(null)).is_err());
         assert!(validate(&def, &json!([ "/a" ])).is_err());
+    }
+
+    /// `keybinding` settings accept well-formed accelerator strings and empty
+    /// (disabled); reject non-strings, bare modifiers, malformed chords, and
+    /// multi-char junk keys.
+    #[test]
+    fn keybinding_setting_validates() {
+        use super::{validate, SettingDef};
+        let def = SettingDef {
+            key: "demo.kb".into(),
+            setting_type: "keybinding".into(),
+            label: "Demo".into(),
+            default: json!("Ctrl+B"),
+            extra: serde_json::Map::new(),
+        };
+        assert!(validate(&def, &json!("Ctrl+B")).is_ok());
+        assert!(validate(&def, &json!("CmdOrCtrl+Shift+P")).is_ok());
+        assert!(validate(&def, &json!("Shift+Alt+F")).is_ok());
+        assert!(validate(&def, &json!("Ctrl+`")).is_ok());
+        assert!(validate(&def, &json!("Ctrl+1")).is_ok());
+        assert!(validate(&def, &json!("")).is_ok()); // empty = disabled
+        assert!(validate(&def, &json!(42)).is_err());
+        assert!(validate(&def, &json!(null)).is_err());
+        assert!(validate(&def, &json!("Ctrl+Shift")).is_err()); // bare modifiers
+        assert!(validate(&def, &json!("Ctrl++B")).is_err()); // dangling separator
+        assert!(validate(&def, &json!("Ctrl+A+B")).is_err()); // two main keys
+        assert!(validate(&def, &json!("Ctrl+Junk")).is_err()); // multi-char junk
     }
 
     #[test]

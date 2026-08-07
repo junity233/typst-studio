@@ -24,6 +24,11 @@
   "noFonts": "无匹配字体",
   "fontDefault": "(默认)",
   "clearFont": "清除",
+  "keybindingNone": "无",
+  "keybindingPrompt": "请按键…",
+  "keybindingReset": "恢复默认",
+  "keybindingClear": "清除",
+  "keybindingConflict": "与「{{other}}」冲突",
 
   "category.editor": "编辑器",
   "category.preview": "预览",
@@ -31,6 +36,7 @@
   "category.appearance": "外观与窗口",
   "category.saving": "保存",
   "category.data": "数据与诊断",
+  "category.keybindings": "键盘快捷键",
 
   "setting.compiler.extraFontDirs": "额外字体目录",
   "setting.compiler.debounceMs": "编译防抖(ms)",
@@ -127,5 +133,28 @@
   "setting.ai.maxTokens": "最大输出 token 数",
   "settingHelp.ai.maxTokens": "Anthropic 必填此项;OpenAI 除非调高否则忽略。",
 
-  "setting.ai.temperature": "温度"
+  "setting.ai.temperature": "温度",
+
+  "setting.keybindings.format.bold": "加粗",
+  "settingHelp.keybindings.format.bold": "将选中文本包裹为 *…*(Typst 加粗)。",
+  "setting.keybindings.format.italic": "斜体",
+  "settingHelp.keybindings.format.italic": "将选中文本包裹为 _…_(Typst 斜体)。",
+  "setting.keybindings.format.strikethrough": "删除线",
+  "setting.keybindings.format.code": "行内代码",
+  "setting.keybindings.format.heading1": "标题 1",
+  "setting.keybindings.format.heading2": "标题 2",
+  "setting.keybindings.format.heading3": "标题 3",
+  "setting.keybindings.save": "保存",
+  "setting.keybindings.save-as": "另存为",
+  "setting.keybindings.new-tab": "新建标签页",
+  "setting.keybindings.open-file": "打开文件",
+  "setting.keybindings.close-tab": "关闭标签页",
+  "setting.keybindings.toggle-sidebar": "切换侧边栏",
+  "setting.keybindings.toggle-preview": "切换预览",
+  "setting.keybindings.open-settings": "打开设置",
+  "setting.keybindings.format-document": "格式化文档",
+  "setting.keybindings.insert-formula": "插入公式",
+  "setting.keybindings.workbench.action.findInFiles": "在文件中查找",
+  "setting.keybindings.workbench.view.outline": "显示大纲",
+  "setting.keybindings.workbench.action.openCommandPalette": "命令面板"
 }

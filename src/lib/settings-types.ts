@@ -15,7 +15,8 @@ export type SettingType =
   | "paths"
   | "select"
   | "font"
-  | "path";
+  | "path"
+  | "keybinding";
 
 /** A single setting descriptor — one row in a category. */
 export interface SettingDef {

@@ -10,6 +10,7 @@ import {
   Palette,
   FolderOpen,
   ChevronDown,
+  Keyboard,
   type LucideIcon,
 } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
@@ -35,6 +36,7 @@ import {
 import { Toggle } from "./Toggle";
 import { FontControl } from "./FontControl";
 import { PathControl } from "./PathControl";
+import { KeybindingControl } from "./KeybindingControl";
 
 /** Icon + accent hue per category id. Falls back to a gear. */
 const CATEGORY_ICON: Record<string, LucideIcon> = {
@@ -44,6 +46,7 @@ const CATEGORY_ICON: Record<string, LucideIcon> = {
   appearance: Palette,
   saving: Save,
   data: Database,
+  keybindings: Keyboard,
 };
 
 /**
@@ -217,6 +220,8 @@ function SettingControl({ def }: { def: SettingDef }) {
       return <FontControl def={def} />;
     case "path":
       return <PathControl def={def} />;
+    case "keybinding":
+      return <KeybindingControl def={def} />;
   }
 }
 

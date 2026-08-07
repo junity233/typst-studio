@@ -132,7 +132,10 @@ export default function activate(ctx: HostApi): void {
     id: "toggle-sidebar",
     title: i18n.t("toggleSidebar", { ns: "command" }),
     category: "View",
-    keybinding: "CmdOrCtrl+B",
+    // Ctrl+B is reserved for Bold (format.bold). The sidebar moves to
+    // Ctrl+Shift+B — pairs naturally with the bold binding (add Shift), and
+    // doesn't collide with any existing keybinding in the registry.
+    keybinding: "CmdOrCtrl+Shift+B",
     handler: () => useUiStore.getState().toggleSidebar(),
   });
 

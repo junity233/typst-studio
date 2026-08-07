@@ -221,7 +221,9 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 menu_labels::lookup(Key::ToggleSidebar, lang),
                 true,
                 true,
-                Some("CmdOrCtrl+B"),
+                // Ctrl+B is reserved for Bold; the sidebar moves to Ctrl+Shift+B
+                // (kept in sync with the format.bold binding on the frontend).
+                Some("CmdOrCtrl+Shift+B"),
             )?,
             &CheckMenuItem::with_id(
                 app,

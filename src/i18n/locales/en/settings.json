@@ -24,6 +24,11 @@
   "noFonts": "No matching fonts",
   "fontDefault": "(Default)",
   "clearFont": "Clear",
+  "keybindingNone": "None",
+  "keybindingPrompt": "Press a key…",
+  "keybindingReset": "Reset to default",
+  "keybindingClear": "Clear",
+  "keybindingConflict": "Conflicts with \"{{other}}\"",
 
   "category.editor": "Editor",
   "category.preview": "Preview",
@@ -31,6 +36,7 @@
   "category.appearance": "Appearance & Window",
   "category.saving": "Saving",
   "category.data": "Data & Diagnostics",
+  "category.keybindings": "Keyboard Shortcuts",
 
   "setting.compiler.extraFontDirs": "Extra font directories",
   "setting.compiler.debounceMs": "Compile debounce (ms)",
@@ -127,5 +133,28 @@
   "setting.ai.maxTokens": "Max output tokens",
   "settingHelp.ai.maxTokens": "Anthropic requires this; OpenAI ignores it unless you raise it.",
 
-  "setting.ai.temperature": "Temperature"
+  "setting.ai.temperature": "Temperature",
+
+  "setting.keybindings.format.bold": "Bold",
+  "settingHelp.keybindings.format.bold": "Wrap the selection in *…* (Typst bold).",
+  "setting.keybindings.format.italic": "Italic",
+  "settingHelp.keybindings.format.italic": "Wrap the selection in _…_ (Typst italic).",
+  "setting.keybindings.format.strikethrough": "Strikethrough",
+  "setting.keybindings.format.code": "Inline code",
+  "setting.keybindings.format.heading1": "Heading 1",
+  "setting.keybindings.format.heading2": "Heading 2",
+  "setting.keybindings.format.heading3": "Heading 3",
+  "setting.keybindings.save": "Save",
+  "setting.keybindings.save-as": "Save As",
+  "setting.keybindings.new-tab": "New tab",
+  "setting.keybindings.open-file": "Open file",
+  "setting.keybindings.close-tab": "Close tab",
+  "setting.keybindings.toggle-sidebar": "Toggle sidebar",
+  "setting.keybindings.toggle-preview": "Toggle preview",
+  "setting.keybindings.open-settings": "Open settings",
+  "setting.keybindings.format-document": "Format document",
+  "setting.keybindings.insert-formula": "Insert formula",
+  "setting.keybindings.workbench.action.findInFiles": "Find in files",
+  "setting.keybindings.workbench.view.outline": "Show outline",
+  "setting.keybindings.workbench.action.openCommandPalette": "Command palette"
 }

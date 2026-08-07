@@ -12,5 +12,12 @@
   "openSettings": "Open Settings",
   "formatDocument": "Format Document",
   "formatRequiresLsp": "Formatting requires the tinymist language server. Install it and restart, or click Restart Language Server in the status bar.",
-  "insertFormula": "Insert Formula"
+  "insertFormula": "Insert Formula",
+  "bold": "Bold",
+  "italic": "Italic",
+  "strikethrough": "Strikethrough",
+  "inlineCode": "Inline Code",
+  "heading1": "Heading 1",
+  "heading2": "Heading 2",
+  "heading3": "Heading 3"
 }

@@ -20,6 +20,12 @@ import { toIpcError } from "../lib/ipc-error";
 import i18n from "../i18n";
 import { commandRegistry } from "../extensions/registry";
 import { createHostApi } from "../extensions/api";
+import {
+  parseKeybinding,
+  matchKeybinding,
+  type ParsedKeybinding,
+} from "../extensions/keybinding";
+import { readSetting } from "./useSetting";
 // Import the workbench extension's lazy activator. Activating is deferred to
 // first dispatch() call (NOT module load) to avoid a circular init: this file
 // exports helpers that the workbench module imports back, so running activate()
@@ -39,6 +45,15 @@ const hostApi = createHostApi("workbench.dispatch");
  */
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
+  // Monaco renders its editable surface as a hidden <textarea class="inputarea">
+  // inside `.monaco-editor`. That textarea would otherwise match the
+  // HTMLTextAreaElement branch below and cause every app-global shortcut (save,
+  // format, AND the formatting shortcuts like Ctrl+B) to be skipped while the
+  // editor is focused — the opposite of what we want. The editor owns its own
+  // keybindings via Monaco's command system, but our app-global shortcuts are
+  // intentionally layered on top (capture-phase), so treat anything inside the
+  // Monaco editor as NOT an editable-yielding target.
+  if (target.closest(".monaco-editor")) return false;
   if (
     target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
@@ -71,62 +86,53 @@ export function useAppCommands(): void {
       unlisten = fn;
     });
 
-    // Capture-phase Cmd/Ctrl+S. The native menu's accelerator only fires when
-    // the keypress reaches the OS — but Monaco (and the VS Code services we
-    // wire via filesServiceOverride) can swallow Cmd+S in the webview before it
-    // bubbles, so the menu handler never runs. This document-level capture
-    // listener sits ahead of the editor, intercepts the save shortcut directly,
-    // and dispatches our save — making Cmd+S reliable regardless of focus.
+    // Capture-phase keybinding dispatcher. The native menu's accelerator only
+    // fires when the keypress reaches the OS — but Monaco (and the VS Code
+    // services we wire via filesServiceOverride) can swallow Cmd+S etc. in the
+    // webview before it bubbles, so the menu handler never runs. This
+    // document-level capture listener sits ahead of the editor and matches the
+    // event against every command's keybinding, making all shortcuts reliable
+    // regardless of focus.
+    //
+    // The single source of truth for what's bound is `commandRegistry` — each
+    // command contributes a default `keybinding` string, which a user may
+    // override via the `keybindings.<cmdId>` setting. We resolve the effective
+    // binding per keydown (cheap: ~20 commands) so a setting change takes
+    // effect on the very next keystroke with no re-subscription needed.
+    const parseCache = new Map<string, ParsedKeybinding | null>();
+    const match = (binding: string, ev: KeyboardEvent): boolean => {
+      let parsed = parseCache.get(binding);
+      if (parsed === undefined) {
+        parsed = parseKeybinding(binding);
+        parseCache.set(binding, parsed);
+      }
+      // parsed is now ParsedKeybinding | null (undefined filled in above).
+      return parsed !== null && parsed !== undefined && matchKeybinding(parsed, ev);
+    };
+
     const onKeyDown = (e: KeyboardEvent) => {
       // A focused editable control (input, textarea, select, [contenteditable])
       // owns the keystrokes — let it handle them, and skip every app-global
-      // shortcut below so typing in the Search panel or Assistant textarea does
-      // not trigger save / find / format.
+      // shortcut so typing in the Search panel or Assistant textarea does not
+      // trigger save / find / format. (Monaco's own textarea is exempted inside
+      // isEditableTarget — see its comment.)
       if (isEditableTarget(e.target)) return;
-      const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key.toLowerCase() === "s" && !e.shiftKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        void dispatch("save");
-      }
-      // Cmd/Ctrl+Shift+S → Save As.
-      if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        e.stopPropagation();
-        void dispatch("save-as");
-      }
-      // Cmd/Ctrl+Shift+F → Find in Files (§Search view). Same capture-phase
-      // rationale as Cmd+S: Monaco can swallow the keystroke before the OS menu
-      // accelerator fires, so intercept it directly and dispatch.
-      if (mod && e.shiftKey && e.key.toLowerCase() === "f") {
-        e.preventDefault();
-        e.stopPropagation();
-        void dispatch("workbench.action.findInFiles");
-      }
-      // Cmd/Ctrl+Shift+O → Show Outline (§Outline). Same capture-phase
-      // rationale as the other Shift shortcuts: Monaco can swallow the
-      // keystroke before the OS menu accelerator fires.
-      if (mod && e.shiftKey && e.key.toLowerCase() === "o") {
-        e.preventDefault();
-        e.stopPropagation();
-        void dispatch("workbench.view.outline");
-      }
-      // Cmd/Ctrl+Shift+P → Open Command Palette. Same capture-phase rationale
-      // as the other Shift shortcuts: Monaco can swallow the keystroke before
-      // the OS menu accelerator fires, so intercept it directly and dispatch.
-      if (mod && e.shiftKey && e.key.toLowerCase() === "p") {
-        e.preventDefault();
-        e.stopPropagation();
-        void dispatch("workbench.action.openCommandPalette");
-      }
-      // Shift+Alt+F → Format Document. Capture-phase (same rationale as Cmd+S):
-      // Monaco can swallow the keystroke before the OS menu accelerator fires.
-      // The `!mod` guard keeps this distinct from Cmd/Ctrl+Shift+F (Find in
-      // Files) — a meta key must NOT be held for this to fire.
-      if (!mod && e.shiftKey && e.altKey && e.key.toLowerCase() === "f") {
-        e.preventDefault();
-        e.stopPropagation();
-        void dispatch("format-document");
+
+      for (const cmd of commandRegistry.all()) {
+        const binding = cmd.keybinding;
+        if (!binding) continue;
+        // User override wins; fall back to the command's default binding.
+        const settingPath = `keybindings.${cmd.id}`;
+        const overridden = readSetting<string | undefined>(settingPath, undefined);
+        const effective = overridden ?? binding;
+        // Empty string = explicitly disabled.
+        if (effective === "") continue;
+        if (match(effective, e)) {
+          e.preventDefault();
+          e.stopPropagation();
+          void dispatch(cmd.id);
+          return;
+        }
       }
     };
     document.addEventListener("keydown", onKeyDown, true);

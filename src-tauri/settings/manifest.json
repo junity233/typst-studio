@@ -98,6 +98,30 @@
         { "key": "action.openDevtools",     "type": "string", "label": "Open developer tools", "default": "", "readonly": true, "action": "openDevtools",
           "help": "Open the WebView console (F12) on the main window to inspect rendering and IPC errors." },
         { "key": "action.exportDiagnostics","type": "string", "label": "Export diagnostics bundle", "default": "", "readonly": true, "action": "exportDiagnostics" }
+    ]},
+    { "id": "keybindings", "label": "Keyboard Shortcuts", "settings": [
+        { "key": "keybindings.format.bold",          "type": "keybinding", "label": "Bold",          "default": "Ctrl+B",
+          "help": "Wrap the selection in *…* (Typst bold)." },
+        { "key": "keybindings.format.italic",        "type": "keybinding", "label": "Italic",        "default": "Ctrl+I",
+          "help": "Wrap the selection in _…_ (Typst italic)." },
+        { "key": "keybindings.format.strikethrough", "type": "keybinding", "label": "Strikethrough", "default": "Ctrl+Shift+X" },
+        { "key": "keybindings.format.code",          "type": "keybinding", "label": "Inline code",   "default": "Ctrl+`" },
+        { "key": "keybindings.format.heading1",      "type": "keybinding", "label": "Heading 1",     "default": "Ctrl+1" },
+        { "key": "keybindings.format.heading2",      "type": "keybinding", "label": "Heading 2",     "default": "Ctrl+2" },
+        { "key": "keybindings.format.heading3",      "type": "keybinding", "label": "Heading 3",     "default": "Ctrl+3" },
+        { "key": "keybindings.save",                 "type": "keybinding", "label": "Save",          "default": "CmdOrCtrl+S" },
+        { "key": "keybindings.save-as",              "type": "keybinding", "label": "Save As",       "default": "CmdOrCtrl+Shift+S" },
+        { "key": "keybindings.new-tab",              "type": "keybinding", "label": "New tab",       "default": "CmdOrCtrl+T" },
+        { "key": "keybindings.open-file",            "type": "keybinding", "label": "Open file",     "default": "CmdOrCtrl+O" },
+        { "key": "keybindings.close-tab",            "type": "keybinding", "label": "Close tab",     "default": "CmdOrCtrl+W" },
+        { "key": "keybindings.toggle-sidebar",       "type": "keybinding", "label": "Toggle sidebar", "default": "CmdOrCtrl+Shift+B" },
+        { "key": "keybindings.toggle-preview",       "type": "keybinding", "label": "Toggle preview", "default": "CmdOrCtrl+\\" },
+        { "key": "keybindings.open-settings",        "type": "keybinding", "label": "Open settings", "default": "CmdOrCtrl+," },
+        { "key": "keybindings.format-document",      "type": "keybinding", "label": "Format document", "default": "Shift+Alt+F" },
+        { "key": "keybindings.insert-formula",       "type": "keybinding", "label": "Insert formula", "default": "Ctrl+Alt+M" },
+        { "key": "keybindings.workbench.action.findInFiles",    "type": "keybinding", "label": "Find in files", "default": "CmdOrCtrl+Shift+F" },
+        { "key": "keybindings.workbench.view.outline",          "type": "keybinding", "label": "Show outline",  "default": "CmdOrCtrl+Shift+O" },
+        { "key": "keybindings.workbench.action.openCommandPalette", "type": "keybinding", "label": "Command palette", "default": "CmdOrCtrl+Shift+P" }
     ]}
   ]
 }

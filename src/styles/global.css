@@ -3636,6 +3636,76 @@ button {
   color: var(--color-ink);
 }
 
+/* =========================================================================
+   Settings — keybinding control
+   A "press a key" field plus Reset/Clear buttons. The field is a <button>
+   styled like .setting-input so it shares the canonical text-field chrome;
+   .keybinding-field-listening highlights capture mode (Action-Blue border +
+   focus ring held while awaiting the next keydown). Reuses .path-control-clear
+   for the Clear button so the two affordances read identically.
+   ========================================================================= */
+.keybinding-control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.keybinding-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 140px;
+  padding: 7px 11px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.keybinding-field:hover {
+  border-color: var(--color-ink-muted-48);
+}
+.keybinding-field:focus,
+.keybinding-field-listening {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-focus-ring);
+}
+.keybinding-field-text {
+  letter-spacing: -0.1px;
+}
+.keybinding-field-listening .keybinding-field-text {
+  color: var(--color-primary);
+  font-style: italic;
+}
+.keybinding-control-reset {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  color: var(--color-ink-muted-48);
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.keybinding-control-reset:hover {
+  border-color: var(--color-primary);
+  color: var(--color-ink);
+}
+.keybinding-conflict {
+  margin: 0;
+  width: 100%;
+  font: var(--text-caption);
+  color: var(--color-warning, #b8860b);
+}
+
 /* ============================================================================
    Format toolbar — table grid picker (insert table)
    An 8×8 hover-grid popup, portal-rendered into document.body (like
