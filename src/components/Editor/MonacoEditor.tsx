@@ -976,6 +976,10 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         // Insert the text + a trailing newline at the start of line 1 so it
         // becomes the new first line(s), pushing the original content down.
         const insertText = text.endsWith("\n") ? text : text + "\n";
+        // Bracket the edit with undo stops to match every other editorEdit.ts
+        // helper — without the leading stop, an in-flight prior edit (e.g. the
+        // tail of a coalescing caret-key input) would merge into one undo group.
+        editor.pushUndoStop();
         editor.executeEdits("insertAtTop", [
           {
             range: new Monaco.Range(1, 1, 1, 1),
@@ -991,7 +995,7 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
           lineNumber: lastInsertedLine,
           column: model.getLineMaxColumn(lastInsertedLine),
         });
-        editor.revealLineInCenter(lastInsertedLine);
+        editor.revealLineInCenter(lastInsertedLine, SCROLL_IMMEDIATE);
         editor.focus();
       },
       strReplace: (oldString, newString) => {

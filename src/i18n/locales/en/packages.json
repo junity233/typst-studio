@@ -24,6 +24,7 @@
   "installFailed": "Installation failed. Check your network and try again.",
   "uninstall": "Uninstall",
   "insertImport": "Insert import",
+  "insertImportDisabled": "Open a Typst document to insert an import",
   "noReadme": "No description available.",
   "confirmUninstall": "Uninstall {{name}} {{version}}? This deletes it from the local cache.",
   "confirmOverwrite": "Some files at the chosen folder already exist. Overwrite them with the template's files?",

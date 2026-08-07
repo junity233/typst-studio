@@ -16,6 +16,8 @@ import {
 import { toIpcError } from "../../../lib/ipc-error";
 import { editorApiRef } from "../../Editor/editorApiRef";
 import i18n from "../../../i18n";
+import { useActiveDocument } from "../../../store/tabsStore";
+import { documentKind } from "../../../store/documentsStore";
 import { Thumbnail } from "./Thumbnail";
 import { PackageReadme } from "./PackageReadme";
 
@@ -36,6 +38,12 @@ export function PackageDetail() {
   const hydrate = useWorkspaceStore((s) => s.hydrate);
   const setActiveView = useUiStore((s) => s.setActiveView);
   const [compilerVersion, setCompilerVersion] = useState<string | null>(null);
+  // The import snippet is Typst syntax (#import "@preview/…"), so insertion is
+  // only meaningful in a Typst tab. Non-Typst tabs (markdown, plain text, image,
+  // pdf) would get invalid content, and image/pdf tabs have no editor at all —
+  // disable the button in all those cases instead of silently no-op'ing.
+  const activeDoc = useActiveDocument();
+  const canInsertImport = activeDoc !== null && documentKind(activeDoc) === "typst";
 
   // Look up the selected entry in the FULL (unfiltered) index so the detail
   // view stays valid even if the user changes the search/category filter.
@@ -220,10 +228,11 @@ export function PackageDetail() {
         })()}
         <button
           className="pkg-btn-secondary"
+          disabled={!canInsertImport}
           onClick={() => {
             editorApiRef.current?.insertAtTop(importText);
           }}
-          title={importText}
+          title={canInsertImport ? importText : t("insertImportDisabled")}
         >
           {t("insertImport")}
         </button>
