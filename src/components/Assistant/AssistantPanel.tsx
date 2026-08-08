@@ -52,8 +52,12 @@ export function AssistantPanel(_: { viewId: string }) {
 
   return (
     <div className="assistant-panel">
+      {/*
+        The sidebar host already renders the view title (.sidebar-header /
+        .sidebar-title), so this row is a secondary toolbar — just the action
+        buttons — NOT a second title bar. Matches .explorer-header's grammar.
+      */}
       <div className="assistant-panel__header">
-        <span className="assistant-panel__title">{t("title")}</span>
         <div className="assistant-panel__header-actions">
           <button
             className={`assistant-toggle-btn${autoApprove ? " assistant-toggle-btn--on" : ""}`}
