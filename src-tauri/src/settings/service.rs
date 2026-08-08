@@ -292,11 +292,36 @@ fn check_range(extra: &serde_json::Map<String, Value>, key: &str, f: f64) -> Res
 /// Recognized keybinding modifier tokens (matched case-insensitively).
 const KEYBINDING_MODIFIERS: &[&str] = &["cmdorctrl", "ctrl", "cmd", "shift", "alt"];
 
+/// Recognized named special-key tokens (the non-modifier main key of a binding,
+/// matched case-insensitively). Mirrors the frontend `NAMED_KEYS` table — a
+/// binding authored as `Ctrl+Enter` or captured from an Enter keydown parses to
+/// the token "enter", and this table is what lets the backend validator accept
+/// it instead of rejecting the multi-char token as malformed. Single-character
+/// keys (letters/digits/punctuation) are validated separately and aren't listed
+/// here. Function keys F1–F24 are recognized by pattern (see `is_fn_key`).
+const KEYBINDING_NAMED_KEYS: &[&str] = &[
+    "space", "enter", "return", "escape", "esc", "tab", "backspace", "delete", "del",
+    "insert", "home", "end", "pageup", "pagedown",
+    "up", "down", "left", "right",
+    "arrowup", "arrowdown", "arrowleft", "arrowright",
+];
+
+/// Is `lower` (already lowercased) a function-key token f1..f24?
+fn is_fn_key(lower: &str) -> bool {
+    let rest = match lower.strip_prefix('f').filter(|r| !r.is_empty()) {
+        Some(r) => r,
+        None => return false,
+    };
+    rest.bytes().all(|b| b.is_ascii_digit())
+        && rest.parse::<u32>().map(|n| (1..=24).contains(&n)).unwrap_or(false)
+}
+
 /// Validate a `keybinding`-type setting value: empty (disabled) is allowed;
 /// otherwise it must be `mod(+mod)*+key` with exactly one non-modifier part.
 /// Mirrors the frontend `parseKeybinding` grammar — kept lightweight (no
-/// per-platform CmdOrCtrl resolution, no named-key table) since the frontend
-/// re-validates at match time and the input was authored by our own control.
+/// per-platform CmdOrCtrl resolution) since the frontend re-validates at match
+/// time and the input was authored by our own control. Accepts single-char
+/// keys, the named special keys in [`KEYBINDING_NAMED_KEYS`], and F1–F24.
 fn validate_keybinding(s: &str) -> bool {
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -316,12 +341,17 @@ fn validate_keybinding(s: &str) -> bool {
         if has_key {
             return false;
         }
-        // Require a single character key (letters/digits/punctuation). A future
-        // named-key table ("Enter", "F1", …) would slot in here.
-        if p.chars().count() != 1 {
-            return false;
+        // A single character (letter/digit/punctuation) is always a valid key.
+        if p.chars().count() == 1 {
+            has_key = true;
+            continue;
         }
-        has_key = true;
+        // Otherwise it must be a recognized named key or F1–F24.
+        if KEYBINDING_NAMED_KEYS.contains(&lower.as_str()) || is_fn_key(&lower) {
+            has_key = true;
+            continue;
+        }
+        return false;
     }
     has_key
 }
@@ -514,12 +544,21 @@ mod tests {
         assert!(validate(&def, &json!("Ctrl+`")).is_ok());
         assert!(validate(&def, &json!("Ctrl+1")).is_ok());
         assert!(validate(&def, &json!("")).is_ok()); // empty = disabled
+        // Named special keys and F1–F24 (the capture flow emits these tokens).
+        assert!(validate(&def, &json!("Ctrl+Enter")).is_ok());
+        assert!(validate(&def, &json!("CmdOrCtrl+F5")).is_ok());
+        assert!(validate(&def, &json!("Shift+ArrowLeft")).is_ok());
+        assert!(validate(&def, &json!("Alt+Space")).is_ok());
+        assert!(validate(&def, &json!("Ctrl+F24")).is_ok());
         assert!(validate(&def, &json!(42)).is_err());
         assert!(validate(&def, &json!(null)).is_err());
         assert!(validate(&def, &json!("Ctrl+Shift")).is_err()); // bare modifiers
         assert!(validate(&def, &json!("Ctrl++B")).is_err()); // dangling separator
         assert!(validate(&def, &json!("Ctrl+A+B")).is_err()); // two main keys
         assert!(validate(&def, &json!("Ctrl+Junk")).is_err()); // multi-char junk
+        assert!(validate(&def, &json!("Ctrl+F25")).is_err()); // F-key out of range
+        assert!(validate(&def, &json!("Ctrl+F0")).is_err()); // F0 isn't a key
+        assert!(validate(&def, &json!("Ctrl+BogusKey")).is_err()); // unknown named key
     }
 
     #[test]

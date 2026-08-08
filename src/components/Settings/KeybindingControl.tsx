@@ -8,6 +8,7 @@ import { commandRegistry } from "../../extensions/registry";
 import {
   captureKeybinding,
   formatKeybinding,
+  keybindingsEqual,
   parseKeybinding,
 } from "../../extensions/keybinding";
 
@@ -136,6 +137,12 @@ export function KeybindingControl({ def }: { def: SettingDef }) {
  * conflicting command's title (for display) or null. Skips the command being
  * edited (`selfCmdId`). "Effective" mirrors the dispatcher: the per-command
  * setting override, else the command's declared default.
+ *
+ * Comparison is by PARSED equivalence (`keybindingsEqual`), not raw string
+ * equality: `Ctrl+B` and `CmdOrCtrl+B` collide on Windows/Linux, and
+ * `Shift+Alt+F` collides with `Alt+Shift+F` (modifier order is irrelevant). A
+ * naive string compare would miss both and silently let the user save a
+ * collision that the dispatcher then resolves by registry order.
  */
 function detectConflict(selfCmdId: string, binding: string): string | null {
   const parsed = parseKeybinding(binding);
@@ -148,7 +155,10 @@ function detectConflict(selfCmdId: string, binding: string): string | null {
     );
     const effective = override ?? cmd.keybinding;
     if (!effective) continue;
-    if (effective === binding) return cmd.title || cmd.id;
+    const other = parseKeybinding(effective);
+    if (other !== null && keybindingsEqual(parsed, other)) {
+      return cmd.title || cmd.id;
+    }
   }
   return null;
 }

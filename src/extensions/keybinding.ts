@@ -88,33 +88,116 @@ export function parseKeybinding(input: string): ParsedKeybinding | null {
 }
 
 /**
+ * Recognized named special keys, mapped to stable lowercase storage tokens.
+ * The token is what `parseKeybinding` keeps in `ParsedKeybinding.key` and what
+ * `matchKeybinding` compares against `e.key` (normalized via
+ * {@link keyEventToToken}). Single-character keys (letters/digits/punctuation)
+ * are NOT in this table — they round-trip as themselves.
+ *
+ * Both the friendly form a user might type ("Enter", "F1") and the exact
+ * `KeyboardEvent.key` value ("Enter", "F1", "ArrowLeft") map to the same token,
+ * so a binding authored as `Enter` and one captured from a keydown both parse
+ * to `key: "enter"`.
+ */
+const NAMED_KEYS: Record<string, string> = {
+  // Spelled-out aliases (case-insensitive on lookup).
+  space: "space",
+  enter: "enter",
+  return: "enter",
+  escape: "escape",
+  esc: "escape",
+  tab: "tab",
+  backspace: "backspace",
+  delete: "delete",
+  del: "delete",
+  insert: "insert",
+  home: "home",
+  end: "end",
+  pageup: "pageup",
+  pagedown: "pagedown",
+  up: "up",
+  down: "down",
+  left: "left",
+  right: "right",
+  // KeyboardEvent.key spellings (already camelcase; lowercased on lookup).
+  arrowup: "up",
+  arrowdown: "down",
+  arrowleft: "left",
+  arrowright: "right",
+};
+
+/** Friendly display form for each named-key token, for formatKeybinding. */
+const NAMED_KEY_DISPLAY: Record<string, string> = {
+  space: "Space",
+  enter: "Enter",
+  escape: "Esc",
+  tab: "Tab",
+  backspace: "Backspace",
+  delete: "Delete",
+  insert: "Insert",
+  home: "Home",
+  end: "End",
+  pageup: "PageUp",
+  pagedown: "PageDown",
+  up: "↑",
+  down: "↓",
+  left: "←",
+  right: "→",
+};
+
+/**
+ * Is `token` (already lowercased) a function-key token like "f1".."f24"?
+ * Function keys are the one named family that's a contiguous range rather than
+ * a fixed set, so we recognize them by pattern instead of listing each.
+ */
+function isFunctionKeyToken(lower: string): boolean {
+  return /^f([1-9]|1[0-9]|2[0-4])$/.test(lower);
+}
+
+/**
  * Normalize a main-key token: lower-case single letters, keep digits and
- * punctuation as-is. Single character only — a multi-char token that isn't a
- * known modifier is rejected upstream by parseKeybinding (returns null via the
- * "second non-modifier" rule only if it's the 2nd; a lone multi-char junk token
- * like "Foo" would slip through as key "foo", which is fine — it just won't
- * match any real event). We additionally reject obviously-bad multi-char keys
- * here so a typo in settings is caught.
+ * punctuation as-is, and recognize the named special keys in {@link NAMED_KEYS}
+ * plus F1–F24. Anything else (multi-char junk like "Junk", or an unknown
+ * special key) returns `""`, which `parseKeybinding` treats as an invalid
+ * binding (returns null) — so a typo in settings, or an unparsable captured key,
+ * is caught rather than silently stored as a dead binding.
  */
 function normalizeKey(part: string): string {
   // Single char: letters lower-cased, digits/punct kept.
   if (part.length === 1) {
     return part.toLowerCase();
   }
-  // Allow a few spelled-out special keys we care about. Currently none are
-  // used (the app's keybindings are all single chars), but this is the seam
-  // for future "Space" / "Enter" / "F1" support.
-  const named: Record<string, string> = {
-    space: " ",
-    enter: "enter",
-    escape: "escape",
-    esc: "escape",
-    tab: "tab",
-  };
   const lower = part.toLowerCase();
-  if (named[lower]) return named[lower];
+  if (isFunctionKeyToken(lower)) return lower;
+  if (NAMED_KEYS[lower]) return NAMED_KEYS[lower];
   // Reject multi-char junk: a keybinding must be a concrete single key.
   return "";
+}
+
+/**
+ * Map a `KeyboardEvent.key` value to the storage token a binding uses. This is
+ * the capture-side counterpart to {@link normalizeKey}: it turns the browser's
+ * `e.key` ("F1", "ArrowLeft", "Enter", " ", "'") into the token form
+ * ("f1"/"left"/"enter"/"space"/"'") so `captureKeybinding` emits strings that
+ * round-trip through `parseKeybinding`. Returns `null` for keys we don't model
+ * (e.g. "Dead", "Unidentified", or unmapped IME keys) — the caller treats that
+ * as "keep listening", same as a bare modifier press.
+ */
+function keyEventToToken(eKey: string): string | null {
+  // The space bar reports e.key === " ", but its storage token is "space"
+  // (matching how a hand-authored "Ctrl+Space" binding parses). Map it
+  // explicitly before the single-char path, which would otherwise keep " ".
+  if (eKey === " ") return "space";
+  // Single char (letter / digit / punctuation): the token is itself,
+  // lowercased for letters. This is the common path for the app's bindings.
+  if (eKey.length === 1) {
+    return eKey.toLowerCase();
+  }
+  const lower = eKey.toLowerCase();
+  if (isFunctionKeyToken(lower)) return lower;
+  if (NAMED_KEYS[lower]) return NAMED_KEYS[lower];
+  // Unknown multi-char key (Dead, Unidentified, Process, IME compose, …).
+  return null;
 }
 
 /**
@@ -142,9 +225,50 @@ export function matchKeybinding(
     if (e.ctrlKey !== p.ctrl) return false;
   }
 
-  // Main key: compare case-insensitively. e.key for letters is already
-  // case-sensitive to shift state ("a" vs "A"); we lower-case both sides.
-  return e.key.toLowerCase() === p.key;
+  // Main key: compare the event's key, normalized to the same storage token
+  // form the parsed binding holds (see keyEventToToken). For single chars this
+  // is just a lower-case compare; for named keys (F1, ArrowLeft, Enter, …) it
+  // maps the event's `e.key` to the token so a stored "left" matches an
+  // "ArrowLeft" event. `e.key` is always a string per the spec ("Unidentified"
+  // for unrecognized), so the lookup is safe.
+  return keyEventToToken(e.key) === p.key;
+}
+
+/**
+ * Do two parsed bindings match the SAME set of keydown events on this platform?
+ * Two bindings are equivalent when their modifier state and main key describe
+ * the same chord. The only subtlety is `CmdOrCtrl`, which is a cross-platform
+ * alias: on mac it means metaKey, elsewhere it means ctrlKey. So a hand-authored
+ * `Ctrl+B` and a captured `CmdOrCtrl+B` collide on Windows/Linux, and a
+ * `Shift+Alt+F` collides with `Alt+Shift+F` (modifier order is irrelevant) — a
+ * naive string compare misses both. This mirrors the dispatcher's per-platform
+ * resolution so conflict detection (KeybindingControl) flags exactly the chords
+ * that would actually fight at match time.
+ */
+export function keybindingsEqual(a: ParsedKeybinding, b: ParsedKeybinding): boolean {
+  if (a.key !== b.key) return false;
+  if (a.shift !== b.shift) return false;
+  if (a.alt !== b.alt) return false;
+  // Resolve the accelerator side of each binding into the platform-specific
+  // (ctrl, cmd) pair, then compare those pairs. A binding with cmdOrCtrl set
+  // forbids the opposite raw modifier (matching matchKeybinding's "exactly one"
+  // rule): CmdOrCtrl+B does NOT equal CmdOrCtrl+B + raw Ctrl on mac, etc.
+  const [aCtrl, aCmd] = resolveAccelerator(a);
+  const [bCtrl, bCmd] = resolveAccelerator(b);
+  return aCtrl === bCtrl && aCmd === bCmd;
+}
+
+/**
+ * Reduce a parsed binding's accelerator (cmdOrCtrl + raw ctrl/cmd) to the
+ * concrete (ctrl, cmd) modifier pair this platform dispatches on. Mirrors
+ * `matchKeybinding`'s "exactly one of meta/ctrl" rule: a cmdOrCtrl binding
+ * forbids the opposite raw modifier from also being set.
+ */
+function resolveAccelerator(p: ParsedKeybinding): [boolean, boolean] {
+  if (p.cmdOrCtrl) {
+    return isMac ? [false, true] : [true, false];
+  }
+  return [p.ctrl, p.cmd];
 }
 
 /**
@@ -175,9 +299,13 @@ export function formatKeybinding(input: string): string {
   return mods.join("+");
 }
 
-/** Render a main key for display: upper-case single letters (B), keep rest. */
+/** Render a main key for display: upper-case single letters (B), friendly
+ * names for special keys (F1, Enter, ↑), keep digits/punctuation as-is. */
 function prettyKey(key: string): string {
+  if (NAMED_KEY_DISPLAY[key]) return NAMED_KEY_DISPLAY[key];
   if (key.length === 1 && /[a-z]/.test(key)) return key.toUpperCase();
+  // Function keys (f1..f24) display upper-cased (F1).
+  if (/^f[0-9]+$/.test(key)) return key.toUpperCase();
   return key;
 }
 
@@ -192,19 +320,32 @@ const MODIFIER_KEYS = new Set([
 
 /**
  * Capture a `keydown` event into a storage keybinding string. Used by the
- * settings KeybindingControl's "press a key" flow. Returns `null` when the
- * event is a bare modifier press (no main key yet) or Escape (cancel) — the
- * caller decides what to do with those.
+ * settings KeybindingControl's "press a key" flow. Returns `null` when:
+ * - the event is Escape (cancel capture — caller exits listen mode), or
+ * - it's a bare modifier press (no main key yet — keep listening), or
+ * - the main key isn't one we can model (e.g. "Dead"/"Unidentified"/IME compose
+ *   keys, which have no stable `e.key`). Returning null there keeps the control
+ *   in listen mode rather than emitting a string that won't parse, won't match,
+ *   and would be rejected by the backend validator on save.
  *
  * The serialized form uses `CmdOrCtrl` (not a platform-specific modifier) so
  * the same setting is portable across the user's machines, matching the
- * hand-authored `keybinding` strings on the in-tree extensions.
+ * hand-authored `keybinding` strings on the in-tree extensions. Named/special
+ * keys are emitted via {@link keyEventToToken} so an F1 or arrow press round-
+ * trips through `parseKeybinding` (e.g. `ArrowLeft` → "left" → parses fine),
+ * instead of the old behavior of emitting the raw multi-char `e.key`, which
+ * produced an unparseable, never-matching, backend-rejected binding.
  */
 export function captureKeybinding(e: KeyboardEvent): string | null {
   // Escape cancels capture — caller handles by exiting listen mode.
   if (e.key === "Escape") return null;
   // Bare modifier press — wait for the actual key.
   if (MODIFIER_KEYS.has(e.key)) return null;
+
+  const token = keyEventToToken(e.key);
+  // Unknown / unmappable key (Dead, Unidentified, IME compose, …): keep
+  // listening rather than emit an unparseable binding.
+  if (token === null) return null;
 
   // Emit modifiers in a stable order: CmdOrCtrl, then Alt, then Shift, then the
   // main key. Capture normalizes meta/ctrl to the cross-platform CmdOrCtrl so a
@@ -214,6 +355,6 @@ export function captureKeybinding(e: KeyboardEvent): string | null {
   if (e.metaKey || e.ctrlKey) parts.push("CmdOrCtrl");
   if (e.altKey) parts.push("Alt");
   if (e.shiftKey) parts.push("Shift");
-  parts.push(e.key.toLowerCase());
+  parts.push(token);
   return parts.join("+");
 }
