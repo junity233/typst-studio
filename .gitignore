@@ -44,6 +44,10 @@ public/vendor/
 .playwright-cli/
 .playwright-mcp/
 
+# Mimosa security-scan output (finding ledger, history, hook state, reports) —
+# regenerated per scan, local-only.
+.mimosa/
+
 # Agent-generated session state, plans, and design notes — local-only.
 .omc/
 docs/superpowers/

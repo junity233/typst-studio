@@ -35,6 +35,11 @@ const mocks = vi.hoisted(() => ({
         },
       },
     ],
+    // PackageDetail also reads `installed` (for the install-button label) and
+    // `installing` (in-flight flag). The real store seeds these to [] / {}, so
+    // mirror that here — otherwise the component throws on render.
+    installed: [],
+    installing: {},
   },
 }));
 
