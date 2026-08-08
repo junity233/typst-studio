@@ -324,6 +324,18 @@ button {
   min-height: 0;
   width: 100%;
   height: 100%;
+  /* Clip Monaco's overflowing content widgets (notably the suggest/popup
+     widget, which renders under `.monaco-editor > .overflowingContentWidgets`
+     with `position: absolute`). `.monaco-editor` itself is `overflow: visible`,
+     and Monaco positions these widgets using the WHOLE window (document body)
+     as the available space — not the editor pane — when deciding whether they
+     fit. So a widget anchored at a cursor near the editor's bottom/right edge
+     expands DOWNWARD past the editor onto the diagnostics panel, or RIGHTWARD
+     onto the preview pane, instead of staying inside the editor. Clipping here
+     on BOTH axes contains the widget to the editor pane; Monaco's own
+     below/above preference then flips it up when it no longer fits below.
+     (Mirrors the `.pane` overflow that wraps this.) */
+  overflow: hidden;
 }
 .editor-pane > div,
 .editor-pane .monaco-editor {
@@ -682,10 +694,27 @@ button {
 .diagnostics-body.dragging {
   transition: none;
 }
+.diagnostics.collapsed {
+  /* 收起后整块脱离文档流、贴底悬浮成贯通细条，不占布局空间。 */
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+}
+.diagnostics.collapsed .diagnostics-header {
+  /* 头部收窄成细条：高度压到 22px，分隔线移到顶部。 */
+  height: 22px;
+  border-bottom: none;
+  border-top: 1px solid var(--color-hairline);
+  padding: 0 var(--space-md);
+}
 .diagnostics.collapsed .diagnostics-body {
   max-height: 0;
   height: auto;
   overflow: hidden;
+  /* 收起瞬间瞬时贴底为细条，避免 0.2s 过渡期间出现正在缩小的悬浮大块。 */
+  transition: none;
 }
 .diag-empty {
   padding: var(--space-xs) var(--space-lg);
@@ -1939,6 +1968,8 @@ button {
   width: 100%;
 }
 .editor-area {
+  /* relative 锚定收起态诊断面板的贴底悬浮细条（见 .diagnostics.collapsed）。 */
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
