@@ -299,79 +299,95 @@ pub async fn search_workspace(
     Ok(hits)
 }
 
-/// Replace matches across the workspace (§Search view → Replace). Runs the
-/// same file-walk as [`search_workspace`] to compute per-file replacement text,
-/// then routes each affected file to the right sink:
-/// - **Open document** → `update_text` bumps the in-memory buffer's revision
-///   and marks it dirty (the user's edits persist; they can save/close as
-///   usual). The new content + revision are returned so the frontend can mirror
-///   them into Monaco via a "controlled replace" (see SearchPanel handshake) —
-///   the frontend MUST NOT re-sync via its own `updateText`, or the revision
+/// Replace matches across the workspace (§Search view → Replace). Walks the
+/// same file tree as [`search_workspace`] to find candidate files, then routes
+/// each affected file to the right sink:
+/// - **Open document (visible OR soft-closed)** → spliced from its LIVE buffer
+///   text (`tab_text`), then `update_text` bumps the revision and marks dirty.
+///   Splicing from the buffer — not the disk — is what preserves the user's
+///   unsaved edits: an open doc with a dirty buffer may differ from its on-disk
+///   content, and a disk-based replacement would silently clobber those edits.
+///   The new content + revision are returned so the frontend can mirror them
+///   into Monaco via a "controlled replace" (see SearchPanel handshake) — the
+///   frontend MUST NOT re-sync via its own `updateText`, or the revision
 ///   desyncs and the user's next keystroke is dropped.
-/// - **Not open** → written directly to disk.
+/// - **Not open** → spliced from disk text and written back to disk (atomic
+///   write). No dirty buffer can disagree, because there is no buffer.
 ///
 /// Conflicted open docs are NOT skipped: their buffer is still updated (the
 /// user explicitly asked to replace), preserving the "edit the buffer" decision
-/// the user made. Disk writes for non-open files never race with a dirty
-/// buffer.
+/// the user made.
 #[tauri::command]
 pub async fn replace_in_files(
     state: State<'_, AppState>,
     req: crate::domain::search::ReplaceRequest,
 ) -> Result<crate::domain::search::ReplaceOutcome> {
     let ws = state.workspace.clone();
-    // 1. Compute replacements (pure: walk + match + splice, no writes).
-    let computed = {
-        let req = req.clone();
-        let root = ws.root().ok_or_else(|| {
-            AppError::InvalidInput("no workspace open".into())
-        })?;
-        tauri::async_runtime::spawn_blocking(move || crate::fs::search::replace_compute(&root, &req))
-            .await
-            .map_err(|e| AppError::Other(format!("join error: {e}")))?
-            .map_err(|e| AppError::Other(e.to_string()))?
-    };
-    if computed.is_empty() {
-        return Ok(crate::domain::search::ReplaceOutcome {
-            closed_files_written: 0,
-            open_docs: Vec::new(),
-            failed: Vec::new(),
-        });
-    }
+    let root = ws.root().ok_or_else(|| {
+        AppError::InvalidInput("no workspace open".into())
+    })?.clone();
 
-    // 2. Preflight: which of these files are open? docs_at_paths canonicalizes
-    //    both the inputs and each doc's identity path before matching, so we
-    //    feed it the (possibly non-canonical) abs_paths straight from the walk.
-    let abs_paths: Vec<PathBuf> = computed.iter().map(|c| c.abs_path.clone()).collect();
-    let open_docs = state.editor.document().docs_at_paths(&abs_paths);
-    // Index open docs by canonical path for O(1) join against FileReplacement.
+    // 1. Walk the workspace for candidate files (no text read yet) and build
+    //    the matcher once. Both run on the blocking pool; the candidates walk
+    //    does stat/read_dir IO, and build_replace_matcher compiles a regex.
+    let (candidates, matcher) = {
+        let req = req.clone();
+        let root = root.clone();
+        tauri::async_runtime::spawn_blocking(move || -> std::result::Result<_, anyhow::Error> {
+            let cands = crate::fs::search::replace_candidates(&root, &req);
+            let matcher = crate::fs::search::build_replace_matcher(&req)?;
+            Ok((cands, matcher))
+        })
+        .await
+        .map_err(|e| AppError::Other(format!("join error: {e}")))?
+        .map_err(|e| AppError::Other(e.to_string()))?
+    };
+
+    // 2. Which candidates are OPEN documents? docs_at_paths_with_hidden
+    //    includes soft-closed (hidden) tabs too — a hidden tab still holds a
+    //    live buffer that must be spliced in-memory, not from disk. Index by
+    //    canonical path for an O(1) join against the walk.
+    let abs_paths: Vec<PathBuf> = candidates.iter().map(|c| c.abs_path.clone()).collect();
+    let open_docs = state.editor.document().docs_at_paths_with_hidden(&abs_paths);
     let mut open_by_canon: std::collections::HashMap<PathBuf, DocumentId> =
         std::collections::HashMap::new();
     for d in &open_docs {
         open_by_canon.insert(d.path.clone(), d.id);
     }
 
-    // 3. Route each file: open doc → buffer update (capture new revision);
-    //    closed file → atomic disk write. The disk writes are blocking IO, so
-    //    they're batched into one spawn_blocking. A single closed-file failure
-    //    (permission denied, disk full, vanished mid-batch) does NOT abort the
-    //    rest: we record it in `failed` and continue, so the user gets a
-    //    partial-success summary instead of a half-applied batch with no detail.
-    //    Open-doc updates stay here (they touch AppState and must run off the
-    //    blocking pool).
+    // 3. Compute each file's replacement, reading text from the right source
+    //    (live buffer for open docs, disk for closed), then route to its sink.
+    //    Open-doc splices run inline (they need AppState → update_text); the
+    //    disk reads for closed files are deferred to the blocking batch below
+    //    alongside their writes so we cross the async/blocking boundary once.
     let mut open_results: Vec<crate::domain::search::OpenDocReplacement> = Vec::new();
-    let mut closed: Vec<crate::fs::search::FileReplacement> = Vec::new();
-    for c in computed {
-        // Canonicalize the walked path the same way docs_at_paths did so the
-        // join succeeds regardless of symlinks/`..` in the abs path.
-        let canon = crate::domain::path::canonicalize_for_identity(&c.abs_path)
-            .unwrap_or_else(|_| c.abs_path.clone());
+    let mut closed: Vec<crate::fs::search::ReplaceCandidate> = Vec::new();
+    for cand in candidates {
+        // Canonicalize the walked path the same way docs_at_paths_with_hidden
+        // did so the join succeeds regardless of symlinks/`..` in the abs path.
+        let canon = crate::domain::path::canonicalize_for_identity(&cand.abs_path)
+            .unwrap_or_else(|_| cand.abs_path.clone());
         if let Some(id) = open_by_canon.get(&canon).copied() {
-            // Open: update the in-memory buffer. update_text auto-bumps the
-            // revision, marks dirty, publishes to VFS, and signals the compile
-            // worker — exactly what we want for a buffer edit. We then read the
-            // fresh revision back so the frontend can sync Monaco.
-            state.editor.document().update_text(id, c.new_content.clone())?;
+            // Open: splice from the LIVE buffer text. tab_text returns the
+            // in-memory buffer (possibly dirty, possibly diverged from disk);
+            // replacing on top of THAT is what keeps unsaved edits intact. A
+            // None here means the tab vanished mid-batch (closed concurrently)
+            // — skip it rather than fall back to disk, which would race the
+            // just-closed buffer's save.
+            let buf_text = match state.editor.document().tab_text(id) {
+                Some(t) => t,
+                None => continue,
+            };
+            let Some(fr) = crate::fs::search::compute_file_replacement(
+                &buf_text, &req, &matcher, &cand.relative, cand.abs_path.clone(),
+            ) else {
+                continue;
+            };
+            // update_text auto-bumps the revision, marks dirty, publishes to
+            // VFS, and signals the compile worker — exactly what we want for a
+            // buffer edit. Read the fresh revision back so the frontend syncs
+            // Monaco to it.
+            state.editor.document().update_text(id, fr.new_content.clone())?;
             let new_revision = state
                 .editor
                 .document()
@@ -379,35 +395,57 @@ pub async fn replace_in_files(
                 .ok_or_else(|| AppError::Other(format!("doc {id} vanished after update_text")))?;
             open_results.push(crate::domain::search::OpenDocReplacement {
                 id,
-                new_content: c.new_content,
+                new_content: fr.new_content,
                 new_revision,
                 path: canon.to_string_lossy().into_owned(),
             });
         } else {
-            // Closed: defer to the blocking batch below. Keep the relative path
-            // (computed by the walker) so a failure can be reported back in
-            // workspace-relative form.
-            closed.push(c);
+            // Closed: defer to the blocking batch below, which reads disk text,
+            // splices, and writes atomically in one blocking hop.
+            closed.push(cand);
         }
     }
 
-    // 4. Atomic-write every closed file on the blocking pool, collecting
-    //    failures. We use the project's atomic write (temp + fsync + rename +
-    //    perm-preserve) — the same protocol Saves use — so a crash mid-batch
-    //    can never truncate a workspace file, and a 0600 file stays 0600.
+    // 4. Read + splice + atomically-write every closed file on the blocking
+    //    pool, collecting failures. A single closed-file failure (permission
+    //    denied, disk full, vanished mid-batch) does NOT abort the rest: we
+    //    record it in `failed` and continue, so the user gets a partial-success
+    //    summary instead of a half-applied batch with no detail. Uses the
+    //    project's atomic write (temp + fsync + rename + perm-preserve) — the
+    //    same protocol Saves use — so a crash mid-batch can never truncate a
+    //    workspace file.
     let closed_written: u32;
     let failed: Vec<crate::domain::search::ReplaceFailure> = if closed.is_empty() {
         closed_written = 0;
         Vec::new()
     } else {
+        let req = req.clone();
+        let matcher = matcher.clone();
         let written = tauri::async_runtime::spawn_blocking(move || {
             let mut ok = 0u32;
             let mut failures: Vec<crate::domain::search::ReplaceFailure> = Vec::new();
-            for c in &closed {
-                match crate::persistence::atomic::write_bytes(&c.abs_path, c.new_content.as_bytes()) {
+            for cand in &closed {
+                // Read disk text; a non-UTF-8 / unreadable file is a soft
+                // failure (reported, not fatal) — same best-effort as `search`.
+                let text = match std::fs::read_to_string(&cand.abs_path) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        failures.push(crate::domain::search::ReplaceFailure {
+                            relative: cand.relative.clone(),
+                            reason: e.to_string(),
+                        });
+                        continue;
+                    }
+                };
+                let Some(fr) = crate::fs::search::compute_file_replacement(
+                    &text, &req, &matcher, &cand.relative, cand.abs_path.clone(),
+                ) else {
+                    continue;
+                };
+                match crate::persistence::atomic::write_bytes(&fr.abs_path, fr.new_content.as_bytes()) {
                     Ok(()) => ok += 1,
                     Err(e) => failures.push(crate::domain::search::ReplaceFailure {
-                        relative: c.relative.clone(),
+                        relative: cand.relative.clone(),
                         reason: e.to_string(),
                     }),
                 }

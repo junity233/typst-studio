@@ -124,7 +124,12 @@ pub fn search(root: &Path, query: &SearchQuery) -> Result<Vec<SearchHit>> {
 /// One matching strategy: a compiled regex, or a hand-rolled literal search.
 /// The literal path avoids constructing a regex (and its small per-match cost)
 /// for the common "plain text" case.
-enum Matcher {
+///
+/// `pub(crate)` so the IPC `replace_in_files` command can build one matcher
+/// (via [`build_replace_matcher`]) and reuse it across both the open-doc and
+/// closed-file paths without re-compiling a regex per file.
+#[derive(Clone)]
+pub(crate) enum Matcher {
     Regex(Regex),
     Literal {
         needle_lower: String,
@@ -358,6 +363,186 @@ pub struct FileReplacement {
     pub match_count: usize,
 }
 
+/// Build the [`Matcher`] for a replace request, pre-validating a regex
+/// replacement so a bad capture reference ($5 on a pattern with fewer groups)
+/// becomes a clean error instead of a panic inside `spawn_blocking`. Literal
+/// mode needs no validation. Shared by [`replace_compute`] (disk walk) and the
+/// open-document path in the IPC layer.
+pub(crate) fn build_replace_matcher(req: &ReplaceRequest) -> Result<Matcher> {
+    let matcher = build_matcher(&req.query)?;
+    if let Matcher::Regex(re) = &matcher {
+        validate_regex_replacement(re, req.replacement.as_str())?;
+    }
+    Ok(matcher)
+}
+
+/// Upper bound on a file we're willing to rebuild in memory for a replace. A
+/// multi-MB generated file (JSON/CSV checked into the workspace) would
+/// otherwise be read wholesale, rebuilt, and written back — slow and memory-
+/// hungry. The search hit caps protect the result LIST, but replace walks
+/// every matching file regardless, so this is the only ceiling. Mirrors
+/// `fs_commands.rs::MAX_SOURCE_FILE_BYTES` (10 MiB).
+pub const REPLACE_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Compute the post-replacement text for ONE file, given its current text.
+/// Pure: no disk IO, no document mutation — the caller decides the sink. Walks
+/// the text line by line (same constraint as `search`: cross-line patterns are
+/// not supported), splices `replacement` into each selected match range, and
+/// returns the rebuilt text + match count. Returns `None` when no match was
+/// selected/replaced (so the caller can skip the file entirely).
+///
+/// `relative` and `abs_path` are carried through untouched for the caller's
+/// routing convenience. `target` (when set in `req`) restricts the replacement
+/// to the single match at that exact `(line, column)`.
+///
+/// This is factored out of [`replace_compute`] so the IPC layer can reuse the
+/// exact same splice logic on an OPEN document's buffer text (which may differ
+/// from disk when the buffer is dirty) — see `replace_in_files`. The disk-walk
+/// path reads from the file system; the open-doc path reads from the in-memory
+/// buffer. Both produce a [`FileReplacement`] the caller routes to its sink.
+pub(crate) fn compute_file_replacement(
+    text: &str,
+    req: &ReplaceRequest,
+    matcher: &Matcher,
+    relative: &str,
+    abs_path: PathBuf,
+) -> Option<FileReplacement> {
+    let replacement = req.replacement.as_str();
+    let preserve_case = req.preserve_case;
+    let target = req.target.as_ref();
+
+    // Match the target against (line, column) BEFORE we decide whether this
+    // file has a relevant match. `column` is 1-indexed scalar values; we
+    // compare against the matcher's per-line match ranges (byte offsets →
+    // char offsets). If the target doesn't resolve to a real match, the
+    // file produces no replacement.
+    let target_match_line = target.and_then(|t| if t.line >= 1 { Some(t.line as usize) } else { None });
+    let target_match_col = target.and_then(|t| if t.column >= 1 { Some(t.column as u32) } else { None });
+
+    let mut rebuilt = String::with_capacity(text.len());
+    let mut total_matches = 0usize;
+    let mut any_change = false;
+    // Preserve the trailing newline shape: iterate with line endings kept.
+    let lines = split_lines_with_endings(text);
+    for (line_idx, (line, ending)) in lines.into_iter().enumerate() {
+        // SearchHit.line is 1-indexed.
+        let line_no = line_idx + 1;
+        let ranges = matcher.find(line);
+        if ranges.is_empty() {
+            rebuilt.push_str(line);
+            rebuilt.push_str(&ending);
+            continue;
+        }
+        // Resolve which ranges to replace.
+        let (to_replace, matched_count) = select_ranges(
+            &ranges,
+            line,
+            line_no,
+            target,
+            target_match_line,
+            target_match_col,
+        );
+        if to_replace.is_empty() {
+            // Matches present but none selected (target didn't line up on
+            // this line) — keep line verbatim.
+            rebuilt.push_str(line);
+            rebuilt.push_str(&ending);
+            continue;
+        }
+        let replaced = splice_replacements(line, &to_replace, replacement, preserve_case, matcher);
+        rebuilt.push_str(&replaced);
+        rebuilt.push_str(&ending);
+        total_matches += matched_count;
+        any_change = true;
+    }
+
+    if any_change {
+        Some(FileReplacement {
+            relative: relative.to_string(),
+            abs_path,
+            new_content: rebuilt,
+            match_count: total_matches,
+        })
+    } else {
+        None
+    }
+}
+
+/// One candidate file for a replace run: its workspace-relative path + absolute
+/// path. The walk in [`replace_compute`] and [`replace_candidates`] produces
+/// these; the IPC layer reads the file's text (from disk OR from an open doc's
+/// buffer) and hands it to [`compute_file_replacement`] for the actual splice.
+#[derive(Debug, Clone)]
+pub struct ReplaceCandidate {
+    pub relative: String,
+    pub abs_path: PathBuf,
+}
+
+/// Walk `root` (same traversal as [`replace_compute`]) and yield every file that
+/// COULD contain a replaceable match — without reading the file text. Applies
+/// the same `IGNORED_DIRS`, `include_glob`, byte-size guard, and `target`
+/// filters as [`replace_compute`].
+///
+/// This is the routing seam for [`replace_in_files`](crate::ipc::fs_commands::replace_in_files):
+/// the IPC layer asks the document service which of these paths are open (so it
+/// can splice from the LIVE buffer text, not the possibly-stale disk content),
+/// then reads disk text only for the closed ones. Decoupling the walk from the
+/// text source is what lets replace honor a dirty buffer instead of clobbering
+/// it with a disk-based replacement.
+pub(crate) fn replace_candidates(root: &Path, req: &ReplaceRequest) -> Vec<ReplaceCandidate> {
+    let target = req.target.as_ref();
+    let ignored: HashSet<&'static str> = crate::fs::tree::IGNORED_DIRS.iter().copied().collect();
+    let include = req.query.include_glob.as_deref();
+    let mut out: Vec<ReplaceCandidate> = Vec::new();
+
+    for entry in walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.file_type().is_dir() {
+                let name = e.file_name();
+                if ignored.contains(name.to_string_lossy().as_ref()) {
+                    return false;
+                }
+            }
+            true
+        })
+    {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if let Some(glob) = include {
+            let name = entry.file_name().to_string_lossy();
+            if !matches_simple_glob(glob, &name) {
+                continue;
+            }
+        }
+        let path = entry.path();
+        let rel = match path.strip_prefix(root) {
+            Ok(r) => r.to_string_lossy().replace('\\', "/").to_string(),
+            Err(_) => continue,
+        };
+        // If a target is set, skip every file that isn't it.
+        if let Some(t) = target {
+            if t.relative != rel {
+                continue;
+            }
+        }
+        // Same byte guard as replace_compute (see REPLACE_MAX_FILE_BYTES).
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() > REPLACE_MAX_FILE_BYTES {
+                continue;
+            }
+        }
+        out.push(ReplaceCandidate { relative: rel, abs_path: path.to_path_buf() });
+    }
+    out
+}
+
 /// Walk `root` (same traversal as [`search`]) and, for every file that has at
 /// least one match under `req.query`, compute the post-replacement text. Does
 /// NOT write to disk or touch open documents — returns the computed content so
@@ -368,20 +553,16 @@ pub struct FileReplacement {
 ///
 /// Line-based: matches and replacements are applied independently per line
 /// (same constraint as `search`). Cross-line patterns are not supported.
+///
+/// NOTE: this walks DISK. An open document whose buffer is dirty will be
+/// spliced from its on-disk content here — the IPC layer's `replace_in_files`
+/// is the one that routes open docs through their live buffer text instead
+/// (so a dirty buffer's unsaved edits aren't silently overwritten).
 pub fn replace_compute(root: &Path, req: &ReplaceRequest) -> Result<Vec<FileReplacement>> {
-    let query = &req.query;
-    let matcher = build_matcher(query)?;
-    let replacement = req.replacement.as_str();
-    // Pre-validate a regex replacement so a bad capture reference ($5 on a
-    // pattern with fewer groups) becomes a clean error instead of a panic
-    // inside spawn_blocking. Literal mode needs no validation.
-    if let Matcher::Regex(re) = &matcher {
-        validate_regex_replacement(re, replacement)?;
-    }
-    let preserve_case = req.preserve_case;
+    let matcher = build_replace_matcher(req)?;
     let target = req.target.as_ref();
     let ignored: HashSet<&'static str> = crate::fs::tree::IGNORED_DIRS.iter().copied().collect();
-    let include = query.include_glob.as_deref();
+    let include = req.query.include_glob.as_deref();
     let mut out: Vec<FileReplacement> = Vec::new();
 
     for entry in walkdir::WalkDir::new(root)
@@ -422,13 +603,7 @@ pub fn replace_compute(root: &Path, req: &ReplaceRequest) -> Result<Vec<FileRepl
             }
         }
         // Skip non-UTF-8 / unreadable files (best-effort, same as `search`).
-        // Also skip files larger than the byte guard: a multi-MB generated
-        // file (JSON/CSV checked into the workspace) would otherwise be read
-        // wholesale, rebuilt in memory, and written back — slow and memory-
-        // hungry. The search hit caps protect the result LIST, but replace
-        // walks every matching file regardless, so this is the only ceiling.
-        // Mirrors fs_commands.rs::MAX_SOURCE_FILE_BYTES (10 MiB).
-        const REPLACE_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+        // Also skip files larger than the byte guard (see REPLACE_MAX_FILE_BYTES).
         if let Ok(meta) = std::fs::metadata(path) {
             if meta.len() > REPLACE_MAX_FILE_BYTES {
                 continue;
@@ -439,58 +614,8 @@ pub fn replace_compute(root: &Path, req: &ReplaceRequest) -> Result<Vec<FileRepl
             Err(_) => continue,
         };
 
-        // Match the target against (line, column) BEFORE we decide whether this
-        // file has a relevant match. `column` is 1-indexed scalar values; we
-        // compare against the matcher's per-line match ranges (byte offsets →
-        // char offsets). If the target doesn't resolve to a real match, the
-        // file produces no replacement.
-        let target_match_line = target.and_then(|t| if t.line >= 1 { Some(t.line as usize) } else { None });
-        let target_match_col = target.and_then(|t| if t.column >= 1 { Some(t.column as u32) } else { None });
-
-        let mut rebuilt = String::with_capacity(text.len());
-        let mut total_matches = 0usize;
-        let mut any_change = false;
-        // Preserve the trailing newline shape: iterate with line endings kept.
-        let lines = split_lines_with_endings(&text);
-        for (line_idx, (line, ending)) in lines.into_iter().enumerate() {
-            // SearchHit.line is 1-indexed.
-            let line_no = line_idx + 1;
-            let ranges = matcher.find(line);
-            if ranges.is_empty() {
-                rebuilt.push_str(line);
-                rebuilt.push_str(&ending);
-                continue;
-            }
-            // Resolve which ranges to replace.
-            let (to_replace, matched_count) = select_ranges(
-                &ranges,
-                line,
-                line_no,
-                target,
-                target_match_line,
-                target_match_col,
-            );
-            if to_replace.is_empty() {
-                // Matches present but none selected (target didn't line up on
-                // this line) — keep line verbatim.
-                rebuilt.push_str(line);
-                rebuilt.push_str(&ending);
-                continue;
-            }
-            let replaced = splice_replacements(line, &to_replace, replacement, preserve_case, &matcher);
-            rebuilt.push_str(&replaced);
-            rebuilt.push_str(&ending);
-            total_matches += matched_count;
-            any_change = true;
-        }
-
-        if any_change {
-            out.push(FileReplacement {
-                relative: rel.clone(),
-                abs_path: path.to_path_buf(),
-                new_content: rebuilt,
-                match_count: total_matches,
-            });
+        if let Some(fr) = compute_file_replacement(&text, req, &matcher, &rel, path.to_path_buf()) {
+            out.push(fr);
         }
     }
     Ok(out)
@@ -996,5 +1121,103 @@ mod tests {
         let a = out.iter().find(|f| f.relative == "a.txt").unwrap();
         assert_eq!(a.new_content, "Earth\r\nEarth\r\n");
         let _ = read_file; // silence unused if no other reader test
+    }
+
+    // ── compute_file_replacement / replace_candidates ───────────────────
+    // These power the open-document routing path: the IPC layer reads text
+    // from a doc's live buffer (NOT disk) and hands it here. The splice logic
+    // is identical to replace_compute; these tests pin the contract.
+
+    #[test]
+    fn compute_file_replacement_splices_provided_text() {
+        // The caller supplies the text — e.g. a dirty buffer "foo BAR baz"
+        // even though disk holds "foo bar". Splicing must use the SUPPLIED
+        // text, not re-read disk. This is the data-preservation invariant for
+        // replace over an open doc with unsaved edits: the replacement is
+        // layered on top of the buffer, not the stale disk content.
+        let mut q = query("BAR");
+        q.case_sensitive = false; // match "BAR" (and "bar") regardless of case
+        let req = replace_req(q, "qux");
+        let matcher = build_replace_matcher(&req).unwrap();
+        let fr = compute_file_replacement(
+            "foo BAR baz\n",
+            &req,
+            &matcher,
+            "open.typ",
+            PathBuf::from("/tmp/open.typ"),
+        )
+        .expect("one match → Some");
+        // preserve_case off → replacement used verbatim ("BAR" → "qux").
+        assert_eq!(fr.new_content, "foo qux baz\n");
+        assert_eq!(fr.match_count, 1);
+        assert_eq!(fr.relative, "open.typ");
+    }
+
+    #[test]
+    fn compute_file_replacement_returns_none_when_no_match() {
+        let req = replace_req(query("zzz"), "x");
+        let matcher = build_replace_matcher(&req).unwrap();
+        assert!(compute_file_replacement("no match here", &req, &matcher, "a", PathBuf::from("/a")).is_none());
+    }
+
+    #[test]
+    fn compute_file_replacement_honors_target_pin() {
+        // Two matches on one line; target pins the second. The caller passes
+        // the same text it would for replace-all, but only the targeted range
+        // is replaced.
+        let mut req = replace_req(query("ab"), "X");
+        req.target = Some(TargetRef {
+            relative: "a".into(),
+            line: 1,
+            column: 4, // 2nd "ab" starts at char col 4 ("ab ab" → a=1,b=2,_,a=4)
+        });
+        let matcher = build_replace_matcher(&req).unwrap();
+        let fr = compute_file_replacement("ab ab", &req, &matcher, "a", PathBuf::from("/a"))
+            .expect("target resolves to one match");
+        assert_eq!(fr.new_content, "ab X");
+        assert_eq!(fr.match_count, 1);
+    }
+
+    #[test]
+    fn replace_candidates_yields_matching_files_without_reading_text() {
+        // Two .typ files + one .md file; an include_glob of "*.typ" filters out
+        // the .md. A target restricts to one file. The walker returns the
+        // candidates (relative + abs_path) and does NOT read file text — the
+        // caller (replace_in_files) supplies text per-file.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.typ"), "World").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("b.typ"), "World").unwrap();
+        std::fs::write(dir.path().join("c.md"), "World").unwrap();
+
+        let mut q = query("World");
+        q.include_glob = Some("*.typ".into());
+        let req = ReplaceRequest {
+            query: q,
+            replacement: "Earth".into(),
+            preserve_case: false,
+            target: None,
+        };
+        let cands = replace_candidates(dir.path(), &req);
+        let rels: Vec<&str> = cands.iter().map(|c| c.relative.as_str()).collect();
+        assert!(rels.contains(&"a.typ"));
+        assert!(rels.contains(&"sub/b.typ"));
+        assert!(!rels.contains(&"c.md"), ".md must be filtered by *.typ glob");
+    }
+
+    #[test]
+    fn replace_candidates_target_restricts_to_one_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.typ"), "World").unwrap();
+        std::fs::write(dir.path().join("b.typ"), "World").unwrap();
+        let req = ReplaceRequest {
+            query: query("World"),
+            replacement: "Earth".into(),
+            preserve_case: false,
+            target: Some(TargetRef { relative: "b.typ".into(), line: 1, column: 1 }),
+        };
+        let cands = replace_candidates(dir.path(), &req);
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].relative, "b.typ");
     }
 }

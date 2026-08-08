@@ -868,6 +868,42 @@ impl DocumentService {
             .collect()
     }
 
+    /// Like [`docs_at_paths`](Self::docs_at_paths) but ALSO includes
+    /// soft-closed (hidden) documents. Used by search-replace: a hidden tab
+    /// still holds a live (possibly dirty) buffer in memory, so its content
+    /// must be spliced from that buffer and written back via `update_text` —
+    /// NOT from disk (which would silently discard its unsaved edits). The
+    /// template/delete paths keep using `docs_at_paths` (visible tabs only).
+    pub fn docs_at_paths_with_hidden(&self, paths: &[PathBuf]) -> Vec<AffectedDoc> {
+        use std::collections::HashSet;
+
+        let targets: HashSet<PathBuf> = paths
+            .iter()
+            .filter_map(|p| canonicalize_existing_or_target(p).ok())
+            .collect();
+        if targets.is_empty() {
+            return Vec::new();
+        }
+
+        let tabs = self.store.tabs.read();
+        tabs.values()
+            .filter_map(|t| {
+                let rt = t.state.lock();
+                let canon = rt.meta.origin.canonical_path()?.to_path_buf();
+                if targets.contains(&canon) {
+                    Some(AffectedDoc {
+                        id: rt.meta.id,
+                        path: canon,
+                        dirty: rt.meta.dirty,
+                        conflict: rt.meta.conflict,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Mark known open documents as missing after an app-initiated delete
     /// succeeds. The watcher may emit the same deletion later; `set_conflict`
     /// suppresses an identical duplicate.
@@ -2076,6 +2112,48 @@ mod tests {
         // docs_at_paths (template preflight) likewise ignores it.
         let at = document.docs_at_paths(&[path.clone()]);
         assert!(at.is_empty(), "hidden doc must not block template; got {at:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `docs_at_paths_with_hidden` is the search-replace routing query: unlike
+    /// [`docs_at_paths`](Self::docs_at_paths) (which skips hidden tabs for the
+    /// delete/template preflights), it MUST include soft-closed docs. A hidden
+    /// tab still owns a live (possibly dirty) buffer in memory, so replace has
+    /// to splice that buffer in-memory via `update_text` — NOT write disk based
+    /// on the (stale) disk content, which would silently discard the unsaved
+    /// edits the user parked in the background tab.
+    #[test]
+    fn docs_at_paths_with_hidden_includes_soft_closed_tabs() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir().join(format!("ts-hidden-replace-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let path = dir.join("doc.typ");
+        std::fs::write(&path, "x").unwrap();
+
+        // A second, visible doc at a sibling path — to confirm the visible path
+        // is still reported (the new helper is a superset of docs_at_paths).
+        let path2 = dir.join("other.typ");
+        std::fs::write(&path2, "y").unwrap();
+        let visible = document.open_from_content(path2.clone(), "y".into(), None).unwrap();
+
+        let hidden = document.open_from_content(path.clone(), "x".into(), None).unwrap();
+        document.update_text(hidden.id, "unsaved".into()).unwrap(); // dirty buffer
+        document.soft_close(hidden.id).unwrap();
+        assert!(document.tab_meta(hidden.id).unwrap().hidden);
+
+        // docs_at_paths excludes the hidden doc (the existing contract).
+        let at = document.docs_at_paths(&[path.clone(), path2.clone()]);
+        assert_eq!(at.len(), 1);
+        assert_eq!(at[0].id, visible.id);
+
+        // docs_at_paths_with_hidden reports BOTH — including the dirty hidden
+        // one, so replace routes it through the buffer (not the disk).
+        let with_hidden = document.docs_at_paths_with_hidden(&[path.clone(), path2.clone()]);
+        assert_eq!(with_hidden.len(), 2, "expected both visible + hidden; got {with_hidden:?}");
+        assert!(with_hidden.iter().any(|d| d.id == hidden.id && d.dirty));
+        assert!(with_hidden.iter().any(|d| d.id == visible.id));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
