@@ -130,4 +130,19 @@ mod tests {
             res.output,
         );
     }
+
+    /// Regenerate the frontend TS bindings for the two wire types. ts-rs only
+    /// writes the file when `::export()` is invoked under `--features
+    /// export-types`; the `#[derive(TS)]` annotation alone declares the shape.
+    /// Without this, `src/lib/types.ts` drifts (it was missing
+    /// `LatexConvertResult`, which broke the frontend `tsc`/build). Mirrors the
+    /// pattern in every other domain/ipc module's `export_types` test.
+    #[test]
+    #[cfg(feature = "export-types")]
+    fn export_types() {
+        use ts_rs::TS;
+        let cfg = ts_rs::Config::default();
+        super::LatexConvertResult::export(&cfg).unwrap();
+        super::LatexConvertWarning::export(&cfg).unwrap();
+    }
 }

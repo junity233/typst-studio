@@ -518,6 +518,38 @@ details: unknown | null,
 recoverable: boolean, };
 
 /**
+ * Result of converting a LaTeX math snippet to Typst math source.
+ */
+export type LatexConvertResult = { 
+/**
+ * The converted Typst math source (without surrounding `$` — the frontend
+ * adds those based on inline/display mode and current math context).
+ */
+output: string, 
+/**
+ * Non-fatal conversion warnings (unknown macros, partial expansions, …).
+ * Empty when the conversion was clean.
+ */
+warnings: Array<LatexConvertWarning>, };
+
+/**
+ * One conversion warning. `kind` is a short stable slug derived from tylax's
+ * [`WarningKind`](tylax::WarningKind) `Display` impl (e.g. `"unsupported
+ * macro"`, `"parse error"`); `message` is the human-readable detail. The modal
+ * surfaces these as a non-blocking hint so the user knows the conversion may be
+ * imperfect (e.g. an unknown macro passed through unchanged).
+ */
+export type LatexConvertWarning = { 
+/**
+ * Short stable slug, e.g. `"unsupported macro"`, `"parse error"`.
+ */
+kind: string, 
+/**
+ * Human-readable detail (e.g. `"Unknown macro '\foo' passed through unchanged"`).
+ */
+message: string, };
+
+/**
  * Persisted UI-panel layout (§7.2 "侧栏、诊断面板与预览可见性；分栏尺寸").
  * These migrate the per-first-run defaults out of `window.*` settings into
  * the session (settings remain as a fallback default for a brand-new install).
