@@ -14,6 +14,7 @@
 pub mod compile_service;
 pub mod compile_supervisor;
 pub mod compile_worker;
+pub mod dependency_graph;
 pub mod document_service;
 pub mod editor_service;
 pub mod export_service;

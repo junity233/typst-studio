@@ -460,6 +460,13 @@ impl DocumentService {
             return;
         };
         self.store.vfs.remove(&canon);
+        // Drop this document's outgoing dependency edges too: a closed tab no
+        // longer includes anything. (Ingoing edges — others depending on this
+        // file — are kept; the file still exists on disk.)
+        self.store.deps.remove_outgoing(&canon);
+        // Cascade a recompile so documents that #include this file fall back to
+        // the disk copy now that its live buffer left the VFS overlay.
+        self.recompile_dependents_of(&canon);
     }
 
     /// Snapshot `(canonical_path, current_text, revision)` for a tab, or `None`
@@ -622,6 +629,14 @@ impl DocumentService {
             &self.store.registry,
             &self.store.emitter,
         );
+        // Cascade a recompile to open documents that transitively #include this
+        // path (multi-file projects). Covers two cases the conflict-detection
+        // above ignores: (a) `path` isn't itself an open document but IS
+        // included by one (its disk content changed), and (b) `path` is an open
+        // document whose buffer the user keeps — dependents compile against the
+        // live VFS overlay either way. Self-induced save events are coalesced
+        // by the worker (content-identical → same result), so this is harmless.
+        self.recompile_dependents_of(path);
     }
 
     /// Clear the dirty flag after a successful save.
@@ -737,6 +752,10 @@ impl DocumentService {
         if let Some(old) = &old_canon {
             if old.as_path() != canon.as_path() {
                 self.store.vfs.remove(old);
+                // The Save-As target is a different file; drop the old path's
+                // outgoing dependency edges. The new path's edges refresh on the
+                // imminent recompile (swap_world → create_worker → compile).
+                self.store.deps.remove_outgoing(old);
             }
         }
         self.store.vfs.upsert(canon.clone(), text.clone(), revision);
@@ -1461,7 +1480,11 @@ impl DocumentService {
         // that #includes / #reads this file must compile against the live edit,
         // not the stale disk copy. Only for documents with a canonical path.
         if let Some(canon) = canon {
-            self.store.vfs.upsert(canon, content.clone(), meta_snapshot.revision);
+            self.store.vfs.upsert(canon.clone(), content.clone(), meta_snapshot.revision);
+            // Cascade a recompile to any open document that transitively
+            // #includes this one (multi-file projects). The VFS upsert above
+            // already published the live buffer, so dependents compile against it.
+            self.recompile_dependents_of(&canon);
         }
         // Signal the worker. If it's busy compiling, the message queues; the
         // worker picks up the latest text when it finishes.
@@ -1481,6 +1504,49 @@ impl DocumentService {
             recovery.schedule_snapshot(meta_snapshot, content, disk_version);
         }
         Ok(authoritative_revision)
+    }
+
+    /// After a change to `changed_path` (edit or external modify), recompile
+    /// every open document that transitively `#include`s it. The changed
+    /// document itself is already recompiled by the caller; it is never in the
+    /// dependent set (a file does not include itself). Best-effort: a dependent
+    /// that isn't currently open simply has no worker to signal.
+    ///
+    /// Lock discipline: collect dependent ids under the `tabs` read lock, drop
+    /// it, then signal workers — never hold both at once.
+    fn recompile_dependents_of(&self, changed_path: &Path) {
+        // The dependency graph is keyed by canonical disk path (as produced by
+        // the resolver). Canonicalize the change path so it matches; if that
+        // fails (e.g. a just-deleted file) or yields a different form, also try
+        // the raw path, so a watcher event still reaches the right dependents.
+        let dependents = match canonicalize_for_identity(changed_path) {
+            Ok(c) if c.as_path() == changed_path => self.store.deps.dependents_of(&c),
+            Ok(c) => {
+                let mut set = self.store.deps.dependents_of(&c);
+                set.extend(self.store.deps.dependents_of(changed_path));
+                set
+            }
+            Err(_) => self.store.deps.dependents_of(changed_path),
+        };
+        if dependents.is_empty() {
+            return;
+        }
+        let dep_ids: Vec<DocumentId> = {
+            let tabs = self.store.tabs.read();
+            tabs.iter()
+                .filter_map(|(id, tab)| {
+                    let guard = tab.state.lock();
+                    let dep_path = guard.meta.origin.canonical_path()?;
+                    dependents.contains(dep_path).then_some(*id)
+                })
+                .collect()
+        };
+        let workers = self.store.workers.read();
+        for id in dep_ids {
+            if let Some(worker) = workers.get(&id) {
+                worker.recompile();
+            }
+        }
     }
 
     /// Prepare data needed to save a tab: returns `(path, current_text)`. The
@@ -1564,7 +1630,10 @@ impl DocumentService {
         };
         // Keep the shared VFS in step with the adopted buffer (§5 end).
         if let Some(canon) = canon {
-            self.store.vfs.upsert(canon, content.clone(), revision);
+            self.store.vfs.upsert(canon.clone(), content.clone(), revision);
+            // Cascade to documents that #include this one: the buffer just
+            // changed from the user's dirty edit to the disk version.
+            self.recompile_dependents_of(&canon);
         }
         // Recompile against the new buffer.
         if let Some(worker) = self.store.workers.read().get(&id) {

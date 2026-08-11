@@ -6,7 +6,6 @@
 //! - `typst_engine`    EditorWorld + compiler + font/source loaders
 //! - `render`          Pluggable render pipelines (SVG / PDF / PNG)
 //! - `service`         Orchestration (EditorService, CompileScheduler, Export)
-//! - `project`         Project abstraction (MVP stub)
 //! - `settings`        Dynamic JSON config + shared manifest + SettingsService
 //! - `ipc`             Tauri commands, events, AppState
 //! - `error`           Unified AppError + Result alias
@@ -21,7 +20,6 @@ pub mod lsp;
 pub mod net;
 pub mod paths;
 pub mod persistence;
-pub mod project;
 pub mod render;
 pub mod service;
 pub mod settings;
@@ -115,6 +113,9 @@ pub fn run() {
             ipc::commands::save_state,
             ipc::commands::save_all,
             ipc::fs_commands::save_as,
+            // Paste-feature: write image bytes (containment-checked, bypasses
+            // the fs plugin's $HOME scope so workspaces on other drives work).
+            ipc::fs_commands::write_bytes_to_file,
             ipc::commands::export_pdf,
             ipc::commands::export_png,
             ipc::commands::export_svg,

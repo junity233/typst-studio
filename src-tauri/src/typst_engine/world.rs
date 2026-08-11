@@ -37,7 +37,8 @@
 //! [`World`]: typst::World
 //! [`SystemFontLoader`]: super::font_loader::SystemFontLoader
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use chrono::{Datelike, Timelike};
 use parking_lot::RwLock;
@@ -78,14 +79,20 @@ pub struct EditorWorld {
     vfs: Option<Arc<MemoryVfs>>,
     /// Font book + lazy font loader.
     fonts: SystemFontLoader,
+    /// Non-main `FileId`s the compiler requested since the last
+    /// [`take_dependency_paths`](Self::take_dependency_paths) drain. Refreshed
+    /// on every compile to feed the reverse dependency graph so that editing a
+    /// `#include`d file cascades a recompile to its dependents.
+    requested_deps: RwLock<HashSet<FileId>>,
 }
 
 impl EditorWorld {
     /// Create a new world seeded with the given source text, using the full
-    /// system + embedded font set. No workspace resolver, so workspace-relative
-    /// `#include` / `#image()` are disabled (untitled / single-file mode) — but
-    /// `@preview`/`@local` package imports still resolve (packages are global,
-    /// not workspace-relative), via a package-only resolver.
+    /// system + embedded font set. No workspace resolver is attached, so
+    /// workspace-relative `#include` / `#image()` do not resolve (untitled /
+    /// single-file mode — use [`with_resolver`](Self::with_resolver) for that).
+    /// `@preview`/`@local` package imports still resolve: packages are global,
+    /// not workspace-relative, so a package-only resolver is attached.
     pub fn new(initial_text: impl Into<String>) -> Self {
         Self::with_font_loader(initial_text, SystemFontLoader::new())
     }
@@ -109,6 +116,7 @@ impl EditorWorld {
             resolver: Some(crate::fs::FileResolver::new(std::env::temp_dir())),
             vfs: None,
             fonts,
+            requested_deps: RwLock::new(HashSet::new()),
         }
     }
 
@@ -141,6 +149,7 @@ impl EditorWorld {
             resolver: Some(resolver),
             vfs,
             fonts,
+            requested_deps: RwLock::new(HashSet::new()),
         })
     }
 
@@ -218,6 +227,35 @@ impl EditorWorld {
     pub fn has_resolver(&self) -> bool {
         self.resolver.is_some()
     }
+
+    /// Record a non-main `FileId` the compiler requested, for later dependency
+    /// extraction. Package-rooted ids are skipped (they're global and never
+    /// change via our watcher/VFS, so tracking them is pointless), as is the
+    /// main id (served from memory, not a dependency).
+    fn record_dependency(&self, id: FileId) {
+        if id == self.source_id {
+            return;
+        }
+        if matches!(id.get().root(), typst::syntax::VirtualRoot::Package(_)) {
+            return;
+        }
+        self.requested_deps.write().insert(id);
+    }
+
+    /// Drain the `FileId`s the compiler requested since the last call and map
+    /// them to canonical disk paths via the resolver. Called by the compile
+    /// service after each compile to refresh the reverse dependency graph.
+    /// Returns empty when no resolver is attached (untitled tabs) or every id
+    /// failed to map to a disk path.
+    pub fn take_dependency_paths(&self) -> Vec<PathBuf> {
+        let ids = std::mem::take(&mut *self.requested_deps.write());
+        let Some(resolver) = &self.resolver else {
+            return Vec::new();
+        };
+        ids.into_iter()
+            .filter_map(|id| resolver.disk_path_of(id).ok())
+            .collect()
+    }
 }
 
 impl World for EditorWorld {
@@ -238,6 +276,8 @@ impl World for EditorWorld {
             // The main source is always served from memory (the editable buffer).
             return Ok(self.source.read().clone());
         }
+        // Track workspace-local dependencies for the reverse-dependency graph.
+        self.record_dependency(id);
         // A non-main file. Consult the in-memory VFS overlay FIRST (§5 end): if
         // this id's disk path is an open document with a live buffer, serve that
         // — so a `#include`d file reflects unsaved edits instead of the stale
@@ -263,6 +303,7 @@ impl World for EditorWorld {
                 if id == self.source_id {
                     return Ok(Bytes::from_string(self.source.read().text().to_string()));
                 }
+                self.record_dependency(id);
                 // Same VFS overlay as `source`, but as bytes — so `#read` of an
                 // open text document also sees the live buffer. Binary assets
                 // (images) are never inserted into the VFS, so they miss here

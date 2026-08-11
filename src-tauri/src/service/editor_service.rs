@@ -547,6 +547,15 @@ mod tests {
         panic!("no compiled event for {id} within timeout");
     }
 
+    /// Render a document's pages to a single SVG string for equality checks.
+    fn render_doc(svc: &EditorService, id: DocumentId) -> String {
+        let doc = svc.last_doc(id).expect("doc present");
+        crate::render::svg::SvgRenderer::new()
+            .render(&doc)
+            .expect("svg render is infallible")
+            .join("\n")
+    }
+
     // --- tests ---------------------------------------------------------------
 
     #[test]
@@ -1061,6 +1070,158 @@ mod tests {
         // the overlay, so disk is the source of truth again.
         let doc = svc.last_doc(main_meta.id).expect("main doc present after close");
         assert!(!doc.pages().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn editing_included_file_cascades_recompile_to_includer() {
+        // Reverse-dependency recompile: editing the #include'd file must
+        // recompile the document that includes it — automatically, WITHOUT the
+        // user touching the including document. Without the dependency graph
+        // this wait times out (main never recompiles).
+        let dir = std::env::temp_dir().join(format!("ts-revdep-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main_path = dir.join("main.typ");
+        let intro_path = dir.join("intro.typ");
+        std::fs::write(&main_path, "#include \"intro.typ\"\n").unwrap();
+        std::fs::write(&intro_path, "Alpha\n").unwrap();
+
+        let (svc, emitter) = make_service();
+        let main_meta = svc
+            .open_from_disk(main_path.clone(), "#include \"intro.typ\"\n".to_string(), None)
+            .unwrap();
+        let intro_meta = svc
+            .open_from_disk(intro_path.clone(), "Alpha\n".to_string(), None)
+            .unwrap();
+        wait_for_compiled(&emitter, main_meta.id);
+        wait_for_compiled(&emitter, intro_meta.id);
+
+        let svg_before = render_doc(&svc, main_meta.id);
+
+        // Edit ONLY intro. main must recompile on its own (cascade).
+        emitter.clear();
+        svc.update_text(intro_meta.id, "Beta\n".to_string()).unwrap();
+        wait_for_compiled(&emitter, main_meta.id);
+
+        let svg_after = render_doc(&svc, main_meta.id);
+        assert_ne!(
+            svg_before, svg_after,
+            "main must recompile when the file it #includes is edited"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn editing_indirectly_included_file_cascades_transitively() {
+        // a includes b, b includes c. Editing c must recompile BOTH b and a
+        // (the dependency graph walks the transitive closure).
+        let dir = std::env::temp_dir().join(format!("ts-transitive-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.typ"), "#include \"b.typ\"\n").unwrap();
+        std::fs::write(dir.join("b.typ"), "#include \"c.typ\"\n").unwrap();
+        std::fs::write(dir.join("c.typ"), "C1\n").unwrap();
+
+        let (svc, emitter) = make_service();
+        let a = svc
+            .open_from_disk(dir.join("a.typ"), "#include \"b.typ\"\n".to_string(), None)
+            .unwrap();
+        let b = svc
+            .open_from_disk(dir.join("b.typ"), "#include \"c.typ\"\n".to_string(), None)
+            .unwrap();
+        let c = svc
+            .open_from_disk(dir.join("c.typ"), "C1\n".to_string(), None)
+            .unwrap();
+        wait_for_compiled(&emitter, a.id);
+        wait_for_compiled(&emitter, b.id);
+        wait_for_compiled(&emitter, c.id);
+
+        let svg_a_before = render_doc(&svc, a.id);
+        let svg_b_before = render_doc(&svc, b.id);
+
+        // Edit ONLY c. Both a and b must recompile transitively.
+        emitter.clear();
+        svc.update_text(c.id, "C2\n".to_string()).unwrap();
+        wait_for_compiled(&emitter, b.id);
+        wait_for_compiled(&emitter, a.id);
+
+        assert_ne!(render_doc(&svc, a.id), svg_a_before, "a must recompile transitively");
+        assert_ne!(render_doc(&svc, b.id), svg_b_before, "b must recompile transitively");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn external_change_to_included_file_recompiles_includer() {
+        // intro.typ is NOT an open document. Rewriting it on disk and faking a
+        // watcher event must recompile main (which reads intro from disk).
+        let dir = std::env::temp_dir().join(format!("ts-watch-revdep-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main_path = dir.join("main.typ");
+        let intro_path = dir.join("intro.typ");
+        std::fs::write(&main_path, "#include \"intro.typ\"\n").unwrap();
+        std::fs::write(&intro_path, "Disk1\n").unwrap();
+
+        let (svc, emitter) = make_service();
+        let main_meta = svc
+            .open_from_disk(main_path.clone(), "#include \"intro.typ\"\n".to_string(), None)
+            .unwrap();
+        wait_for_compiled(&emitter, main_meta.id);
+        // intro is deliberately NOT opened as a tab — only main is.
+
+        let svg_before = render_doc(&svc, main_meta.id);
+
+        // Externally rewrite intro on disk, then fake the watcher callback.
+        emitter.clear();
+        std::fs::write(&intro_path, "Disk2\n").unwrap();
+        svc.handle_external_change(&intro_path);
+        wait_for_compiled(&emitter, main_meta.id);
+
+        assert_ne!(
+            render_doc(&svc, main_meta.id),
+            svg_before,
+            "main must recompile on an external change to a non-open included file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn closing_included_file_cascades_fallback_recompile() {
+        // Closing an #include'd document removes its VFS overlay; the includer
+        // must automatically fall back to the disk copy — no manual re-touch.
+        let dir = std::env::temp_dir().join(format!("ts-close-cascade-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main_path = dir.join("main.typ");
+        let intro_path = dir.join("intro.typ");
+        std::fs::write(&main_path, "#include \"intro.typ\"\n").unwrap();
+        std::fs::write(&intro_path, "OnDisk\n").unwrap();
+
+        let (svc, emitter) = make_service();
+        let main_meta = svc
+            .open_from_disk(main_path.clone(), "#include \"intro.typ\"\n".to_string(), None)
+            .unwrap();
+        let intro_meta = svc
+            .open_from_disk(intro_path.clone(), "OnDisk\n".to_string(), None)
+            .unwrap();
+        wait_for_compiled(&emitter, main_meta.id);
+        wait_for_compiled(&emitter, intro_meta.id);
+
+        let svg_disk = render_doc(&svc, main_meta.id);
+
+        // Edit intro in memory only (disk still says "OnDisk").
+        emitter.clear();
+        svc.update_text(intro_meta.id, "OnlyInMemory\n".to_string()).unwrap();
+        wait_for_compiled(&emitter, main_meta.id);
+        let svg_edit = render_doc(&svc, main_meta.id);
+        assert_ne!(svg_disk, svg_edit, "main must reflect the live buffer edit");
+
+        // Close intro. main must recompile on its own and fall back to disk.
+        emitter.clear();
+        svc.close_tab(intro_meta.id).unwrap();
+        wait_for_compiled(&emitter, main_meta.id);
+        assert_eq!(
+            render_doc(&svc, main_meta.id),
+            svg_disk,
+            "main must fall back to the disk intro after the included doc closes"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

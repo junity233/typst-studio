@@ -4,7 +4,6 @@
 
 pub mod compiler;
 pub mod font_loader;
-pub mod source_provider;
 pub mod vfs;
 pub mod world;
 

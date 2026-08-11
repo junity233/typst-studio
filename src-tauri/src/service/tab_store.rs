@@ -35,6 +35,7 @@ use crate::typst_engine::MemoryVfs;
 
 use super::compile_supervisor::CompileSupervisor;
 use super::compile_worker::CompileWorker;
+use super::dependency_graph::DependencyGraph;
 use super::editor_service::Emitter;
 use super::tab_state::TabState;
 use super::workspace_service::WorkspaceService;
@@ -94,6 +95,11 @@ pub struct TabStore {
     /// so the cap applies across all tabs. Defaults to a fresh supervisor with
     /// the policy-derived cap; tests can inject a custom one.
     pub supervisor: CompileSupervisor,
+    /// Shared reverse dependency graph (canonical path → dependents). Fed by
+    /// each compile's [`EditorWorld::take_dependency_paths`](crate::typst_engine::world::EditorWorld::take_dependency_paths)
+    /// and consulted on edit / watcher changes to cascade recompiles across
+    /// `#include`d files.
+    pub deps: Arc<DependencyGraph>,
 }
 
 impl TabStore {
@@ -108,6 +114,7 @@ impl TabStore {
             vfs: Arc::new(MemoryVfs::new()),
             emitter,
             supervisor: CompileSupervisor::new(),
+            deps: Arc::new(DependencyGraph::new()),
         }
     }
 

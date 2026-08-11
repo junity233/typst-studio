@@ -28,6 +28,8 @@
 //!
 //! [`DocumentService`]: super::document_service::DocumentService
 
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -47,6 +49,7 @@ use super::compile_supervisor::{
     CompileSupervisor, PANIC_BACKOFF_DURATION, PANIC_BACKOFF_THRESHOLD, SLOW_COMPILE_THRESHOLD,
 };
 use super::compile_worker::CompileWorker;
+use super::dependency_graph::DependencyGraph;
 use super::editor_service::{CompileState, Emitter};
 use super::tab_state::TabState;
 use super::tab_store::TabStore;
@@ -83,8 +86,9 @@ impl CompileService {
         // closed mid-compile still runs to completion (Rust can't kill the
         // thread), but its result must not be published.
         let tabs = self.store.tabs.clone();
+        let deps = self.store.deps.clone();
         let compile_fn: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            Self::do_compile_for_tab(&tab, &emitter, &supervisor, &tabs, id)
+            Self::do_compile_for_tab(&tab, &emitter, &supervisor, &tabs, &deps, id)
         });
         let worker = CompileWorker::spawn(compile_fn);
         worker.recompile(); // initial compile
@@ -99,6 +103,7 @@ impl CompileService {
                 &self.store.emitter,
                 &self.store.supervisor,
                 &self.store.tabs,
+                &self.store.deps,
                 id,
             );
         }
@@ -140,6 +145,7 @@ impl CompileService {
         emitter: &Arc<dyn Emitter>,
         supervisor: &CompileSupervisor,
         tabs: &super::tab_store::Tabs,
+        deps: &DependencyGraph,
         id: DocumentId,
     ) {
         // A Save As / workspace reclassification can replace the TabState
@@ -219,6 +225,23 @@ impl CompileService {
         // Also suppress all emits during shutdown drain.
         if supervisor.is_shutting_down() {
             return;
+        }
+
+        // Refresh the reverse dependency graph from the files this compile
+        // pulled in (multi-file projects). After the closed-doc / shutdown
+        // guards so a stale compile can't pollute the graph; covers success and
+        // panic alike — partial evaluation still records requested ids.
+        let main_path = tab
+            .state
+            .lock()
+            .meta
+            .origin
+            .canonical_path()
+            .map(|p| p.to_path_buf());
+        if let Some(main_path) = main_path {
+            let dep_paths: HashSet<PathBuf> =
+                tab.world.take_dependency_paths().into_iter().collect();
+            deps.update_dependencies(&main_path, dep_paths);
         }
 
         let (outcome, doc) = match result {
@@ -640,7 +663,14 @@ mod tests {
         // 2s typst compile in a unit test, so the watchdog is exercised
         // separately (see slow_watchdog_flag_logic).
         let (tab, emitter_typed, emitter_dyn, supervisor, tabs, id) = fixtures(2);
-        CompileService::do_compile_for_tab(&tab, &emitter_dyn, &supervisor, &tabs, id);
+        CompileService::do_compile_for_tab(
+            &tab,
+            &emitter_dyn,
+            &supervisor,
+            &tabs,
+            &DependencyGraph::new(),
+            id,
+        );
         let statuses = emitter_typed.statuses.lock().clone();
         // Must end in Success (plain text compiles fine).
         assert!(
@@ -674,7 +704,14 @@ mod tests {
 
         // First compile: full.
         emitter_typed.compiled.lock().clear();
-        CompileService::do_compile_for_tab(&tab, &emitter_dyn, &supervisor, &tabs, id);
+        CompileService::do_compile_for_tab(
+            &tab,
+            &emitter_dyn,
+            &supervisor,
+            &tabs,
+            &DependencyGraph::new(),
+            id,
+        );
         let first = emitter_typed.compiled.lock().clone();
         assert!(first.len() == 1, "expected one emit_compiled, got {first:?}");
         let (page_count, full1, changed1) = first[0];
@@ -696,7 +733,14 @@ mod tests {
 
         // Second compile: should be incremental.
         emitter_typed.compiled.lock().clear();
-        CompileService::do_compile_for_tab(&tab, &emitter_dyn, &supervisor, &tabs, id);
+        CompileService::do_compile_for_tab(
+            &tab,
+            &emitter_dyn,
+            &supervisor,
+            &tabs,
+            &DependencyGraph::new(),
+            id,
+        );
         let second = emitter_typed.compiled.lock().clone();
         assert!(second.len() == 1, "expected one emit, got {second:?}");
         let (page_count2, full2, changed2) = second[0];
@@ -722,7 +766,14 @@ mod tests {
         let (tab, emitter_typed, emitter_dyn, supervisor, tabs, id) = fixtures(2);
         // Remove the tab to simulate it having been closed mid-compile.
         tabs.write().remove(&id);
-        CompileService::do_compile_for_tab(&tab, &emitter_dyn, &supervisor, &tabs, id);
+        CompileService::do_compile_for_tab(
+            &tab,
+            &emitter_dyn,
+            &supervisor,
+            &tabs,
+            &DependencyGraph::new(),
+            id,
+        );
         let statuses = emitter_typed.statuses.lock().clone();
         assert!(statuses.is_empty(), "closed doc must not emit, got {statuses:?}");
     }
@@ -751,6 +802,7 @@ mod tests {
             &emitter_dyn,
             &supervisor,
             &tabs,
+            &DependencyGraph::new(),
             id,
         );
 
@@ -764,7 +816,14 @@ mod tests {
     fn shutdown_suppresses_compile() {
         let (tab, emitter_typed, emitter_dyn, supervisor, tabs, id) = fixtures(2);
         supervisor.shutdown();
-        CompileService::do_compile_for_tab(&tab, &emitter_dyn, &supervisor, &tabs, id);
+        CompileService::do_compile_for_tab(
+            &tab,
+            &emitter_dyn,
+            &supervisor,
+            &tabs,
+            &DependencyGraph::new(),
+            id,
+        );
         let statuses = emitter_typed.statuses.lock().clone();
         assert!(
             statuses.is_empty(),
@@ -783,7 +842,14 @@ mod tests {
             rt.consecutive_panic_count = PANIC_BACKOFF_THRESHOLD;
             rt.panic_cooldown_until = Some(Instant::now() + Duration::from_secs(60));
         }
-        CompileService::do_compile_for_tab(&tab, &emitter_dyn, &supervisor, &tabs, id);
+        CompileService::do_compile_for_tab(
+            &tab,
+            &emitter_dyn,
+            &supervisor,
+            &tabs,
+            &DependencyGraph::new(),
+            id,
+        );
         // Skipped: no statuses at all (the backoff check returns before emit).
         let statuses = emitter_typed.statuses.lock().clone();
         assert!(
