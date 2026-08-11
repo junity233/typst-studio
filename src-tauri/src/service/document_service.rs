@@ -514,44 +514,80 @@ impl DocumentService {
     /// [`clear_dirty`](Self::clear_dirty) in the save path.
     ///
     /// `saved_revision` is the revision whose text was just written. The dirty
-    /// flag + conflict are only cleared when the tab's CURRENT revision still
-    /// equals `saved_revision` — a compare-and-set that prevents a lost-update
-    /// race where an `update_text` lands between the write completing and this
-    /// call (that edit's dirty flag must NOT be clobbered). If the revision
-    /// advanced (the user typed during the save), dirty stays true and the
-    /// recovery snapshot is kept (the new unsaved edit is still recoverable).
+    /// flag is cleared only when the tab's CURRENT revision still equals
+    /// `saved_revision` — a compare-and-set that prevents a lost-update race
+    /// where an `update_text` lands between the write completing and this call
+    /// (that edit's dirty flag must NOT be clobbered). If the revision advanced
+    /// (the user typed during the save), dirty stays true and the recovery
+    /// snapshot is kept (the new unsaved edit is still recoverable).
+    ///
+    /// The conflict flag, by contrast, is cleared **unconditionally**: a
+    /// successful write means the disk now matches what we just wrote, so any
+    /// prior external-change conflict is resolved regardless of a racing edit.
+    /// This is what lets `save_overwrite` (the user's explicit "overwrite disk"
+    /// action) clear a `Modified`/`Replaced` conflict even when a keystroke
+    /// lands during the write — without it, the stale conflict would block the
+    /// next in-place save at the conflict gate.
     pub fn mark_saved(&self, id: DocumentId, saved_revision: u64) {
-        let path = {
+        let (path, still_clean) = {
             let tabs = self.store.tabs.read();
             let Some(tab) = tabs.get(&id) else { return };
             let mut rt = tab.state.lock();
-            if rt.meta.revision != saved_revision {
-                // The buffer advanced past the saved revision while the write was
-                // in flight. Do NOT clear dirty/conflict — the newer edit is
-                // still unsaved. The disk version + recovery snapshot stay as-is
-                // (the snapshot reflects the latest buffer via the debounce
-                // worker; the disk version still matches what we just wrote, so
-                // the self-save watcher event is correctly recognized).
+            // CAS: only clear dirty/conflict when the buffer hasn't advanced
+            // past the saved revision. If an `update_text` landed between the
+            // write completing and this call, that newer edit is still unsaved
+            // — its dirty flag must NOT be clobbered (lost-update guard).
+            // CAS: only clear `dirty` when the buffer hasn't advanced past the
+            // saved revision. If an `update_text` landed between the write
+            // completing and this call, that newer edit is still unsaved — its
+            // dirty flag must NOT be clobbered (lost-update guard).
+            let still_clean = rt.meta.revision == saved_revision;
+            if still_clean {
+                rt.meta.dirty = false;
+            } else {
                 tracing::debug!(
                     ?id, saved_revision, current = rt.meta.revision,
                     "mark_saved: revision advanced during save; keeping dirty"
                 );
-                return;
             }
-            rt.meta.dirty = false;
+            // The conflict flag is cleared UNCONDITIONALLY. A successful write
+            // means the disk now matches the buffer we just wrote, so any prior
+            // external-change conflict is resolved — whether or not the buffer
+            // has since advanced. This matters for `save_overwrite` (the user's
+            // explicit "overwrite disk" action): a keystroke landing during the
+            // write must NOT leave a stale conflict that would block the next
+            // in-place save at the conflict gate. `dirty` stays CAS-gated (the
+            // newer edit is unsaved), but `conflict` (an *external* divergence)
+            // is not. (Regular `save` never reaches here with an active conflict
+            // — the gate rejects it — so this only affects save_overwrite, where
+            // it is correct.)
             rt.meta.conflict = ConflictState::None;
-            rt.meta.origin.canonical_path().map(|p| p.to_path_buf())
+            (
+                rt.meta.origin.canonical_path().map(|p| p.to_path_buf()),
+                still_clean,
+            )
         };
-        // Recompute the disk version from the on-disk bytes the caller just
-        // wrote. Reads outside the lock (no nested cross-service locks).
+        // ALWAYS re-baseline the disk version + identity from the bytes the
+        // caller just wrote — even when the buffer has since advanced. The
+        // bytes on disk are exactly `saved_revision`'s content regardless, so
+        // the stored version must reflect that, or the next watcher event /
+        // WatcherHealth poll would see stored V0 ≠ disk V1 and spuriously
+        // report a `Modified` conflict for our own save. (Previously this ran
+        // only on the CAS-pass branch, which tripped "file changed on disk"
+        // any time a keystroke's `update_text` landed between the atomic write
+        // and this call — a race that's easy to hit with autosave or saving
+        // mid-typing.) Reads outside the lock (no nested cross-service locks).
         if let Some(path) = path {
             self.set_disk_version_from_path(id, Some(&path));
         }
-        // The doc is now clean on disk → its recovery snapshot (if any) is no
-        // longer needed. Discard it immediately (§5.1.2 "clean 文档删除快照" /
-        // §5.1.4). Best-effort: no recovery service wired → no-op.
-        if let Some(recovery) = self.recovery() {
-            recovery.discard_snapshot(id);
+        // The recovery snapshot is disposable only once the buffer is fully
+        // clean on disk. When dirty is retained (buffer advanced past the
+        // saved revision), keep the snapshot so the unsaved edit stays
+        // recoverable. Best-effort: no recovery service wired → no-op.
+        if still_clean {
+            if let Some(recovery) = self.recovery() {
+                recovery.discard_snapshot(id);
+            }
         }
     }
 
@@ -2523,5 +2559,165 @@ mod tests {
         document.hard_close(meta.id).unwrap();
         assert!(document.tab_meta(meta.id).is_none());
         assert!(document.registry().read().get(meta.id).is_none());
+    }
+
+    /// Regression for the "self-save misreported as an external change" race.
+    ///
+    /// When a keystroke's `update_text` lands between the atomic write
+    /// completing and `mark_saved` running, the buffer's revision advances
+    /// past the saved one. `mark_saved`'s CAS must then keep `dirty` true
+    /// (the newer edit is still unsaved) — BUT it must STILL re-baseline the
+    /// stored disk version to the bytes just written. Without that re-baseline
+    /// the next watcher poll compares the stale stored version against the
+    /// freshly written disk bytes, sees a mismatch, and spuriously reports a
+    /// `Modified` conflict for our own save. This locks the fix in place.
+    #[test]
+    fn mark_saved_rebaselines_disk_version_when_revision_advances() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir()
+            .join(format!("ts-marksaved-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.typ");
+        std::fs::write(&path, "v0").unwrap();
+
+        // Open: disk_version seeded to hash("v0"); revision 0; clean.
+        let meta = document
+            .open_from_content(path.clone(), "v0".into(), None)
+            .unwrap();
+        let id = meta.id;
+
+        // User types "v1" → dirty, revision 1.
+        document.update_text(id, "v1".into()).unwrap();
+        let saved_revision = document.tab_revision(id).unwrap();
+
+        // The save's atomic write lands "v1" on disk.
+        std::fs::write(&path, "v1").unwrap();
+
+        // RACE: while the write was in flight, another keystroke ("v2") lands —
+        // the buffer revision advances past `saved_revision` BEFORE mark_saved
+        // runs.
+        document.update_text(id, "v2".into()).unwrap();
+        assert!(
+            document.tab_revision(id).unwrap() > saved_revision,
+            "test setup: revision must advance past the saved one"
+        );
+
+        // mark_saved(saved_revision): dirty stays true (CAS), but the stored
+        // disk version must be re-baselined to the bytes on disk now.
+        document.mark_saved(id, saved_revision);
+
+        // (a) dirty retained — the "v2" edit is still unsaved.
+        assert!(
+            document.tab_meta(id).unwrap().dirty,
+            "dirty must stay true when revision advanced during save"
+        );
+
+        // (b) disk_version rebaselined to the bytes actually on disk.
+        let on_disk = DiskVersion::from_path(&path).unwrap();
+        let tab = document
+            .store
+            .tabs
+            .read()
+            .get(&id)
+            .cloned()
+            .expect("tab present");
+        {
+            let rt = tab.state.lock();
+            assert_eq!(
+                rt.disk_version,
+                Some(on_disk),
+                "disk_version must reflect the bytes just written, not the pre-save baseline"
+            );
+        }
+
+        // (c) End-to-end: the watcher fires for our own save. With the
+        //     rebaselined version it is recognized as a self-save no-op — no
+        //     conflict may be raised.
+        handle_external_change_locked(
+            &path,
+            &document.store.tabs,
+            &document.store.registry,
+            &document.store.emitter,
+        );
+        {
+            let rt = tab.state.lock();
+            assert!(
+                matches!(rt.meta.conflict, ConflictState::None),
+                "self-save must not trip a conflict, got {:?}",
+                rt.meta.conflict
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression for the save_overwrite conflict-clear gap.
+    ///
+    /// When the user picks "overwrite disk" (save_overwrite), the write
+    /// succeeds and mark_saved runs. If a keystroke's update_text lands during
+    /// the write, the CAS fails — dirty correctly stays true (the newer edit is
+    /// unsaved) — but the conflict must STILL be cleared: the disk was just
+    /// overwritten, so the prior external-change conflict is resolved. Without
+    /// this, the stale conflict blocks the next in-place save at the conflict
+    /// gate. Mirrors the disk_version re-baseline fix one rung over on the same
+    /// CAS.
+    #[test]
+    fn mark_saved_clears_conflict_unconditionally_when_revision_advances() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir()
+            .join(format!("ts-marksaved-conflict-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.typ");
+        std::fs::write(&path, "v0").unwrap();
+
+        let meta = document
+            .open_from_content(path.clone(), "v0".into(), None)
+            .unwrap();
+        let id = meta.id;
+
+        // Tab is now in a Modified conflict (as if the watcher saw an external
+        // change) with an unsaved buffer edit at revision 1 — the state at the
+        // moment save_overwrite captures its snapshot.
+        document.update_text(id, "v1".into()).unwrap();
+        let saved_revision = document.tab_revision(id).unwrap();
+        {
+            let tab = document.store.tabs.read().get(&id).cloned().unwrap();
+            tab.state.lock().meta.conflict =
+                ConflictState::Modified { disk_version: None };
+        }
+
+        // save_overwrite's atomic write lands "v1" on disk.
+        std::fs::write(&path, "v1").unwrap();
+
+        // RACE: a keystroke lands during the write → revision advances past
+        // saved_revision before mark_saved runs.
+        document.update_text(id, "v2".into()).unwrap();
+        assert!(
+            document.tab_revision(id).unwrap() > saved_revision,
+            "test setup: revision must advance past the saved one"
+        );
+
+        document.mark_saved(id, saved_revision);
+
+        // dirty retained — the "v2" edit is still unsaved.
+        assert!(
+            document.tab_meta(id).unwrap().dirty,
+            "dirty must stay true when revision advanced during save"
+        );
+
+        // conflict cleared — the overwrite resolved it, even though the buffer
+        // advanced. A stale conflict here would block the next Ctrl+S.
+        let tab = document.store.tabs.read().get(&id).cloned().unwrap();
+        {
+            let rt = tab.state.lock();
+            assert!(
+                matches!(rt.meta.conflict, ConflictState::None),
+                "conflict must be cleared after a successful overwrite even when \
+                 the buffer advanced, got {:?}",
+                rt.meta.conflict
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
