@@ -239,7 +239,12 @@ fn sanitize_loaded_paths(cfg: &mut ProjectConfig) {
             dirs.retain(|d| path_ok("compile.extraFontDirs entry", d));
             c.extra_font_dirs = if dirs.is_empty() { None } else { Some(dirs) };
         }
-        cfg.compile = Some(c);
+        // Avoid re-serializing an all-empty `[compile]` table on the next save.
+        cfg.compile = if c.root.is_none() && c.extra_font_dirs.is_none() {
+            None
+        } else {
+            Some(c)
+        };
     }
 }
 

@@ -51,8 +51,10 @@ fn seed_new_tab_content(state: &State<'_, AppState>) -> Result<Option<String>> {
         .and_then(|c| c.new_file_template)
     {
         if let Some(root) = state.workspace.root() {
-            // The path is validated workspace-relative on `set`; belt-and-
-            // suspenders against a hand-edited escape here.
+            // The value is already guaranteed workspace-relative upstream: it
+            // either survived load-time sanitize_loaded_paths (which drops
+            // escaping paths) or passed set-time validate_config_paths (which
+            // rejects them). So root.join cannot escape.
             let p = root.join(&tmpl_rel);
             match std::fs::read_to_string(&p) {
                 Ok(text) => return Ok(Some(text)),
@@ -460,32 +462,72 @@ pub(crate) fn path_buf_from(picked: tauri_plugin_fs::FilePath) -> Result<PathBuf
         .map_err(|e| AppError::InvalidInput(format!("invalid file path: {e}")))
 }
 
-/// Lexically check that `target` is at or under `root`, normalizing `.`/`..`
-/// (the target may not exist yet, so this is a pure-component check, not a
-/// canonicalize). Used to keep an export `output_path` — which comes from a
-/// possibly-untrusted `.typstpro` and may carry an escaped `${title}` macro
-/// expansion — from writing outside the workspace. The OS save-dialog path is
-/// user-chosen and is NOT run through this check.
+/// Check that `target` resolves at-or-under `root`, resolving symlinks on the
+/// nearest EXISTING ancestor. Used to keep an export `output_path` — which comes
+/// from a possibly-untrusted `.typstpro` and may carry an escaped `${title}`
+/// macro expansion — from writing outside the workspace.
+///
+/// A pure lexical `..`-fold is NOT sufficient: a repo-shipped symlink
+/// `build -> C:\outside` would pass a lexical check for `build/evil.pdf` but
+/// write outside the workspace. So we resolve the deepest existing ancestor via
+/// `canonicalize` (which also normalizes Windows drive/segment case), then fold
+/// the not-yet-existing tail (handling any remaining `..`) against that resolved
+/// base, and prefix-match against the canonicalized root. The OS save-dialog
+/// path is user-chosen and is NOT run through this check.
 pub(crate) fn within_workspace(root: &std::path::Path, target: &std::path::Path) -> bool {
-    use std::path::{Component, PathBuf};
+    use std::ffi::OsStr;
+    use std::path::PathBuf;
+
     let abs = if target.is_absolute() {
         target.to_path_buf()
     } else {
         root.join(target)
     };
-    let mut norm: Vec<Component> = Vec::new();
-    for c in abs.components() {
-        match c {
-            Component::ParentDir => {
-                norm.pop();
-            }
-            Component::CurDir => {}
-            other => norm.push(other),
+
+    // Walk up from the target to the deepest ancestor that exists, remembering
+    // the not-yet-existing tail in reverse order.
+    let mut existing = abs.as_path();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if existing.exists() {
+            break;
+        }
+        match existing.file_name() {
+            Some(n) => tail.push(n.to_os_string()),
+            None => return false, // no filesystem anchor at all — reject
+        }
+        match existing.parent() {
+            Some(p) => existing = p,
+            None => return false,
         }
     }
-    let normalized: PathBuf = norm.iter().collect();
-    let root_norm: PathBuf = root.components().collect();
-    normalized.starts_with(&root_norm)
+
+    // Resolve the existing ancestor through symlinks (also normalizes case).
+    let mut resolved: PathBuf = match existing.canonicalize() {
+        Ok(c) => c,
+        Err(_) => return false, // can't resolve — reject rather than risk escape
+    };
+
+    // Re-apply the tail, folding `..` against the resolved path so an escape
+    // like `build/../../evil` is rejected instead of passing a lexical
+    // prefix-match.
+    for comp in tail.iter().rev() {
+        let os: &OsStr = comp;
+        if os == OsStr::new("..") {
+            resolved = match resolved.parent() {
+                Some(p) => p.to_path_buf(),
+                None => return false,
+            };
+        } else if os != OsStr::new(".") && !os.is_empty() {
+            resolved = resolved.join(comp);
+        }
+    }
+
+    let root_canon = match root.canonicalize() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    resolved.starts_with(&root_canon)
 }
 
 /// Reject an export `output_path` that escapes the open workspace root.
@@ -506,31 +548,58 @@ fn ensure_export_within_workspace(
 #[cfg(test)]
 mod tests {
     use super::within_workspace;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    /// A real temp dir (so `canonicalize` inside `within_workspace` succeeds),
+    /// already created on disk.
+    fn tmp_root() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("typst-export-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn within_workspace_accepts_nested_and_rejects_escape() {
+        let root = tmp_root();
+        // Nested + relative (joined under root).
+        assert!(within_workspace(&root, &root.join("build/x.pdf")));
+        assert!(within_workspace(&root, &root.join("a/b/c.typ")));
+        assert!(within_workspace(&root, Path::new("build/x.pdf")));
+        // `..` that stays under root.
+        assert!(within_workspace(&root, &root.join("a/../b.typ")));
+        // Escapes.
+        assert!(!within_workspace(&root, &root.join("../etc/passwd")));
+        assert!(!within_workspace(&root, &root.join("../../evil")));
+        // Absolute path outside root.
+        let outside = std::env::temp_dir().join("totally-outside.pdf");
+        assert!(!within_workspace(&root, &outside));
+    }
 
     #[cfg(unix)]
     #[test]
-    fn within_workspace_accepts_nested_and_rejects_escape() {
-        let root = Path::new("/ws");
-        assert!(within_workspace(root, Path::new("/ws/build/x.pdf")));
-        assert!(within_workspace(root, Path::new("/ws/a/b/c.typ")));
-        // Relative (joined under root).
-        assert!(within_workspace(root, Path::new("build/x.pdf")));
-        // `..` that stays under root.
-        assert!(within_workspace(root, Path::new("/ws/a/../b.typ")));
-        // Escapes.
-        assert!(!within_workspace(root, Path::new("/ws/../etc/passwd")));
-        assert!(!within_workspace(root, Path::new("/etc/passwd")));
-        assert!(!within_workspace(root, Path::new("/ws/../../evil")));
+    fn within_workspace_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+        let root = tmp_root();
+        let outside = std::env::temp_dir().join(format!("typst-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&outside).unwrap();
+        // A repo-shipped symlink `build -> outside` must NOT let a write escape.
+        symlink(&outside, root.join("build")).unwrap();
+        assert!(!within_workspace(&root, &root.join("build/evil.pdf")));
+        // A plain (non-symlink) descendant is still fine.
+        std::fs::create_dir_all(root.join("safe")).unwrap();
+        assert!(within_workspace(&root, &root.join("safe/ok.pdf")));
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[cfg(windows)]
     #[test]
     fn within_workspace_handles_windows_paths() {
-        let root = Path::new("C:\\ws");
-        assert!(within_workspace(root, Path::new("C:\\ws\\build\\x.pdf")));
-        assert!(within_workspace(root, Path::new("build\\x.pdf")));
-        assert!(!within_workspace(root, Path::new("C:\\ws\\..\\evil.pdf")));
-        assert!(!within_workspace(root, Path::new("D:\\secret.pdf")));
+        let root = tmp_root();
+        let root_str = root.to_string_lossy().to_string();
+        // Case-variant absolute path (the canonicalized prefix match tolerates it).
+        let lower = root_str.to_ascii_lowercase();
+        assert!(within_workspace(&root, Path::new(&format!("{lower}\\build\\x.pdf"))));
+        assert!(within_workspace(&root, Path::new("build\\x.pdf")));
+        assert!(!within_workspace(&root, &root.join("..\\evil.pdf")));
     }
 }
