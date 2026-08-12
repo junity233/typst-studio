@@ -34,6 +34,7 @@ import type {
   OpenExternalFilePayload,
   OpenedDocument,
   OpenDocRecord,
+  ProjectConfig,
   RecoverableInfo,
   RecoveredDocument,
   RecoveryAvailablePayload,
@@ -981,6 +982,70 @@ export async function onSettingsChanged(
 ): Promise<UnlistenFn> {
   return listen<Record<string, unknown>>("settings_changed", (e) =>
     handler(e.payload),
+  );
+}
+
+// --- Project config (.typstpro) ---------------------------------------------
+
+/**
+ * The cached project config (`<workspace>/.typstpro`), or `null` when no
+ * workspace is open or the workspace has no `.typstpro`.
+ */
+export async function getProjectConfig(): Promise<ProjectConfig | null> {
+  return invoke<ProjectConfig | null>("get_project_config");
+}
+
+/**
+ * Validate, persist, cache, and broadcast a full `.typstpro` config. Returns
+ * the saved config (with `schemaVersion` stamped). Requires an open workspace.
+ */
+export async function setProjectConfig(
+  config: ProjectConfig,
+): Promise<ProjectConfig> {
+  return invoke<ProjectConfig>("set_project_config", { config });
+}
+
+/**
+ * Set (or clear, when `path` is null) the main compile file, preserving any
+ * other `.typstpro` fields. Returns the saved config.
+ */
+export async function setMainFile(
+  path: string | null,
+): Promise<ProjectConfig> {
+  return invoke<ProjectConfig>("set_main_file", { path });
+}
+
+/** Delete the workspace's `.typstpro` and broadcast `project_config_changed(null)`. */
+export async function clearProjectConfig(): Promise<void> {
+  await invoke("clear_project_config");
+}
+
+/**
+ * Absolute path to the workspace's `.typstpro` (whether or not it exists), or
+ * `null` when no workspace is open.
+ */
+export async function getProjectConfigPath(): Promise<string | null> {
+  return invoke<string | null>("get_project_config_path");
+}
+
+/**
+ * All `.typ` files under the workspace root (workspace-relative, forward
+ * slashes, sorted), for the main-file picker. Empty when no workspace is open.
+ */
+export async function listTypFiles(): Promise<string[]> {
+  return invoke<string[]>("list_typ_files");
+}
+
+/**
+ * Subscribe to project-config broadcasts. Emitted on load/set/clear and on
+ * external `.typstpro` edits picked up by the workspace watcher. The payload
+ * carries the new config, or `null` when none exists.
+ */
+export async function onProjectConfigChanged(
+  handler: (config: ProjectConfig | null) => void,
+): Promise<UnlistenFn> {
+  return listen<{ config: ProjectConfig | null }>("project_config_changed", (e) =>
+    handler(e.payload.config ?? null),
   );
 }
 

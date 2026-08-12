@@ -14,6 +14,7 @@ import {
   renameEntry as renameEntryBE,
 } from "../lib/tauri";
 import { recordWorkspace, loadSession } from "../lib/session";
+import { useProjectConfigStore } from "./projectConfigStore";
 
 /**
  * Workspace store: the open folder, its lazily-loaded file tree, and the file
@@ -126,6 +127,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       if (meta) {
         set({ rootPath: meta.root, name: meta.name });
         await get().refresh("");
+        // Load the workspace's `.typstpro` (project config) once the root is
+        // established. Subscribes to `project_config_changed` on first call.
+        void useProjectConfigStore.getState().hydrate();
       }
     } catch (e) {
       console.warn("[workspace.hydrate] failed:", e);
@@ -145,6 +149,8 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       await get().refresh("");
       // Persist the chosen workspace so it reopens on next launch.
       recordWorkspace(meta.root);
+      // Re-hydrate the project config for the new root.
+      void useProjectConfigStore.getState().hydrate();
     } catch (e) {
       console.error("[workspace.openWorkspace] failed:", e);
       throw e;
@@ -158,6 +164,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       console.warn("[workspace.closeWorkspace] backend rejected:", e);
     }
     set({ rootPath: null, name: null, tree: {}, expanded: new Set<string>() });
+    // The backend resets the `.typstpro` cache on close (broadcasts null); clear
+    // the path + candidate list here too so the panel shows its empty state.
+    useProjectConfigStore.setState({ config: null, configPath: null, typFiles: [] });
   },
 
   ensureLoaded: async (rel) => {

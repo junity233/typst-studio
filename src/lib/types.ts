@@ -1203,3 +1203,6 @@ root: string,
  * Display name (the root folder's basename).
  */
 name: string, };
+
+export type ProjectConfig = { schemaVersion: number, main?: string | null, title?: string | null, };
+export type ProjectConfigChangedPayload = { config?: ProjectConfig | null, };

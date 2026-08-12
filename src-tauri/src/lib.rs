@@ -208,6 +208,13 @@ pub fn run() {
             // original + re-parses + patches in Rust — the frontend can't
             // serialize because it lacks the original text + hayagriva/biblatex).
             ipc::bib_commands::bibliography_save_entries,
+            // Project config (`.typstpro` at the workspace root).
+            ipc::project_config_commands::get_project_config,
+            ipc::project_config_commands::set_project_config,
+            ipc::project_config_commands::set_main_file,
+            ipc::project_config_commands::clear_project_config,
+            ipc::project_config_commands::get_project_config_path,
+            ipc::project_config_commands::list_typ_files,
             // AI Assistant proxy (streaming LLM calls; key injected in Rust).
             ipc::ai_commands::ai_proxy_stream,
             // Insert Formula: LaTeX → Typst math conversion (tylax).
@@ -458,6 +465,22 @@ pub fn run() {
                 crate::service::watcher_health::WatcherHealth::start(editor.document().store_clone()),
             );
 
+            // Project config (`.typstpro` at the workspace root): workspace-
+            // scoped, so it starts empty and is loaded on workspace open. The
+            // `on_change` callback broadcasts `project_config_changed` to all
+            // windows (mirrors `settings_changed`), so the panel + preview +
+            // export all react to a config change without each polling.
+            let app_for_project = app.handle().clone();
+            let project_config = Arc::new(
+                crate::service::project_config_service::ProjectConfigService::new(move |cfg| {
+                    use crate::ipc::events::ProjectConfigChangedPayload;
+                    let _ = app_for_project.emit(
+                        "project_config_changed",
+                        ProjectConfigChangedPayload { config: cfg },
+                    );
+                }),
+            );
+
             app.manage(AppState {
                 editor,
                 export,
@@ -470,6 +493,7 @@ pub fn run() {
                 save,
                 watcher_health,
                 packages,
+                project_config,
             });
 
             // Custom titlebar (Windows only): drop the OS frame so the frontend

@@ -23,6 +23,7 @@ use crate::net::client::HttpClient;
 use crate::service::editor_service::{EditorService, Emitter};
 use crate::service::export_service::ExportService;
 use crate::service::lsp_service::LspService;
+use crate::service::project_config_service::ProjectConfigService;
 use crate::service::save_coordinator::SaveCoordinator;
 use crate::service::session::SessionService;
 use crate::service::theme_service::ThemeService;
@@ -136,4 +137,6 @@ pub struct AppState {
     pub watcher_health: Arc<crate::service::watcher_health::WatcherHealth>,
     /// Package catalog + install orchestration (Packages view).
     pub packages: Arc<crate::service::package_service::PackageService>,
+    /// Workspace-scoped `.typstpro` project config (main compile file, etc.).
+    pub project_config: Arc<ProjectConfigService>,
 }

@@ -4156,3 +4156,31 @@ button {
 .bibliography-item-title { font: var(--text-caption); color: var(--color-ink-muted-80); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bibliography-item-meta { font: var(--text-nav-link); color: var(--color-ink-muted-48); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bibliography-empty { margin: 0; padding: var(--space-lg) var(--space-sm); text-align: center; font: var(--text-caption); color: var(--color-ink-muted-48); }
+
+/* --- Project panel (.typstpro) -------------------------------------------- */
+.project-panel { display: flex; flex-direction: column; gap: var(--space-sm); padding: var(--space-sm); }
+.project-panel.empty { padding: var(--space-lg) var(--space-sm); text-align: center; font: var(--text-caption); color: var(--color-ink-muted-48); }
+.project-field { display: flex; flex-direction: column; gap: 4px; }
+.project-label { font: var(--text-caption); color: var(--color-ink-muted-80); }
+.project-select, .project-input { padding: 7px 11px; border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); background: var(--color-canvas); color: var(--color-ink); font-size: 13px; letter-spacing: -0.1px; transition: border-color 0.12s ease, box-shadow 0.12s ease; width: 100%; box-sizing: border-box; }
+.project-select { cursor: pointer; appearance: none; -webkit-appearance: none; }
+.project-select:hover, .project-input:hover { border-color: var(--color-ink-muted-48); }
+.project-select:focus, .project-input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-focus-ring); }
+.project-hint { margin: 0; font: var(--text-fine-print); color: var(--color-ink-muted-48); }
+.project-hint.warn { color: var(--color-error); }
+.project-actions { display: flex; gap: var(--space-xs); flex-wrap: wrap; }
+.project-btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); background: var(--color-canvas); color: var(--color-ink); font: var(--text-button-utility); cursor: pointer; transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease; }
+.project-btn:hover:not(:disabled) { background: var(--color-surface-pearl); border-color: var(--color-ink-muted-48); }
+.project-btn:active:not(:disabled) { transform: scale(0.96); }
+.project-btn:disabled { opacity: 0.45; cursor: default; }
+.project-btn.primary { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
+.project-btn.primary:hover:not(:disabled) { background: var(--color-primary-focus); border-color: var(--color-primary-focus); }
+.project-btn.danger { color: var(--color-error); border-color: var(--color-hairline); align-self: flex-start; }
+.project-btn.danger:hover:not(:disabled) { background: var(--color-danger-soft); border-color: var(--color-error); }
+.project-radio-group { display: flex; gap: var(--space-sm); }
+.project-radio { display: inline-flex; align-items: center; gap: 5px; font: var(--text-caption); color: var(--color-ink); cursor: pointer; }
+.project-radio input { cursor: pointer; }
+.project-radio input:disabled + span, .project-radio:has(input:disabled) { opacity: 0.5; cursor: default; }
+.project-status { display: flex; flex-direction: column; gap: 2px; padding-top: var(--space-xs); border-top: 1px solid var(--color-divider-soft); }
+.project-status-label { font: var(--text-fine-print); color: var(--color-ink-muted-48); }
+.project-status-path { font: var(--text-fine-print); font-family: var(--font-mono); color: var(--color-ink-muted-80); word-break: break-all; }

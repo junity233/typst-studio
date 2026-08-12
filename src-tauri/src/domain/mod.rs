@@ -11,6 +11,7 @@ pub mod git_status;
 pub mod path;
 pub mod outline;
 pub mod package_catalog;
+pub mod project_config;
 pub mod registry;
 pub mod search;
 pub mod source_map;

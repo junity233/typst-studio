@@ -5,6 +5,7 @@ import type { ViewContribution } from "../../extensions/registry";
 import { useUiStore } from "../../store/uiStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { onFsChanged } from "../../lib/tauri";
+import { useProjectConfigStore } from "../../store/projectConfigStore";
 import { EmptyWorkspace } from "./EmptyWorkspace";
 
 /**
@@ -42,6 +43,7 @@ const VIEW_TITLE_KEYS: Record<string, string> = {
   "workbench.outline": "sidebar:outline.title",
   "workbench.search": "sidebar:search.title",
   "workbench.packages": "packages:title",
+  "workbench.project": "project:title",
   "workbench.assistant": "sidebar:assistant.title",
 };
 
@@ -122,6 +124,9 @@ export function Sidebar() {
     let cancelled = false;
     onFsChanged(() => {
       void refreshAll();
+      // Keep the project-config main-file candidate list fresh too, so the
+      // Project panel's dropdown reflects newly added/removed .typ files.
+      void useProjectConfigStore.getState().refreshTypFiles();
     }).then((fn) => {
       if (cancelled) {
         // Already cleaned up — release immediately so the listener never fires.

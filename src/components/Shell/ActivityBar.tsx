@@ -11,6 +11,7 @@ const VIEW_TITLE_KEYS: Record<string, string> = {
   "workbench.scm": "sidebar:sourceControl.title",
   "workbench.symbols": "sidebar:symbols.title",
   "workbench.bibliography": "sidebar:bibliography.title",
+  "workbench.project": "project:title",
 };
 
 /**

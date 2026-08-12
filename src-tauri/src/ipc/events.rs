@@ -212,6 +212,23 @@ pub struct FsChangedPayload {
 // `CompileStatus` lives in `domain` to avoid a service→ipc reverse dependency.
 pub use crate::service::theme_service::ThemesChangedPayload;
 
+/// Payload of the `project_config_changed` event: the new project config, or
+/// `None` when the workspace has no `.typstpro` (or no workspace is open). Emitted
+/// after every load/set/clear and on external `.typstpro` edits picked up by the
+/// workspace watcher. The frontend replaces its cached config on each event.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct ProjectConfigChangedPayload {
+    /// The new config, or `None` when no `.typstpro` exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<crate::domain::project_config::ProjectConfig>,
+}
+
 /// Payload of the `conflict` event (§8.4): an external disk change to an open
 /// document's file moved it into a conflict state. `disk_content` is present
 /// for `Modified` so the UI can show a diff; absent otherwise.
@@ -350,6 +367,9 @@ mod tests {
         // is re-exported from this module).
         crate::service::theme_service::ThemeInfo::export(&cfg).unwrap();
         crate::service::theme_service::ThemesChangedPayload::export(&cfg).unwrap();
+        // Project config (`.typstpro`) wire types.
+        crate::domain::project_config::ProjectConfig::export(&cfg).unwrap();
+        ProjectConfigChangedPayload::export(&cfg).unwrap();
     }
 
     #[test]

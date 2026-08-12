@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Eye, EyeOff, Link, Unlink } from "lucide-react";
+import { Eye, EyeOff, FileOutput, Link, Unlink, WrapText } from "lucide-react";
 import { TabStrip } from "../TitleBar/TabStrip";
 import { MonacoEditor } from "../Editor/MonacoEditor";
 import { editorApiRef } from "../Editor/editorApiRef";
@@ -15,7 +15,10 @@ import { documentKind } from "../../store/documentsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { useUiStore } from "../../store/uiStore";
 import { useSetting } from "../../hooks/useSetting";
-import { updateText } from "../../lib/tauri";
+import { openFileByPath, updateText } from "../../lib/tauri";
+import { joinWorkspacePath, workspacePathsEqual } from "../../lib/workspacePath";
+import { useWorkspaceStore } from "../../store/workspaceStore";
+import { useProjectConfigStore } from "../../store/projectConfigStore";
 import {
   constrainSynchronizedScrollTarget,
   lineAtOrAboveY,
@@ -121,7 +124,35 @@ function detachZoomListener(el: HTMLElement | null): void {
  */
 export function EditorArea() {
   const { t } = useTranslation("editor");
+  const { t: tProject } = useTranslation("project");
   const activeTab = useActiveDocument();
+  // Project preview mode: when on AND a project main file is configured, the
+  // preview renders the MAIN file's compiled output even while the user edits a
+  // sub-file it `#include`s. The main file is looked up among open documents by
+  // matching its workspace-relative path; if it isn't open yet, the effect
+  // below opens it as a background tab so it has a compile worker (the cascade
+  // recompile then keeps it fresh as sub-files change).
+  const rootPath = useWorkspaceStore((s) => s.rootPath);
+  const mainRelPath = useProjectConfigStore((s) => s.config?.main ?? null);
+  const projectPreview = useUiStore((s) => s.projectPreview);
+  const setProjectPreview = useUiStore((s) => s.setProjectPreview);
+  const mainAbsPath =
+    mainRelPath !== null && rootPath !== null
+      ? joinWorkspacePath(rootPath, mainRelPath)
+      : null;
+  const mainDoc = useDocumentsStore((s) => {
+    if (mainAbsPath === null) return null;
+    for (const d of Object.values(s.documents)) {
+      if (d.path !== null && workspacePathsEqual(d.path, mainAbsPath)) return d;
+    }
+    return null;
+  });
+  // The document feeding the preview pane: the main file when project preview is
+  // active, otherwise the active tab. `previewDoc` is null only when activeTab
+  // is null AND no main doc is available; the render block falls back to
+  // activeTab (narrowed to non-null in that scope) when null.
+  const projectPreviewActive = projectPreview && mainDoc !== null;
+  const previewDoc = projectPreviewActive ? mainDoc : activeTab;
   // The active document's content kind (defaults to "typst"). Drives which
   // editor/viewer is rendered and which Typst-specific chrome (preview pane,
   // FormatToolbar, scroll-sync, diagnostics) is shown. Binary kinds (image/pdf)
@@ -129,6 +160,12 @@ export function EditorArea() {
   // gets Monaco only; typst keeps the full historical layout.
   const activeKind = activeTab ? documentKind(activeTab) : "typst";
   const isTypst = activeKind === "typst";
+  // Word wrap is meaningful for any tab that shows a Monaco editor (typst,
+  // markdown, text); binary viewers (image/pdf) have no editor to wrap.
+  const isEditable =
+    activeKind === "typst" ||
+    activeKind === "markdown" ||
+    activeKind === "text";
   const [previewHighlightState, setPreviewHighlightState] = useState<{
     tabId: string;
     lines: number[];
@@ -173,6 +210,11 @@ export function EditorArea() {
 
   // --- Scroll-sync & click-to-source wiring -------------------------------
   const [scrollSync, setScrollSync] = useSetting<boolean>("preview.scrollSync");
+  // Word-wrap toggle lives in the top toolbar and flips the persisted
+  // editor.wordWrap setting; Monaco applies it live via its settingsOptions
+  // effect. Mirrors the preview.scrollSync pattern (one source of truth).
+  const [wordWrap, setWordWrap] = useSetting<boolean>("editor.wordWrap");
+  const wordWrapOn = wordWrap === true;
   // The preview-pane padding (user setting, default 4px) is also the anchor
   // offset for scroll-sync: the synced line/rect sits this many px below the
   // pane's top edge. Reading it here keeps the anchor in lockstep with the
@@ -561,6 +603,44 @@ export function EditorArea() {
     );
   }, []);
 
+  // Project preview: ensure the configured main file is open as a background
+  // tab so it has a compile worker. Without this, the preview has no compiled
+  // output to show while the user edits a sub-file. Opening then re-activating
+  // the previously active tab adds the main file to the strip without stealing
+  // focus (two synchronous set() calls — React batches them, no visible flicker).
+  useEffect(() => {
+    if (!projectPreview) return;
+    if (mainAbsPath === null) return;
+    if (mainDoc !== null) return; // already open
+    let cancelled = false;
+    void (async () => {
+      try {
+        const before = useTabsStore.getState().activeId;
+        const opened = await openFileByPath(mainAbsPath);
+        if (cancelled) return;
+        useTabsStore.getState().openPath(opened);
+        // Restore focus to the tab the user was on — but ONLY if our openPath is
+        // still the reason the main file is active. openPath synchronously sets
+        // activeId to opened.id; if the live activeId is still that right after,
+        // nothing else (e.g. a user tab click during the await) changed it, so
+        // restoring `before` is safe. If it already differs, the user switched
+        // away and we leave their choice alone.
+        if (before && before !== opened.id) {
+          const live = useTabsStore.getState().activeId;
+          if (live === opened.id) {
+            const tabs = useTabsStore.getState().tabs;
+            if (tabs.includes(before)) useTabsStore.getState().activate(before);
+          }
+        }
+      } catch (e) {
+        console.warn("[projectPreview] opening main file failed:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectPreview, mainAbsPath, mainDoc]);
+
   // Editor → preview: the editor is the driver.
   useEffect(() => {
     if (!scrollSyncOn) return;
@@ -898,6 +978,38 @@ export function EditorArea() {
             {scrollSyncOn ? <Link size={14} /> : <Unlink size={14} />}
           </button>
         )}
+        {/* Project preview toggle: only when a project main file is configured.
+            When on, the preview renders the main file (even while editing a
+            sub-file); when off, it follows the active tab. */}
+        {isTypst && mainRelPath !== null && (
+          <button
+            className="scroll-sync-toggle"
+            type="button"
+            onClick={() => setProjectPreview(!projectPreview)}
+            title={
+              projectPreview
+                ? `${tProject("previewMode")}: ${tProject("previewMain")}`
+                : `${tProject("previewMode")}: ${tProject("previewActive")}`
+            }
+            aria-pressed={projectPreview}
+          >
+            <FileOutput size={14} />
+          </button>
+        )}
+        {/* Word-wrap toggle for any Monaco-backed tab (typst/markdown/text).
+            Single icon; the pressed state + tooltip convey on/off. Flips the
+            persisted editor.wordWrap setting, which Monaco applies live. */}
+        {isEditable && (
+          <button
+            className="word-wrap-toggle"
+            type="button"
+            onClick={() => setWordWrap(!wordWrapOn)}
+            title={wordWrapOn ? t("wordWrap.on") : t("wordWrap.off")}
+            aria-pressed={wordWrapOn}
+          >
+            <WrapText size={14} />
+          </button>
+        )}
         {/* The preview toggle is meaningful only for kinds that have a split
             preview (typst SVG / rendered markdown). Binary viewers and plain
             text have no toggle. */}
@@ -971,14 +1083,14 @@ export function EditorArea() {
                     <MarkdownPreview source={activeTab.content} />
                   ) : (
                     <PreviewPane
-                      svgPages={activeTab.svgPages}
-                      lineMap={activeTab.lineMap}
+                      svgPages={(previewDoc ?? activeTab).svgPages}
+                      lineMap={(previewDoc ?? activeTab).lineMap}
                       activeLines={activePreviewLines}
                       onRefresh={handleRefresh}
                       onJumpToLine={handleJumpToLine}
                       onScroll={handlePreviewScroll}
                       onPageImgLoad={handlePageImgLoad}
-                      revision={activeTab.compiledRevision}
+                      revision={(previewDoc ?? activeTab).compiledRevision}
                       paneRef={previewPaneRef}
                       pageRefs={pageRefs}
                     />

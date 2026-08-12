@@ -10,10 +10,17 @@ export interface UiState {
   previewVisible: boolean;
   /** Currently active sidebar view id (null = no active view). */
   activeViewId: string | null;
+  /**
+   * When true and a project main file is configured, the preview pane renders
+   * the MAIN file's compiled output even while editing a sub-file it includes.
+   * When false (or no main file), the preview follows the active tab.
+   */
+  projectPreview: boolean;
   toggleSidebar: () => void;
   togglePreview: () => void;
   setSidebar: (v: boolean) => void;
   setPreview: (v: boolean) => void;
+  setProjectPreview: (v: boolean) => void;
   /** Directly set active view; also shows the sidebar (or hides if null). */
   setActiveView: (id: string | null) => void;
   /** VSCode semantics: if same view is active and sidebar is visible, hide it;
@@ -25,11 +32,13 @@ export const useUiStore = create<UiState>()((set) => ({
   sidebarVisible: true,
   previewVisible: true,
   activeViewId: "workbench.explorer",
+  projectPreview: true,
 
   toggleSidebar: () => set((s) => ({ sidebarVisible: !s.sidebarVisible })),
   togglePreview: () => set((s) => ({ previewVisible: !s.previewVisible })),
   setSidebar: (v) => set({ sidebarVisible: v }),
   setPreview: (v) => set({ previewVisible: v }),
+  setProjectPreview: (v) => set({ projectPreview: v }),
 
   setActiveView: (id) => set({ activeViewId: id, sidebarVisible: id !== null }),
   toggleView: (id) =>

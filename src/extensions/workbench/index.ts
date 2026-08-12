@@ -9,6 +9,7 @@ import {
   exportPdf,
   exportPng,
   exportSvg,
+  openFileByPath,
   openSettings,
 } from "../../lib/tauri";
 import { closeTabWithConfirm } from "../../lib/commands";
@@ -19,7 +20,30 @@ import {
   labelFor,
 } from "../../hooks/useAppCommands";
 import { flushDocumentSnapshot } from "../../lib/saveDocument";
+import { joinWorkspacePath, workspacePathsEqual } from "../../lib/workspacePath";
+import { useProjectConfigStore } from "../../store/projectConfigStore";
 import i18n from "../../i18n";
+
+/**
+ * Resolve the document id to export: the project's main file when one is
+ * configured AND currently open, otherwise the active tab. The main file must
+ * already be open (have a compiled revision pinned) — opening it on demand here
+ * would race the compile. In practice the project-preview flow opens it; if it
+ * isn't open, we fall back to the active tab rather than surprising the user.
+ */
+function resolveExportTargetId(): string | null {
+  const rootPath = useWorkspaceStore.getState().rootPath;
+  const main = useProjectConfigStore.getState().config?.main ?? null;
+  if (main !== null && rootPath !== null) {
+    const mainAbs = joinWorkspacePath(rootPath, main);
+    const docs = useDocumentsStore.getState().documents;
+    const mainDoc = Object.values(docs).find(
+      (d) => d.path !== null && workspacePathsEqual(d.path, mainAbs),
+    );
+    if (mainDoc) return mainDoc.id;
+  }
+  return useTabsStore.getState().activeId;
+}
 
 /**
  * In-tree 'workbench' extension: registers the core File/View/Export commands
@@ -172,10 +196,10 @@ export default function activate(ctx: HostApi): void {
     title: labelFor("export-pdf"),
     category: "File",
     handler: async () => {
-      const { activeId } = useTabsStore.getState();
-      if (activeId !== null) {
-        const snapshot = await flushDocumentSnapshot(activeId);
-        await exportPdf(activeId, snapshot.revision);
+      const id = resolveExportTargetId();
+      if (id !== null) {
+        const snapshot = await flushDocumentSnapshot(id);
+        await exportPdf(id, snapshot.revision);
       }
     },
     enablement: () => useTabsStore.getState().activeId !== null,
@@ -186,10 +210,10 @@ export default function activate(ctx: HostApi): void {
     title: labelFor("export-png"),
     category: "File",
     handler: async () => {
-      const { activeId } = useTabsStore.getState();
-      if (activeId !== null) {
-        const snapshot = await flushDocumentSnapshot(activeId);
-        await exportPng(activeId, snapshot.revision);
+      const id = resolveExportTargetId();
+      if (id !== null) {
+        const snapshot = await flushDocumentSnapshot(id);
+        await exportPng(id, snapshot.revision);
       }
     },
     enablement: () => useTabsStore.getState().activeId !== null,
@@ -200,12 +224,40 @@ export default function activate(ctx: HostApi): void {
     title: labelFor("export-svg"),
     category: "File",
     handler: async () => {
-      const { activeId } = useTabsStore.getState();
-      if (activeId !== null) {
-        const snapshot = await flushDocumentSnapshot(activeId);
-        await exportSvg(activeId, snapshot.revision);
+      const id = resolveExportTargetId();
+      if (id !== null) {
+        const snapshot = await flushDocumentSnapshot(id);
+        await exportSvg(id, snapshot.revision);
       }
     },
     enablement: () => useTabsStore.getState().activeId !== null,
+  });
+
+  ctx.registerCommand({
+    id: "open-project-settings",
+    title: i18n.t("openProjectSettings", { ns: "project" }),
+    category: "View",
+    handler: async () => {
+      useUiStore.getState().setActiveView("workbench.project");
+    },
+    enablement: () => useWorkspaceStore.getState().rootPath !== null,
+  });
+
+  ctx.registerCommand({
+    id: "go-to-main-file",
+    title: i18n.t("goToMainFile", { ns: "project" }),
+    category: "Go",
+    handler: async () => {
+      const rootPath = useWorkspaceStore.getState().rootPath;
+      const main = useProjectConfigStore.getState().config?.main ?? null;
+      if (main === null || rootPath === null) return;
+      const doc = await openFileByPath(joinWorkspacePath(rootPath, main));
+      useTabsStore.getState().openPath(doc);
+    },
+    enablement: () => {
+      const rootPath = useWorkspaceStore.getState().rootPath;
+      const main = useProjectConfigStore.getState().config?.main ?? null;
+      return rootPath !== null && main !== null;
+    },
   });
 }

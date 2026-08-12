@@ -171,12 +171,27 @@ fn open_path_as_workspace(
     // watcher's lifetime.
     let app_for_cb = app.clone();
     let editor_for_cb = state.editor.clone();
+    // Project config hot-reload: an external edit to `<root>/.typstpro` is
+    // re-read and re-broadcast. `load` fires `on_change` (→
+    // `project_config_changed`) so the panel/preview/export react without each
+    // polling. Clone the service + root so the watcher closure is 'static.
+    let project_config_for_cb = state.project_config.clone();
+    let root_for_cb = root.clone();
     let on_change: watcher::OnChange = Arc::new(move |paths: &[PathBuf]| {
         // §8.4: route each changed path to the editor so an open document whose
         // backing file changed is reloaded (clean buffer) or marked conflict
         // (dirty buffer / deleted). Safe on the watcher flush thread.
         for p in paths {
             editor_for_cb.handle_external_change(p);
+        }
+        // Hot-reload the ROOT `.typstpro` when the watcher saw it change
+        // (external edit, git checkout, …). Match on both file name AND parent
+        // == root so a `.typstpro` in a subdirectory (a backup, a package
+        // example, …) doesn't spuriously reload the root config. `load` is
+        // idempotent and degrades to None on a missing/corrupt file.
+        let config_path = root_for_cb.join(crate::service::project_config_service::CONFIG_FILENAME);
+        if paths.iter().any(|p| p == &config_path) {
+            project_config_for_cb.load(&root_for_cb);
         }
         // Notify the frontend to refresh its file tree (independent of the
         // document-handling above — the tree shows all files, not just docs).
@@ -190,6 +205,14 @@ fn open_path_as_workspace(
     // watcher waits before flushing a batch of changed paths.
     let debounce_ms = state.settings.get_or_default::<u64>("compiler.debounceMs");
     let meta = state.workspace.open(root, std::time::Duration::from_millis(debounce_ms), on_change)?;
+    // Load the workspace's `.typstpro` now that the root is established. Uses
+    // the canonical root the workspace service stores (not the display string
+    // in `meta.root`), matching the path the watcher reloads. Fires
+    // `project_config_changed` (None when absent) so the frontend has the
+    // project config alongside the workspace metadata on open.
+    if let Some(canonical_root) = state.workspace.root() {
+        state.project_config.load(&canonical_root);
+    }
     // §6.3: reflect watcher health. `watcher_healthy()` is true iff the watcher
     // guard is live (started OK); a start failure leaves it false. Surface that
     // to the watcher-health service so the frontend can warn "external detection
@@ -289,6 +312,9 @@ pub async fn close_workspace(state: State<'_, AppState>) -> Result<()> {
     // `workspace_change_triggers_restart(_, false) == None` contract.
     let was_open = state.workspace.root().is_some();
     state.workspace.close();
+    // Drop the cached `.typstpro` (file is NOT deleted — only the in-memory
+    // cache resets) and broadcast None so the frontend clears project state.
+    state.project_config.reset();
     state.editor.reclassify_documents(&state.workspace);
     if was_open {
         // A workspace close requests ONE LSP restart AFTER reclassify succeeds
