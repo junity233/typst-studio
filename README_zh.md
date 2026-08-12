@@ -5,7 +5,7 @@
 [English README](README.md)
 
 ![status](https://img.shields.io/badge/status-WIP-yellow)
-![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
+![license](https://img.shields.io/badge/license-MIT-blue)
 ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 
 ![Typst Studio icon](app-icon.png)
@@ -238,7 +238,7 @@ Typst Studio 目前仍然是一个快速演进中的项目，适合愿意尝鲜�
 
 ## 许可证
 
-本项目采用 **MIT OR Apache-2.0** 双许可证，与 Typst 项目保持一致。
+本项目基于 [MIT 许可证](LICENSE) 开源。
 
 ## 致谢
 

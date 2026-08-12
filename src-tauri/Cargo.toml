@@ -3,6 +3,7 @@ name = "typst-studio"
 version = "0.1.2"
 description = "A Typst visual editor with live SVG preview"
 authors = ["Typst Studio"]
+license = "MIT"
 edition = "2021"
 
 [lib]

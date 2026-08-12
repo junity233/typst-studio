@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useContextMenuStore, type MenuItem } from "../Sidebar/contextMenuStore";
 import { useUiStore } from "../../store/uiStore";
+import { useAboutModalStore } from "../../store/aboutModalStore";
 import { dispatch } from "../../hooks/useAppCommands";
 import { loadSession } from "../../lib/session";
 
@@ -383,10 +384,10 @@ function buildHelpMenu(t: T): MenuItem[] {
       type: "action",
       label: t("about", { name: PRODUCT_NAME }),
       onSelect: () => {
-        // No native About dialog from the webview; show a simple alert. The
-        // macOS native menu still has its own rich About panel via
-        // PredefinedMenuItem.
-        window.alert(PRODUCT_NAME);
+        // No native About dialog from the webview on Windows; open our in-app
+        // About modal instead. macOS keeps its own rich About panel via
+        // PredefinedMenuItem (see src-tauri menu.rs).
+        useAboutModalStore.getState().open();
       },
     },
   ];

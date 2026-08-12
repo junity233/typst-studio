@@ -17,7 +17,7 @@ export default function activate(ctx: HostApi): void {
       import("../../components/Sidebar/Symbols/SymbolsPanel").then((m) => ({
         default: m.SymbolsPanel,
       })),
-    order: 5,
+    order: 30,
     when: "always",
   });
 }

@@ -5,7 +5,7 @@
 [简体中文](README_zh.md)
 
 ![status](https://img.shields.io/badge/status-WIP-yellow)
-![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
+![license](https://img.shields.io/badge/license-MIT-blue)
 ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 
 ![Typst Studio icon](app-icon.png)
@@ -238,7 +238,7 @@ Key directions include stronger project workflows, richer language-service suppo
 
 ## License
 
-This project is dual-licensed under **MIT OR Apache-2.0**, matching the Typst project itself.
+This project is licensed under the [MIT License](LICENSE).
 
 ## Acknowledgments
 

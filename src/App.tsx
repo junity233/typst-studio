@@ -7,6 +7,7 @@ import { ConfirmDialog } from "./components/Dialogs/ConfirmDialog";
 import { RecoveryDialog } from "./components/Dialogs/RecoveryDialog";
 import { ConflictDialog } from "./components/Dialogs/ConflictDialog";
 import { FormulaModal } from "./components/FormulaModal/FormulaModal";
+import { AboutModal } from "./components/About/AboutModal";
 import { ContextMenu } from "./components/Sidebar/ContextMenu";
 import { CommandPalette } from "./components/CommandPalette/CommandPalette";
 import { useTypstCompile } from "./hooks/useTypstCompile";
@@ -120,6 +121,9 @@ export default function App() {
       {/* Store-driven (useFormulaModalStore); opened by the toolbar button and
           the Ctrl+Alt+M command. Renders nothing when closed. */}
       <FormulaModal />
+      {/* Store-driven (useAboutModalStore); opened by Help → About and the
+          open-about command. Renders nothing when closed. */}
+      <AboutModal />
       <ContextMenu />
       <CommandPalette />
       {settingsOpen && (

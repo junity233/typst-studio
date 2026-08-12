@@ -4,6 +4,7 @@ import { useTabsStore } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
+import { useAboutModalStore } from "../../store/aboutModalStore";
 import {
   exportPdf,
   exportPng,
@@ -154,6 +155,15 @@ export default function activate(ctx: HostApi): void {
     keybinding: "CmdOrCtrl+,",
     handler: async () => {
       await openSettings();
+    },
+  });
+
+  ctx.registerCommand({
+    id: "open-about",
+    title: i18n.t("openAbout", { ns: "command" }),
+    category: "View",
+    handler: () => {
+      useAboutModalStore.getState().open();
     },
   });
 

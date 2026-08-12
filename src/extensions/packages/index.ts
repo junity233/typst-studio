@@ -11,7 +11,7 @@ export default function activate(ctx: HostApi): void {
       import("../../components/Sidebar/Packages/PackagesPanel").then((m) => ({
         default: m.PackagesPanel,
       })),
-    order: 4,
+    order: 50,
     when: "always",
   });
 }

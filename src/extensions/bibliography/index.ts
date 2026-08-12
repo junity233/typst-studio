@@ -21,7 +21,7 @@ export default function activate(ctx: HostApi): void {
       import("../../components/Sidebar/Bibliography/BibliographyPanel").then(
         (m) => ({ default: m.BibliographyPanel }),
       ),
-    order: 6,
+    order: 40,
     when: "workspace",
   });
 }

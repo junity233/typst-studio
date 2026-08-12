@@ -2880,6 +2880,105 @@ button {
   color: var(--color-error);
 }
 
+/* ---- About dialog ---------------------------------------------------------
+   Reuses .dialog-overlay / .dialog chrome; .about-modal widens the box and
+   centers the content. A presentation-only About card: icon, name, version,
+   tagline, a hairline divider, tech + copyright fine print, a Typst link, and
+   a single centered Close action. gap:0 + explicit margins give precise
+   vertical rhythm (the asymmetric spacing the base .dialog gap can't express).*/
+.about-modal {
+  width: min(420px, 92vw);
+  text-align: center;
+  /* Cross-axis centering so the icon, name, and actions stack centered. */
+  align-items: center;
+  gap: 0;
+  padding: var(--space-xl) var(--space-lg) var(--space-lg);
+}
+.about-icon {
+  width: 88px;
+  height: 88px;
+  border-radius: var(--radius-lg);
+  /* The icon is a flat SVG; a soft drop shadow gives it the same lifted feel as
+     the .svg-page preview pages — the only other place shadow is used. */
+  filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.12));
+  margin-bottom: var(--space-md);
+  user-select: none;
+}
+.about-name {
+  font: 600 24px/1.2 var(--font-display);
+  letter-spacing: -0.02em;
+  color: var(--color-ink);
+  margin: 0;
+}
+.about-version {
+  font: var(--text-caption);
+  color: var(--color-ink-muted-48);
+  margin: 6px 0 0;
+}
+.about-tagline {
+  font: var(--text-body);
+  color: var(--color-ink-muted-80);
+  line-height: 1.5;
+  margin: var(--space-md) 0 0;
+  /* Cap width so the tagline stays a comfortable 1–2 lines. */
+  max-width: 32ch;
+}
+.about-divider {
+  width: 100%;
+  height: 1px;
+  background: var(--color-hairline);
+  margin: var(--space-lg) 0;
+  border: 0;
+}
+.about-built {
+  font: var(--text-fine-print);
+  color: var(--color-ink-muted-80);
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+.about-copyright {
+  font: var(--text-fine-print);
+  color: var(--color-ink-muted-48);
+  margin: 6px 0 0;
+}
+.about-license {
+  font: var(--text-fine-print);
+  color: var(--color-ink-muted-48);
+  margin: 2px 0 0;
+}
+/* The Typst link: a ghost-style text button with an external-link glyph.
+   Mirrors .btn-ghost's hover/active/focus treatment but is link-sized. */
+.about-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--space-md);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  cursor: pointer;
+  font: var(--text-caption);
+  color: var(--color-primary);
+  transition: background 0.1s ease, transform 0.1s ease;
+}
+.about-link:hover {
+  background: var(--color-primary-softer);
+}
+.about-link:active {
+  transform: scale(0.96);
+}
+.about-link:focus-visible {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: 2px;
+}
+/* The single Close action centers under the content. */
+.about-modal .dialog-actions {
+  width: 100%;
+  justify-content: center;
+  margin-top: var(--space-lg);
+}
+
 /* ============================================================================
    Recovery dialog (§5.1.3) — wider than the confirm dialog; lists docs.
    ========================================================================= */

@@ -1,0 +1,11 @@
+{
+  "__smoke__": "about en ok",
+  "title": "About {{name}}",
+  "version": "Version {{version}}",
+  "tagline": "A Typst visual editor with live preview.",
+  "builtWith": "Built with Tauri · React · Rust · Typst",
+  "copyright": "Copyright © 2026 Junity",
+  "license": "Released under the MIT License",
+  "learnTypst": "Learn more about Typst",
+  "close": "Close"
+}

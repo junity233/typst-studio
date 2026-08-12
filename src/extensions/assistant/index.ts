@@ -12,7 +12,7 @@ export default function activate(ctx: HostApi): void {
       import("../../components/Assistant/AssistantPanel").then((m) => ({
         default: m.AssistantPanel,
       })),
-    order: 30,
+    order: 60,
     when: "always",
   });
 

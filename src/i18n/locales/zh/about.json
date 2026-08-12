@@ -1,0 +1,11 @@
+{
+  "__smoke__": "about zh 就绪",
+  "title": "关于 {{name}}",
+  "version": "版本 {{version}}",
+  "tagline": "一款支持实时预览的 Typst 可视化编辑器。",
+  "builtWith": "基于 Tauri · React · Rust · Typst 构建",
+  "copyright": "Copyright © 2026 Junity",
+  "license": "基于 MIT 许可证发布",
+  "learnTypst": "了解更多关于 Typst",
+  "close": "关闭"
+}

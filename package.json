@@ -2,6 +2,8 @@
   "name": "typst-studio",
   "private": true,
   "version": "0.1.2",
+  "license": "MIT",
+  "author": "Junity",
   "type": "module",
   "scripts": {
     "dev": "npm run fetch-grammar && npm run fetch-monaco-assets && vite",
