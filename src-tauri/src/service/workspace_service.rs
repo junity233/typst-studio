@@ -122,6 +122,7 @@ impl WorkspaceService {
         root: PathBuf,
         debounce: std::time::Duration,
         on_fs_change: watcher::OnChange,
+        compile_root: Option<PathBuf>,
     ) -> Result<WorkspaceMeta> {
         if !root.is_dir() {
             return Err(AppError::InvalidInput(format!(
@@ -143,11 +144,20 @@ impl WorkspaceService {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| canonical.display().to_string());
 
+        // The resolver anchors at the EFFECTIVE root: the workspace root joined
+        // with the project's `[compile].root` (Typst's `--root`), or the
+        // workspace root itself when none is designated. `self.root` keeps the
+        // true workspace root (used for containment, search, meta.root) — only
+        // the resolver's anchor changes.
+        let effective = match &compile_root {
+            Some(rel) if !rel.as_os_str().is_empty() => canonical.join(rel),
+            _ => canonical.clone(),
+        };
         // Swap root + resolver. Mint a fresh workspace id each open so
         // reclassification can distinguish docs owned by a *prior* workspace
         // from those owned by the current one (§4.3).
         *self.root.write() = Some(canonical.clone());
-        let resolver = FileResolver::new(canonical.clone());
+        let resolver = FileResolver::new(effective);
         *self.resolver.write() = Some(resolver);
         *self.id.write() = Some(WorkspaceId::new());
 
@@ -163,6 +173,30 @@ impl WorkspaceService {
             root: canonical.display().to_string(),
             name,
         })
+    }
+
+    /// Re-anchor the resolver at the EFFECTIVE root derived from a (possibly
+    /// new) `compile.root`, returning whether the root actually changed. Used
+    /// when `.typstpro` is edited externally or `[compile].root` is set via the
+    /// panel — the caller follows up with `EditorService::reclassify_documents`
+    /// so open tabs rebuild their worlds against the new anchor. No-op (returns
+    /// `false`) when no workspace is open.
+    pub fn reanchor_compile_root(&self, compile_root: Option<PathBuf>) -> bool {
+        let Some(ws_root) = self.root.read().clone() else {
+            return false;
+        };
+        let effective = match &compile_root {
+            Some(rel) if !rel.as_os_str().is_empty() => ws_root.join(rel),
+            _ => ws_root,
+        };
+        let Some(resolver) = self.resolver.read().clone() else {
+            return false;
+        };
+        if resolver.root() == effective {
+            return false;
+        }
+        resolver.set_root(effective);
+        true
     }
 
     /// Close the workspace (stops the watcher, drops the resolver). Open tabs
@@ -211,18 +245,19 @@ impl WorkspaceService {
     }
 
     /// Cross-file search across the workspace root (§Search view). Walks the
-    /// tree once, matches each line of each non-ignored file. Returns hits
-    /// capped per-file and in total.
+    /// tree once, matches each line of each non-ignored file, applying the
+    /// project's `exclude` globs. Returns hits capped per-file and in total.
     pub fn search(
         &self,
         query: &crate::domain::search::SearchQuery,
+        exclude: Option<&globset::GlobSet>,
     ) -> anyhow::Result<Vec<crate::domain::search::SearchHit>> {
         let root = self
             .root
             .read()
             .clone()
             .ok_or_else(|| anyhow::anyhow!("no workspace open"))?;
-        crate::fs::search::search(&root, query)
+        crate::fs::search::search(&root, query, exclude)
     }
 
     /// Create a file or directory at a workspace-relative path.
@@ -395,7 +430,7 @@ mod tests {
         let ws = WorkspaceService::new();
         assert!(!ws.is_open());
         let meta = ws
-            .open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change())
+            .open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None)
             .unwrap();
         assert!(ws.is_open());
         assert_eq!(meta.name, dir.file_name().unwrap().to_string_lossy());
@@ -412,7 +447,7 @@ mod tests {
         std::fs::write(dir.join("a.typ"), "x").unwrap();
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         let entries = ws.read_dir("").unwrap();
         let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"sub"), "dirs should appear: {names:?}");
@@ -424,7 +459,7 @@ mod tests {
     fn create_entry_creates_file_and_dir() {
         let dir = tmp_dir();
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         ws.create_entry("new.typ", EntryKind::File).unwrap();
         ws.create_entry("newdir", EntryKind::Dir).unwrap();
         assert!(dir.join("new.typ").exists());
@@ -437,7 +472,7 @@ mod tests {
         let dir = tmp_dir();
         std::fs::write(dir.join("existing.typ"), "keep me").unwrap();
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
 
         assert!(ws.create_entry("existing.typ", EntryKind::File).is_err());
         assert_eq!(std::fs::read_to_string(dir.join("existing.typ")).unwrap(), "keep me");
@@ -449,7 +484,7 @@ mod tests {
         let dir = tmp_dir();
         std::fs::write(dir.join("a.typ"), "x").unwrap();
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         ws.rename_entry("a.typ", "b.typ").unwrap();
         assert!(!dir.join("a.typ").exists());
         assert!(dir.join("b.typ").exists());
@@ -465,7 +500,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("sub/nested")).unwrap();
         std::fs::write(dir.join("sub/nested/child.typ"), "child").unwrap();
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
 
         // File copy.
         ws.copy_entry("a.typ", "a_copy.typ").unwrap();
@@ -489,7 +524,7 @@ mod tests {
         let dir = tmp_dir();
         std::fs::create_dir_all(dir.join("d")).unwrap();
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         // Escaping the root is rejected by resolve_rel.
         assert!(ws.copy_entry("d", "../escape").is_err());
         // Copying a dir into itself (would recurse forever) is rejected.
@@ -508,7 +543,7 @@ mod tests {
         std::fs::write(dir.join("gone.typ"), "x").unwrap();
         std::fs::create_dir_all(dir.join("gonedir")).unwrap();
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         // Delete the file: either trashed (gone) or platform error (still there).
         match ws.delete_entry("gone.typ") {
             Ok(TrashOutcome::Trashed) => {
@@ -531,7 +566,7 @@ mod tests {
         std::fs::write(dir.join("gone.typ"), "x").unwrap();
         std::fs::create_dir_all(dir.join("gonedir")).unwrap();
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         assert_eq!(
             ws.delete_entry_permanent("gone.typ").unwrap(),
             TrashOutcome::PermanentlyDeleted
@@ -549,7 +584,7 @@ mod tests {
     fn resolve_rel_rejects_path_escape() {
         let dir = tmp_dir();
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         assert!(ws.resolve_rel("../escape.typ").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -566,7 +601,7 @@ mod tests {
         let dir = tmp_dir();
         std::fs::write(dir.join("main.typ"), "x").unwrap();
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         let file = dir.join("main.typ");
         assert!(ws.contains(&file), "file inside root must be contained");
         let _ = std::fs::remove_dir_all(&dir);
@@ -578,7 +613,7 @@ mod tests {
         let other = std::env::temp_dir().join(format!("typst-ws-out-{}", uuid::Uuid::new_v4()));
         std::fs::write(&other, "x").unwrap();
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         assert!(
             !ws.contains(&other),
             "file outside root must not be contained"
@@ -599,11 +634,11 @@ mod tests {
         let dir = tmp_dir();
         let ws = WorkspaceService::new();
         assert!(ws.workspace_id().is_none(), "no id before first open");
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         let id1 = ws.workspace_id().expect("open mints an id");
         // Reopen the SAME folder — must yield a fresh id (so stale docs are
         // detectable across a reopen).
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         let id2 = ws.workspace_id().expect("reopen mints an id");
         assert_ne!(id1, id2, "each open must mint a fresh workspace id");
         ws.close();
@@ -620,7 +655,7 @@ mod tests {
             received_cb.lock().unwrap().extend_from_slice(paths);
         });
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), on_change).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), on_change, None).unwrap();
         // Mutate; the watcher should report it within a few debounce windows.
         std::fs::write(dir.join("changed.typ"), "y").unwrap();
         let mut seen = false;

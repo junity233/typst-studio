@@ -17,36 +17,77 @@
 
 use crate::domain::search::{ReplaceRequest, SearchHit, SearchQuery, TargetRef};
 use anyhow::Result;
+use globset::GlobSet;
 use regex::Regex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+/// The shared IGNORED_DIRS set (built once per walk). Used by [`dir_filter`] so
+/// every walk (search / replace) prunes the same built-in dirs.
+fn ignored_dirs() -> HashSet<&'static str> {
+    crate::fs::tree::IGNORED_DIRS.iter().copied().collect()
+}
+
+/// True if `rel` (a workspace-relative, forward-slash path) is excluded by the
+/// project's `exclude` globs. For a directory, also tests a synthetic child
+/// path so patterns like `build/**` prune the whole subtree.
+fn path_excluded(exclude: Option<&GlobSet>, rel: &str, is_dir: bool) -> bool {
+    let Some(gs) = exclude else { return false };
+    if gs.is_match(rel) {
+        return true;
+    }
+    if is_dir {
+        let mut child = String::with_capacity(rel.len() + 8);
+        child.push_str(rel);
+        child.push_str("/dummy");
+        gs.is_match(&child)
+    } else {
+        false
+    }
+}
+
+/// Build the `filter_entry` predicate shared by every walk: prune built-in
+/// ignored dirs and dirs matching the project `exclude` globs.
+fn dir_filter<'a>(root: &'a Path, exclude: Option<&'a GlobSet>) -> impl Fn(&walkdir::DirEntry) -> bool + 'a {
+    let ignored = ignored_dirs();
+    move |e| {
+        if !e.file_type().is_dir() {
+            return true;
+        }
+        let name = e.file_name();
+        if ignored.contains(name.to_string_lossy().as_ref()) {
+            return false;
+        }
+        if let Some(gs) = exclude {
+            if let Ok(rel) = e.path().strip_prefix(root) {
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                if path_excluded(Some(gs), &rel, true) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
 
 /// Recursively search `root` for lines matching `query`.
 ///
 /// - Skips `IGNORED_DIRS` (same set as the Explorer tree).
 /// - Skips non-UTF-8 / unreadable files.
 /// - Caps per-file hits at `max_per_file` and total at `max_total`.
-pub fn search(root: &Path, query: &SearchQuery) -> Result<Vec<SearchHit>> {
+pub fn search(
+    root: &Path,
+    query: &SearchQuery,
+    exclude: Option<&GlobSet>,
+) -> Result<Vec<SearchHit>> {
     let matcher = build_matcher(query)?;
-    let ignored: HashSet<&'static str> = crate::fs::tree::IGNORED_DIRS
-        .iter()
-        .copied()
-        .collect();
     let include = query.include_glob.as_deref();
     let mut hits: Vec<SearchHit> = Vec::new();
 
     for entry in walkdir::WalkDir::new(root)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| {
-            if e.file_type().is_dir() {
-                let name = e.file_name();
-                if ignored.contains(name.to_string_lossy().as_ref()) {
-                    return false;
-                }
-            }
-            true
-        })
+        .filter_entry(dir_filter(root, exclude))
     {
         let entry = match entry {
             Ok(e) => e,
@@ -66,6 +107,9 @@ pub fn search(root: &Path, query: &SearchQuery) -> Result<Vec<SearchHit>> {
             Ok(r) => r.to_string_lossy().replace('\\', "/").to_string(),
             Err(_) => continue,
         };
+        if path_excluded(exclude, &rel, false) {
+            continue;
+        }
         // Skip non-UTF-8 / unreadable files (best-effort: the Search view is
         // informational, never blocking).
         let text = match std::fs::read_to_string(path) {
@@ -489,24 +533,19 @@ pub struct ReplaceCandidate {
 /// then reads disk text only for the closed ones. Decoupling the walk from the
 /// text source is what lets replace honor a dirty buffer instead of clobbering
 /// it with a disk-based replacement.
-pub(crate) fn replace_candidates(root: &Path, req: &ReplaceRequest) -> Vec<ReplaceCandidate> {
+pub(crate) fn replace_candidates(
+    root: &Path,
+    req: &ReplaceRequest,
+    exclude: Option<&GlobSet>,
+) -> Vec<ReplaceCandidate> {
     let target = req.target.as_ref();
-    let ignored: HashSet<&'static str> = crate::fs::tree::IGNORED_DIRS.iter().copied().collect();
     let include = req.query.include_glob.as_deref();
     let mut out: Vec<ReplaceCandidate> = Vec::new();
 
     for entry in walkdir::WalkDir::new(root)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| {
-            if e.file_type().is_dir() {
-                let name = e.file_name();
-                if ignored.contains(name.to_string_lossy().as_ref()) {
-                    return false;
-                }
-            }
-            true
-        })
+        .filter_entry(dir_filter(root, exclude))
     {
         let entry = match entry {
             Ok(e) => e,
@@ -526,6 +565,9 @@ pub(crate) fn replace_candidates(root: &Path, req: &ReplaceRequest) -> Vec<Repla
             Ok(r) => r.to_string_lossy().replace('\\', "/").to_string(),
             Err(_) => continue,
         };
+        if path_excluded(exclude, &rel, false) {
+            continue;
+        }
         // If a target is set, skip every file that isn't it.
         if let Some(t) = target {
             if t.relative != rel {
@@ -558,25 +600,20 @@ pub(crate) fn replace_candidates(root: &Path, req: &ReplaceRequest) -> Vec<Repla
 /// spliced from its on-disk content here — the IPC layer's `replace_in_files`
 /// is the one that routes open docs through their live buffer text instead
 /// (so a dirty buffer's unsaved edits aren't silently overwritten).
-pub fn replace_compute(root: &Path, req: &ReplaceRequest) -> Result<Vec<FileReplacement>> {
+pub fn replace_compute(
+    root: &Path,
+    req: &ReplaceRequest,
+    exclude: Option<&GlobSet>,
+) -> Result<Vec<FileReplacement>> {
     let matcher = build_replace_matcher(req)?;
     let target = req.target.as_ref();
-    let ignored: HashSet<&'static str> = crate::fs::tree::IGNORED_DIRS.iter().copied().collect();
     let include = req.query.include_glob.as_deref();
     let mut out: Vec<FileReplacement> = Vec::new();
 
     for entry in walkdir::WalkDir::new(root)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| {
-            if e.file_type().is_dir() {
-                let name = e.file_name();
-                if ignored.contains(name.to_string_lossy().as_ref()) {
-                    return false;
-                }
-            }
-            true
-        })
+        .filter_entry(dir_filter(root, exclude))
     {
         let entry = match entry {
             Ok(e) => e,
@@ -596,6 +633,9 @@ pub fn replace_compute(root: &Path, req: &ReplaceRequest) -> Result<Vec<FileRepl
             Ok(r) => r.to_string_lossy().replace('\\', "/").to_string(),
             Err(_) => continue,
         };
+        if path_excluded(exclude, &rel, false) {
+            continue;
+        }
         // If a target is set, skip every file that isn't it.
         if let Some(t) = target {
             if t.relative != rel {
@@ -831,7 +871,7 @@ mod tests {
             max_per_file: 100,
             max_total: 100,
         };
-        let hits = search(dir.path(), &q).unwrap();
+        let hits = search(dir.path(), &q, None).unwrap();
         // main.typ: 2 (Hello World, World peace — note "world" in "World")
         // sub/nested.typ: 1
         // target/build.typ: 0 (ignored)
@@ -851,7 +891,7 @@ mod tests {
             max_per_file: 100,
             max_total: 100,
         };
-        let hits = search(dir.path(), &q).unwrap();
+        let hits = search(dir.path(), &q, None).unwrap();
         assert_eq!(hits.len(), 0, "expected 0 case-sensitive hits");
     }
 
@@ -867,7 +907,7 @@ mod tests {
             max_per_file: 100,
             max_total: 100,
         };
-        let hits = search(dir.path(), &q).unwrap();
+        let hits = search(dir.path(), &q, None).unwrap();
         assert!(hits.len() >= 3, "expected at least 3 regex hits, got {}", hits.len());
     }
 
@@ -883,7 +923,7 @@ mod tests {
             max_per_file: 100,
             max_total: 100,
         };
-        let hits = search(dir.path(), &q).unwrap();
+        let hits = search(dir.path(), &q, None).unwrap();
         assert!(hits.iter().all(|h| h.relative.ends_with(".typ")));
     }
 
@@ -899,7 +939,7 @@ mod tests {
             max_per_file: 100,
             max_total: 100,
         };
-        let hits = search(dir.path(), &q).unwrap();
+        let hits = search(dir.path(), &q, None).unwrap();
         for h in &hits {
             assert!(h.line >= 1);
             assert!(h.column >= 1);
@@ -940,7 +980,7 @@ mod tests {
             query("World"),
             "Earth",
         );
-        let out = replace_compute(dir.path(), &req).unwrap();
+        let out = replace_compute(dir.path(), &req, None).unwrap();
         // main.typ had 2 hits, sub/nested.typ had 1 → both files replaced.
         let main = out.iter().find(|f| f.relative == "main.typ").unwrap();
         assert_eq!(main.match_count, 2);
@@ -958,7 +998,7 @@ mod tests {
         let mut q = query("world");
         q.case_sensitive = false;
         let req = replace_req(q, "earth");
-        let out = replace_compute(dir.path(), &req).unwrap();
+        let out = replace_compute(dir.path(), &req, None).unwrap();
         let main = out.iter().find(|f| f.relative == "main.typ").unwrap();
         assert!(main.new_content.contains("Hello earth"));
         assert!(main.new_content.contains("earth peace"));
@@ -971,7 +1011,7 @@ mod tests {
         // No need to change case sensitivity: pattern matches only "World".
         let mut req = replace_req(q, "earth");
         req.preserve_case = true;
-        let out = replace_compute(dir.path(), &req).unwrap();
+        let out = replace_compute(dir.path(), &req, None).unwrap();
         let main = out.iter().find(|f| f.relative == "main.typ").unwrap();
         // "World" is title-cased → replacement becomes "Earth".
         assert!(main.new_content.contains("Hello Earth"));
@@ -988,7 +1028,7 @@ mod tests {
             preserve_case: true,
             target: None,
         };
-        let out = replace_compute(dir.path(), &req).unwrap();
+        let out = replace_compute(dir.path(), &req, None).unwrap();
         let a = out.iter().find(|f| f.relative == "a.txt").unwrap();
         // "WORLD" all-upper → "EARTH"; "world" untouched (didn't match).
         assert_eq!(a.new_content, "EARTH world\n");
@@ -1001,7 +1041,7 @@ mod tests {
         let mut q = query(r"\((\w+)\)");
         q.is_regex = true;
         let req = replace_req(q, "[$1]");
-        let out = replace_compute(dir.path(), &req).unwrap();
+        let out = replace_compute(dir.path(), &req, None).unwrap();
         let a = out.iter().find(|f| f.relative == "a.txt").unwrap();
         assert_eq!(a.new_content, "foo[bar] baz[qux]\n");
     }
@@ -1017,7 +1057,7 @@ mod tests {
         let mut q = query("World");
         q.is_regex = true;
         let req = replace_req(q, "$1");
-        let err = replace_compute(dir.path(), &req).unwrap_err();
+        let err = replace_compute(dir.path(), &req, None).unwrap_err();
         assert!(
             err.to_string().contains("capture group"),
             "expected a capture-group error, got: {err}"
@@ -1026,7 +1066,7 @@ mod tests {
         let mut q2 = query(r"(World)");
         q2.is_regex = true;
         let req2 = replace_req(q2, "$5");
-        let err2 = replace_compute(dir.path(), &req2).unwrap_err();
+        let err2 = replace_compute(dir.path(), &req2, None).unwrap_err();
         assert!(
             err2.to_string().contains("capture group"),
             "expected a capture-group error, got: {err2}"
@@ -1035,7 +1075,7 @@ mod tests {
         let mut q3 = query(r"(World)");
         q3.is_regex = true;
         let req3 = replace_req(q3, "${oops}");
-        let err3 = replace_compute(dir.path(), &req3).unwrap_err();
+        let err3 = replace_compute(dir.path(), &req3, None).unwrap_err();
         assert!(
             err3.to_string().contains("doesn't exist"),
             "expected a missing-named-group error, got: {err3}"
@@ -1053,7 +1093,7 @@ mod tests {
         let mut q = query(r"(?P<w>World)");
         q.is_regex = true;
         let req = replace_req(q, "[${w}] $$");
-        let out = replace_compute(dir.path(), &req).unwrap();
+        let out = replace_compute(dir.path(), &req, None).unwrap();
         let a = out.iter().find(|f| f.relative == "a.txt").unwrap();
         assert_eq!(a.new_content, "[World] $\n");
     }
@@ -1062,7 +1102,7 @@ mod tests {
     fn replace_empty_replacement_deletes_match() {
         let dir = make_fixture();
         let req = replace_req(query("World"), "");
-        let out = replace_compute(dir.path(), &req).unwrap();
+        let out = replace_compute(dir.path(), &req, None).unwrap();
         let main = out.iter().find(|f| f.relative == "main.typ").unwrap();
         assert!(main.new_content.contains("Hello "));
         assert!(!main.new_content.contains("World"));
@@ -1078,7 +1118,7 @@ mod tests {
             line: 3,
             column: 1,
         });
-        let out = replace_compute(dir.path(), &req).unwrap();
+        let out = replace_compute(dir.path(), &req, None).unwrap();
         let main = out.iter().find(|f| f.relative == "main.typ").unwrap();
         assert_eq!(main.match_count, 1);
         // Only the line-3 match replaced; the line-2 one is intact.
@@ -1095,7 +1135,7 @@ mod tests {
             line: 3,
             column: 99, // no match starts here
         });
-        let out = replace_compute(dir.path(), &req).unwrap();
+        let out = replace_compute(dir.path(), &req, None).unwrap();
         // No file qualifies → empty outcome.
         assert!(out.is_empty(), "expected no replacements, got {:?}", out);
     }
@@ -1106,7 +1146,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "ab ab").unwrap(); // no trailing \n
         let req = replace_req(query("ab"), "X");
-        let out = replace_compute(dir.path(), &req).unwrap();
+        let out = replace_compute(dir.path(), &req, None).unwrap();
         let a = out.iter().find(|f| f.relative == "a.txt").unwrap();
         assert_eq!(a.new_content, "X X");
         assert!(!a.new_content.ends_with('\n'));
@@ -1117,7 +1157,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"World\r\nWorld\r\n").unwrap();
         let req = replace_req(query("World"), "Earth");
-        let out = replace_compute(dir.path(), &req).unwrap();
+        let out = replace_compute(dir.path(), &req, None).unwrap();
         let a = out.iter().find(|f| f.relative == "a.txt").unwrap();
         assert_eq!(a.new_content, "Earth\r\nEarth\r\n");
         let _ = read_file; // silence unused if no other reader test
@@ -1198,7 +1238,7 @@ mod tests {
             preserve_case: false,
             target: None,
         };
-        let cands = replace_candidates(dir.path(), &req);
+        let cands = replace_candidates(dir.path(), &req, None);
         let rels: Vec<&str> = cands.iter().map(|c| c.relative.as_str()).collect();
         assert!(rels.contains(&"a.typ"));
         assert!(rels.contains(&"sub/b.typ"));
@@ -1216,7 +1256,7 @@ mod tests {
             preserve_case: false,
             target: Some(TargetRef { relative: "b.typ".into(), line: 1, column: 1 }),
         };
-        let cands = replace_candidates(dir.path(), &req);
+        let cands = replace_candidates(dir.path(), &req, None);
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].relative, "b.typ");
     }

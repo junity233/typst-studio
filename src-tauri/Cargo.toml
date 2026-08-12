@@ -123,6 +123,8 @@ notify = "8"
 
 # Recursive directory traversal for the Search view.
 walkdir = "2"
+# Glob matching for the `.typstpro` `exclude` patterns (search + main-file picker).
+globset = "0.4"
 # Regex matching for the Search view (literal mode is hand-rolled; regex mode uses this).
 regex = "1"
 

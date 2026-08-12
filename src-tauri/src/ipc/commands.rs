@@ -22,19 +22,15 @@ use crate::error::{AppError, Result};
 use crate::ipc::events::{LspStatusPayload, OpenedDocument};
 use crate::ipc::state::AppState;
 
-/// Create a new untitled tab. `content` defaults to the `document.defaultTemplate`
-/// setting (falling back to the built-in template if unset). The initial compile
-/// is spawned asynchronously — this returns immediately.
+/// Create a new untitled tab. Seed precedence when `content` is omitted:
+/// project `newFileTemplate` (a workspace-relative file, read from disk) >
+/// global `document.defaultTemplate` (inline text) > the built-in literal.
+/// The initial compile is spawned asynchronously — this returns immediately.
 #[tauri::command]
 pub async fn new_tab(state: State<'_, AppState>, content: Option<String>) -> Result<OpenedDocument> {
-    // When the caller omits content, seed the tab from the user's configured
-    // new-document template rather than the built-in literal.
     let content = match content {
         Some(c) => Some(c),
-        None => {
-            let tmpl = state.settings.get_or_default::<String>("document.defaultTemplate");
-            if tmpl.is_empty() { None } else { Some(tmpl) }
-        }
+        None => seed_new_tab_content(&state)?,
     };
     let editor = state.editor.clone();
     let meta = editor.new_tab(content);
@@ -43,6 +39,30 @@ pub async fn new_tab(state: State<'_, AppState>, content: Option<String>) -> Res
         meta,
         content: content_text,
     })
+}
+
+/// Resolve the seed content for a new untitled tab. Project `newFileTemplate`
+/// (workspace-relative path) wins over the global inline `defaultTemplate`.
+fn seed_new_tab_content(state: &State<'_, AppState>) -> Result<Option<String>> {
+    // Project newFileTemplate: resolve against the workspace root and read it.
+    if let Some(tmpl_rel) = state
+        .project_config
+        .get()
+        .and_then(|c| c.new_file_template)
+    {
+        if let Some(root) = state.workspace.root() {
+            // The path is validated workspace-relative on `set`; belt-and-
+            // suspenders against a hand-edited escape here.
+            let p = root.join(&tmpl_rel);
+            match std::fs::read_to_string(&p) {
+                Ok(text) => return Ok(Some(text)),
+                Err(e) => tracing::warn!(?p, error = %e, "newFileTemplate unreadable; falling back"),
+            }
+        }
+    }
+    // Global inline defaultTemplate.
+    let tmpl = state.settings.get_or_default::<String>("document.defaultTemplate");
+    Ok(if tmpl.is_empty() { None } else { Some(tmpl) })
 }
 
 /// Open a native file dialog, read the chosen file, and open it as a tab.
@@ -227,21 +247,30 @@ pub async fn export_pdf(
     state: State<'_, AppState>,
     id: DocumentId,
     revision: u64,
+    output_path: Option<String>,
 ) -> Result<String> {
-    let app_for_dialog = app.clone();
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        app_for_dialog
-            .dialog()
-            .file()
-            .add_filter("PDF", &["pdf"])
-            .blocking_save_file()
-    })
-    .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
-    let Some(picked) = picked else {
-        return Err(AppError::Other("export cancelled".into()));
+    // When `output_path` is provided (the project's `[export] outputPath`,
+    // macro-expanded by the frontend), skip the save dialog and write there
+    // directly; otherwise prompt as before.
+    let path = match output_path {
+        Some(p) => PathBuf::from(p),
+        None => {
+            let app_for_dialog = app.clone();
+            let picked = tauri::async_runtime::spawn_blocking(move || {
+                app_for_dialog
+                    .dialog()
+                    .file()
+                    .add_filter("PDF", &["pdf"])
+                    .blocking_save_file()
+            })
+            .await
+            .map_err(|e| AppError::Other(format!("join error: {e}")))?;
+            let Some(picked) = picked else {
+                return Err(AppError::Other("export cancelled".into()));
+            };
+            path_buf_from(picked)?
+        }
     };
-    let path = path_buf_from(picked)?;
     let path_str = path.to_string_lossy().to_string();
     let export = state.export.clone();
     let revision_wait = std::time::Duration::from_millis(
@@ -250,6 +279,9 @@ pub async fn export_pdf(
     // Render (CPU-bound) + write (blocking IO) together on a blocking thread.
     tauri::async_runtime::spawn_blocking(move || -> Result<()> {
         let bytes = export.render_pdf(id, revision, revision_wait)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         std::fs::write(&path, &bytes)?;
         Ok(())
     })
@@ -268,21 +300,27 @@ pub async fn export_png(
     state: State<'_, AppState>,
     id: DocumentId,
     revision: u64,
+    output_path: Option<String>,
 ) -> Result<Vec<String>> {
-    let app_for_dialog = app.clone();
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        app_for_dialog
-            .dialog()
-            .file()
-            .add_filter("PNG", &["png"])
-            .blocking_save_file()
-    })
-    .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
-    let Some(picked) = picked else {
-        return Err(AppError::Other("export cancelled".into()));
+    let picked_path = match output_path {
+        Some(p) => PathBuf::from(p),
+        None => {
+            let app_for_dialog = app.clone();
+            let picked = tauri::async_runtime::spawn_blocking(move || {
+                app_for_dialog
+                    .dialog()
+                    .file()
+                    .add_filter("PNG", &["png"])
+                    .blocking_save_file()
+            })
+            .await
+            .map_err(|e| AppError::Other(format!("join error: {e}")))?;
+            let Some(picked) = picked else {
+                return Err(AppError::Other("export cancelled".into()));
+            };
+            path_buf_from(picked)?
+        }
     };
-    let picked_path = path_buf_from(picked)?;
     let save_dir = picked_path
         .parent()
         .ok_or_else(|| AppError::InvalidInput("chosen path has no parent directory".into()))?
@@ -325,21 +363,27 @@ pub async fn export_svg(
     state: State<'_, AppState>,
     id: DocumentId,
     revision: u64,
+    output_path: Option<String>,
 ) -> Result<Vec<String>> {
-    let app_for_dialog = app.clone();
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        app_for_dialog
-            .dialog()
-            .file()
-            .add_filter("SVG", &["svg"])
-            .blocking_save_file()
-    })
-    .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
-    let Some(picked) = picked else {
-        return Err(AppError::Other("export cancelled".into()));
+    let picked_path = match output_path {
+        Some(p) => PathBuf::from(p),
+        None => {
+            let app_for_dialog = app.clone();
+            let picked = tauri::async_runtime::spawn_blocking(move || {
+                app_for_dialog
+                    .dialog()
+                    .file()
+                    .add_filter("SVG", &["svg"])
+                    .blocking_save_file()
+            })
+            .await
+            .map_err(|e| AppError::Other(format!("join error: {e}")))?;
+            let Some(picked) = picked else {
+                return Err(AppError::Other("export cancelled".into()));
+            };
+            path_buf_from(picked)?
+        }
     };
-    let picked_path = path_buf_from(picked)?;
     let save_dir = picked_path
         .parent()
         .ok_or_else(|| AppError::InvalidInput("chosen path has no parent directory".into()))?

@@ -4,11 +4,13 @@ import { Plus } from "lucide-react";
 import { useDebounce } from "../../../hooks/useDebounce";
 import { useBibliographyStore } from "../../../store/bibliographyStore";
 import { useWorkspaceStore } from "../../../store/workspaceStore";
+import { useProjectConfigStore } from "../../../store/projectConfigStore";
 import { useDialogStore } from "../../../store/dialogStore";
+import { joinWorkspacePath } from "../../../lib/workspacePath";
 import { editorApiRef } from "../../Editor/editorApiRef";
 import { BibEntryItem } from "./BibEntryItem";
 import { BibEditModal } from "./BibEditModal";
-import type { BibEntry, BibEntryEditable } from "../../../lib/types";
+import type { BibEntry, BibEntryEditable, BibFileInfo } from "../../../lib/types";
 
 /**
  * The Bibliography sidebar view (Task 4): discovers `.bib`/`.yml`/`.yaml` files
@@ -43,6 +45,27 @@ export function BibliographyPanel() {
   const deleteEntry = useBibliographyStore((s) => s.deleteEntry);
   const clear = useBibliographyStore((s) => s.clear);
 
+  // Declared bibliography files (`.typstpro` `bibliography`) take precedence:
+  // they are resolved to absolute paths and listed FIRST, deduped against the
+  // scan-discovered files. The auto-select effect below then picks the first
+  // declared file. When no declaration exists, the scan list is used as-is.
+  const declaredBib = useProjectConfigStore((s) => s.config?.bibliography ?? null);
+  const files = useMemo<BibFileInfo[]>(() => {
+    const declared = (declaredBib ?? [])
+      .map((rel) => (rootPath ? joinWorkspacePath(rootPath, rel) : null))
+      .filter((p): p is string => p !== null)
+      .map<BibFileInfo>((path) => ({ path, entryCount: null }));
+    const seen = new Set(declared.map((d) => d.path));
+    const merged = [...declared];
+    for (const f of discoveredFiles) {
+      if (!seen.has(f.path)) {
+        merged.push(f);
+        seen.add(f.path);
+      }
+    }
+    return merged;
+  }, [declaredBib, rootPath, discoveredFiles]);
+
   // Local input state, debounced into the store query so typing stays snappy.
   const [input, setInput] = useState(query);
   const debouncedInput = useDebounce(input, 150);
@@ -69,9 +92,9 @@ export function BibliographyPanel() {
   const failedPaths = useBibliographyStore((s) => s.failedPaths);
   useEffect(() => {
     if (activeFilePath !== null) return;
-    const next = discoveredFiles.find((f) => !failedPaths.includes(f.path));
+    const next = files.find((f) => !failedPaths.includes(f.path));
     if (next) void loadFile(next.path);
-  }, [discoveredFiles, activeFilePath, failedPaths, loadFile]);
+  }, [files, activeFilePath, failedPaths, loadFile]);
 
   const handleCite = useCallback((key: string) => {
     editorApiRef.current?.replaceSelection(`#cite(<${key}>)`);
@@ -144,7 +167,7 @@ export function BibliographyPanel() {
     return entries.filter((e) => matchesQuery(e, normalizedQuery));
   }, [entries, normalizedQuery]);
 
-  const hasFiles = discoveredFiles.length > 0;
+  const hasFiles = files.length > 0;
   const hasEntries = visibleEntries.length > 0;
 
   return (
@@ -158,7 +181,7 @@ export function BibliographyPanel() {
               onChange={(e) => void loadFile(e.target.value)}
               aria-label={t("selectFile")}
             >
-              {discoveredFiles.map((f) => {
+              {files.map((f) => {
                 const failed = failedPaths.includes(f.path);
                 return (
                   <option key={f.path} value={f.path}>

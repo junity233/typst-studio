@@ -66,9 +66,10 @@ pub async fn get_project_config_path(state: State<'_, AppState>) -> Result<Optio
 }
 
 /// All `.typ` files under the workspace root (workspace-relative, forward
-/// slashes, sorted), for the main-file picker. Empty when no workspace is open.
-/// The recursive directory walk is offloaded to `spawn_blocking` so it can't
-/// stall the async runtime on large workspaces (mirrors `search_workspace`).
+/// slashes, sorted), for the main-file picker. Applies the project's `exclude`
+/// globs. Empty when no workspace is open. The recursive directory walk is
+/// offloaded to `spawn_blocking` so it can't stall the async runtime on large
+/// workspaces (mirrors `search_workspace`).
 #[tauri::command]
 pub async fn list_typ_files(state: State<'_, AppState>) -> Result<Vec<String>> {
     let root = state.workspace.root();
@@ -76,10 +77,25 @@ pub async fn list_typ_files(state: State<'_, AppState>) -> Result<Vec<String>> {
         Some(r) => r,
         None => return Ok(Vec::new()),
     };
+    let exclude = state
+        .project_config
+        .get()
+        .and_then(|cfg| cfg.exclude)
+        .map(|v| build_exclude_set(&v));
     let files = tauri::async_runtime::spawn_blocking(move || {
-        crate::service::project_config_service::ProjectConfigService::list_typ_files(&root)
+        crate::service::project_config_service::ProjectConfigService::list_typ_files(
+            &root,
+            exclude.as_ref(),
+        )
     })
     .await
     .map_err(|e| AppError::Other(format!("join error: {e}")))?;
     Ok(files)
+}
+
+/// Build the exclude GlobSet once (cheap) so the spawned walk threads a single
+/// reference through.
+fn build_exclude_set(patterns: &[String]) -> globset::GlobSet {
+    crate::service::project_config_service::build_exclude_globset(Some(patterns))
+        .unwrap_or_else(|| globset::GlobSet::empty())
 }

@@ -21,6 +21,7 @@ import {
 } from "../../hooks/useAppCommands";
 import { flushDocumentSnapshot } from "../../lib/saveDocument";
 import { joinWorkspacePath, workspacePathsEqual } from "../../lib/workspacePath";
+import { expandTemplate } from "../../lib/pathMacros";
 import { useProjectConfigStore } from "../../store/projectConfigStore";
 import i18n from "../../i18n";
 
@@ -191,16 +192,59 @@ export default function activate(ctx: HostApi): void {
     },
   });
 
+  /** Run one export format, honoring the project's `[export] outputPath` when
+   *  `useConfigPath` is set (macro-expanded + joined to the workspace root).
+   *  When no outputPath is configured, the backend shows its save dialog. */
+  async function doExport(
+    format: "pdf" | "png" | "svg",
+    useConfigPath: boolean,
+  ): Promise<void> {
+    const id = resolveExportTargetId();
+    if (id === null) return;
+    const snapshot = await flushDocumentSnapshot(id);
+    let outputPath: string | undefined;
+    if (useConfigPath) {
+      const cfg = useProjectConfigStore.getState().config;
+      const rootPath = useWorkspaceStore.getState().rootPath;
+      const pattern = cfg?.export?.outputPath;
+      if (pattern && rootPath) {
+        const expanded = expandTemplate(pattern, {
+          workspace: rootPath,
+          title: cfg.title ?? "",
+        });
+        // Treat an already-absolute expansion as-is; otherwise anchor at root.
+        outputPath = /^([A-Za-z]:[\\/]|[\\/])./.test(expanded)
+          ? expanded
+          : joinWorkspacePath(rootPath, expanded);
+      }
+    }
+    if (format === "pdf") await exportPdf(id, snapshot.revision, outputPath);
+    else if (format === "png") await exportPng(id, snapshot.revision, outputPath);
+    else await exportSvg(id, snapshot.revision, outputPath);
+  }
+
+  /** Resolve the project's default export format (`[export] format`), "pdf" if unset. */
+  function defaultExportFormat(): "pdf" | "png" | "svg" {
+    const f = useProjectConfigStore.getState().config?.export?.format ?? "pdf";
+    return f === "png" || f === "svg" ? f : "pdf";
+  }
+
+  ctx.registerCommand({
+    id: "export",
+    title: labelFor("export-pdf"),
+    category: "File",
+    handler: async () => {
+      await doExport(defaultExportFormat(), true);
+    },
+    enablement: () => useTabsStore.getState().activeId !== null,
+  });
+
   ctx.registerCommand({
     id: "export-pdf",
     title: labelFor("export-pdf"),
     category: "File",
     handler: async () => {
-      const id = resolveExportTargetId();
-      if (id !== null) {
-        const snapshot = await flushDocumentSnapshot(id);
-        await exportPdf(id, snapshot.revision);
-      }
+      await doExport("pdf", true);
     },
     enablement: () => useTabsStore.getState().activeId !== null,
   });
@@ -210,11 +254,7 @@ export default function activate(ctx: HostApi): void {
     title: labelFor("export-png"),
     category: "File",
     handler: async () => {
-      const id = resolveExportTargetId();
-      if (id !== null) {
-        const snapshot = await flushDocumentSnapshot(id);
-        await exportPng(id, snapshot.revision);
-      }
+      await doExport("png", true);
     },
     enablement: () => useTabsStore.getState().activeId !== null,
   });
@@ -224,11 +264,7 @@ export default function activate(ctx: HostApi): void {
     title: labelFor("export-svg"),
     category: "File",
     handler: async () => {
-      const id = resolveExportTargetId();
-      if (id !== null) {
-        const snapshot = await flushDocumentSnapshot(id);
-        await exportSvg(id, snapshot.revision);
-      }
+      await doExport("svg", true);
     },
     enablement: () => useTabsStore.getState().activeId !== null,
   });

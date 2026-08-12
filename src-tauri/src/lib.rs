@@ -357,25 +357,14 @@ pub fn run() {
                 &mut startup_problems,
             ));
 
-            // Now that settings exist, pre-build the process-wide font store
-            // folding in the user-configured extra font directories
-            // (`compiler.extraFontDirs`). This runs before any window/tab can
-            // open, so the system scan cost stays off the first-open path. The
-            // store is process-wide; changing extra dirs takes effect on restart.
-            {
-                let extra_font_dirs = settings
-                    .get_or_default::<Vec<String>>("compiler.extraFontDirs")
-                    .into_iter()
-                    .map(std::path::PathBuf::from)
-                    .collect::<Vec<_>>();
-                crate::typst_engine::font_loader::warm(&extra_font_dirs);
-            }
-
             // Session memory (open documents + active view, §13) in the same config dir.
             // `SessionService::load` is already load-tolerant (corrupt/missing →
             // empty), but guard the `?` so any future regression degrades
             // instead of aborting. The fallback builds an in-memory empty
             // session at the same path (so a later successful persist works).
+            // Loaded BEFORE the font warm so the last workspace's project font
+            // dirs (`.typstpro` `[compile].extraFontDirs`) can fold into the
+            // one-time startup scan.
             let session_path = cfg_dir.join("session.json");
             let session = Arc::new(crate::startup::load_or_problem(
                 "session",
@@ -383,6 +372,30 @@ pub fn run() {
                 || SessionService::empty(session_path.clone()),
                 &mut startup_problems,
             ));
+
+            // Pre-build the process-wide font store, folding in BOTH the global
+            // `compiler.extraFontDirs` AND the last-opened project's
+            // `[compile].extraFontDirs` (peeked from its `.typstpro`). Project
+            // font dirs therefore take effect on the next restart — they aren't
+            // live-reloaded (the warmed store is frozen for the process). The
+            // system scan cost stays off the first-open path.
+            {
+                let mut extra_font_dirs: Vec<std::path::PathBuf> = settings
+                    .get_or_default::<Vec<String>>("compiler.extraFontDirs")
+                    .into_iter()
+                    .map(std::path::PathBuf::from)
+                    .collect();
+                let last_workspace = session.get().last_workspace;
+                if !last_workspace.is_empty() {
+                    let ws_root = std::path::PathBuf::from(&last_workspace);
+                    if let Some(cfg) = crate::service::project_config_service::ProjectConfigService::peek(&ws_root) {
+                        for d in cfg.extra_font_dirs() {
+                            extra_font_dirs.push(ws_root.join(d));
+                        }
+                    }
+                }
+                crate::typst_engine::font_loader::warm(&extra_font_dirs);
+            }
 
             // Crash-recovery subsystem (§5.1). Resolved under the same config
             // dir as session/settings. Built AFTER the session is loaded but
@@ -469,11 +482,21 @@ pub fn run() {
             // scoped, so it starts empty and is loaded on workspace open. The
             // `on_change` callback broadcasts `project_config_changed` to all
             // windows (mirrors `settings_changed`), so the panel + preview +
-            // export all react to a config change without each polling.
+            // export all react to a config change without each polling. It also
+            // re-anchors the resolver when `[compile].root` changes (panel edit
+            // or external `.typstpro` edit picked up by the watcher).
             let app_for_project = app.handle().clone();
+            let ws_for_project = workspace.clone();
+            let editor_for_project = editor.clone();
             let project_config = Arc::new(
                 crate::service::project_config_service::ProjectConfigService::new(move |cfg| {
                     use crate::ipc::events::ProjectConfigChangedPayload;
+                    let compile_root = cfg
+                        .as_ref()
+                        .and_then(|c| c.compile_root().map(std::path::PathBuf::from));
+                    if ws_for_project.reanchor_compile_root(compile_root) {
+                        editor_for_project.reclassify_documents(&ws_for_project);
+                    }
                     let _ = app_for_project.emit(
                         "project_config_changed",
                         ProjectConfigChangedPayload { config: cfg },

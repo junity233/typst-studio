@@ -7809,6 +7809,7 @@ dependencies = [
  "dunce",
  "futures-util",
  "gix",
+ "globset",
  "hayagriva",
  "http",
  "mockito",

@@ -204,7 +204,18 @@ fn open_path_as_workspace(
     // 300 ms). This is the `compiler.debounceMs` setting — the quiet period the
     // watcher waits before flushing a batch of changed paths.
     let debounce_ms = state.settings.get_or_default::<u64>("compiler.debounceMs");
-    let meta = state.workspace.open(root, std::time::Duration::from_millis(debounce_ms), on_change)?;
+    // Peek `.typstpro` BEFORE open so the resolver can anchor at the project's
+    // `[compile].root` (Typst's `--root`) from the very first tab. The full
+    // load happens after open (below). A peek (no cache/on_change) avoids
+    // firing the re-anchor path before a resolver exists.
+    let compile_root = crate::service::project_config_service::ProjectConfigService::peek(&root)
+        .and_then(|cfg| cfg.compile_root().map(std::path::PathBuf::from));
+    let meta = state.workspace.open(
+        root,
+        std::time::Duration::from_millis(debounce_ms),
+        on_change,
+        compile_root,
+    )?;
     // Load the workspace's `.typstpro` now that the root is established. Uses
     // the canonical root the workspace service stores (not the display string
     // in `meta.root`), matching the path the watcher reloads. Fires
@@ -387,7 +398,13 @@ pub async fn search_workspace(
     query: crate::domain::search::SearchQuery,
 ) -> Result<Vec<crate::domain::search::SearchHit>> {
     let ws = state.workspace.clone();
-    let hits = tauri::async_runtime::spawn_blocking(move || ws.search(&query))
+    let exclude = state
+        .project_config
+        .get()
+        .and_then(|c| c.exclude);
+    let exclude_gs =
+        crate::service::project_config_service::build_exclude_globset(exclude.as_deref());
+    let hits = tauri::async_runtime::spawn_blocking(move || ws.search(&query, exclude_gs.as_ref()))
         .await
         .map_err(|e| AppError::Other(format!("join error: {e}")))?
         .map_err(|e| AppError::Other(e.to_string()))?;
@@ -421,6 +438,12 @@ pub async fn replace_in_files(
     let root = ws.root().ok_or_else(|| {
         AppError::InvalidInput("no workspace open".into())
     })?.clone();
+    let exclude = state
+        .project_config
+        .get()
+        .and_then(|c| c.exclude);
+    let exclude_gs =
+        crate::service::project_config_service::build_exclude_globset(exclude.as_deref());
 
     // 1. Walk the workspace for candidate files (no text read yet) and build
     //    the matcher once. Both run on the blocking pool; the candidates walk
@@ -428,8 +451,9 @@ pub async fn replace_in_files(
     let (candidates, matcher) = {
         let req = req.clone();
         let root = root.clone();
+        let exclude_gs = exclude_gs.clone();
         tauri::async_runtime::spawn_blocking(move || -> std::result::Result<_, anyhow::Error> {
-            let cands = crate::fs::search::replace_candidates(&root, &req);
+            let cands = crate::fs::search::replace_candidates(&root, &req, exclude_gs.as_ref());
             let matcher = crate::fs::search::build_replace_matcher(&req)?;
             Ok((cands, matcher))
         })

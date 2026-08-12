@@ -31,26 +31,26 @@ describe("export wrappers forward revision to IPC (§9)", () => {
     resetWithResolveValue([]);
   });
 
-  it("exportPdf sends { id, revision } to export_pdf", async () => {
+  it("exportPdf sends { id, revision, outputPath } to export_pdf", async () => {
     await exportPdf("doc-1", 7);
     expect(invokeMock).toHaveBeenCalledTimes(1);
     const [cmd, args] = invokeMock.mock.calls[0];
     expect(cmd).toBe("export_pdf");
-    expect(args).toEqual({ id: "doc-1", revision: 7 });
+    expect(args).toEqual({ id: "doc-1", revision: 7, outputPath: null });
   });
 
-  it("exportPng sends { id, revision } to export_png", async () => {
+  it("exportPng sends { id, revision, outputPath } to export_png", async () => {
     await exportPng("doc-2", 13);
     const [cmd, args] = invokeMock.mock.calls[0];
     expect(cmd).toBe("export_png");
-    expect(args).toEqual({ id: "doc-2", revision: 13 });
+    expect(args).toEqual({ id: "doc-2", revision: 13, outputPath: null });
   });
 
-  it("exportSvg sends { id, revision } to export_svg", async () => {
+  it("exportSvg sends { id, revision, outputPath } to export_svg", async () => {
     await exportSvg("doc-3", 0);
     const [cmd, args] = invokeMock.mock.calls[0];
     expect(cmd).toBe("export_svg");
-    expect(args).toEqual({ id: "doc-3", revision: 0 });
+    expect(args).toEqual({ id: "doc-3", revision: 0, outputPath: null });
   });
 
   it("revision 0 is forwarded (not dropped as falsy)", async () => {
@@ -63,8 +63,14 @@ describe("export wrappers forward revision to IPC (§9)", () => {
   it("different revisions are forwarded verbatim (no hardcoding)", async () => {
     await exportPdf("doc-5", 42);
     await exportPdf("doc-5", 43);
-    expect(invokeMock.mock.calls[0][1]).toEqual({ id: "doc-5", revision: 42 });
-    expect(invokeMock.mock.calls[1][1]).toEqual({ id: "doc-5", revision: 43 });
+    expect(invokeMock.mock.calls[0][1]).toEqual({ id: "doc-5", revision: 42, outputPath: null });
+    expect(invokeMock.mock.calls[1][1]).toEqual({ id: "doc-5", revision: 43, outputPath: null });
+  });
+
+  it("exportPdf forwards a caller-supplied outputPath", async () => {
+    await exportPdf("doc-6", 1, "build/out.pdf");
+    const [, args] = invokeMock.mock.calls[0];
+    expect(args).toEqual({ id: "doc-6", revision: 1, outputPath: "build/out.pdf" });
   });
 });
 

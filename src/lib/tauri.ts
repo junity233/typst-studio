@@ -487,24 +487,36 @@ export async function saveAll(ids: DocumentId[]): Promise<SaveAllResult> {
  * rendering an older revision's document. The caller passes the tab's current
  * `revision`.
  */
-export async function exportPdf(id: DocumentId, revision: number): Promise<string> {
-  return invoke<string>("export_pdf", { id, revision });
+export async function exportPdf(
+  id: DocumentId,
+  revision: number,
+  outputPath?: string,
+): Promise<string> {
+  return invoke<string>("export_pdf", { id, revision, outputPath: outputPath ?? null });
 }
 
 /**
  * Render each page to a PNG via typst-render; returns the saved paths. See
  * [`exportPdf`] for the `revision` semantics (§9).
  */
-export async function exportPng(id: DocumentId, revision: number): Promise<string[]> {
-  return invoke<string[]>("export_png", { id, revision });
+export async function exportPng(
+  id: DocumentId,
+  revision: number,
+  outputPath?: string,
+): Promise<string[]> {
+  return invoke<string[]>("export_png", { id, revision, outputPath: outputPath ?? null });
 }
 
 /**
  * Render each page to an SVG via typst-svg; returns the saved paths. See
  * [`exportPdf`] for the `revision` semantics (§9).
  */
-export async function exportSvg(id: DocumentId, revision: number): Promise<string[]> {
-  return invoke<string[]>("export_svg", { id, revision });
+export async function exportSvg(
+  id: DocumentId,
+  revision: number,
+  outputPath?: string,
+): Promise<string[]> {
+  return invoke<string[]>("export_svg", { id, revision, outputPath: outputPath ?? null });
 }
 
 // --- Workspace / filesystem -------------------------------------------------

@@ -4184,3 +4184,5 @@ button {
 .project-status { display: flex; flex-direction: column; gap: 2px; padding-top: var(--space-xs); border-top: 1px solid var(--color-divider-soft); }
 .project-status-label { font: var(--text-fine-print); color: var(--color-ink-muted-48); }
 .project-status-path { font: var(--text-fine-print); font-family: var(--font-mono); color: var(--color-ink-muted-80); word-break: break-all; }
+.project-section { font: var(--text-caption-strong); color: var(--color-ink-muted-80); text-transform: uppercase; letter-spacing: 0.04em; padding-top: var(--space-xs); border-top: 1px solid var(--color-divider-soft); margin-top: var(--space-xxs); }
+.project-section:first-child { border-top: 0; padding-top: 0; margin-top: 0; }

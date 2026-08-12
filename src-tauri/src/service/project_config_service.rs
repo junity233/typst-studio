@@ -16,7 +16,9 @@ use std::path::{Path, PathBuf};
 
 use parking_lot::RwLock;
 
-use crate::domain::project_config::{validate_main_path, ProjectConfig, CURRENT_SCHEMA_VERSION};
+use crate::domain::project_config::{
+    validate_workspace_relative_path, ProjectConfig, CURRENT_SCHEMA_VERSION,
+};
 use crate::error::{AppError, Result};
 use crate::persistence;
 
@@ -51,17 +53,23 @@ impl ProjectConfigService {
         self.replace(loaded)
     }
 
+    /// Read `<root>/.typstpro` WITHOUT caching or firing `on_change` — a pure
+    /// peek used at workspace-open time to resolve `compile.root` BEFORE the
+    /// resolver is built (see `WorkspaceService::open`).
+    pub fn peek(root: &Path) -> Option<ProjectConfig> {
+        read_and_parse(root)
+    }
+
     /// The cached config (a clone), or `None`.
     pub fn get(&self) -> Option<ProjectConfig> {
         self.config.read().clone()
     }
 
     /// Validate, persist, cache, and broadcast a full config. `schema_version`
-    /// is stamped to current before writing. Returns the saved config.
+    /// is stamped to current before writing. All path-typed fields are
+    /// validated to stay within the workspace. Returns the saved config.
     pub fn set(&self, root: &Path, mut cfg: ProjectConfig) -> Result<ProjectConfig> {
-        if let Some(main) = cfg.main.as_deref() {
-            validate_main_path(main)?;
-        }
+        validate_config_paths(&cfg)?;
         cfg.schema_version = CURRENT_SCHEMA_VERSION;
         write_config(root, &cfg)?;
         self.replace(Some(cfg.clone()));
@@ -73,7 +81,7 @@ impl ProjectConfigService {
     /// the config is preserved).
     pub fn set_main_file(&self, root: &Path, main: Option<String>) -> Result<ProjectConfig> {
         if let Some(m) = main.as_deref() {
-            validate_main_path(m)?;
+            validate_workspace_relative_path(m, "main file path")?;
         }
         let mut cfg = self.get().unwrap_or_default();
         cfg.main = main;
@@ -100,11 +108,12 @@ impl ProjectConfigService {
 
     /// Recursively enumerate `.typ` files under `root`, returning
     /// workspace-relative paths (forward slashes) sorted lexicographically.
-    /// Hidden entries (leading `.`) and `node_modules` are skipped. Returns an
-    /// empty vec when `root` is missing or unreadable.
-    pub fn list_typ_files(root: &Path) -> Vec<String> {
+    /// Hidden entries (leading `.`), `node_modules`, and `target` are always
+    /// skipped; entries/dirs matching `exclude` (workspace-relative globs) are
+    /// skipped too. Returns an empty vec when `root` is missing or unreadable.
+    pub fn list_typ_files(root: &Path, exclude: Option<&globset::GlobSet>) -> Vec<String> {
         let mut out = Vec::new();
-        walk_typ(root, root, &mut out);
+        walk_typ(root, root, exclude, &mut out);
         out.sort();
         out
     }
@@ -157,28 +166,111 @@ fn write_config(root: &Path, cfg: &ProjectConfig) -> Result<()> {
     persistence::write_bytes(&path, &bytes)
 }
 
+/// Validate every workspace-relative path field of `cfg`. Collects the first
+/// violation (the field that names it in the error message).
+fn validate_config_paths(cfg: &ProjectConfig) -> Result<()> {
+    if let Some(main) = cfg.main.as_deref() {
+        validate_workspace_relative_path(main, "main file path")?;
+    }
+    if let Some(bib) = cfg.bibliography.as_deref() {
+        for e in bib {
+            validate_workspace_relative_path(e, "bibliography entry")?;
+        }
+    }
+    if let Some(t) = cfg.new_file_template.as_deref() {
+        validate_workspace_relative_path(t, "newFileTemplate")?;
+    }
+    if let Some(compile) = cfg.compile.as_ref() {
+        if let Some(root) = compile.root.as_deref() {
+            validate_workspace_relative_path(root, "compile.root")?;
+        }
+        if let Some(dirs) = compile.extra_font_dirs.as_deref() {
+            for d in dirs {
+                validate_workspace_relative_path(d, "compile.extraFontDirs entry")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Build a `GlobSet` from the project's `exclude` patterns. Returns `None` when
+/// there are no patterns or every pattern fails to compile. Match against
+/// workspace-relative paths with forward slashes.
+pub fn build_exclude_globset(exclude: Option<&[String]>) -> Option<globset::GlobSet> {
+    let patterns = exclude?;
+    let mut builder = globset::GlobSetBuilder::new();
+    let mut added = 0;
+    for p in patterns {
+        match globset::GlobBuilder::new(p)
+            .literal_separator(true)
+            .build()
+        {
+            Ok(g) => {
+                builder.add(g);
+                added += 1;
+            }
+            Err(e) => tracing::warn!(pattern = %p, error = %e, "exclude glob failed to compile; skipping"),
+        }
+    }
+    if added == 0 {
+        return None;
+    }
+    builder.build().ok()
+}
+
+/// True if a directory at workspace-relative `rel` should be pruned. A dir
+/// matches when the globset hits its own path OR a synthetic child path, so
+/// patterns like `build`, `build/**`, and `build/*` all prune the subtree.
+fn dir_excluded(exclude: &globset::GlobSet, rel: &str) -> bool {
+    if exclude.is_match(rel) {
+        return true;
+    }
+    // Synthetic child catches `build/**` / `build/*` without relying on the
+    // exact zero-match semantics of `**`.
+    let mut child = String::with_capacity(rel.len() + 8);
+    child.push_str(rel);
+    child.push_str("/dummy");
+    exclude.is_match(&child)
+}
+
 /// Recursive `.typ` collector. `base` is the root used to compute the relative
-/// path; `dir` is the current traversal position.
-fn walk_typ(base: &Path, dir: &Path, out: &mut Vec<String>) {
+/// path; `dir` is the current traversal position. `exclude` optionally prunes
+/// dirs/files by workspace-relative glob.
+fn walk_typ(base: &Path, dir: &Path, exclude: Option<&globset::GlobSet>, out: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        // Skip hidden entries (`.git`, `.typstpro`, …) and `node_modules`.
-        if name.starts_with('.') || name == "node_modules" {
+        // Skip hidden entries (`.git`, `.typstpro`, …), `node_modules`, and
+        // `target` (aligned with fs::tree::IGNORED_DIRS).
+        if name.starts_with('.') || name == "node_modules" || name == "target" {
             continue;
         }
         let path = entry.path();
         let Ok(ft) = entry.file_type() else { continue };
+        let rel = path.strip_prefix(base).ok().map(|r| {
+            // Forward-slash relative path for cross-platform wire + glob matching.
+            r.to_string_lossy().replace('\\', "/")
+        });
         if ft.is_dir() {
-            walk_typ(base, &path, out);
+            if let Some(rel) = &rel {
+                if let Some(gs) = exclude {
+                    if dir_excluded(gs, rel) {
+                        continue;
+                    }
+                }
+            }
+            walk_typ(base, &path, exclude, out);
         } else if ft.is_file() && name.ends_with(".typ") {
-            if let Ok(rel) = path.strip_prefix(base) {
-                // Forward-slash relative path for cross-platform wire stability.
-                let rel = rel.to_string_lossy().replace('\\', "/");
-                out.push(rel);
+            if let Some(rel) = &rel {
+                if let Some(gs) = exclude {
+                    if gs.is_match(rel) {
+                        continue;
+                    }
+                }
+                out.push(rel.clone());
             }
         }
     }
@@ -230,6 +322,7 @@ mod tests {
                     schema_version: 0, // set() stamps current
                     main: Some("paper.typ".into()),
                     title: Some("T".into()),
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -249,7 +342,7 @@ mod tests {
         svc.set(&root, ProjectConfig {
             schema_version: CURRENT_SCHEMA_VERSION,
             main: Some("a.typ".into()),
-            title: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -267,6 +360,7 @@ mod tests {
             schema_version: CURRENT_SCHEMA_VERSION,
             main: Some("a.typ".into()),
             title: Some("Title".into()),
+            ..Default::default()
         })
         .unwrap();
         let cfg = svc.set_main_file(&root, Some("b.typ".into())).unwrap();
@@ -282,6 +376,7 @@ mod tests {
             schema_version: CURRENT_SCHEMA_VERSION,
             main: Some("a.typ".into()),
             title: Some("Title".into()),
+            ..Default::default()
         })
         .unwrap();
         let cfg = svc.set_main_file(&root, None).unwrap();
@@ -301,11 +396,49 @@ mod tests {
                 ProjectConfig {
                     schema_version: 1,
                     main: Some("../escape.typ".into()),
-                    title: None,
+                    ..Default::default()
                 },
             )
             .unwrap_err();
         assert!(err.to_string().to_lowercase().contains("workspace"));
+    }
+
+    #[test]
+    fn set_rejects_invalid_compile_root() {
+        let root = tmp_root();
+        let (svc, _) = capturing_service();
+        use crate::domain::project_config::CompileConfig;
+        let err = svc
+            .set(
+                &root,
+                ProjectConfig {
+                    schema_version: 2,
+                    compile: Some(CompileConfig {
+                        root: Some("../outside".into()),
+                        extra_font_dirs: None,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("compile.root"));
+    }
+
+    #[test]
+    fn set_rejects_invalid_bibliography_entry() {
+        let root = tmp_root();
+        let (svc, _) = capturing_service();
+        let err = svc
+            .set(
+                &root,
+                ProjectConfig {
+                    schema_version: 2,
+                    bibliography: Some(vec!["/abs.bib".into()]),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("bibliography"));
     }
 
     #[test]
@@ -315,7 +448,7 @@ mod tests {
         svc.set(&root, ProjectConfig {
             schema_version: 1,
             main: Some("a.typ".into()),
-            title: None,
+            ..Default::default()
         })
         .unwrap();
         assert!(root.join(CONFIG_FILENAME).exists());
@@ -338,18 +471,40 @@ mod tests {
         std::fs::create_dir_all(root.join("ch")).unwrap();
         std::fs::write(root.join("ch").join("b.typ"), b"x").unwrap();
         std::fs::write(root.join("ignored.txt"), b"x").unwrap();
-        // Hidden + node_modules are skipped.
+        // Hidden + node_modules + target are skipped.
         std::fs::write(root.join(".hidden.typ"), b"x").unwrap();
         std::fs::create_dir_all(root.join("node_modules")).unwrap();
         std::fs::write(root.join("node_modules").join("nm.typ"), b"x").unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("target").join("t.typ"), b"x").unwrap();
 
-        let files = ProjectConfigService::list_typ_files(&root);
+        let files = ProjectConfigService::list_typ_files(&root, None);
         assert_eq!(files, vec!["a.typ".to_string(), "ch/b.typ".to_string()]);
     }
 
     #[test]
+    fn list_typ_files_applies_exclude() {
+        let root = tmp_root();
+        std::fs::write(root.join("keep.typ"), b"x").unwrap();
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        std::fs::write(root.join("build").join("out.typ"), b"x").unwrap();
+        std::fs::write(root.join("notes.bak.typ"), b"x").unwrap();
+
+        let gs = build_exclude_globset(Some(&["build/**".to_string(), "*.bak.typ".to_string()])).unwrap();
+        let files = ProjectConfigService::list_typ_files(&root, Some(&gs));
+        // build/ pruned by build/**; notes.bak.typ dropped by *.bak.typ.
+        assert_eq!(files, vec!["keep.typ".to_string()]);
+    }
+
+    #[test]
+    fn build_exclude_globset_none_when_empty() {
+        assert!(build_exclude_globset(None).is_none());
+        assert!(build_exclude_globset(Some(&[])).is_none());
+    }
+
+    #[test]
     fn list_typ_files_missing_root_is_empty() {
-        let files = ProjectConfigService::list_typ_files(&PathBuf::from("/does/not/exist"));
+        let files = ProjectConfigService::list_typ_files(&PathBuf::from("/does/not/exist"), None);
         assert!(files.is_empty());
     }
 }

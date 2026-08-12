@@ -1398,7 +1398,7 @@ mod tests {
 
         // Open a workspace rooted at the file's dir and reclassify.
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         let ws_id = ws.workspace_id().unwrap();
         emitter.clear(); // drop the initial-compile event so the wait below
                          // only returns once the post-reclassify compile finishes.
@@ -1439,7 +1439,7 @@ mod tests {
         std::fs::write(dir.join("intro.typ"), "Intro\n").unwrap();
 
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         let (svc, emitter) = make_service();
         let content = std::fs::read_to_string(&main).unwrap();
         // Open WITH a workspace → it's a WorkspaceFile.
@@ -1485,7 +1485,7 @@ mod tests {
         std::fs::write(&main, "#set page(width: 10cm)\n\nOriginal").unwrap();
 
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         let (svc, emitter) = make_service();
         let content = std::fs::read_to_string(&main).unwrap();
         let meta = svc.open_from_disk(main.clone(), content, Some(&ws)).unwrap();
@@ -1522,7 +1522,7 @@ mod tests {
         let ws = WorkspaceService::new();
         let dir = std::env::temp_dir().join(format!("ts-recl-unt-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         svc.reclassify_documents(&ws);
         ws.close();
         svc.reclassify_documents(&ws);
@@ -1559,7 +1559,7 @@ mod tests {
 
         // Open a workspace that does NOT contain the file → stays loose.
         let ws = WorkspaceService::new();
-        ws.open(ws_dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(ws_dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         svc.reclassify_documents(&ws);
 
         let after = svc.tab_meta(meta.id).unwrap();
@@ -1585,7 +1585,7 @@ mod tests {
 
         let (svc, emitter) = make_service();
         let ws = WorkspaceService::new();
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         let id1 = ws.workspace_id().expect("workspace open has an id");
         // Open inside the workspace → classifies as WorkspaceFile(id1).
         let content = std::fs::read_to_string(&main).unwrap();
@@ -1607,7 +1607,7 @@ mod tests {
         ));
 
         // Reopen the SAME folder → a fresh WorkspaceId.
-        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change()).unwrap();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None).unwrap();
         let id2 = ws.workspace_id().expect("reopened workspace has an id");
         assert_ne!(id1, id2, "each open must mint a fresh WorkspaceId");
         svc.reclassify_documents(&ws);
