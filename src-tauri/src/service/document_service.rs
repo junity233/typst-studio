@@ -1122,6 +1122,44 @@ impl DocumentService {
         }
     }
 
+    /// Force-rebuild the `EditorWorld` of every WorkspaceFile tab against the
+    /// workspace resolver's CURRENT root. Used when `[compile].root` changes:
+    /// [`reclassify_documents`](Self::reclassify_documents) would skip these
+    /// because their origin is unchanged, but each tab's main `FileId` vpath was
+    /// virtualized against the now-stale root, so includes/images/reads would
+    /// silently resolve to the wrong disk path until the tab is reopened. Like
+    /// `reclassify_one`, the disk_version + file_identity are carried across the
+    /// rebuild (the file itself didn't change — only its resolution anchor did).
+    pub fn rebuild_workspace_worlds(&self, ws: &WorkspaceService) {
+        let Some(resolver) = ws.resolver() else { return; };
+        let ids: Vec<DocumentId> = self.store.tabs.read().keys().copied().collect();
+        for id in ids {
+            let (meta, text, disk_version, file_identity, canon) = {
+                let tabs = self.store.tabs.read();
+                let Some(tab) = tabs.get(&id).cloned() else { continue; };
+                let rt = tab.state.lock();
+                // Only WorkspaceFile tabs are anchored at the workspace resolver
+                // — LooseFile/Untitled tabs are unaffected by a compile-root move.
+                if !matches!(rt.meta.origin, DocumentOrigin::WorkspaceFile { .. }) {
+                    continue;
+                }
+                let Some(canon) = rt.meta.origin.canonical_path().map(|p| p.to_path_buf()) else {
+                    continue;
+                };
+                (rt.meta.clone(), tab.world.text(), rt.disk_version, rt.file_identity, canon)
+            };
+            let new_tab = self.build_tab(&meta, &text, Some(resolver.clone()), &canon);
+            self.swap_world(id, new_tab);
+            if let Some(dv) = disk_version {
+                if let Some(t) = self.store.tabs.read().get(&id) {
+                    let mut rt = t.state.lock();
+                    rt.disk_version = Some(dv);
+                    rt.file_identity = file_identity;
+                }
+            }
+        }
+    }
+
     /// Reclassify a single document, if its origin should change under `ws`.
     /// No-op when the origin is already correct (or the doc is untitled).
     fn reclassify_one(&self, id: DocumentId, ws: &WorkspaceService) {

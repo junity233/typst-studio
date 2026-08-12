@@ -253,7 +253,11 @@ pub async fn export_pdf(
     // macro-expanded by the frontend), skip the save dialog and write there
     // directly; otherwise prompt as before.
     let path = match output_path {
-        Some(p) => PathBuf::from(p),
+        Some(p) => {
+            let path = PathBuf::from(p);
+            ensure_export_within_workspace(&state, &path)?;
+            path
+        }
         None => {
             let app_for_dialog = app.clone();
             let picked = tauri::async_runtime::spawn_blocking(move || {
@@ -303,7 +307,11 @@ pub async fn export_png(
     output_path: Option<String>,
 ) -> Result<Vec<String>> {
     let picked_path = match output_path {
-        Some(p) => PathBuf::from(p),
+        Some(p) => {
+            let path = PathBuf::from(p);
+            ensure_export_within_workspace(&state, &path)?;
+            path
+        }
         None => {
             let app_for_dialog = app.clone();
             let picked = tauri::async_runtime::spawn_blocking(move || {
@@ -366,7 +374,11 @@ pub async fn export_svg(
     output_path: Option<String>,
 ) -> Result<Vec<String>> {
     let picked_path = match output_path {
-        Some(p) => PathBuf::from(p),
+        Some(p) => {
+            let path = PathBuf::from(p);
+            ensure_export_within_workspace(&state, &path)?;
+            path
+        }
         None => {
             let app_for_dialog = app.clone();
             let picked = tauri::async_runtime::spawn_blocking(move || {
@@ -446,4 +458,79 @@ pub(crate) fn path_buf_from(picked: tauri_plugin_fs::FilePath) -> Result<PathBuf
     picked
         .into_path()
         .map_err(|e| AppError::InvalidInput(format!("invalid file path: {e}")))
+}
+
+/// Lexically check that `target` is at or under `root`, normalizing `.`/`..`
+/// (the target may not exist yet, so this is a pure-component check, not a
+/// canonicalize). Used to keep an export `output_path` — which comes from a
+/// possibly-untrusted `.typstpro` and may carry an escaped `${title}` macro
+/// expansion — from writing outside the workspace. The OS save-dialog path is
+/// user-chosen and is NOT run through this check.
+pub(crate) fn within_workspace(root: &std::path::Path, target: &std::path::Path) -> bool {
+    use std::path::{Component, PathBuf};
+    let abs = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        root.join(target)
+    };
+    let mut norm: Vec<Component> = Vec::new();
+    for c in abs.components() {
+        match c {
+            Component::ParentDir => {
+                norm.pop();
+            }
+            Component::CurDir => {}
+            other => norm.push(other),
+        }
+    }
+    let normalized: PathBuf = norm.iter().collect();
+    let root_norm: PathBuf = root.components().collect();
+    normalized.starts_with(&root_norm)
+}
+
+/// Reject an export `output_path` that escapes the open workspace root.
+fn ensure_export_within_workspace(
+    state: &State<'_, AppState>,
+    path: &std::path::Path,
+) -> Result<()> {
+    if let Some(root) = state.workspace.root() {
+        if !within_workspace(&root, path) {
+            return Err(AppError::InvalidInput(
+                "export output path escapes the workspace".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::within_workspace;
+    use std::path::Path;
+
+    #[cfg(unix)]
+    #[test]
+    fn within_workspace_accepts_nested_and_rejects_escape() {
+        let root = Path::new("/ws");
+        assert!(within_workspace(root, Path::new("/ws/build/x.pdf")));
+        assert!(within_workspace(root, Path::new("/ws/a/b/c.typ")));
+        // Relative (joined under root).
+        assert!(within_workspace(root, Path::new("build/x.pdf")));
+        // `..` that stays under root.
+        assert!(within_workspace(root, Path::new("/ws/a/../b.typ")));
+        // Escapes.
+        assert!(!within_workspace(root, Path::new("/ws/../etc/passwd")));
+        assert!(!within_workspace(root, Path::new("/etc/passwd")));
+        assert!(!within_workspace(root, Path::new("/ws/../../evil")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn within_workspace_handles_windows_paths() {
+        let root = Path::new("C:\\ws");
+        assert!(within_workspace(root, Path::new("C:\\ws\\build\\x.pdf")));
+        assert!(within_workspace(root, Path::new("build\\x.pdf")));
+        assert!(!within_workspace(root, Path::new("C:\\ws\\..\\evil.pdf")));
+        assert!(!within_workspace(root, Path::new("D:\\secret.pdf")));
+    }
 }

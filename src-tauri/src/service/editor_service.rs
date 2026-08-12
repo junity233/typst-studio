@@ -222,6 +222,13 @@ impl EditorService {
         self.document.reclassify_documents(ws);
     }
 
+    /// Delegates to [`DocumentService::rebuild_workspace_worlds`]. Called when
+    /// `[compile].root` changes so WorkspaceFile tabs rebuild against the new
+    /// resolver anchor.
+    pub fn rebuild_workspace_worlds(&self, ws: &WorkspaceService) {
+        self.document.rebuild_workspace_worlds(ws);
+    }
+
     /// Delegates to [`DocumentService::close_tab`] (now a hard-close alias, §B1).
     pub fn close_tab(&self, id: DocumentId) -> Result<()> {
         self.document.close_tab(id)

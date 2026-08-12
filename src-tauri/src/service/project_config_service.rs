@@ -148,6 +148,12 @@ fn read_and_parse(root: &Path) -> Option<ProjectConfig> {
                 tracing::warn!(?path, error = %e, ".typstpro migration failed; ignoring");
                 return None;
             }
+            // `.typstpro` is hand-editable and may come from an untrusted
+            // workspace clone, so re-validate every path field here (set() only
+            // guards user edits via the panel). Drop — don't honor — any field
+            // that escapes the workspace, so peek/load/get never yield a path
+            // that could read/write outside the root.
+            sanitize_loaded_paths(&mut cfg);
             Some(cfg)
         }
         Err(e) => {
@@ -191,6 +197,50 @@ fn validate_config_paths(cfg: &ProjectConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// True iff `value` is a workspace-relative path that stays under the root
+/// (logs + returns false on a violation). Used by [`sanitize_loaded_paths`].
+fn path_ok(field: &str, value: &str) -> bool {
+    match validate_workspace_relative_path(value, field) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(
+                field, value, error = %e,
+                ".typstpro path escapes the workspace; ignoring this field"
+            );
+            false
+        }
+    }
+}
+
+/// Drop (set to `None`) any path field of a LOADED config that escapes the
+/// workspace. The config is hand-editable / may come from an untrusted clone,
+/// and `set()` only guards panel edits — so this is the trust boundary for
+/// every path-typed field consumed downstream (main, bibliography[],
+/// newFileTemplate, compile.root, compile.extraFontDirs[]). Non-path fields
+/// (title, template, typstVersion, exclude globs, export) are left as-is.
+fn sanitize_loaded_paths(cfg: &mut ProjectConfig) {
+    if let Some(m) = cfg.main.take() {
+        cfg.main = path_ok("main", &m).then_some(m);
+    }
+    if let Some(t) = cfg.new_file_template.take() {
+        cfg.new_file_template = path_ok("newFileTemplate", &t).then_some(t);
+    }
+    if let Some(mut bib) = cfg.bibliography.take() {
+        bib.retain(|e| path_ok("bibliography entry", e));
+        cfg.bibliography = if bib.is_empty() { None } else { Some(bib) };
+    }
+    if let Some(mut c) = cfg.compile.take() {
+        if let Some(root) = c.root.take() {
+            c.root = path_ok("compile.root", &root).then_some(root);
+        }
+        if let Some(mut dirs) = c.extra_font_dirs.take() {
+            dirs.retain(|d| path_ok("compile.extraFontDirs entry", d));
+            c.extra_font_dirs = if dirs.is_empty() { None } else { Some(dirs) };
+        }
+        cfg.compile = Some(c);
+    }
 }
 
 /// Build a `GlobSet` from the project's `exclude` patterns. Returns `None` when
@@ -506,5 +556,34 @@ mod tests {
     fn list_typ_files_missing_root_is_empty() {
         let files = ProjectConfigService::list_typ_files(&PathBuf::from("/does/not/exist"), None);
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn load_drops_paths_that_escape_the_workspace() {
+        // A hand-edited / untrusted `.typstpro` with escaping path fields: the
+        // valid `main` is preserved, every escaping field is dropped to None.
+        let root = tmp_root();
+        std::fs::write(
+            root.join(CONFIG_FILENAME),
+            "schemaVersion = 2\n\
+             main = \"paper.typ\"\n\
+             newFileTemplate = \"../../../etc/passwd\"\n\
+             bibliography = [\"refs.bib\", \"/abs.bib\"]\n\
+             \n[compile]\nroot = \"../../outside\"\nextraFontDirs = [\"fonts\", \"..\"]\n",
+        )
+        .unwrap();
+        let (svc, _cap) = capturing_service();
+        let cfg = svc.load(&root).expect("valid v2 config loads");
+        assert_eq!(cfg.main.as_deref(), Some("paper.typ")); // valid, kept
+        assert!(cfg.new_file_template.is_none(), "escaping newFileTemplate dropped");
+        // bibliography: "refs.bib" kept, "/abs.bib" (absolute) dropped.
+        assert_eq!(cfg.bibliography.as_deref(), Some(&["refs.bib".to_string()][..]));
+        let compile = cfg.compile.expect("compile table kept");
+        assert!(compile.root.is_none(), "escaping compile.root dropped");
+        // extraFontDirs: "fonts" kept, ".." dropped.
+        assert_eq!(
+            compile.extra_font_dirs.as_deref(),
+            Some(&["fonts".to_string()][..])
+        );
     }
 }

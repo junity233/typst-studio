@@ -495,7 +495,11 @@ pub fn run() {
                         .as_ref()
                         .and_then(|c| c.compile_root().map(std::path::PathBuf::from));
                     if ws_for_project.reanchor_compile_root(compile_root) {
-                        editor_for_project.reclassify_documents(&ws_for_project);
+                        // reclassify_documents would skip WorkspaceFile tabs
+                        // (their origin is unchanged), but their main FileId
+                        // vpath is anchored at the now-stale root — force a
+                        // world rebuild so includes/images re-resolve.
+                        editor_for_project.rebuild_workspace_worlds(&ws_for_project);
                     }
                     let _ = app_for_project.emit(
                         "project_config_changed",
