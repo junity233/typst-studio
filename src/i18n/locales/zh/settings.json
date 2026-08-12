@@ -61,6 +61,7 @@
   "settingHelp.editor.updateDebounceMs": "最后一次按键后，编辑器等待多久再把文本推送到编译管线。",
   "setting.editor.pasteConvertRichText": "将富文本粘贴为 Typst",
   "setting.editor.pasteImagePath": "粘贴图片路径",
+  "settingHelp.editor.pasteImagePath": "粘贴的图片(截图、复制的图片、网页/Word 图片)保存到何处。可用宏:${fileDir}、${workspace}、${fileName}、${filePath}、${hash}、${ext}、${timestamp}、${index}。",
   "setting.editor.pasteImageFetchRemote": "粘贴时下载远程图片",
   "setting.editor.insertImagePath": "插入图片路径",
   "settingHelp.editor.insertImagePath": "工具栏插入的图片复制到何处。可用宏:${fileDir}、${fileName}、${workspace}、${ext}、${timestamp}。",

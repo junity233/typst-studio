@@ -1,5 +1,6 @@
 import { join, dirname, isAbsolute, appConfigDir } from "@tauri-apps/api/path";
-import { writeFile, mkdir } from "@tauri-apps/plugin-fs";
+import { writeBytesToFile } from "../../lib/tauri";
+import { relativePath } from "../../lib/relativePath";
 
 export async function resolveImageDir(
   ctx: { workspace?: string; filePath?: string },
@@ -12,9 +13,36 @@ export async function resolveImageDir(
 }
 
 export async function writeImage(absPath: string, bytes: Uint8Array): Promise<void> {
-  const dir = await dirname(absPath);
-  await mkdir(dir, { recursive: true });
-  await writeFile(absPath, bytes);
+  // Route through the backend (containment-checked std::fs) instead of the fs
+  // plugin: the plugin is scoped to $HOME/**, which rejects workspaces on other
+  // drives. mkdir of the parent dir happens Rust-side. See write_bytes_to_file.
+  await writeBytesToFile(absPath, bytes);
+}
+
+/**
+ * Derive the `#image("…")` source string for a just-written image: prefer a
+ * path **relative to the source document's directory** (Typst resolves image
+ * paths relative to the source `.typ` file, so a relative reference is portable
+ * and shareable). Falls back to the absolute on-disk path when a relative one
+ * can't be expressed — i.e. an untitled tab (no `tab.path` → no file dir), a
+ * target on a different Windows drive, or a target outside the workspace that
+ * landed in the app-config image cache. In every fallback case the absolute
+ * path is still correct (it's where the bytes actually live), just less pretty.
+ *
+ * Shared by both the raw-image paste flow and the rich-text paste flow so their
+ * inserted references stay consistent.
+ */
+export async function imageSrcForInsert(
+  absPath: string,
+  tab: { path: string | null },
+  ctx: { workspace?: string; filePath?: string },
+): Promise<string> {
+  const fileDir = await resolveImageDir(ctx, tab);
+  if (fileDir) {
+    const rel = relativePath(fileDir, absPath);
+    if (rel !== null) return rel;
+  }
+  return absPath;
 }
 
 /**

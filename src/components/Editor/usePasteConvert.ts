@@ -8,8 +8,8 @@ import { htmlToTypst } from "../../lib/htmlToTypst";
 import { escapeTypstStr } from "../../lib/htmlToTypst/escape";
 import { expandTemplate } from "../../lib/pathMacros";
 import { inferExt } from "../../lib/htmlToTypst/images";
-import { sha1Hex } from "./sha1";
-import { writeImage, resolveImageDir, ensureAbsolute } from "./imageIo";
+import { sha1Hex, sha1HexBytes } from "./sha1";
+import { writeImage, resolveImageDir, ensureAbsolute, imageSrcForInsert } from "./imageIo";
 import { fetchUrlToFile } from "../../lib/tauri";
 
 export type GetEditor = () => Monaco.editor.IStandaloneCodeEditor | null;
@@ -38,11 +38,6 @@ export function usePasteConvert(
       const editor = getEditor();
       if (!editor || !editor.hasTextFocus()) return;
       const html = e.clipboardData?.getData("text/html");
-      if (!html) return;
-      const plain = e.clipboardData?.getData("text/plain") ?? "";
-      if (plain.trim().length > 0 && !looksRich(html, plain)) return;
-      if (TYPST_MARK.test(plain)) return;
-
       const tab = tabRef.current;
       const ctx = {
         workspace: rootPath ?? undefined,
@@ -50,6 +45,48 @@ export function usePasteConvert(
         imageTemplate: imageTemplate ?? "${fileDir}/assets/pasted-${hash}.${ext}",
         fetchRemote: fetchRemote !== false,
       };
+
+      // Raw-image paste (screenshot, copied image file): the clipboard carries
+      // image file items but no HTML, so the rich-text conversion below never
+      // runs. Handle it up-front — save each to the configured folder and drop
+      // one #image("…") per item at the caret. The File handles are captured
+      // synchronously here (before any await) because clipboard items can be
+      // invalidated once the handler yields; a File itself stays readable.
+      if (!html) {
+        const rawImages = collectClipboardImages(e.clipboardData);
+        if (rawImages.length === 0) return; // no HTML, no image → native paste
+        e.preventDefault();
+        const startModelUri = editor.getModel()?.uri.toString();
+        const srcs = await Promise.all(
+          rawImages.map((file, index) =>
+            resolveRawImage(file, ctx, tab, index).catch((err) => {
+              console.warn("[paste] raw image failed:", err);
+              return null;
+            }),
+          ),
+        );
+        const finalText = srcs
+          .filter((s): s is string => s !== null)
+          .map((s) => `#image("${escapeTypstStr(s)}")`)
+          .join("\n");
+        if (finalText.length === 0) return; // every image failed
+        // Re-validate focus + model identity before applying. Image writes can
+        // take time, during which the user may switch tabs (model changed) or
+        // click away from the editor. Bail silently rather than inject into the
+        // wrong document or at a stale cursor (same rationale as rich-text path).
+        const liveEditor = getEditor();
+        if (!liveEditor || !liveEditor.hasTextFocus()) return;
+        const liveUri = liveEditor.getModel()?.uri.toString();
+        if (liveUri !== startModelUri) return;
+        const sel = liveEditor.getSelection();
+        if (!sel) return;
+        liveEditor.executeEdits("paste-raw-image", [{ range: sel, text: finalText }]);
+        return;
+      }
+
+      const plain = e.clipboardData?.getData("text/plain") ?? "";
+      if (plain.trim().length > 0 && !looksRich(html, plain)) return;
+      if (TYPST_MARK.test(plain)) return;
       let result;
       try {
         result = htmlToTypst(html, ctx);
@@ -146,13 +183,74 @@ async function resolveImage(
   const abs = await ensureAbsolute(rel, ctx.workspace);
   if (isRemote) {
     await fetchUrlToFile(img.src, abs);
-    return abs;
-  }
-  if (bytes) {
+  } else if (bytes) {
     await writeImage(abs, bytes);
-    return abs;
+  } else {
+    return img.src;
   }
-  return img.src;
+  // Prefer a path relative to the source document so #image() stays portable
+  // (Typst resolves image paths relative to the source .typ file). Falls back
+  // to the absolute path when a relative one can't be expressed (untitled tab,
+  // cross-drive, app-config cache). Shared with the raw-image paste path.
+  return await imageSrcForInsert(abs, tab, ctx);
+}
+
+/**
+ * Pull image files off a paste's {@link DataTransfer}. Screenshots and "copy
+ * image" land here as `kind: "file"` items with an `image/*` MIME type and NO
+ * `text/html` payload (which is why the rich-text path never sees them). Must
+ * be called synchronously during the event — `DataTransferItem` access is
+ * invalidated once the handler yields — but the returned {@link File}s stay
+ * readable across awaits.
+ */
+function collectClipboardImages(data: DataTransfer | null): File[] {
+  if (!data) return [];
+  const out: File[] = [];
+  const items = data.items;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind === "file" && item.type.startsWith("image/")) {
+      const file = item.getAsFile();
+      if (file) out.push(file);
+    }
+  }
+  return out;
+}
+
+/**
+ * Resolve a raw pasted image (screenshot / copied file) to the `#image("…")`
+ * source string, mirroring {@link resolveImage}'s contract for the rich-text
+ * path: expand the template, write the bytes to disk, and return a
+ * document-relative path. The difference is the bytes come straight off the
+ * clipboard (no data-URI decoding, no remote fetch), and the dedup hash is over
+ * the raw image bytes rather than a base64 string.
+ */
+async function resolveRawImage(
+  file: File,
+  ctx: { workspace?: string; filePath?: string; imageTemplate: string; fetchRemote: boolean },
+  tab: Tab,
+  index: number,
+): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const hash = await sha1HexBytes(bytes);
+  // Synthesize a `data:<mime>;` prefix so {@link inferExt} (which keys on
+  // `^data:image/<sub>;`) maps the MIME type to an extension without a
+  // separate MIME→ext table. `image/jpeg` → jpg, `image/svg+xml` → svg, etc.
+  const ext = inferExt(`data:${file.type};`);
+  const fileDir = await resolveImageDir(ctx, tab);
+  const rel = expandTemplate(ctx.imageTemplate, {
+    workspace: ctx.workspace,
+    fileDir,
+    fileName: tab.path ? tab.path.split(/[\\/]/).pop()?.replace(/\.typ$/, "") : undefined,
+    filePath: tab.path ?? undefined,
+    hash,
+    ext,
+    timestamp: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
+    index,
+  });
+  const abs = await ensureAbsolute(rel, ctx.workspace);
+  await writeImage(abs, bytes);
+  return await imageSrcForInsert(abs, tab, ctx);
 }
 
 function decodeDataUri(uri: string): Uint8Array {

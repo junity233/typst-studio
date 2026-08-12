@@ -1238,3 +1238,34 @@ export async function clearConflict(id: DocumentId): Promise<void> {
 export async function fetchUrlToFile(url: string, dest: string): Promise<number> {
   return invoke<number>("fetch_url_to_file", { url, dest });
 }
+
+/**
+ * Write binary bytes to an absolute path via the backend (containment-checked:
+ * must be under the workspace root or app config dir). Used by the paste-image
+ * flow to materialize clipboard bytes — routing through Rust instead of
+ * `@tauri-apps/plugin-fs` bypasses the plugin's `$HOME` scope, so pasted images
+ * land correctly for workspaces opened outside the home directory.
+ *
+ * Bytes are base64-encoded because the default IPC serializes command args as
+ * JSON; a multi-MB `number[]` per image would be wasteful and slow.
+ */
+export async function writeBytesToFile(dest: string, bytes: Uint8Array): Promise<number> {
+  return invoke<number>("write_bytes_to_file", { dest, bytesB64: bytesToBase64(bytes) });
+}
+
+/**
+ * Base64-encode a {@link Uint8Array}. Chunked to avoid the call-stack limit that
+ * `String.fromCharCode.apply` hits on large arrays (a pasted screenshot easily
+ * exceeds the ~125k-arg ceiling).
+ */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(
+      null,
+      bytes.subarray(i, i + CHUNK) as unknown as number[],
+    );
+  }
+  return btoa(binary);
+}

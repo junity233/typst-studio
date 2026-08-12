@@ -61,6 +61,7 @@
   "settingHelp.editor.updateDebounceMs": "How long the editor waits after the last keystroke before pushing text to the compile pipeline.",
   "setting.editor.pasteConvertRichText": "Paste rich text as Typst",
   "setting.editor.pasteImagePath": "Pasted image path",
+  "settingHelp.editor.pasteImagePath": "Where pasted images (screenshots, copied images, web/Word images) are saved. Macros: ${fileDir}, ${workspace}, ${fileName}, ${filePath}, ${hash}, ${ext}, ${timestamp}, ${index}.",
   "setting.editor.pasteImageFetchRemote": "Download remote images on paste",
   "setting.editor.insertImagePath": "Inserted image path",
   "settingHelp.editor.insertImagePath": "Where toolbar-inserted images are copied. Macros: ${fileDir}, ${fileName}, ${workspace}, ${ext}, ${timestamp}.",

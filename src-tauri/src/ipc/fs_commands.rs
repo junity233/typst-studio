@@ -25,6 +25,75 @@ use crate::service::workspace_service::WorkspaceMeta;
 /// the file tree. See `commands::MAX_SOURCE_FILE_BYTES` for rationale.
 const MAX_SOURCE_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
+/// Whether `candidate` is contained within `base` (resolving existing ancestors
+/// so a symlink can't redirect outside the root). Thin wrapper over the shared
+/// [`ensure_contained_path`](crate::domain::path::ensure_contained_path)
+/// helper — same policy as `net_commands::is_contained`, kept local because the
+/// two modules are independent and the policy is a one-liner.
+fn contained_in(base: &Path, candidate: &Path) -> bool {
+    crate::domain::path::ensure_contained_path(base, candidate).is_ok()
+}
+
+/// Write base64-encoded `bytes` to absolute `dest`, creating parent dirs as
+/// needed. Returns the number of bytes written.
+///
+/// This is the write path for pasted images: the frontend computes `dest` from
+/// the user's `editor.pasteImagePath` template (typically `${fileDir}/assets/…`)
+/// and ships the clipboard bytes here. Routing through Rust — instead of
+/// `@tauri-apps/plugin-fs` — bypasses the fs plugin's `$HOME` scope, so images
+/// land correctly for workspaces opened outside the home directory (e.g. on a
+/// second drive), matching how the app's open/save/save-as commands already use
+/// `std::fs` directly.
+///
+/// **Containment:** identical policy to `fetch_url_to_file` — `dest` must live
+/// under the open workspace root OR the app's config dir (the two legitimate
+/// targets for a pasted image), so a compromised frontend can't write to
+/// arbitrary paths. Bytes are passed base64-encoded because the default IPC
+/// serializes command args as JSON (avoids a multi-MB number array per image).
+#[tauri::command]
+pub async fn write_bytes_to_file(
+    dest: String,
+    bytes_b64: String,
+    state: State<'_, AppState>,
+) -> Result<u64> {
+    let dest_path = Path::new(&dest);
+    if !dest_path.is_absolute() {
+        return Err(AppError::InvalidInput("dest must be absolute".into()));
+    }
+    let workspace_root = state.workspace.root();
+    let config_base = crate::paths::app_config_dir();
+    let allowed = workspace_root
+        .as_ref()
+        .map(|r| contained_in(r, dest_path))
+        .unwrap_or(false)
+        || config_base
+            .as_ref()
+            .map(|b| contained_in(b, dest_path))
+            .unwrap_or(false);
+    if !allowed {
+        return Err(AppError::InvalidInput(
+            "dest must be inside the workspace or the app config directory".into(),
+        ));
+    }
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&bytes_b64)
+        .map_err(|e| AppError::InvalidInput(format!("invalid base64 bytes: {e}")))?;
+    let len = bytes.len() as u64;
+    let dest_buf = dest_path.to_path_buf();
+    // Blocking file IO off the async runtime, matching the export commands.
+    tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+        if let Some(parent) = dest_buf.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&dest_buf, &bytes)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
+    Ok(len)
+}
+
 /// Wire view of one document rebound by a rename/move (§6.4). Emitted in the
 /// `docs_rebound` event payload AND returned from the `rename_entry` command so
 /// the frontend can rebind tab titles / breadcrumbs / active-file highlight.
