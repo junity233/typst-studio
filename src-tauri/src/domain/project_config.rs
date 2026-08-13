@@ -10,8 +10,6 @@
 //! main = "paper.typ"
 //! title = "My Paper"
 //! bibliography = ["refs.bib"]
-//! template = "@preview/charged-ieee:0.1.0"
-//! typstVersion = "0.13.0"
 //! newFileTemplate = "templates/chapter.typ"
 //! exclude = ["build/**", "out/**"]
 //!
@@ -103,15 +101,6 @@ pub struct ProjectConfig {
     /// prefers these over scan-discovery when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bibliography: Option<Vec<String>>,
-    /// The Universe template this project was created from (e.g.
-    /// `"@preview/charged-ieee:0.1.0"`). Metadata only — drives a "created
-    /// from" indicator + future update checks.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub template: Option<String>,
-    /// Target Typst version (e.g. `"0.13.0"`). Advisory — the panel warns when
-    /// it differs from the embedded compiler version.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub typst_version: Option<String>,
     /// Workspace-relative file whose contents seed a new document. Precedence
     /// in `new_tab`: explicit content > this > global `document.defaultTemplate`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,8 +124,6 @@ impl Default for ProjectConfig {
             main: None,
             title: None,
             bibliography: None,
-            template: None,
-            typst_version: None,
             new_file_template: None,
             exclude: None,
             compile: None,
@@ -225,8 +212,6 @@ schemaVersion = 2
 main = "paper.typ"
 bibliography = ["refs.bib", "extra.yml"]
 exclude = ["build/**"]
-template = "@preview/foo:0.1.0"
-typstVersion = "0.13.0"
 newFileTemplate = "templates/chapter.typ"
 
 [compile]
@@ -241,8 +226,6 @@ outputPath = "build/${title}.pdf"
         assert_eq!(cfg.main.as_deref(), Some("paper.typ"));
         assert_eq!(cfg.bibliography.as_deref(), Some(&["refs.bib".to_string(), "extra.yml".to_string()][..]));
         assert_eq!(cfg.exclude.as_deref(), Some(&["build/**".to_string()][..]));
-        assert_eq!(cfg.template.as_deref(), Some("@preview/foo:0.1.0"));
-        assert_eq!(cfg.typst_version.as_deref(), Some("0.13.0"));
         assert_eq!(cfg.new_file_template.as_deref(), Some("templates/chapter.typ"));
         let compile = cfg.compile.unwrap();
         assert_eq!(compile.root.as_deref(), Some("src"));
@@ -250,6 +233,16 @@ outputPath = "build/${title}.pdf"
         let export = cfg.export.unwrap();
         assert_eq!(export.format.as_deref(), Some("pdf"));
         assert_eq!(export.output_path.as_deref(), Some("build/${title}.pdf"));
+    }
+
+    #[test]
+    fn removed_fields_are_ignored_on_load() {
+        // `template` and `typstVersion` were removed; an old `.typstpro` that
+        // still carries them must load (serde ignores unknown keys by default),
+        // and the surviving fields are parsed as usual.
+        let raw = "schemaVersion = 2\nmain = \"paper.typ\"\ntemplate = \"@preview/foo:0.1.0\"\ntypstVersion = \"0.13.0\"\n";
+        let cfg: ProjectConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.main.as_deref(), Some("paper.typ"));
     }
 
     #[test]
@@ -279,8 +272,6 @@ outputPath = "build/${title}.pdf"
             main: Some("paper.typ".into()),
             title: None,
             bibliography: None,
-            template: None,
-            typst_version: None,
             new_file_template: None,
             exclude: None,
             compile: None,
@@ -300,8 +291,6 @@ outputPath = "build/${title}.pdf"
             main: Some("a.typ".into()),
             title: Some("T".into()),
             bibliography: None,
-            template: None,
-            typst_version: Some("0.13.0".into()),
             new_file_template: None,
             exclude: None,
             compile: Some(CompileConfig { root: Some("src".into()), extra_font_dirs: None }),
@@ -309,7 +298,7 @@ outputPath = "build/${title}.pdf"
         };
         let json = serde_json::to_string(&cfg).unwrap();
         assert!(json.contains("\"schemaVersion\""));
-        assert!(json.contains("\"typstVersion\""));
+        assert!(json.contains("\"newFileTemplate\"") || !json.contains("newFileTemplate"));
         assert!(json.contains("\"compile\""));
         assert!(json.contains("\"extraFontDirs\"") || !json.contains("extraFontDirs"));
     }
@@ -321,8 +310,6 @@ outputPath = "build/${title}.pdf"
             main: Some("x.typ".into()),
             title: None,
             bibliography: None,
-            template: None,
-            typst_version: None,
             new_file_template: None,
             exclude: None,
             compile: None,
@@ -343,8 +330,6 @@ outputPath = "build/${title}.pdf"
             main: Some("x.typ".into()),
             title: Some("T".into()),
             bibliography: None,
-            template: None,
-            typst_version: None,
             new_file_template: None,
             exclude: None,
             compile: None,

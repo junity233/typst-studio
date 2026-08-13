@@ -1,19 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Save, Trash2, StarOff } from "lucide-react";
+import { Save, Trash2, StarOff, FolderOpen, FileText } from "lucide-react";
 import { useProjectConfigStore } from "../../../store/projectConfigStore";
 import { useWorkspaceStore } from "../../../store/workspaceStore";
 import { useUiStore } from "../../../store/uiStore";
 import { useDialogStore } from "../../../store/dialogStore";
-import { packageCompilerVersion } from "../../../lib/tauri";
+import { pickPath } from "../../../lib/tauri";
+import { relativeWithinWorkspace } from "../../../lib/workspacePath";
 import type { ProjectConfig } from "../../../lib/types";
 
 /** The editable form shape. List fields are comma-separated strings for input. */
 interface Form {
   main: string;
   title: string;
-  template: string;
-  typstVersion: string;
   bibliography: string;
   newFileTemplate: string;
   exclude: string;
@@ -26,8 +25,6 @@ interface Form {
 const EMPTY_FORM: Form = {
   main: "",
   title: "",
-  template: "",
-  typstVersion: "",
   bibliography: "",
   newFileTemplate: "",
   exclude: "",
@@ -50,8 +47,6 @@ function configToForm(cfg: ProjectConfig | null): Form {
   return {
     main: cfg.main ?? "",
     title: cfg.title ?? "",
-    template: cfg.template ?? "",
-    typstVersion: cfg.typstVersion ?? "",
     bibliography: (cfg.bibliography ?? []).join(", "),
     newFileTemplate: cfg.newFileTemplate ?? "",
     exclude: (cfg.exclude ?? []).join(", "),
@@ -82,8 +77,6 @@ function formToConfig(form: Form): ProjectConfig {
     schemaVersion: 2,
     main: form.main || null,
     title: form.title || null,
-    template: form.template || null,
-    typstVersion: form.typstVersion || null,
     bibliography: parseList(form.bibliography),
     newFileTemplate: form.newFileTemplate || null,
     exclude: parseList(form.exclude),
@@ -92,15 +85,11 @@ function formToConfig(form: Form): ProjectConfig {
   };
 }
 
-/** Compare two "M.m.p" version strings; returns >0 if a is newer, 0 equal, <0 older. NaN-safe. */
-function compareVersion(a: string, b: string): number {
-  const pa = a.trim().split(".").map((n) => parseInt(n, 10) || 0);
-  const pb = b.trim().split(".").map((n) => parseInt(n, 10) || 0);
-  for (let i = 0; i < 3; i++) {
-    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
-    if (d !== 0) return d;
-  }
-  return 0;
+/** Append `rel` to a comma-separated list string, deduping + trimming. */
+function appendRel(list: string, rel: string): string {
+  const items = parseList(list);
+  if (items.includes(rel)) return list;
+  return [...items, rel].join(", ");
 }
 
 /**
@@ -126,18 +115,11 @@ export function ProjectPanel() {
   const [form, setForm] = useState<Form>(() => configToForm(config));
   const [saving, setSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
-  const [embeddedVersion, setEmbeddedVersion] = useState<string | null>(null);
+  const [browseWarning, setBrowseWarning] = useState<string | null>(null);
 
   const formRef = useRef(form);
   formRef.current = form;
   const prevFormRef = useRef<Form>(form);
-
-  // Fetch the embedded Typst version once for the drift hint.
-  useEffect(() => {
-    void packageCompilerVersion()
-      .then(setEmbeddedVersion)
-      .catch(() => setEmbeddedVersion(null));
-  }, []);
 
   // Sync the form when the backend-broadcast config changes, WITHOUT clobbering
   // a field the user is actively editing. For each field, adopt the incoming
@@ -167,6 +149,29 @@ export function ProjectPanel() {
   const set = (k: keyof Form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
+  // Open a native file/folder picker, convert the absolute result back to a
+  // workspace-relative path (the backend rejects absolute paths for `.typstpro`),
+  // and hand it to `apply`. A pick outside the workspace is rejected with an
+  // inline warning rather than silently dropped.
+  const browse = async (
+    kind: "file" | "folder",
+    apply: (rel: string) => void,
+  ) => {
+    if (rootPath === null) return;
+    const abs = await pickPath(kind).catch((e) => {
+      console.warn("[project] path picker failed:", e);
+      return null;
+    });
+    if (abs === null) return;
+    const rel = relativeWithinWorkspace(rootPath, abs);
+    if (rel === null) {
+      setBrowseWarning(t("pathOutsideWorkspace"));
+      return;
+    }
+    setBrowseWarning(null);
+    apply(rel);
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -181,6 +186,12 @@ export function ProjectPanel() {
   };
 
   const handleClearMain = async () => {
+    const result = await useDialogStore.getState().confirm({
+      title: t("confirmClearMainTitle"),
+      message: t("confirmClearMainMessage"),
+      confirmLabel: t("clearMainFile"),
+    });
+    if (result !== "confirm") return;
     setForm((f) => ({ ...f, main: "" }));
     try {
       await setMainFile(null);
@@ -203,265 +214,301 @@ export function ProjectPanel() {
     }
   };
 
-  // Typst version drift hint.
-  let versionHint: { key: string; opts?: Record<string, string> } | null = null;
-  if (form.typstVersion.trim() && embeddedVersion) {
-    const cmp = compareVersion(form.typstVersion, embeddedVersion);
-    const opts = { project: form.typstVersion.trim(), embedded: embeddedVersion };
-    versionHint =
-      cmp > 0
-        ? { key: "typstVersionAhead", opts }
-        : cmp < 0
-          ? { key: "typstVersionDrift", opts }
-          : { key: "typstVersionUpToDate", opts };
-  }
-
   return (
     <div className="project-panel">
-      <div className="project-section">{t("generalSection")}</div>
-
-      <div className="project-field">
-        <label className="project-label" htmlFor="project-main-file">
-          {t("mainFile")}
-        </label>
-        <select id="project-main-file" className="project-select" value={form.main} onChange={set("main")}>
-          <option value="">{t("mainFileNone")}</option>
-          {typFiles.map((f) => (
-            <option key={f} value={f}>
-              {f}
-            </option>
-          ))}
-        </select>
-        {typFiles.length === 0 && <p className="project-hint">{t("mainFileEmpty")}</p>}
-        {mainMissing && <p className="project-hint warn">{t("mainFileMissing")}</p>}
-      </div>
-
-      <div className="project-field">
-        <label className="project-label" htmlFor="project-title">
+      {/* Header: the project name as a hero title, not a buried field. */}
+      <header className="project-header">
+        <label className="project-header-label" htmlFor="project-title">
           {t("projectTitle")}
         </label>
         <input
           id="project-title"
-          className="project-input"
+          className="project-title-input"
           type="text"
           value={form.title}
           placeholder={t("projectTitlePlaceholder")}
           onChange={set("title")}
         />
-      </div>
+      </header>
 
-      <div className="project-field">
-        <label className="project-label" htmlFor="project-template">
-          {t("template")}
-        </label>
-        <input
-          id="project-template"
-          className="project-input"
-          type="text"
-          value={form.template}
-          placeholder={t("templatePlaceholder")}
-          onChange={set("template")}
-        />
-      </div>
+      <div className="project-scroll">
+        {/* Inline "outside workspace" warning after a failed pick. */}
+        {browseWarning && <p className="project-warning">{browseWarning}</p>}
 
-      <div className="project-field">
-        <label className="project-label" htmlFor="project-typst-version">
-          {t("typstVersion")}
-        </label>
-        <input
-          id="project-typst-version"
-          className="project-input"
-          type="text"
-          value={form.typstVersion}
-          placeholder={t("typstVersionPlaceholder")}
-          onChange={set("typstVersion")}
-        />
-        {versionHint && (
-          <p className={`project-hint${versionHint.key === "typstVersionAhead" ? " warn" : ""}`}>
-            {t(versionHint.key, versionHint.opts)}
-          </p>
-        )}
-      </div>
+        {/* General */}
+        <section className="project-card">
+          <h3 className="project-card-title">{t("generalSection")}</h3>
 
-      <div className="project-field">
-        <label className="project-label" htmlFor="project-bib">
-          {t("bibliography")}
-        </label>
-        <input
-          id="project-bib"
-          className="project-input"
-          type="text"
-          value={form.bibliography}
-          placeholder="refs.bib, extra.yml"
-          onChange={set("bibliography")}
-        />
-        <p className="project-hint">{t("bibliographyHint")}</p>
-      </div>
+          <div className="project-field">
+            <label className="project-label" htmlFor="project-main-file">
+              {t("mainFile")}
+            </label>
+            <div className="project-path-row">
+              <select id="project-main-file" className="project-select" value={form.main} onChange={set("main")}>
+                <option value="">{t("mainFileNone")}</option>
+                {typFiles.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="project-browse"
+                title={t("browseFile")}
+                aria-label={t("browseFile")}
+                onClick={() => void browse("file", (rel) => setForm((f) => ({ ...f, main: rel })))}
+              >
+                <FileText size={15} />
+              </button>
+            </div>
+            {typFiles.length === 0 && <p className="project-hint">{t("mainFileEmpty")}</p>}
+            {mainMissing && <p className="project-hint warn">{t("mainFileMissing")}</p>}
+          </div>
 
-      <div className="project-section">{t("compileSection")}</div>
+          <div className="project-field">
+            <label className="project-label" htmlFor="project-bib">
+              {t("bibliography")}
+            </label>
+            <div className="project-path-row">
+              <input
+                id="project-bib"
+                className="project-input"
+                type="text"
+                value={form.bibliography}
+                placeholder="refs.bib, extra.yml"
+                onChange={set("bibliography")}
+              />
+              <button
+                type="button"
+                className="project-browse"
+                title={t("browseFile")}
+                aria-label={t("browseFile")}
+                onClick={() => void browse("file", (rel) => setForm((f) => ({ ...f, bibliography: appendRel(f.bibliography, rel) })))}
+              >
+                <FileText size={15} />
+              </button>
+            </div>
+            <p className="project-hint">{t("bibliographyHint")}</p>
+          </div>
+        </section>
 
-      <div className="project-field">
-        <label className="project-label" htmlFor="project-compile-root">
-          {t("compileRoot")}
-        </label>
-        <input
-          id="project-compile-root"
-          className="project-input"
-          type="text"
-          value={form.compileRoot}
-          placeholder="src"
-          onChange={set("compileRoot")}
-        />
-        <p className="project-hint">{t("compileRootHint")}</p>
-      </div>
+        {/* Compile */}
+        <section className="project-card">
+          <h3 className="project-card-title">{t("compileSection")}</h3>
 
-      <div className="project-field">
-        <label className="project-label" htmlFor="project-font-dirs">
-          {t("extraFontDirs")}
-        </label>
-        <input
-          id="project-font-dirs"
-          className="project-input"
-          type="text"
-          value={form.extraFontDirs}
-          placeholder="fonts, vendor/fonts"
-          onChange={set("extraFontDirs")}
-        />
-        <p className="project-hint">
-          {t("extraFontDirsHint")} · <em>{t("restartRequired")}</em>
-        </p>
-      </div>
+          <div className="project-field">
+            <label className="project-label" htmlFor="project-compile-root">
+              {t("compileRoot")}
+            </label>
+            <div className="project-path-row">
+              <input
+                id="project-compile-root"
+                className="project-input"
+                type="text"
+                value={form.compileRoot}
+                placeholder="src"
+                onChange={set("compileRoot")}
+              />
+              <button
+                type="button"
+                className="project-browse"
+                title={t("browseFolder")}
+                aria-label={t("browseFolder")}
+                onClick={() => void browse("folder", (rel) => setForm((f) => ({ ...f, compileRoot: rel })))}
+              >
+                <FolderOpen size={15} />
+              </button>
+            </div>
+            <p className="project-hint">{t("compileRootHint")}</p>
+          </div>
 
-      <div className="project-section">{t("exportSection")}</div>
+          <div className="project-field">
+            <label className="project-label" htmlFor="project-font-dirs">
+              {t("extraFontDirs")}
+            </label>
+            <div className="project-path-row">
+              <input
+                id="project-font-dirs"
+                className="project-input"
+                type="text"
+                value={form.extraFontDirs}
+                placeholder="fonts, vendor/fonts"
+                onChange={set("extraFontDirs")}
+              />
+              <button
+                type="button"
+                className="project-browse"
+                title={t("browseFolder")}
+                aria-label={t("browseFolder")}
+                onClick={() => void browse("folder", (rel) => setForm((f) => ({ ...f, extraFontDirs: appendRel(f.extraFontDirs, rel) })))}
+              >
+                <FolderOpen size={15} />
+              </button>
+            </div>
+            <span className="project-pill">{t("restartRequired")}</span>
+            <p className="project-hint">{t("extraFontDirsHint")}</p>
+          </div>
+        </section>
 
-      <div className="project-field">
-        <label className="project-label" htmlFor="project-export-format">
-          {t("exportFormat")}
-        </label>
-        <select
-          id="project-export-format"
-          className="project-select"
-          value={form.exportFormat}
-          onChange={set("exportFormat")}
-        >
-          <option value="">{t("exportFormatNone")}</option>
-          <option value="pdf">PDF</option>
-          <option value="png">PNG</option>
-          <option value="svg">SVG</option>
-        </select>
-      </div>
+        {/* Export */}
+        <section className="project-card">
+          <h3 className="project-card-title">{t("exportSection")}</h3>
 
-      <div className="project-field">
-        <label className="project-label" htmlFor="project-export-path">
-          {t("exportPath")}
-        </label>
-        <input
-          id="project-export-path"
-          className="project-input"
-          type="text"
-          value={form.exportPath}
-          placeholder="build/${title}.pdf"
-          onChange={set("exportPath")}
-        />
-        <p className="project-hint">{t("exportPathHint")}</p>
-      </div>
+          <div className="project-field">
+            <label className="project-label" htmlFor="project-export-format">
+              {t("exportFormat")}
+            </label>
+            <select
+              id="project-export-format"
+              className="project-select"
+              value={form.exportFormat}
+              onChange={set("exportFormat")}
+            >
+              <option value="">{t("exportFormatNone")}</option>
+              <option value="pdf">PDF</option>
+              <option value="png">PNG</option>
+              <option value="svg">SVG</option>
+            </select>
+          </div>
 
-      {/* New file template + exclude */}
-      <div className="project-field">
-        <label className="project-label" htmlFor="project-new-file-template">
-          {t("newFileTemplate")}
-        </label>
-        <select
-          id="project-new-file-template"
-          className="project-select"
-          value={form.newFileTemplate}
-          onChange={set("newFileTemplate")}
-        >
-          <option value="">{t("newFileTemplateNone")}</option>
-          {typFiles.map((f) => (
-            <option key={f} value={f}>
-              {f}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="project-field">
-        <label className="project-label" htmlFor="project-exclude">
-          {t("exclude")}
-        </label>
-        <input
-          id="project-exclude"
-          className="project-input"
-          type="text"
-          value={form.exclude}
-          placeholder="build/**, out/**"
-          onChange={set("exclude")}
-        />
-        <p className="project-hint">{t("excludeHint")}</p>
-      </div>
-
-      {/* Save row */}
-      <div className="project-actions">
-        <button
-          type="button"
-          className="project-btn primary"
-          onClick={() => void handleSave()}
-          disabled={!dirty || saving}
-        >
-          <Save size={14} />
-          {savedFlash ? t("saved") : t("save")}
-        </button>
-        {storedMain && (
-          <button type="button" className="project-btn" onClick={() => void handleClearMain()} title={t("clearMainFile")}>
-            <StarOff size={14} />
-            {t("clearMainFile")}
-          </button>
-        )}
-      </div>
-
-      {/* Preview mode (UI pref; only meaningful with a main file) */}
-      <div className="project-field">
-        <span className="project-label">{t("previewMode")}</span>
-        <div className="project-radio-group">
-          <label className="project-radio">
+          <div className="project-field">
+            <label className="project-label" htmlFor="project-export-path">
+              {t("exportPath")}
+            </label>
             <input
-              type="radio"
-              name="project-preview-mode"
-              checked={projectPreview}
-              onChange={() => setProjectPreview(true)}
-              disabled={!storedMain}
+              id="project-export-path"
+              className="project-input"
+              type="text"
+              value={form.exportPath}
+              placeholder="build/${title}.pdf"
+              onChange={set("exportPath")}
             />
-            {t("previewMain")}
-          </label>
-          <label className="project-radio">
+            <p className="project-hint">{t("exportPathHint")}</p>
+          </div>
+        </section>
+
+        {/* Workspace */}
+        <section className="project-card">
+          <h3 className="project-card-title">{t("workspaceSection")}</h3>
+
+          <div className="project-field">
+            <label className="project-label" htmlFor="project-new-file-template">
+              {t("newFileTemplate")}
+            </label>
+            <div className="project-path-row">
+              <select
+                id="project-new-file-template"
+                className="project-select"
+                value={form.newFileTemplate}
+                onChange={set("newFileTemplate")}
+              >
+                <option value="">{t("newFileTemplateNone")}</option>
+                {typFiles.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="project-browse"
+                title={t("browseFile")}
+                aria-label={t("browseFile")}
+                onClick={() => void browse("file", (rel) => setForm((f) => ({ ...f, newFileTemplate: rel })))}
+              >
+                <FileText size={15} />
+              </button>
+            </div>
+          </div>
+
+          <div className="project-field">
+            <label className="project-label" htmlFor="project-exclude">
+              {t("exclude")}
+            </label>
             <input
-              type="radio"
-              name="project-preview-mode"
-              checked={!projectPreview}
-              onChange={() => setProjectPreview(false)}
-              disabled={!storedMain}
+              id="project-exclude"
+              className="project-input"
+              type="text"
+              value={form.exclude}
+              placeholder="build/**, out/**"
+              onChange={set("exclude")}
             />
-            {t("previewActive")}
-          </label>
+            <p className="project-hint">{t("excludeHint")}</p>
+          </div>
+        </section>
+
+        {/* Preview mode */}
+        <section className="project-card">
+          <h3 className="project-card-title">{t("previewMode")}</h3>
+          <div className="project-segmented" role="tablist" aria-label={t("previewMode")}>
+            <button
+              type="button"
+              className={`project-segmented-btn${projectPreview ? " active" : ""}`}
+              role="tab"
+              aria-selected={projectPreview}
+              disabled={!storedMain}
+              onClick={() => setProjectPreview(true)}
+            >
+              {t("previewMain")}
+            </button>
+            <button
+              type="button"
+              className={`project-segmented-btn${!projectPreview ? " active" : ""}`}
+              role="tab"
+              aria-selected={!projectPreview}
+              disabled={!storedMain}
+              onClick={() => setProjectPreview(false)}
+            >
+              {t("previewActive")}
+            </button>
+          </div>
+          <p className="project-hint">{t("previewMainHint")}</p>
+        </section>
+      </div>
+
+      {/* Footer: config path + pinned actions. */}
+      <footer className="project-footer">
+        <div className="project-status">
+          <span className="project-status-label">{t("configPath")}</span>
+          <code className="project-status-path" title={configPath ?? undefined}>
+            {configPath ?? t("noConfig")}
+          </code>
         </div>
-        <p className="project-hint">{t("previewMainHint")}</p>
-      </div>
-
-      {/* Status row */}
-      <div className="project-status">
-        <span className="project-status-label">{t("configPath")}</span>
-        <code className="project-status-path" title={configPath ?? undefined}>
-          {configPath ?? t("noConfig")}
-        </code>
-      </div>
-
-      {config && (
-        <button type="button" className="project-btn danger" onClick={() => void handleDelete()}>
-          <Trash2 size={14} />
-          {t("deleteConfig")}
-        </button>
-      )}
+        <div className="project-footer-actions">
+          <button
+            type="button"
+            className="project-save"
+            onClick={() => void handleSave()}
+            disabled={!dirty || saving}
+          >
+            <Save size={14} />
+            {savedFlash ? t("saved") : t("save")}
+          </button>
+          {storedMain && (
+            <button
+              type="button"
+              className="project-icon-btn"
+              onClick={() => void handleClearMain()}
+              title={t("clearMainFile")}
+              aria-label={t("clearMainFile")}
+            >
+              <StarOff size={16} />
+            </button>
+          )}
+          {config && (
+            <button
+              type="button"
+              className="project-icon-btn danger"
+              onClick={() => void handleDelete()}
+              title={t("deleteConfig")}
+              aria-label={t("deleteConfig")}
+            >
+              <Trash2 size={16} />
+            </button>
+          )}
+        </div>
+      </footer>
     </div>
   );
 }

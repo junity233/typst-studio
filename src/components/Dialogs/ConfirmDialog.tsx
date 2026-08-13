@@ -17,7 +17,10 @@ export function ConfirmDialog() {
   // the defaults localize with the rest of the UI.
   const confirmLabel = current.confirmLabel ?? t("common:save");
   const cancelLabel = current.cancelLabel ?? t("common:cancel");
-  const discardLabel = current.discardLabel ?? t("common:dontSave");
+  // The discard ("Don't Save") button is specific to the unsaved-tab-close
+  // flow; binary confirms (delete, clear, apply-edit, save-as-fallback) omit
+  // `discardLabel` and render only Cancel + Confirm.
+  const showDiscard = current.discardLabel !== undefined;
 
   return (
     <div
@@ -41,12 +44,14 @@ export function ConfirmDialog() {
           <button className="btn-utility" onClick={() => resolve("cancel")}>
             {cancelLabel}
           </button>
-          <button
-            className="btn-ghost"
-            onClick={() => resolve("discard")}
-          >
-            {discardLabel}
-          </button>
+          {showDiscard && (
+            <button
+              className="btn-ghost"
+              onClick={() => resolve("discard")}
+            >
+              {current.discardLabel}
+            </button>
+          )}
           <button
             className="btn-primary"
             autoFocus

@@ -1206,5 +1206,5 @@ name: string, };
 
 export type CompileConfig = { root?: string | null, extraFontDirs?: (string)[] | null, };
 export type ExportConfig = { format?: string | null, outputPath?: string | null, };
-export type ProjectConfig = { schemaVersion: number, main?: string | null, title?: string | null, bibliography?: (string)[] | null, template?: string | null, typstVersion?: string | null, newFileTemplate?: string | null, exclude?: (string)[] | null, compile?: CompileConfig | null, export?: ExportConfig | null, };
+export type ProjectConfig = { schemaVersion: number, main?: string | null, title?: string | null, bibliography?: (string)[] | null, newFileTemplate?: string | null, exclude?: (string)[] | null, compile?: CompileConfig | null, export?: ExportConfig | null, };
 export type ProjectConfigChangedPayload = { config?: ProjectConfig | null, };

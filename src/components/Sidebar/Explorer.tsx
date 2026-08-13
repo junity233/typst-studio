@@ -23,6 +23,7 @@ import { useTabsStore, readAllDocuments } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { useFileClipboardStore, readClipboard } from "../../store/fileClipboardStore";
 import { useExplorerSelectionStore } from "../../store/explorerSelectionStore";
+import { useDialogStore } from "../../store/dialogStore";
 import { openFileByPath, revealInFinder, updateText } from "../../lib/tauri";
 import { toIpcError } from "../../lib/ipc-error";
 import i18n from "../../i18n";
@@ -64,15 +65,23 @@ function copyToClipboard(text: string) {
   });
 }
 
-/** Run a destructive-delete (trash or permanent) with shared error handling. */
+/** Run a destructive-delete (trash or permanent) with shared error handling.
+ *  Uses the app's styled ConfirmDialog (native `window.confirm` is suppressed /
+ *  unreliable in the Tauri webview). `confirmMessage` is the action description
+ *  (the entry name is shown as the title). */
 async function doDeleteWithConfirm(
   entry: DirEntry,
   deleteFn: (rel: string) => Promise<unknown>,
-  confirm: string,
+  confirmMessage: string,
   errKey: string,
 ) {
-  const ok = window.confirm(confirm);
-  if (!ok) return;
+  const result = await useDialogStore.getState().confirm({
+    title: entry.name,
+    message: confirmMessage,
+    confirmLabel: i18n.t("delete", { ns: "common" }),
+    cancelLabel: i18n.t("cancel", { ns: "common" }),
+  });
+  if (result !== "confirm") return;
   try {
     await deleteFn(entry.relative);
   } catch (e) {
