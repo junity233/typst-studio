@@ -60,8 +60,5 @@ vite.config.d.ts
 docs/superpowers/
 DESIGN.md
 
-# Lockfile kept local — dependency versions resolved per-install.
-package-lock.json
-
 # ZCode agent working directory
 .zcode/

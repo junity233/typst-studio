@@ -44,24 +44,16 @@ jobs:
         with:
           node-version: 20
 
-      # No package-lock.json in the repo (resolved per-install by policy), so
-      # cache the npm tarball store keyed on the manifest — installs then skip
-      # re-downloading every package on each build.
-      - name: Cache npm downloads
+      # With the committed lockfile, cache node_modules itself keyed on
+      # package-lock.json — a warm `npm install` then just verifies the tree
+      # (a few seconds) instead of resolving + extracting ~1GB of packages.
+      # node_modules/.cache/grammar (the tinymist VSIX download cache) is
+      # subsumed by this entry.
+      - name: Cache node_modules
         uses: actions/cache@v4
         with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('package.json') }}
-          restore-keys: npm-${{ runner.os }}-
-
-      # fetch-grammar re-extracts every run but caches the downloaded
-      # tinymist VSIX under node_modules/.cache/grammar (keyed on the script,
-      # which pins the version) — with it cached, no network fetch at all.
-      - name: Cache fetched frontend assets
-        uses: actions/cache@v4
-        with:
-          path: node_modules/.cache/grammar
-          key: grammar-vsix-${{ hashFiles('scripts/fetch-grammar.mjs') }}
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
