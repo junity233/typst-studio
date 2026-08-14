@@ -1,6 +1,6 @@
 # Typst Studio
 
-> A native desktop editor for Typst, focused on local-first workflows, live preview, and smooth writing.
+> A native desktop IDE for [Typst](https://typst.app) — edit, watch it compile, and ship your document. Local-first, no CLI install, no cloud.
 
 [简体中文](README_zh.md)
 
@@ -8,240 +8,122 @@
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 
-![Typst Studio icon](app-icon.png)
+## Why Typst Studio
 
-## Screenshots
+Typst Studio embeds the **official Typst compiler** in a Rust backend and pairs it with a Monaco-based editor and a live multi-page preview — the writing loop stays entirely on your machine, and everything compiles and refreshes as you type.
 
-### Editing a multi-page report
+It is built as a real workbench rather than a generic code editor that happens to open `.typ` files: project-level configuration, bibliography and package management, workspace-wide search, export pipelines, session recovery, and theming are all first-class.
 
-![Typst Studio editing a report](assets/screenshots/project-report-window.png)
+## Features
 
-### Poster-style preview layout
+### Writing & editing
 
-![Typst Studio poster preview](assets/screenshots/poster-window.png)
+- **Monaco editor with Typst syntax highlighting** — full keyboard editing, word-wrap toggle, configurable font/size/line-height/minimap.
+- **Format toolbar** — one click to insert headings, bold/italic/code, lists, tables, links, and images; a visual grid picker for tables.
+- **Formula assist** — guided insertion of math formulas.
+- **Rich-text paste** — content pasted from browsers or Word is converted into Typst markup.
+- **Paste images** — screenshots dropped into the editor are saved into a configurable assets folder and referenced automatically.
+- **Multi-tab editing** with per-tab dirty state, soft-close, and session restore.
 
-## Sample Documents
+### Live preview
 
-The repository now includes a small smoke-test workspace at [`examples/readme-demo`](examples/readme-demo):
+- **Embedded compiler** — no Typst CLI needed; preview starts instantly.
+- **Debounced incremental recompiles** — multi-page SVG preview refreshes as you type; stale responses are dropped by a revision guard.
+- **Preview ↔ source sync** — double-click the preview to jump to the source line.
+- **Project preview mode** — preview the project's main file while editing any of its includes.
+- **Ctrl + wheel zoom** in the preview pane.
 
-- `quick-start.typ`: onboarding-style sample with headings, quote, list, and table
-- `project-report.typ`: multi-page report used for the editor + preview screenshot
-- `poster.typ`: layout-heavy single-page poster used for a more visual preview
+### Project & workspace
 
-These files are useful for quick manual checks when you want to verify editing, preview refresh, and tab switching after local changes.
+- **Folder workspaces** — lazy-loading file explorer with create / rename / copy / delete (trash-first, with confirmation for destructive actions).
+- **`.typstpro` project config** — a small TOML file at the workspace root declares the main file, title, bibliographies, compile root, extra font dirs, exclude globs, new-file template, and export defaults (format + output path with `${title}` macros). Hand-editable, watched, live-reloaded. See the [field reference](docs/typstpro.md).
+- **Workspace search & replace** — full-text search across the project with jump-to-line, plus multi-file replace.
+- **Outline view** — jump by heading structure.
+- **Source control** — a Git panel for status and commits.
+- **Recent workspaces** — reopen where you left off.
 
-## Overview
+### Bibliography & packages
 
-**Typst Studio** is a cross-platform desktop editor built specifically for [Typst](https://typst.app). It uses `Tauri 2 + React + Rust` and embeds the official Typst compiler directly, so you can edit, preview, and export documents without relying on a separate Typst CLI install.
+- **Bibliography panel** — parses `.bib` and Hayagriva `.yml`; click a reference to insert `#cite(<key>)` at the caret.
+- **Packages panel** — browse the Typst Universe catalog, manage installed packages, and insert `#import` statements.
 
-Its goal is not just to put Typst into a generic code editor, but to offer a desktop experience that feels better for writing, typesetting, and document organization: code on the left, real-time multi-page preview on the right, plus workspace, search, outline, export, recovery, and theming support.
+### Diagnostics & language features
 
-## Who It Is For
+- **Diagnostics panel** — compile errors and warnings with severity, position, and jump-to-line.
+- **Tinymist integration** — richer language features when [`tinymist`](https://github.com/Myriad-Dreamin/tinymist) is on your `PATH` (optional; not bundled).
 
-- People who want a desktop Typst app instead of a browser-only or CLI-only workflow
-- People who want to write source and watch the rendered result side by side
-- People who need local folders, document search, outline navigation, and export tools
-- People who prefer a local-first workflow and do not want to depend on cloud sync
+### Export
 
-## Highlights
+- **PDF / PNG / SVG export**, pinned to the revision you are looking at — never silently exporting an older compile.
+- **Per-project export defaults** — declare `format` and `outputPath` in `.typstpro` to skip the save dialog entirely.
 
-- **Embedded official Typst compiler**  
-  You can compile, preview, and export Typst documents out of the box, without first installing the Typst CLI.
+### AI assistant
 
-- **Live multi-page preview**  
-  The preview refreshes automatically as you edit and supports multi-page SVG rendering.
+- Built-in writing assistant — bring your own provider and key (Anthropic-compatible / OpenAI-compatible endpoints), configurable model and token limits.
 
-- **Preview-to-source mapping**  
-  Editor and preview can scroll together, and double-clicking the preview jumps back to the corresponding source line.
+### Safety & recovery
 
-- **Workspace workflow**  
-  You can open a full folder workspace, browse files in the explorer, create, rename, or delete entries, and reopen recent workspaces.
+- **Autosave** (interval / on-change / manual modes) and crash-recovery snapshots.
+- **External-change awareness** — files modified outside the app surface a conflict dialog instead of being overwritten; deletes are blocked while affected documents have unsaved edits.
+- **Session restore** — tabs, layout, and window geometry come back on launch.
 
-- **Writing navigation**  
-  Built-in outline view lets you navigate by headings, and workspace-wide search helps you find content across files.
+### Personalization
 
-- **Export options**  
-  Supports export to `PDF`, `PNG`, and `SVG`.
+- **Themes** — built-in light/dark/sepia/accent themes, plus hot-reloadable custom CSS themes ([authoring guide](docs/themes.md)).
+- **English / 简体中文 UI**, switchable at runtime.
+- **Command palette** (`Ctrl+Shift+P`) for every action, with a settings window covering editor, compile, export, search, and appearance.
 
-- **Safer saving and recovery**  
-  Includes autosave modes, session restore, crash recovery, and conflict handling when files change outside the app.
+## Keyboard shortcuts
 
-- **Themes and language**  
-  Offers built-in themes, hot-reloadable custom CSS themes, and English/Simplified Chinese UI.
+> `Cmd` on macOS, `Ctrl` on Windows/Linux.
 
-## What You Can Do Today
-
-- Open a single `.typ` file or an entire Typst project folder
-- Edit multiple documents in tabs
-- Use the format toolbar to quickly insert headings, lists, tables, links, and images
-- Convert pasted rich text into Typst markup
-- Inspect diagnostics and jump to problem locations
-- Reuse the running app instance when opening `.typ` files, instead of spawning duplicate windows
-
-## Quick Start
-
-### 1. Open a file or folder
-
-- If you only want to edit one document, just open a `.typ` file
-- If you are working on a full project, opening the whole folder is recommended
-
-### 2. Edit on the left, preview on the right
-
-- The left side is a Monaco editor
-- The right side is a multi-page preview pane
-- You can hide or show the sidebar and preview pane as needed
-
-### 3. Use the sidebar for navigation
-
-- `Explorer`: browse workspace files
-- `Search`: search across the workspace
-- `Outline`: jump by document heading structure
-
-### 4. Export your final document
-
-You can export from the native app menu as:
-
-- `PDF`
-- `PNG`
-- `SVG`
-
-## Useful Shortcuts
-
-> Shortcuts use `Cmd` on macOS and `Ctrl` on Windows/Linux.
-
-- `Cmd/Ctrl + S`: save the current document
-- `Cmd/Ctrl + Shift + S`: save as
-- `Cmd/Ctrl + B`: toggle sidebar
-- `Cmd/Ctrl + Shift + F`: find in files
-- `Cmd/Ctrl + Shift + O`: open Outline
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Shift+P` | Command palette |
+| `Ctrl+T` / `Ctrl+W` | New tab / close tab |
+| `Ctrl+O` | Open file |
+| `Ctrl+S` / `Ctrl+Shift+S` | Save / save as |
+| `Ctrl+Shift+B` | Toggle sidebar |
+| `Ctrl+\` | Toggle preview |
+| `Ctrl+Shift+F` | Find in files |
+| `Ctrl+Shift+G` | Source control |
+| `Ctrl+Shift+O` | Outline |
+| `Ctrl+wheel` | Zoom preview |
+| `Shift+Alt+F` | Format document |
 
 ## Installation
 
-### Option 1: Use a packaged release
+### Download a build
 
-When packaged builds are available on the [Releases](../../releases) page, download the one for your platform.
+Grab the latest installer from the [Releases](../../releases) page:
 
-Supported target platforms:
+- **Windows** — `.msi` or NSIS `.exe` (x64)
+- **macOS** — `.dmg` (Apple Silicon & Intel)
+- **Linux** — `.deb` / `.AppImage`
 
-- macOS
-- Windows
-- Linux
+### Build from source
 
-> The repository already includes a cross-platform release workflow. If no downloadable build is currently published, use the source-based setup below.
-
-### Option 2: Run from source
-
-#### Requirements
-
-- `Node.js 20+`
-- `Rust 1.92+`
-- Platform-specific Tauri prerequisites
-
-Please check the official Tauri prerequisites first:
-
-- [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
-
-#### Development run
+Requirements: Node.js 20+, Rust 1.92+, and the [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
 npm install
-npm run tauri dev
+npm run tauri dev     # development
+npm run tauri build   # installers land in src-tauri/target/release/bundle/
 ```
 
-#### Production build
+## Documentation
 
-```bash
-npm run tauri build
-```
+- [`.typstpro` project config reference](docs/typstpro.md)
+- [Custom theme authoring](docs/themes.md)
 
-Build artifacts are written to `src-tauri/target/release/bundle/`.
+## Data & privacy
 
-## Optional Components
+Typst Studio is local-first — documents never leave your file system. The app keeps a small amount of support data (settings, recent workspaces, session state, recovery snapshots, user themes) under its private data directory (`%APPDATA%\com.typststudio.app\` on Windows, `~/Library/Application Support/com.typststudio.app/` on macOS, `~/.local/share/com.typststudio.app/` on Linux). The optional AI assistant sends only the prompts you explicitly send it, to the endpoint you configure.
 
-### Tinymist language service
+## Status
 
-Typst Studio includes integration for the Tinymist language server, but Tinymist itself is not bundled with the app.
-
-If you want richer language-service behavior, install `tinymist` separately and make sure it is available on your system `PATH`.
-
-## Personalization
-
-### Themes
-
-The app ships with multiple built-in themes and also supports user-authored themes. Custom themes hot-reload after saving, with no app restart required.
-
-Theme documentation:
-
-- [docs/themes.md](docs/themes.md)
-
-### Language
-
-Currently supported UI languages:
-
-- English
-- Simplified Chinese
-
-### Configurable settings
-
-Things you can configure in the Settings window include:
-
-- Editor font, font size, line height, wrapping, minimap, and whitespace rendering
-- Compile and editor debounce
-- Autosave behavior
-- Preview zoom, background, and padding
-- Search result limits
-- PNG export resolution
-- Extra font directories
-
-## Data and Privacy
-
-Typst Studio is local-first. Your documents remain on your local file system.
-
-The app also stores a small amount of local support data to improve resilience and usability, such as:
-
-- Settings
-- Recent workspaces
-- Last session state
-- Crash-recovery snapshots
-- User themes
-
-### Crash-recovery locations
-
-Recovery snapshots are stored under the app's private data directory in a `recovery/` subfolder:
-
-| Platform | Path |
-| --- | --- |
-| macOS | `~/Library/Application Support/com.typststudio.app/recovery/` |
-| Windows | `%APPDATA%\com.typststudio.app\recovery\` |
-| Linux | `~/.local/share/com.typststudio.app/recovery/` |
-
-These recovery files are not automatically deleted on uninstall. You can clear them manually from Settings.
-
-## Current Status
-
-Typst Studio is still an actively evolving project and is best suited for users who are comfortable trying an early-stage app.
-
-The local editing experience is already substantial, but this is not yet a fully polished, everything-included Typst IDE.
-
-## Known Limitations
-
-- Language-service behavior depends on whether external `tinymist` is available
-- Custom themes currently focus on the app chrome; Monaco and preview theme linkage is not yet fully unified
-- Project-level workflows are already present, but the overall experience is still being refined
-- This is not a cloud collaboration tool; it is currently positioned as a local desktop editor
-
-## Direction
-
-The project is moving toward feeling more like a dedicated Typst workstation than a generic code editor.
-
-Key directions include stronger project workflows, richer language-service support, a better theming system, and continued refinement of the desktop writing experience.
+Actively developed (`v0.1.x`). The local editing workflow is solid; language-service depth and theme/editor linkage are still being refined. Feedback and issues are welcome.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
-
-## Acknowledgments
-
-- [Typst](https://github.com/typst/typst)
-- [Tauri](https://tauri.app)
-- [Monaco Editor](https://microsoft.github.io/monaco-editor/)
+[MIT](LICENSE). Built on [Typst](https://github.com/typst/typst), [Tauri](https://tauri.app), and [Monaco Editor](https://microsoft.github.io/monaco-editor/).
