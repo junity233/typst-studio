@@ -50,7 +50,7 @@ It is built as a real workbench rather than a generic code editor that happens t
 ### Diagnostics & language features
 
 - **Diagnostics panel** — compile errors and warnings with severity, position, and jump-to-line.
-- **Tinymist integration** — richer language features when [`tinymist`](https://github.com/Myriad-Dreamin/tinymist) is on your `PATH` (optional; not bundled).
+- **Tinymist integration** — richer language features via [`tinymist`](https://github.com/Myriad-Dreamin/tinymist). Found on your `PATH` or in the managed install (`~/.typststudio/`); when neither exists, the app downloads it automatically (disable or re-trigger from Settings → Language Server).
 
 ### Export
 

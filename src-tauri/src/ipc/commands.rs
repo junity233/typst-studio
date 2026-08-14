@@ -280,18 +280,176 @@ pub async fn export_pdf(
     let revision_wait = std::time::Duration::from_millis(
         state.settings.get_or_default::<u64>("export.revisionWaitMs"),
     );
+    let pdf_options = pdf_options_from_state(&state)?;
     // Render (CPU-bound) + write (blocking IO) together on a blocking thread.
     tauri::async_runtime::spawn_blocking(move || -> Result<()> {
-        let bytes = export.render_pdf(id, revision, revision_wait)?;
+        let bytes = export.render_pdf_with_options(id, revision, revision_wait, &pdf_options)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, &bytes)?;
+        // Atomic write: auto-export-on-save makes routine exports, and a quit
+        // mid-write must never leave a truncated PDF at the output path.
+        crate::persistence::atomic::write_bytes(&path, &bytes)?;
         Ok(())
     })
     .await
     .map_err(|e| AppError::Other(format!("join error: {e}")))??;
     Ok(path_str)
+}
+
+/// One document to render in a batch export: the backend tab id, the pinned
+/// revision, and the file stem used for the output name (`{name}.pdf`).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct BatchExportItem {
+    pub id: DocumentId,
+    /// Serialized as a JSON number by Tauri (u64 → bigint is overridden, same
+    /// as every other wire revision field).
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub revision: u64,
+    pub name: String,
+}
+
+/// Per-item outcome of a batch export: the written path on success, or the
+/// error message (a failed document never aborts the rest of the batch).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct BatchExportOutcome {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "export-types", ts(optional))]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "export-types", ts(optional))]
+    pub error: Option<String>,
+}
+
+/// Read the `export.pdf*` settings and build the `PdfOptions` for this run.
+/// An invalid value (bad page-range expression, unknown standard) errors the
+/// whole export up front — better one clear dialog than N per-file failures.
+fn pdf_options_from_state(state: &State<'_, AppState>) -> Result<typst_pdf::PdfOptions> {
+    crate::render::pdf_options::pdf_options_from_settings(
+        &state.settings.get_or_default::<String>("export.pdfPageRanges"),
+        &state.settings.get_or_default::<String>("export.pdfStandard"),
+        state.settings.get_or_default::<bool>("export.pdfTagged"),
+    )
+}
+
+/// Export several compiled documents to one user-picked folder as PDFs, in one
+/// pass. The frontend supplies `{id, revision, name}` per document (opening
+/// backend-only tabs for closed files and closing them afterwards). The
+/// output folder is picked by a native dialog INSIDE this command — the same
+/// trust model as `export_pdf`'s save dialog: the webview never supplies a
+/// write path, so no containment check is needed (a user-picked folder may be
+/// anywhere on disk). Failures are per-item: one broken document doesn't
+/// abort the batch.
+#[tauri::command]
+pub async fn export_batch_pdf(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    items: Vec<BatchExportItem>,
+) -> Result<Vec<BatchExportOutcome>> {
+    let app_for_dialog = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app_for_dialog
+            .dialog()
+            .file()
+            .blocking_pick_folder()
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
+    let Some(picked) = picked else {
+        return Err(AppError::Other("export cancelled".into()));
+    };
+    let dir = path_buf_from(picked)?;
+    let export = state.export.clone();
+    let revision_wait = std::time::Duration::from_millis(
+        state.settings.get_or_default::<u64>("export.revisionWaitMs"),
+    );
+    let pdf_options = pdf_options_from_state(&state)?;
+    let outcomes = tauri::async_runtime::spawn_blocking(
+        move || -> Result<Vec<BatchExportOutcome>> {
+            std::fs::create_dir_all(&dir)?;
+            let mut outcomes = Vec::with_capacity(items.len());
+            // Authoritative per-run name dedupe: two inputs that sanitize to
+            // the same stem (frontend preview aside) must not overwrite each
+            // other's `{stem}.pdf`. The frontend's uniquifyStems is a display
+            // nicety; this is the guard that counts.
+            let mut used_names: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for item in items {
+                // Sanitize the caller-supplied name down to a file stem —
+                // never a path separator hop out of the chosen directory.
+                let base = sanitize_file_stem(&item.name);
+                let mut stem = base.clone();
+                let mut n = 1;
+                while !used_names.insert(stem.clone()) {
+                    n += 1;
+                    stem = format!("{base}-{n}");
+                }
+                let target = dir.join(format!("{stem}.pdf"));
+                let result = export
+                    .render_pdf_with_options(item.id, item.revision, revision_wait, &pdf_options)
+                    .and_then(|bytes| {
+                        // Atomic write: an app quit mid-batch (auto-export
+                        // paths make routine exports common) must never leave
+                        // a truncated PDF at a displayed path.
+                        crate::persistence::atomic::write_bytes(&target, &bytes)?;
+                        Ok(target.to_string_lossy().into_owned())
+                    });
+                outcomes.push(match result {
+                    Ok(path) => BatchExportOutcome {
+                        name: item.name,
+                        path: Some(path),
+                        error: None,
+                    },
+                    Err(e) => BatchExportOutcome {
+                        name: item.name,
+                        path: None,
+                        error: Some(e.to_string()),
+                    },
+                });
+            }
+            Ok(outcomes)
+        },
+    )
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
+    Ok(outcomes)
+}
+
+/// Reduce a caller-supplied output name to a safe file stem: map anything
+/// that isn't a Unicode alphanumeric or `._- ` to `_` (so path separators and
+/// punctuation can't smuggle structure), trim leading/trailing dots so the
+/// stem is never a `..` traversal component, and fall back to `document`
+/// when nothing survives. Windows reserved names (CON, COM1, …) pass
+/// through — the per-item error path reports the failed write.
+fn sanitize_file_stem(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '.' || c == '_' || c == '-' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim_matches('.').trim().to_string();
+    if cleaned.is_empty() {
+        "document".to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// Export each page of the tab's compiled document for `revision` to a PNG. A
@@ -444,6 +602,27 @@ pub async fn restart_lsp(state: State<'_, AppState>) -> Result<()> {
     Ok(())
 }
 
+/// Snapshot of the managed tinymist install (state, progress, installed
+/// version/path). The Settings window + StatusBar seed from this and then
+/// subscribe to `tinymist_install` events.
+#[tauri::command]
+pub async fn get_tinymist_install(
+    state: State<'_, AppState>,
+) -> Result<crate::lsp::installer::TinymistInstallStatus> {
+    Ok(state.tinymist.status())
+}
+
+/// Start (or join) a managed tinymist download into ~/.typststudio/.
+/// Fire-and-forget: the command returns the current status immediately and
+/// all progress arrives via `tinymist_install` events.
+#[tauri::command]
+pub async fn install_tinymist(
+    state: State<'_, AppState>,
+) -> Result<crate::lsp::installer::TinymistInstallStatus> {
+    state.tinymist.begin_install();
+    Ok(state.tinymist.status())
+}
+
 /// Convert a dialog `FilePath` into a `PathBuf`, rejecting URLs we can't resolve.
 /// Shared by the image/path pickers and the settings path picker.
 pub(crate) fn path_buf_from(picked: tauri_plugin_fs::FilePath) -> Result<PathBuf> {
@@ -505,6 +684,30 @@ fn ensure_export_within_workspace(
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+
+    use super::sanitize_file_stem;
+
+    #[test]
+    #[cfg(feature = "export-types")]
+    fn export_types() {
+        use ts_rs::TS;
+        let cfg = ts_rs::Config::default();
+        super::BatchExportItem::export(&cfg).unwrap();
+        super::BatchExportOutcome::export(&cfg).unwrap();
+    }
+
+    #[test]
+    fn sanitize_file_stem_strips_path_hops_and_unsafe_chars() {
+        assert_eq!(sanitize_file_stem("chapter 1"), "chapter 1");
+        // Path separators become underscores; leading dots are trimmed so the
+        // stem can never be a `..` traversal component.
+        assert_eq!(sanitize_file_stem("..\\..\\evil"), "_.._evil");
+        assert_eq!(sanitize_file_stem("a/b\\c:d"), "a_b_c_d");
+        assert_eq!(sanitize_file_stem("..."), "document");
+        assert_eq!(sanitize_file_stem("  "), "document");
+        // CJK file names survive as-is (alphanumeric covers them).
+        assert_eq!(sanitize_file_stem("第三章"), "第三章");
+    }
 
     /// The containment policy `ensure_export_within_workspace` applies, as a
     /// bool for assertions (production calls `ensure_contained_path`

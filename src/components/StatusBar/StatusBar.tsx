@@ -1,13 +1,19 @@
 import { useDiagnosticsForDoc } from "../../store/diagnosticsStore";
 import { useActiveDocument } from "../../store/tabsStore";
 import type { CompileStatus } from "../../lib/ui-types";
-import type { LspStatusKind } from "../../lib/types";
+import type { LspStatusKind, TinymistInstallStatus } from "../../lib/types";
 import { useLspStatus } from "../../store/lspStore";
+import {
+  downloadPercent,
+  useTinymistInstall,
+} from "../../store/tinymistInstallStore";
+import { installTinymist } from "../../lib/tauri";
 import { useStartupProblemsStore } from "../../store/startupProblemsStore";
 import { useSaveStateStore } from "../../store/saveStateStore";
 import { useConflictDialogStore } from "../../store/conflictDialogStore";
 import { useWatcherHealthStore } from "../../store/watcherHealthStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
+import { useEditorStatsStore } from "../../store/editorStatsStore";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
@@ -69,14 +75,23 @@ function statusClass(status: CompileStatus): string {
  * `LspStatusKind` to a short StatusBar string; surfaces the optional
  * `message` hint (e.g. the `Failed` "manual restart required" text) and the
  * `restartReason` trigger when present.
+ *
+ * When tinymist is unavailable, the label defers to the managed-install
+ * state (downloading/verifying/failed) so the user sees the auto-download
+ * that is about to fix the unavailability.
  */
 function lspLabel(
   t: TFunction<"statusbar">,
   statusKind: LspStatusKind,
   available: boolean,
   message: string | null,
+  install: TinymistInstallStatus | null,
 ): string {
-  if (!available && statusKind === "unavailable") return t("lsp.notInstalled");
+  if (!available && statusKind === "unavailable") {
+    const installLabel = unavailableInstallLabel(t, install);
+    if (installLabel !== null) return installLabel;
+    return t("lsp.notInstalled");
+  }
   switch (statusKind) {
     case "disabled":
       return t("lsp.off");
@@ -115,6 +130,50 @@ function lspNeedsAction(statusKind: LspStatusKind, available: boolean): boolean 
   }
 }
 
+/**
+ * Label for the unavailable state driven by the managed-install progress, or
+ * `null` when the install state adds nothing (not installed / installed /
+ * unsupported → plain "not installed").
+ */
+function unavailableInstallLabel(
+  t: TFunction<"statusbar">,
+  install: TinymistInstallStatus | null,
+): string | null {
+  if (install === null) return null;
+  switch (install.state) {
+    case "downloading": {
+      const percent = downloadPercent(install);
+      return percent !== null
+        ? t("lsp.downloadingPercent", { percent })
+        : t("lsp.downloading");
+    }
+    case "verifying":
+      return t("lsp.verifying");
+    case "failed":
+      return t("lsp.downloadFailed");
+    default:
+      return null;
+  }
+}
+
+/**
+ * Whether the unavailable LSP entry should offer a tinymist Download/Retry
+ * button instead of the (hidden) Restart one: the install is startable —
+ * never attempted (`notInstalled`, e.g. auto-download disabled) or failed
+ * (retry). During downloading/verifying and on unsupported platforms there
+ * is nothing to click.
+ */
+function installActionable(
+  statusKind: LspStatusKind,
+  available: boolean,
+  install: TinymistInstallStatus | null,
+): boolean {
+  if (available || statusKind !== "unavailable" || install === null) {
+    return false;
+  }
+  return install.state === "notInstalled" || install.state === "failed";
+}
+
 export function StatusBar() {
   const { t } = useTranslation("statusbar");
   const tab = useActiveDocument();
@@ -133,6 +192,10 @@ export function StatusBar() {
   const statusClassName = statusClass(status);
 
   const { status: lspStatus } = useLspStatus();
+
+  // Managed tinymist install (auto-download when the LSP is unavailable).
+  // Shared subscription — see tinymistInstallStore.
+  const { status: tinymistInstall } = useTinymistInstall();
 
   // §5.3 save state (saving indicator / red save-failed). Minimal for Batch 4:
   // a label that reflects the active doc's SaveState. The full failure UI
@@ -191,6 +254,34 @@ export function StatusBar() {
       /* a failed restart is non-fatal; the next status event catches up */
     });
   };
+
+  // Unavailable + startable install → Download/Retry instead of Restart.
+  // Fire-and-forget; the tinymist_install events drive the UI from here on.
+  const canInstall = installActionable(
+    lspStatus.statusKind,
+    lspStatus.available,
+    tinymistInstall,
+  );
+  const startInstall = () => {
+    installTinymist().catch(() => {
+      /* non-fatal; the next status/progress event catches up */
+    });
+  };
+
+  // §3 editor stats (caret Ln/Col, selection size, document counts). Written
+  // by EditorArea from the Monaco API; only shown while the stats describe the
+  // ACTIVE doc (a stale hidden doc's stats are suppressed until its tab is
+  // reactivated, which re-fires the cursor subscription). Field selectors (not
+  // the whole store) so a cursor move only re-renders this component when a
+  // DISPLAYED value actually changed.
+  const statsDocId = useEditorStatsStore((s) => s.docId);
+  const statsLine = useEditorStatsStore((s) => s.line);
+  const statsColumn = useEditorStatsStore((s) => s.column);
+  const statsSelectionChars = useEditorStatsStore((s) => s.selectionChars);
+  const statsSelectionWords = useEditorStatsStore((s) => s.selectionWords);
+  const statsDocChars = useEditorStatsStore((s) => s.docChars);
+  const statsDocWords = useEditorStatsStore((s) => s.docWords);
+  const statsVisible = statsDocId !== null && statsDocId === (tab?.id ?? null);
 
   return (
     <footer className="statusbar">
@@ -255,15 +346,23 @@ export function StatusBar() {
       <span
         className={
           "statusbar-section statusbar-lsp" +
-          (needsAction ? " statusbar-lsp--action" : "")
+          (needsAction || canInstall ? " statusbar-lsp--action" : "")
         }
         title={
-          lspStatus.restartReason
-            ? t("lsp.lastTrigger", { reason: lspStatus.restartReason })
-            : lspStatus.message ?? undefined
+          tinymistInstall?.state === "failed" && tinymistInstall.error !== null
+            ? tinymistInstall.error
+            : lspStatus.restartReason
+              ? t("lsp.lastTrigger", { reason: lspStatus.restartReason })
+              : lspStatus.message ?? undefined
         }
       >
-        {lspLabel(t, lspStatus.statusKind, lspStatus.available, lspStatus.message)}
+        {lspLabel(
+          t,
+          lspStatus.statusKind,
+          lspStatus.available,
+          lspStatus.message,
+          tinymistInstall,
+        )}
         {needsAction && (
           <button
             type="button"
@@ -274,6 +373,18 @@ export function StatusBar() {
             {t("lsp.restartButton")}
           </button>
         )}
+        {canInstall && (
+          <button
+            type="button"
+            className="statusbar-lsp-restart"
+            title={t("lsp.downloadButtonTitle")}
+            onClick={startInstall}
+          >
+            {tinymistInstall?.state === "failed"
+              ? t("lsp.retryDownloadButton")
+              : t("lsp.downloadButton")}
+          </button>
+        )}
       </span>
       {problemCount > 0 && (
         <span
@@ -282,6 +393,30 @@ export function StatusBar() {
         >
           {t("startupProblems.count", { count: problemCount })}
         </span>
+      )}
+      {statsVisible && statsLine > 0 && (
+        <>
+          <span className="statusbar-section statusbar-stats statusbar-stats-first">
+            {t("cursor.position", { line: statsLine, column: statsColumn })}
+          </span>
+          {statsSelectionChars > 0 && (
+            <span className="statusbar-section statusbar-stats">
+              {t("cursor.selection", {
+                chars: statsSelectionChars,
+                words: statsSelectionWords,
+              })}
+            </span>
+          )}
+          <span
+            className="statusbar-section statusbar-stats"
+            title={t("cursor.docStatsTitle")}
+          >
+            {t("cursor.docStats", {
+              chars: statsDocChars,
+              words: statsDocWords,
+            })}
+          </span>
+        </>
       )}
     </footer>
   );

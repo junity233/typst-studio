@@ -1,9 +1,11 @@
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { Search, X, ChevronUp, ChevronDown } from "lucide-react";
 import { useSetting } from "../../hooks/useSetting";
 import { useThemeStore } from "../../store/themeStore";
 import { markPageDecoded } from "../../lib/compileTiming";
 import { SvgPage } from "./SvgPage";
+import { rectsByPageForLines } from "./previewSearch";
 import type { LineRect } from "../../lib/types";
 
 interface PreviewPaneProps {
@@ -34,6 +36,22 @@ interface PreviewPaneProps {
   paneRef?: React.Ref<HTMLDivElement>;
   /** Refs to each `.svg-page` wrapper, indexed by 0-based page number. */
   pageRefs?: React.RefObject<(HTMLDivElement | null)[]>;
+  // --- Source-driven preview search (see previewSearch.ts) -------------------
+  /** 0-based source-line indices matching the query, for highlight overlays. */
+  searchLines?: number[];
+  /** The active match's 0-based line index (drives the stronger tint). */
+  activeSearchLine?: number | null;
+  /** Open/close the search bar (the magnifier toggle owns this state). */
+  searchOpen?: boolean;
+  onSearchOpenChange?: (open: boolean) => void;
+  searchQuery?: string;
+  onSearchQueryChange?: (query: string) => void;
+  /** Step to the next/previous match (delta ±1); `null` match count hides nav. */
+  onSearchStep?: (delta: 1 | -1) => void;
+  /** Total match count (display "n/m"); 0 = no matches. */
+  searchMatchCount?: number;
+  /** 0-based index of the active match within the full match list. */
+  searchActiveIndex?: number;
 }
 
 /**
@@ -60,6 +78,15 @@ export function PreviewPane({
   revision,
   paneRef,
   pageRefs,
+  searchLines,
+  activeSearchLine,
+  searchOpen = false,
+  onSearchOpenChange,
+  searchQuery = "",
+  onSearchQueryChange,
+  onSearchStep,
+  searchMatchCount = 0,
+  searchActiveIndex = -1,
 }: PreviewPaneProps) {
   const { t } = useTranslation("preview");
   const [autoRefresh] = useSetting<boolean>("preview.autoRefresh");
@@ -89,6 +116,25 @@ export function PreviewPane({
     }
     return buckets;
   }, [lineMap]);
+
+  // Search-highlight buckets (all matches + the active match's own rects).
+  const searchRectsByPage = useMemo(
+    () => rectsByPageForLines(lineMap, searchLines ?? []),
+    [lineMap, searchLines],
+  );
+  const activeSearchRectsByPage = useMemo(
+    () =>
+      activeSearchLine == null
+        ? new Map<number, LineRect[]>()
+        : rectsByPageForLines(lineMap, [activeSearchLine]),
+    [lineMap, activeSearchLine],
+  );
+
+  // Focus the search input when the bar opens.
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen]);
 
   // Inline style overrides on the `.preview-pane` container. Both the page-
   // edge padding (the gap between the page and the pane edges, incl. the
@@ -188,16 +234,95 @@ export function PreviewPane({
       style={surfaceStyle}
       onScroll={onScroll}
     >
-      {autoRefresh === false && onRefresh && (
-        <button
-          className="preview-refresh"
-          type="button"
-          onClick={onRefresh}
-          title={t("refreshPreview")}
-        >
-          {t("refresh")}
-        </button>
-      )}
+      {/* Top chrome: refresh (autoRefresh off), the search toggle, and the
+          search bar share ONE sticky container — separate sticky siblings
+          would pile onto the same top:0 rect and cover each other once the
+          pane scrolls. */}
+      <div className="preview-chrome">
+        <div className="preview-chrome-row">
+          {autoRefresh === false && onRefresh && (
+            <button
+              className="preview-refresh"
+              type="button"
+              onClick={onRefresh}
+              title={t("refreshPreview")}
+            >
+              {t("refresh")}
+            </button>
+          )}
+          {onSearchOpenChange && (
+            <button
+              type="button"
+              className={
+                "preview-tool-button" + (searchOpen ? " is-active" : "")
+              }
+              title={t("search.toggleTitle")}
+              aria-pressed={searchOpen}
+              onClick={() => onSearchOpenChange(!searchOpen)}
+            >
+              <Search size={14} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+        {searchOpen && (
+          <div className="preview-searchbar">
+            <input
+              ref={searchInputRef}
+              type="text"
+              className="preview-search-input"
+              placeholder={t("search.placeholder")}
+              value={searchQuery}
+              onChange={(e) => onSearchQueryChange?.(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  onSearchStep?.(e.shiftKey ? -1 : 1);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  onSearchOpenChange?.(false);
+                }
+              }}
+              aria-label={t("search.placeholder")}
+            />
+            <span className="preview-search-count">
+              {searchMatchCount > 0
+                ? t("search.count", {
+                    active: searchActiveIndex + 1,
+                    total: searchMatchCount,
+                  })
+                : searchQuery.trim() !== ""
+                  ? t("search.noMatches")
+                  : ""}
+            </span>
+            <button
+              type="button"
+              className="preview-tool-button"
+              title={t("search.prev")}
+              disabled={searchMatchCount === 0}
+              onClick={() => onSearchStep?.(-1)}
+            >
+              <ChevronUp size={14} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="preview-tool-button"
+              title={t("search.next")}
+              disabled={searchMatchCount === 0}
+              onClick={() => onSearchStep?.(1)}
+            >
+              <ChevronDown size={14} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="preview-tool-button"
+              title={t("search.close")}
+              onClick={() => onSearchOpenChange?.(false)}
+            >
+              <X size={14} aria-hidden="true" />
+            </button>
+          </div>
+        )}
+      </div>
       {svgPages.length === 0 ? (
         <div className="preview-empty">{t("noPreview")}</div>
       ) : (
@@ -210,6 +335,8 @@ export function PreviewPane({
             lineRects={rectsByPage.get(i)}
             activeLines={activeLines}
             onJumpToLine={onJumpToLine}
+            searchRects={searchRectsByPage.get(i)}
+            activeSearchRects={activeSearchRectsByPage.get(i)}
             onImgLoad={onImgLoadForPage(i)}
             pageRef={refForPage(i)}
           />

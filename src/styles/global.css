@@ -403,11 +403,6 @@ button {
   letter-spacing: -0.374px;
 }
 .preview-refresh {
-  position: sticky;
-  top: 0;
-  align-self: flex-end;
-  z-index: 2;
-  margin-bottom: var(--space-xs);
   padding: var(--space-xxs) var(--space-sm);
   background: var(--color-surface-pearl);
   color: var(--color-ink);
@@ -447,6 +442,96 @@ button {
 .svg-page-highlight-rect {
   fill: var(--color-primary-softer);
   transition: opacity 120ms ease;
+}
+/* Source-driven preview search: soft amber tint for all matching lines, a
+   stronger one for the active match (stepped with Enter / Shift+Enter). */
+.svg-page-search-rect {
+  fill: rgba(255, 193, 7, 0.28);
+  stroke: rgba(255, 193, 7, 0.55);
+  stroke-width: 0.4;
+}
+.svg-page-search-rect--active {
+  fill: rgba(255, 152, 0, 0.45);
+  stroke: rgba(255, 152, 0, 0.8);
+}
+/* Search toggle + bar: ONE sticky container over the page stack (the pane's
+   scroll container scrolls it with page 1's top), so the refresh button, the
+   magnifier, and the search bar never stack onto the same top:0 rect. The
+   container is pointer-events:none; interactive children re-enable. */
+.preview-chrome {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  margin-bottom: var(--space-xs);
+  pointer-events: none;
+}
+.preview-chrome-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+}
+.preview-chrome .preview-refresh,
+.preview-chrome .preview-searchbar,
+.preview-tool-button {
+  pointer-events: auto;
+}
+.preview-tool-button {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: var(--color-surface-pearl);
+  color: var(--color-ink-muted-80);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.preview-tool-button:hover:not(:disabled) {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+.preview-tool-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.preview-tool-button.is-active {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+.preview-searchbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  padding: var(--space-xxs);
+  background: var(--color-surface-pearl);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+}
+.preview-search-input {
+  flex: 1 1 auto;
+  min-width: 60px;
+  padding: var(--space-xxs) var(--space-xs);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  font: var(--text-body);
+}
+.preview-search-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+.preview-search-count {
+  flex: 0 0 auto;
+  color: var(--color-ink-muted-48);
+  font: var(--text-fine-print);
+  white-space: nowrap;
 }
 .svg-page-highlight-rail {
   fill: var(--color-primary);
@@ -1594,7 +1679,12 @@ button {
   flex: 0 0 var(--statusbar-h);
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  /* Left cluster + right-pinned stats group (margin-left:auto on the first
+     stats section). Deterministic regardless of how many sections render —
+     the previous space-between made sections spread or cluster depending on
+     whether the stats group was visible. */
+  justify-content: flex-start;
+  gap: var(--space-lg);
   padding: 0 var(--space-lg);
   background: var(--color-canvas-parchment);
   border-top: 1px solid var(--color-hairline);
@@ -1620,6 +1710,14 @@ button {
 }
 .statusbar-badge {
   color: var(--color-ink-muted-48);
+}
+/* Editor stats (caret Ln/Col, selection size, document counts): muted, and
+   the first one pushes the whole group to the right edge of the bar. */
+.statusbar-stats {
+  color: var(--color-ink-muted-48);
+}
+.statusbar-stats-first {
+  margin-left: auto;
 }
 .statusbar-badge-error {
   color: var(--color-error);
@@ -2589,6 +2687,65 @@ button {
   flex-direction: column;
   gap: var(--space-xs);
 }
+/* Batch-export dialog: wider than the confirm chrome (a file list needs
+   room), with a scrollable checkbox list + toolbar row above it. */
+.dialog-batch-export {
+  width: min(520px, 90vw);
+}
+.batch-export-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+.batch-export-count {
+  margin-left: auto;
+  color: var(--color-ink-muted-48);
+  font: var(--text-fine-print);
+}
+.batch-export-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+}
+.batch-export-list li label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  cursor: pointer;
+}
+.batch-export-list li + li label {
+  border-top: 1px solid var(--color-hairline);
+}
+.batch-export-relpath {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.batch-export-error {
+  color: var(--color-error);
+}
+.batch-export-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  font: var(--text-body);
+}
+.batch-export-failed {
+  color: var(--color-error);
+}
+
 .dialog-title {
   font: var(--text-body-strong);
   color: var(--color-ink);
@@ -3413,6 +3570,25 @@ button {
   background: var(--color-canvas-parchment);
   border-radius: var(--radius-xs);
   color: var(--color-ink-muted-80);
+}
+.setting-progress {
+  /* Thin download progress bar under the tinymist install row's help text.
+     Bounded to the row-text column so a long download never widens the card. */
+  display: block;
+  width: 100%;
+  max-width: 280px;
+  height: 4px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--color-canvas-parchment);
+  overflow: hidden;
+}
+.setting-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-accent, #4a7a5f);
+  transition: width 200ms ease-out;
 }
 .setting-control {
   flex: 0 0 auto;

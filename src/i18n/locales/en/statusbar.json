@@ -39,7 +39,14 @@
     "connected": "LSP: connected",
     "lastTrigger": "Last trigger: {{reason}}",
     "restartButton": "Restart",
-    "restartButtonTitle": "Restart the LSP server"
+    "restartButtonTitle": "Restart the LSP server",
+    "downloading": "LSP: downloading tinymist…",
+    "downloadingPercent": "LSP: downloading tinymist… {{percent}}%",
+    "verifying": "LSP: verifying tinymist…",
+    "downloadFailed": "LSP: tinymist download failed",
+    "downloadButton": "Download",
+    "retryDownloadButton": "Retry",
+    "downloadButtonTitle": "Download the tinymist language server to ~/.typststudio/"
   },
   "startupProblems": {
     "count_one": "{{count}} startup issue",
@@ -55,5 +62,11 @@
     "dismissTitle": "Dismiss this panel",
     "detailsHeader": "Typst Studio — startup problems",
     "detailsCount": "Count: {{count}}"
+  },
+  "cursor": {
+    "position": "Ln {{line}}, Col {{column}}",
+    "selection": "{{chars}} chars ({{words}} words) selected",
+    "docStats": "{{chars}} chars · {{words}} words",
+    "docStatsTitle": "Whole-document character and word count (each CJK character counts as one word)."
   }
 }

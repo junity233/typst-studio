@@ -49,7 +49,17 @@
         { "key": "export.pngPixelPerPt", "type": "number", "label": "PNG resolution (px/pt)", "default": 2.0, "min": 0.5, "max": 8.0, "step": 0.5,
           "help": "Raster resolution for PNG export. 2.0 ≈ retina; 1.0 = one pixel per point." },
         { "key": "export.revisionWaitMs", "type": "integer", "label": "Export compile wait (ms)", "default": 10000, "min": 1000, "max": 60000,
-          "help": "How long export waits for a pending compile to finish before giving up." }
+          "help": "How long export waits for a pending compile to finish before giving up." },
+        { "key": "export.autoOnSave", "type": "boolean", "label": "Auto-export on save", "default": false,
+          "help": "Re-run the project's configured export ([export] format + outputPath in .typstpro) every time a document is saved. Skips silently when the project has no outputPath configured." },
+        { "key": "export.pdfPageRanges", "type": "string", "label": "PDF page ranges", "default": "",
+          "help": "Restrict PDF export to specific pages, e.g. \"1-3,5\" or \"4-\". Empty exports all pages." },
+        { "key": "export.pdfStandard", "type": "select", "label": "PDF standard", "default": "none",
+          "options": ["none", "1.7", "2.0", "a-1b", "a-2b", "a-3b", "a-4", "a-4f", "ua-1"],
+          "optionLabels": { "none": "Default", "1.7": "PDF 1.7", "2.0": "PDF 2.0", "a-1b": "PDF/A-1b", "a-2b": "PDF/A-2b", "a-3b": "PDF/A-3b", "a-4": "PDF/A-4", "a-4f": "PDF/A-4f", "ua-1": "PDF/UA-1" },
+          "help": "Conformance standard enforced during PDF export (archival/A variants embed color profiles and restrict features)." },
+        { "key": "export.pdfTagged", "type": "boolean", "label": "Tagged PDF (accessibility)", "default": true,
+          "help": "Keep the accessibility tag tree in exported PDFs. Disabling reduces file size but breaks screen-reader support." }
     ]},
     { "id": "appearance", "label": "Appearance & Window", "settings": [
         { "key": "appearance.theme", "type": "select", "label": "Theme",
@@ -68,6 +78,18 @@
         { "key": "autosave.mode",       "type": "select",  "label": "Autosave",   "default": "off", "options": ["off", "afterDelay", "onFocusChange"],
           "optionLabels": { "off": "Off", "afterDelay": "After delay", "onFocusChange": "On focus change" } },
         { "key": "autosave.delayMs",    "type": "integer", "label": "Autosave delay (ms)", "default": 3000, "min": 500, "max": 30000 }
+    ]},
+    { "id": "lsp", "label": "Language Server", "settings": [
+        { "key": "lsp.autoDownload", "type": "boolean", "label": "Auto-download tinymist", "default": true,
+          "help": "When no tinymist is found, download it automatically to ~/.typststudio/ and use it as the language server." },
+        { "key": "lsp.tinymistPath", "type": "path", "label": "tinymist binary", "default": "", "pick": "file",
+          "help": "Custom tinymist binary to spawn. Leave empty to prefer the app-managed download (~/.typststudio/) and then PATH." },
+        { "key": "lsp.formatterMode", "type": "select", "label": "Formatter", "default": "typstyle",
+          "options": ["typstyle", "typstfmt"],
+          "optionLabels": { "typstyle": "typstyle", "typstfmt": "typstfmt" },
+          "help": "The formatter behind Format Document (Shift+Alt+F). Applied live — no LSP restart needed." },
+        { "key": "lsp.formatterPrintWidth", "type": "integer", "label": "Formatter print width", "default": 0, "min": 0, "max": 999,
+          "help": "Preferred line width for the formatter. 0 uses the formatter's own default." }
     ]},
     { "id": "ai", "label": "AI Assistant", "settings": [
         { "key": "ai.provider",  "type": "select", "label": "Provider",

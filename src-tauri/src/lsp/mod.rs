@@ -2,5 +2,6 @@
 //! to the frontend via a WebSocket server.
 
 pub mod framing;
+pub mod installer;
 pub mod manager;
 pub mod relay;

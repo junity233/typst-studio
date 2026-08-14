@@ -8,6 +8,7 @@ import { StartupProblemsPanel } from "./components/StatusBar/StartupProblemsPane
 import { ConfirmDialog } from "./components/Dialogs/ConfirmDialog";
 import { RecoveryDialog } from "./components/Dialogs/RecoveryDialog";
 import { ConflictDialog } from "./components/Dialogs/ConflictDialog";
+import { BatchExportDialog } from "./components/Dialogs/BatchExportDialog";
 import { FormulaModal } from "./components/FormulaModal/FormulaModal";
 import { AboutModal } from "./components/About/AboutModal";
 import { ContextMenu } from "./components/Sidebar/ContextMenu";
@@ -18,12 +19,13 @@ import { useExternalFileRouting } from "./hooks/useExternalFileRouting";
 import { useStartupSession } from "./hooks/useStartupSession";
 import { useWindowRestore } from "./hooks/useWindowRestore";
 import { useAutosave } from "./hooks/useAutosave";
-// Task 8 part C: react to a backend WorkspaceChange LSP restart by reconnecting
-// appLanguageClient. Currently INERT — gated on appLanguageClient.isRunning(),
-// which is false until the Phase-C rewire makes it the active client (today the
-// wrapper's client still drives the live session). Mounted so the subscription
-// is live and ready the moment the rewire lands.
+// React to a backend WorkspaceChange LSP restart by reconnecting
+// appLanguageClient (now the live client — MonacoEditor starts it and this
+// hook re-starts it against fresh endpoints after generation bumps).
 import { useLspWorkspaceReconnect } from "./hooks/useLspWorkspaceReconnect";
+// Keep tinymist's runtime config (formatter choice) in sync with the app
+// settings: pushes on every client Ready and on settings changes.
+import { useTinymistConfigSync } from "./components/Editor/tinymistConfig";
 import { activateAll } from "./extensions";
 import {
   onSettingsWindow,
@@ -64,6 +66,7 @@ export default function App() {
   useWindowRestore();
   useAutosave();
   useLspWorkspaceReconnect();
+  useTinymistConfigSync();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Activate all in-tree extensions (registers their views/commands). Runs once;
@@ -106,6 +109,8 @@ export default function App() {
       <ConfirmDialog />
       <RecoveryDialog />
       <ConflictDialog />
+      {/* Command-palette `export-batch` opens this (batchExportStore). */}
+      <BatchExportDialog />
       {/* Store-driven (useFormulaModalStore); opened by the toolbar button and
           the Ctrl+Alt+M command. Renders nothing when closed. */}
       <FormulaModal />

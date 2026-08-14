@@ -11,6 +11,9 @@ import {
   FolderOpen,
   ChevronDown,
   Keyboard,
+  Languages,
+  Download,
+  RotateCw,
   type LucideIcon,
 } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
@@ -19,7 +22,12 @@ import { useSetting } from "../../hooks/useSetting";
 import { useSettingsStore } from "../../store/settingsStore";
 import { useThemeStore } from "../../store/themeStore";
 import {
+  downloadPercent,
+  useTinymistInstall,
+} from "../../store/tinymistInstallStore";
+import {
   clearRecentWorkspaces,
+  installTinymist,
   openDevtools,
   openLogDir,
   openThemesDir,
@@ -47,6 +55,7 @@ const CATEGORY_ICON: Record<string, LucideIcon> = {
   saving: Save,
   data: Database,
   keybindings: Keyboard,
+  lsp: Languages,
 };
 
 /**
@@ -116,7 +125,132 @@ function CategoryPane({ category }: { category: ManifestCategory }) {
           <SettingRow key={def.key} def={def} last={i === category.settings.length - 1} />
         ))}
         {category.id === "appearance" && <OpenThemesFolderRow />}
+        {category.id === "lsp" && <TinymistInstallRow last={category.settings.length === 0} />}
       </section>
+    </div>
+  );
+}
+
+/**
+ * The managed tinymist install row appended to the Language Server card.
+ * Shows the on-disk install (version + path), live download progress, or the
+ * failure with a retry — plus a Download/Re-download action. Driven by the
+ * shared `tinymist_install` subscription (see tinymistInstallStore), so it
+ * reflects the backend's auto-download at app start too.
+ */
+function TinymistInstallRow({ last }: { last: boolean }) {
+  const { t } = useTranslation("settings");
+  const { status } = useTinymistInstall();
+  const [busy, setBusy] = useState(false);
+
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await installTinymist();
+    } catch (e) {
+      window.alert(
+        i18n.t("actionFailed", {
+          ns: "errors",
+          message: toIpcError(e).message,
+        }),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (status === null) {
+    return (
+      <div className="setting-row setting-row-last">
+        <div className="setting-row-text">
+          <span className="setting-label">{t("tinymist.title")}</span>
+        </div>
+        <div className="setting-control">{t("tinymist.loading")}</div>
+      </div>
+    );
+  }
+
+  const inProgress =
+    status.state === "downloading" || status.state === "verifying";
+  const percent = downloadPercent(status);
+
+  let stateText: string;
+  switch (status.state) {
+    case "installed":
+      stateText = t("tinymist.installed", {
+        version: status.installedVersion ?? status.targetVersion,
+      });
+      break;
+    case "downloading":
+      stateText =
+        percent !== null
+          ? t("tinymist.downloadingPercent", {
+              version: status.targetVersion,
+              percent,
+            })
+          : t("tinymist.downloading", { version: status.targetVersion });
+      break;
+    case "verifying":
+      stateText = t("tinymist.verifying");
+      break;
+    case "failed":
+      stateText = status.error ?? t("tinymist.failed");
+      break;
+    case "unsupported":
+      stateText = t("tinymist.unsupported");
+      break;
+    case "notInstalled":
+    default:
+      stateText = t("tinymist.notInstalled");
+      break;
+  }
+
+  return (
+    <div className={"setting-row" + (last ? " setting-row-last" : "")}>
+      <div className="setting-row-text">
+        <span className="setting-label">{t("tinymist.title")}</span>
+        <span className="setting-key">
+          {status.installedPath ?? "~/.typststudio/"}
+        </span>
+        <span className="setting-help" title={status.error ?? undefined}>
+          {stateText}
+        </span>
+        {inProgress && (
+          <span
+            className="setting-progress"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent ?? undefined}
+          >
+            <span
+              className="setting-progress-fill"
+              style={{ width: `${percent ?? 100}%` }}
+            />
+          </span>
+        )}
+      </div>
+      <div className="setting-control">
+        <button
+          type="button"
+          className={"setting-action-btn" + (inProgress || busy ? " setting-action-busy" : "")}
+          onClick={() => void run()}
+          disabled={inProgress || busy || status.state === "unsupported"}
+        >
+          {inProgress ? (
+            t("tinymist.working")
+          ) : status.state === "installed" ? (
+            <>
+              <RotateCw size={13} /> {t("tinymist.redownload")}
+            </>
+          ) : (
+            <>
+              <Download size={13} /> {t("tinymist.download")}
+            </>
+          )}
+        </button>
+      </div>
     </div>
   );
 }

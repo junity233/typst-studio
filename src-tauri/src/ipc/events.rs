@@ -334,6 +334,10 @@ mod tests {
         // §6.4 enums re-exported from `lsp::manager`.
         LspStatusKind::export(&cfg).unwrap();
         LspRestartReason::export(&cfg).unwrap();
+        // Managed tinymist install (lsp::installer) — `tinymist_install` event
+        // payload + the get_tinymist_install command result.
+        crate::lsp::installer::TinymistInstallState::export(&cfg).unwrap();
+        crate::lsp::installer::TinymistInstallStatus::export(&cfg).unwrap();
         FsChangedPayload::export(&cfg).unwrap();
         ConflictPayload::export(&cfg).unwrap();
         // Crash-recovery payloads (§5.1).

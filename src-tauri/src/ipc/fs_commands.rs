@@ -94,6 +94,119 @@ pub async fn write_bytes_to_file(
     Ok(len)
 }
 
+/// Apply LSP `TextEdit[]` to a NOT-open workspace file (read → splice →
+/// atomic write). This is the disk half of `workspace/applyEdit` for rename
+/// refactorings that reach files the app doesn't hold open: the frontend
+/// planner routes open-doc edits to Monaco models and everything else here.
+/// The watcher picks the write up like any external change, so tinymist and
+/// the file tree stay in sync with no extra event plumbing.
+#[tauri::command]
+pub async fn apply_text_edits_to_disk_file(
+    state: State<'_, AppState>,
+    uri: String,
+    edits: Vec<crate::fs::text_edits::WireTextEdit>,
+) -> Result<()> {
+    let path = crate::fs::text_edits::file_uri_to_path(&uri)?;
+    let root = state
+        .workspace
+        .root()
+        .ok_or_else(|| AppError::InvalidInput("no workspace is open".into()))?;
+    if !contained_in(&root, &path) {
+        return Err(AppError::InvalidInput(
+            "edit target is outside the workspace".into(),
+        ));
+    }
+    // Blocking IO (read + atomic write) off the async runtime, matching the
+    // other write commands.
+    tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+        let text = std::fs::read_to_string(&path)?;
+        let new_text = crate::fs::text_edits::apply_text_edits(&text, &edits)?;
+        crate::persistence::atomic::write_bytes(&path, new_text.as_bytes())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
+    Ok(())
+}
+
+/// One `.typ` file found by [`list_typst_files`] (absolute + workspace-relative).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub struct TypstFileEntry {
+    pub abs_path: String,
+    pub rel_path: String,
+}
+
+/// Directories never descended into by [`list_typst_files`] / [`collect_typ_files`].
+const TYP_WALK_SKIP_DIRS: [&str; 3] = [".git", "node_modules", "target"];
+
+/// List every `.typ` file under the workspace root, recursively — the picker
+/// source for batch export. Skips dot-directories and the common dependency /
+/// build directories. Sorted by relative path for a stable listing.
+#[tauri::command]
+pub async fn list_typst_files(
+    state: State<'_, AppState>,
+) -> Result<Vec<TypstFileEntry>> {
+    let root = state
+        .workspace
+        .root()
+        .ok_or_else(|| AppError::InvalidInput("no workspace is open".into()))?;
+    tauri::async_runtime::spawn_blocking(move || Ok(collect_typ_files(&root)))
+        .await
+        .map_err(|e| AppError::Other(format!("join error: {e}")))?
+}
+
+/// Recursive `.typ` walker behind [`list_typst_files`]. Pure-ish (disk IO, no
+/// app state) so the skip rules are unit-testable with a tempdir. Matches the
+/// editor's own openability rules (`file_kind::TYPST_EXTENSIONS`,
+/// case-insensitive). Symlinks are NOT followed — a symlinked directory is
+/// skipped (which is also what makes the walk loop-safe), so the listing
+/// mirrors real in-tree files only.
+fn collect_typ_files(root: &Path) -> Vec<TypstFileEntry> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue; // unreadable subdir: skip, not fail
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else { continue };
+            let path = entry.path();
+            if file_type.is_dir() {
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if name.starts_with('.') || TYP_WALK_SKIP_DIRS.contains(&name) {
+                    continue;
+                }
+                stack.push(path);
+            } else if let Some(ext) = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+            {
+                if crate::domain::file_kind::TYPST_EXTENSIONS.contains(&ext.as_str()) {
+                    let rel = path
+                        .strip_prefix(root)
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_default();
+                    out.push(TypstFileEntry {
+                        abs_path: path.to_string_lossy().into_owned(),
+                        rel_path: rel,
+                    });
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    out
+}
+
 /// Wire view of one document rebound by a rename/move (§6.4). Emitted in the
 /// `docs_rebound` event payload AND returned from the `rename_entry` command so
 /// the frontend can rebind tab titles / breadcrumbs / active-file highlight.
@@ -1093,6 +1206,37 @@ pub(crate) fn workspace_change_triggers_restart(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(feature = "export-types")]
+    fn export_types() {
+        use ts_rs::TS;
+        let cfg = ts_rs::Config::default();
+        TypstFileEntry::export(&cfg).unwrap();
+    }
+
+    #[test]
+    fn collect_typ_files_finds_nested_typ_and_skips_ignored_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("main.typ"), "x").unwrap();
+        std::fs::create_dir_all(root.join("chapters")).unwrap();
+        std::fs::write(root.join("chapters").join("a.typ"), "x").unwrap();
+        // Skipped: dot-dir, .git, node_modules — and non-.typ files.
+        std::fs::create_dir_all(root.join(".hidden")).unwrap();
+        std::fs::write(root.join(".hidden").join("h.typ"), "x").unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git").join("g.typ"), "x").unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::write(root.join("node_modules").join("n.typ"), "x").unwrap();
+        std::fs::write(root.join("notes.txt"), "x").unwrap();
+
+        let found = collect_typ_files(root);
+        let rels: Vec<&str> = found.iter().map(|f| f.rel_path.as_str()).collect();
+        assert_eq!(rels, ["chapters/a.typ", "main.typ"]);
+        // Absolute paths round-trip to real files.
+        assert!(found.iter().all(|f| Path::new(&f.abs_path).is_file()));
+    }
 
     #[test]
     fn open_from_closed_triggers_restart() {

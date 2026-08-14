@@ -1,0 +1,14 @@
+{
+  "__smoke__": "batchExport en ok",
+  "title": "Batch export to PDF",
+  "loading": "Scanning workspace for .typ files…",
+  "noFiles": "No .typ files found in this workspace.",
+  "selectAll": "Select all",
+  "clearSelection": "Clear",
+  "selectedCount_one": "{{count}} file selected",
+  "selectedCount_other": "{{count}} files selected",
+  "exportPdf": "Choose folder & export",
+  "exporting": "Exporting…",
+  "resultOk": "{{name}} → {{path}}",
+  "resultFailed": "{{name}} — failed: {{error}}"
+}

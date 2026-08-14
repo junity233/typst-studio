@@ -119,9 +119,18 @@ pub fn run() {
             ipc::commands::export_pdf,
             ipc::commands::export_png,
             ipc::commands::export_svg,
+            // Batch export (multi-document picker → one output folder).
+            ipc::commands::export_batch_pdf,
+            // LSP workspace/applyEdit disk half (rename across closed files)
+            // + the `.typ` listing that feeds the batch-export picker.
+            ipc::fs_commands::apply_text_edits_to_disk_file,
+            ipc::fs_commands::list_typst_files,
             ipc::commands::get_diagnostics,
             ipc::commands::get_lsp_status,
             ipc::commands::restart_lsp,
+            // Managed tinymist install (auto-download when not on PATH).
+            ipc::commands::get_tinymist_install,
+            ipc::commands::install_tinymist,
             // Workspace / filesystem commands.
             ipc::fs_commands::open_workspace,
             ipc::fs_commands::open_default_workspace,
@@ -245,7 +254,6 @@ pub fn run() {
             // macOS), so it still runs well before any window/tab exists.
 
             use crate::ipc::state::{AppState, TauriEmitter};
-            use crate::lsp::manager::LspConfig;
             use crate::net::client::HttpClient;
             use crate::service::editor_service::{EditorService, Emitter};
             use crate::service::export_service::ExportService;
@@ -270,57 +278,17 @@ pub fn run() {
             let export = Arc::new(ExportService::new(editor.clone()));
             let workspace = Arc::new(WorkspaceService::new());
 
-            // Start the LSP service (spawns tinymist + WebSocket server).
-            // The status callback emits a Tauri event on each transition so the
-            // frontend can subscribe instead of polling.
-            //
-            // `block_on` here is intentional: `LspManager::start` does a fast
-            // `which` (PATH lookup, ~ms) and a `TcpListener::bind`. Both finish
-            // in single-digit milliseconds on a normal PATH, so the brief
-            // main-thread block before window creation is preferable to the
-            // complexity of a spawn + Arc-swap + placeholder-to-live transition
-            // (which would also race the frontend's initial get_lsp_status).
-            // If `which` ever becomes slow (huge PATH), move this to a spawned
-            // task and swap the service in via an Arc<RwLock<Arc<LspService>>>.
-            let lsp_config = LspConfig::default();
-            let app_for_lsp = app.handle().clone();
-            let lsp = tauri::async_runtime::block_on(async {
-                LspService::start(lsp_config, move |status| {
-                    use crate::ipc::events::LspStatusPayload;
-                    // The manager now produces the richer `LspStatus` directly;
-                    // `LspStatusPayload: From<LspStatus>` is the single
-                    // field-for-field mapping point, so this closure is a
-                    // pass-through.
-                    let payload = LspStatusPayload::from(status);
-                    let _ = app_for_lsp.emit("lsp_status", payload);
-                })
-                .await
-            });
-            let lsp = match lsp {
-                Ok(svc) => {
-                    let status = svc.status();
-                    tracing::info!(
-                        "LSP service started: status={:?}, available={}, enabled={}, \
-                         generation={}, ws_url={}",
-                        status.status, status.available, status.enabled,
-                        status.generation, status.ws_url
-                    );
-                    Arc::new(svc)
-                }
-                Err(e) => {
-                    tracing::warn!("LSP service failed to start: {e}");
-                    // Fall back to a no-manager service so the LSP commands still
-                    // resolve (reporting unavailable) instead of panicking at setup.
-                    Arc::new(LspService::disabled())
-                }
-            };
-
             // Settings: persist a free-form JSON document in the platform config
             // dir; broadcast every change to all windows via `settings_changed`.
             // Fault-tolerance (§6.5): if the config dir can't be resolved, fall
             // back to a process-local temp dir; if the settings store fails,
             // fall back to an in-memory default store. Either way the app boots
             // and the failure is collected into `startup_problems` for a banner.
+            //
+            // Constructed BEFORE the LSP service: the LSP's tinymist path is
+            // resolved from `lsp.tinymistPath` + the managed install, so the
+            // settings must exist first (and a settings load is a fast local
+            // file read).
             let cfg_dir = crate::startup::config_dir_or_problem(
                 app.path().app_config_dir().map_err(|e| e.to_string()),
                 &mut startup_problems,
@@ -356,6 +324,82 @@ pub fn run() {
                 },
                 &mut startup_problems,
             ));
+
+            // Reusable HTTP client shared app-wide via AppState. Created before
+            // the LSP/tinymist pieces so the installer can share it.
+            let net = Arc::new(HttpClient::new());
+
+            // Start the LSP service (spawns tinymist + WebSocket server).
+            // The status callback emits a Tauri event on each transition so the
+            // frontend can subscribe instead of polling.
+            //
+            // `block_on` here is intentional: `LspManager::start` does a fast
+            // `which` (PATH lookup, ~ms) and a `TcpListener::bind`. Both finish
+            // in single-digit milliseconds on a normal PATH, so the brief
+            // main-thread block before window creation is preferable to the
+            // complexity of a spawn + Arc-swap + placeholder-to-live transition
+            // (which would also race the frontend's initial get_lsp_status).
+            // If `which` ever becomes slow (huge PATH), move this to a spawned
+            // task and swap the service in via an Arc<RwLock<Arc<LspService>>>.
+            //
+            // The tinymist path resolves as: `lsp.tinymistPath` setting >
+            // managed install under ~/.typststudio/ > `tinymist` on PATH. When
+            // that yields nothing, the manager starts degraded and the
+            // auto-download trigger below kicks in.
+            let lsp_config = crate::lsp::installer::resolve_lsp_config(&settings);
+            let app_for_lsp = app.handle().clone();
+            let lsp = tauri::async_runtime::block_on(async {
+                LspService::start(lsp_config, move |status| {
+                    use crate::ipc::events::LspStatusPayload;
+                    // The manager now produces the richer `LspStatus` directly;
+                    // `LspStatusPayload: From<LspStatus>` is the single
+                    // field-for-field mapping point, so this closure is a
+                    // pass-through.
+                    let payload = LspStatusPayload::from(status);
+                    let _ = app_for_lsp.emit("lsp_status", payload);
+                })
+                .await
+            });
+            let lsp = match lsp {
+                Ok(svc) => {
+                    let status = svc.status();
+                    tracing::info!(
+                        "LSP service started: status={:?}, available={}, enabled={}, \
+                         generation={}, ws_url={}",
+                        status.status, status.available, status.enabled,
+                        status.generation, status.ws_url
+                    );
+                    Arc::new(svc)
+                }
+                Err(e) => {
+                    tracing::warn!("LSP service failed to start: {e}");
+                    // Fall back to a no-manager service so the LSP commands still
+                    // resolve (reporting unavailable) instead of panicking at setup.
+                    Arc::new(LspService::disabled())
+                }
+            };
+
+            // Managed tinymist install (auto-download into ~/.typststudio/).
+            // On success it relaunches the LSP against the freshly resolved
+            // config so the managed binary takes over without an app restart.
+            // Builds its own HTTP client (stall-only read timeout — see
+            // installer docs) rather than sharing `net`.
+            let tinymist = Arc::new(crate::lsp::installer::TinymistInstaller::new(
+                app.handle().clone(),
+            ));
+            {
+                let settings_cb = settings.clone();
+                let lsp_cb = lsp.clone();
+                tinymist.set_on_installed(Arc::new(move || {
+                    let config = crate::lsp::installer::resolve_lsp_config(&settings_cb);
+                    let lsp_for_relaunch = lsp_cb.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = lsp_for_relaunch.relaunch(config).await {
+                            tracing::warn!("LSP relaunch after tinymist install failed: {e}");
+                        }
+                    });
+                }));
+            }
 
             // Session memory (open documents + active view, §13) in the same config dir.
             // `SessionService::load` is already load-tolerant (corrupt/missing →
@@ -467,9 +511,6 @@ pub fn run() {
             // after the window is up so the frontend's listener is registered.
             let recovery_payload = compute_recovery_payload(&recovery);
 
-            // Reusable HTTP client shared app-wide via AppState.
-            let net = Arc::new(HttpClient::new());
-
             // Package service (Packages view): index cache + typst-kit handle.
             // The index cache lives under the app config dir (NOT typst's own
             // dirs) so the two tools never disturb each other's state.
@@ -536,6 +577,26 @@ pub fn run() {
                 }),
             );
 
+            // Auto-download tinymist (managed install into ~/.typststudio/):
+            // when the LSP came up unavailable, no custom binary is configured
+            // (`lsp.tinymistPath` empty — a broken custom path is the user's
+            // to fix, not ours to override), and `lsp.autoDownload` is on.
+            // `begin_install` is idempotent, so this races safely with a
+            // user-triggered download from the Settings window. Progress
+            // arrives as `tinymist_install` events; the `on_installed` hook
+            // above relaunches the LSP when the binary lands.
+            if !lsp.status().available {
+                let custom: String = settings.get("lsp.tinymistPath", String::new());
+                let auto_download: bool = settings.get_or_default("lsp.autoDownload");
+                if custom.trim().is_empty() && auto_download {
+                    tracing::info!(
+                        "tinymist not found; auto-downloading v{} to ~/.typststudio/",
+                        crate::lsp::installer::TINYMIST_VERSION
+                    );
+                    tinymist.begin_install();
+                }
+            }
+
             app.manage(AppState {
                 editor,
                 export,
@@ -549,6 +610,7 @@ pub fn run() {
                 watcher_health,
                 packages,
                 project_config,
+                tinymist,
             });
 
             // Custom titlebar (Windows only): drop the OS frame so the frontend

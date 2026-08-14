@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Eye, EyeOff, FileOutput, Link, Unlink, WrapText } from "lucide-react";
 import { TabStrip } from "../TitleBar/TabStrip";
@@ -26,6 +26,9 @@ import {
   rectAtOrBeforeLine,
 } from "../Preview/previewMapping";
 import { isZoomWheel, nextZoomStep } from "../../hooks/useWheelZoom";
+import { useEditorStatsStore } from "../../store/editorStatsStore";
+import { countChars, countWords } from "../../lib/textStats";
+import { clampActiveIndex, findMatchingLines } from "../Preview/previewSearch";
 
 const PREVIEW_WIDTH_KEY = "ts-preview-width";
 const PREVIEW_WIDTH_DEFAULT = 480;
@@ -153,6 +156,72 @@ export function EditorArea() {
   // activeTab (narrowed to non-null in that scope) when null.
   const projectPreviewActive = projectPreview && mainDoc !== null;
   const previewDoc = projectPreviewActive ? mainDoc : activeTab;
+
+  // --- Source-driven preview search (previewSearch.ts) ----------------------
+  // typst's SVG pages are glyph outlines (no selectable text nodes), so the
+  // preview search runs against the preview document's SOURCE and highlights
+  // the matching lines' rects via the lineMap.
+  const [previewSearchOpen, setPreviewSearchOpen] = useState(false);
+  const [previewSearchQuery, setPreviewSearchQuery] = useState("");
+  const [previewSearchIdx, setPreviewSearchIdx] = useState(0);
+  const searchSourceDoc = previewDoc ?? activeTab;
+  const searchLines = useMemo(
+    () =>
+      previewSearchOpen
+        ? findMatchingLines(
+            (searchSourceDoc?.content ?? "").split("\n"),
+            previewSearchQuery,
+          )
+        : [],
+    [previewSearchOpen, previewSearchQuery, searchSourceDoc?.content],
+  );
+  const clampedSearchIdx = clampActiveIndex(previewSearchIdx, searchLines.length);
+  const activeSearchLine =
+    clampedSearchIdx >= 0 ? (searchLines[clampedSearchIdx] ?? null) : null;
+  // Keep the index in range when the query/doc changes and the match list
+  // shrinks; an empty match list resets to 0 so REOPENING the search bar with
+  // a retained query lands on the FIRST match, not the last (the wrap-around
+  // clamp would otherwise send -1 → count-1).
+  useEffect(() => {
+    setPreviewSearchIdx((i) => {
+      const next =
+        searchLines.length === 0 ? 0 : clampActiveIndex(i, searchLines.length);
+      return next === i ? i : next;
+    });
+  }, [searchLines]);
+  const stepPreviewSearch = useCallback(
+    (delta: 1 | -1) => {
+      setPreviewSearchIdx((i) => clampActiveIndex(i + delta, searchLines.length));
+    },
+    [searchLines],
+  );
+  // Navigate on match change: center the match's preview page and — when the
+  // editor shows the SAME doc (no project-preview include mode) — SCROLL the
+  // editor to the line. Deliberately `revealLineTopIfOutsideViewport` (scroll
+  // only): `revealLine` would move the caret and `focus()` the editor, yanking
+  // keystrokes out of the search input mid-query.
+  //
+  // Deps are PRIMITIVES (ids + line): object deps like `searchSourceDoc`/
+  // `activeTab` churn on every keystroke/compile, which would re-run this
+  // effect per keystroke and re-scroll both panes; live objects are read from
+  // the documents store inside instead.
+  const searchSourceDocId = searchSourceDoc?.id ?? null;
+  const activeTabId = activeTab?.id ?? null;
+  useEffect(() => {
+    if (!previewSearchOpen || activeSearchLine == null) return;
+    const liveDoc = searchSourceDocId
+      ? useDocumentsStore.getState().documents[searchSourceDocId]
+      : undefined;
+    const page = liveDoc?.lineMap?.find(
+      (r) => r.line === activeSearchLine + 1,
+    )?.page;
+    if (page !== undefined) {
+      pageRefs.current[page]?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+    if (searchSourceDocId !== null && searchSourceDocId === activeTabId) {
+      editorApiRef.current?.revealLineTopIfOutsideViewport(activeSearchLine + 1);
+    }
+  }, [activeSearchLine, previewSearchOpen, searchSourceDocId, activeTabId]);
   // The active document's content kind (defaults to "typst"). Drives which
   // editor/viewer is rendered and which Typst-specific chrome (preview pane,
   // FormatToolbar, scroll-sync, diagnostics) is shown. Binary kinds (image/pdf)
@@ -843,6 +912,60 @@ export function EditorArea() {
       ? previewHighlightState.lines
       : [];
 
+  // Same compile-freshness gate as activePreviewLines for the SEARCH rects:
+  // matches come from the CURRENT source, rects from the last-compiled
+  // lineMap — during fast typing current lines would highlight stale page
+  // regions, so the overlays hide until the compile catches up.
+  const searchRectsFresh =
+    searchSourceDoc !== null &&
+    searchSourceDoc !== undefined &&
+    searchSourceDoc.compiledRevision >= searchSourceDoc.revision;
+  const searchRectLines = searchRectsFresh ? searchLines : [];
+  const activeSearchRectLine = searchRectsFresh ? activeSearchLine : null;
+
+  // StatusBar stats (caret Ln/Col, selection size, document counts), split by
+  // update source so a keystroke doesn't recompute everything twice:
+  //  - caret/selection: driven by the Monaco cursor events below (cheap,
+  //    per-event);
+  //  - document totals: recomputed ONLY when the content string identity
+  //    changes, debounced 250ms — whole-doc counting is O(n) (~30ms/MB), fine
+  //    on settle but not per keystroke on large documents.
+  useEffect(() => {
+    const api = editorApiRef.current;
+    if (!api || !activeTab) {
+      useEditorStatsStore.getState().clear();
+      return;
+    }
+    const doc = activeTab;
+    const refresh = () => {
+      const pos = api.getCursorPosition();
+      const sel = api.getSelectionText();
+      useEditorStatsStore.getState().update({
+        docId: doc.id,
+        line: pos?.lineNumber ?? 0,
+        column: pos?.column ?? 0,
+        selectionChars: countChars(sel),
+        selectionWords: countWords(sel),
+      });
+    };
+    refresh();
+    return api.onDidChangeCursorPosition(refresh);
+  }, [editorReadyTick, activeTab?.id]);
+
+  const statsContent = activeTab?.content ?? null;
+  const statsDocId = activeTab?.id ?? null;
+  useEffect(() => {
+    if (statsDocId === null || statsContent === null) return;
+    const timer = window.setTimeout(() => {
+      useEditorStatsStore.getState().update({
+        docId: statsDocId,
+        docChars: countChars(statsContent),
+        docWords: countWords(statsContent),
+      });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [statsDocId, statsContent]);
+
   // Drag the sash: preview width = container right edge - pointer X. Uses
   // window-level pointer events so the drag survives the cursor leaving the
   // sash. Width persists to localStorage on pointerup.
@@ -1086,6 +1209,15 @@ export function EditorArea() {
                       svgPages={(previewDoc ?? activeTab).svgPages}
                       lineMap={(previewDoc ?? activeTab).lineMap}
                       activeLines={activePreviewLines}
+                      searchLines={searchRectLines}
+                      activeSearchLine={activeSearchRectLine}
+                      searchOpen={previewSearchOpen}
+                      onSearchOpenChange={setPreviewSearchOpen}
+                      searchQuery={previewSearchQuery}
+                      onSearchQueryChange={setPreviewSearchQuery}
+                      onSearchStep={stepPreviewSearch}
+                      searchMatchCount={searchLines.length}
+                      searchActiveIndex={clampedSearchIdx}
                       onRefresh={handleRefresh}
                       onJumpToLine={handleJumpToLine}
                       onScroll={handlePreviewScroll}

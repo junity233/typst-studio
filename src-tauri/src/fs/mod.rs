@@ -20,6 +20,7 @@ pub mod packages;
 pub mod package_index;
 pub mod resolver;
 pub mod search;
+pub mod text_edits;
 pub mod tree;
 pub mod watcher;
 

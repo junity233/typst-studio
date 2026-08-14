@@ -10,11 +10,20 @@ import {
   applyModelEdits,
   applyDiskEdits,
   executeWorkspaceEditPlan,
+  toEntryKindWire,
   type DiskApplyIpc,
 } from "./workspaceEditApplier";
 import { monacoModelRegistry } from "./monacoModelRegistry";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { useDialogStore } from "../../store/dialogStore";
+import { useWorkspaceStore } from "../../store/workspaceStore";
+import {
+  applyTextEditsToDiskFile,
+  createEntry,
+  deleteEntry,
+  renameEntry,
+} from "../../lib/tauri";
+import { fileUriToWorkspaceRel } from "../../lib/workspacePath";
 import i18n from "../../i18n";
 
 /**
@@ -51,38 +60,21 @@ import i18n from "../../i18n";
  * `connection.onRequest(ApplyWorkspaceEditRequest.type, …)` line in the
  * connection hook).
  *
- * ## Phase D scope (conservative)
+ * ## Disk path
  *
- * The MODEL-application path (open docs) is fully implemented: it resolves each
- * URI → documentId via the registry, applies the LSP `TextEdit[]` to the live
- * Monaco model as a single `applyEdits` op, and the resulting content-change
- * flows through the editor's normal onChange → `updateContent` + backend-forward
- * path (dirty + revision bump). This is the common case for a rename refactoring
- * or a "wrap in …" code action on an open doc.
+ * The DISK-application path covers un-open-file TEXT edits via the backend
+ * `apply_text_edits_to_disk_file` command (read → splice → atomic write, with
+ * LSP UTF-16 position decoding) and resource ops via the matching
+ * `create_entry` / `rename_entry` / `delete_entry` IPC. See
+ * [`applyDiskEdits`](./workspaceEditApplier.ts) for the failure semantics.
  *
- * The DISK-application path is INTENTIONALLY conservative: for an un-open-file
- * text edit, we don't have the file's content in memory, so applying partial
- * `TextEdit[]` requires a backend round-trip (read → apply edits → atomic
- * write). For Phase D the handler reports such edits as failures (see
- * [`applyDiskEdits`](./workspaceEditApplier.ts)) rather than corrupting state.
- * Resource ops (create/rename/delete) route to the matching `create_entry` /
- * `rename_entry` / `delete_entry` IPC. A future task can harden the un-open-file
- * text-edit path (read+edit+atomic-write) once the backend exposes a single
- * "apply text edits to a not-open file" command; until then the model path
- * carries the real value and the disk path is best-effort.
+ * ## Production wiring
  *
- * ## Inert until rewire
- *
- * This handler is registered on `appLanguageClient`'s `MonacoLanguageClient`
- * BEFORE `client.start()` (see
- * [`registerWorkspaceApplyEditHandler`](Self.registerWorkspaceApplyEditHandler)),
- * so it lands in the client's `_pendingRequestHandlers` and overwrites
- * vscode-languageclient's auto-registered default at connection time. But
- * `appLanguageClient.start()` is NOT called from the UI yet (Phase B deferral —
- * the wrapper-driven client still drives the live session). So this handler is
- * INERT until the rewire task swaps MonacoEditor to the singleton. The wrapper's
- * OWN default `workspace/applyEdit` handling continues to serve the live session
- * in the meantime.
+ * [`createProductionWorkspaceEditDeps`](Self.createProductionWorkspaceEditDeps)
+ * builds the live deps from `lib/tauri.ts` + the workspace store;
+ * `MonacoEditor` passes a `configureClient` hook to
+ * `appLanguageClient.start()` that registers this handler on every FRESH
+ * client (pre-start, so it overrides vscode-languageclient's default).
  */
 
 /**
@@ -116,14 +108,35 @@ function collectOpenAndDirtyUris(): {
 
 /**
  * The injected backend IPC + URI→relpath surface the production handler needs.
- * The rewire task constructs this from `lib/tauri.ts`'s `createEntry` /
- * `renameEntry` / `deleteEntry` and a `file:`-URI → workspace-relative path
- * converter rooted at `workspaceStore.rootPath`. `applyTextEditsToDiskFile` is
- * OPTIONAL (Phase D limitation — see the module doc).
+ * [`createProductionWorkspaceEditDeps`](Self.createProductionWorkspaceEditDeps)
+ * builds the live set from `lib/tauri.ts`'s `createEntry` / `renameEntry` /
+ * `deleteEntry` / `applyTextEditsToDiskFile` and a `file:`-URI →
+ * workspace-relative path converter rooted at `workspaceStore.rootPath`.
  */
 export interface WorkspaceApplyEditDeps extends DiskApplyIpc {
   /** Convert an absolute file URI → workspace-relative path. Null if not in ws. */
   uriToRel: (uri: string) => string | null;
+}
+
+/**
+ * Build the LIVE [`WorkspaceApplyEditDeps`](Self.WorkspaceApplyEditDeps) from
+ * the real IPC wrappers + stores. All reads (`rootPath`) happen at CALL time so
+ * a workspace switch between construction and use is honored per edit — the
+ * uriToRel closure reads the store on every conversion.
+ */
+export function createProductionWorkspaceEditDeps(): WorkspaceApplyEditDeps {
+  return {
+    // The seam's IPC surface uses the literal `"directory"` from the LSP
+    // resource-op layer (workspaceEdit.ts); the backend command takes the
+    // entry-kind wire enum (`"dir"`).
+    createEntry: (rel, kind) => createEntry(rel, toEntryKindWire(kind)),
+    renameEntry: (from, to) => renameEntry(from, to),
+    deleteEntry: (rel) => deleteEntry(rel),
+    applyTextEditsToDiskFile: (uri, edits: TextEdit[]) =>
+      applyTextEditsToDiskFile(uri, edits),
+    uriToRel: (uri) =>
+      fileUriToWorkspaceRel(useWorkspaceStore.getState().rootPath, uri),
+  };
 }
 
 /**
@@ -167,9 +180,10 @@ export async function handleApplyWorkspaceEdit(
  *
  * Returns a disposable that unregisters the handler (for tests / teardown).
  *
- * INERT until the rewire: `appLanguageClient.start()` is not called from the UI
- * yet, so this registration only takes effect once a later task rewires
- * MonacoEditor to drive the singleton client.
+ * Wired from `MonacoEditor`'s `appLanguageClient.start({ configureClient })`
+ * hook: the registration runs per FRESH client instance before `start()`, so
+ * it reliably replaces vscode-languageclient's default on every
+ * connect/reconnect.
  */
 export function registerWorkspaceApplyEditHandler(
   client: MonacoLanguageClient,

@@ -46,6 +46,24 @@ import { usePasteConvert } from "./usePasteConvert";
 import type { DocumentOrigin } from "../../lib/types";
 import { DirectMonacoEditor } from "./DirectMonacoEditor";
 import { appLanguageClient } from "./appLanguageClient";
+import {
+  createProductionWorkspaceEditDeps,
+  registerWorkspaceApplyEditHandler,
+} from "./workspaceApplyEditHandler";
+import type { MonacoLanguageClient } from "monaco-languageclient";
+
+/**
+ * Pre-start hook for every FRESH language client: override
+ * `workspace/applyEdit` with the app's applier (models + backend disk IPC)
+ * instead of monaco-vscode-api's in-memory VFS. Module-level + fresh deps per
+ * call so the registrations follow client restarts 1:1.
+ */
+function configureApplyEditHandler(client: MonacoLanguageClient): void {
+  registerWorkspaceApplyEditHandler(
+    client,
+    createProductionWorkspaceEditDeps(),
+  );
+}
 
 export interface MonacoEditorApi {
   /** Reveal a line, place the cursor, and focus (diagnostics / click-to-source). */
@@ -1201,6 +1219,13 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         wsUrl,
         workspaceRootPath: rootPathRef.current,
         workspaceName: workspaceNameRef.current,
+        // Route `workspace/applyEdit` (rename / code-action edits) through the
+        // app's own applier instead of monaco-vscode-api's in-memory VFS:
+        // open-doc edits go to the live Monaco models, closed-file edits and
+        // resource ops go to the backend safe-file IPC. Runs before
+        // client.start() on every FRESH client so it overrides the default
+        // handler after each reconnect too.
+        configureClient: configureApplyEditHandler,
       })
       .catch((error) => {
         console.warn("[MonacoEditor] appLanguageClient.start failed:", error);

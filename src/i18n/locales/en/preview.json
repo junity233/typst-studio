@@ -8,5 +8,14 @@
   "loading": "Loading…",
   "zoomIn": "Zoom in",
   "zoomOut": "Zoom out",
-  "actualSize": "Actual size"
+  "actualSize": "Actual size",
+  "search": {
+    "toggleTitle": "Search in preview (matches the source text; highlights the pages)",
+    "placeholder": "Find in preview…",
+    "count": "{{active}} / {{total}}",
+    "noMatches": "No matches",
+    "prev": "Previous match (Shift+Enter)",
+    "next": "Next match (Enter)",
+    "close": "Close search (Esc)"
+  }
 }

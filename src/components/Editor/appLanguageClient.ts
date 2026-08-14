@@ -1,6 +1,7 @@
 import { Uri } from "vscode";
 import type { LanguageClientOptions } from "vscode-languageclient/browser.js";
 import { State } from "vscode-languageclient/browser.js";
+import { DidChangeConfigurationNotification } from "vscode-languageclient/browser.js";
 import { MonacoLanguageClient } from "monaco-languageclient";
 import {
   toSocket,
@@ -92,8 +93,8 @@ export interface AppLanguageClientSnapshot {
 }
 
 /**
- * Parameters for [`start`](Self.start). All three drive the idempotency check
- * (see [`paramsEqual`](Self.paramsEqual)).
+ * Parameters for [`start`](Self.start). The first three drive the idempotency
+ * check (see [`paramsEqual`](Self.paramsEqual)).
  */
 export interface StartParams {
   /**
@@ -115,6 +116,18 @@ export interface StartParams {
    * `null`, the basename of the root path is used.
    */
   workspaceName: string | null;
+  /**
+   * Invoked once per FRESH client instance, after construction but BEFORE
+   * `client.start()` — the hook point for pre-start request-handler
+   * registration (e.g. `registerWorkspaceApplyEditHandler`, which must land in
+   * the client's pending handlers to override vscode-languageclient's default
+   * in-memory-VFS `workspace/applyEdit`). NOT part of the
+   * [`paramsEqual`](Self.paramsEqual) identity: two starts differing only in
+   * this callback reuse a running client as-is (the callback only matters when
+   * a new client is actually constructed). A thrown error fails the start
+   * (`Failed` snapshot).
+   */
+  configureClient?: (client: MonacoLanguageClient) => void;
 }
 
 /** A live language client handle held by the singleton. */
@@ -381,6 +394,20 @@ class AppLanguageClient {
     workspaceName: string | null;
   } | null = null;
 
+  /**
+   * The `configureClient` hook from the last [`start`](Self.start) that
+   * supplied one. [`startWithFreshEndpoint`](Self.startWithFreshEndpoint)
+   * re-starts with synthesized params and must forward it too — otherwise a
+   * client rebuilt after a `childCrash`/`settingsChange` bump would silently
+   * lose the pre-start request-handler overrides (e.g. the
+   * `workspace/applyEdit` override), and since `configureClient` is excluded
+   * from [`paramsEqual`](Self.paramsEqual), the next `start()` with identical
+   * wire params would no-op and never restore them.
+   */
+  private lastConfigureClient:
+    | ((client: MonacoLanguageClient) => void)
+    | undefined = undefined;
+
   /** Current snapshot (immutable; identity changes on every transition). */
   getSnapshot(): AppLanguageClientSnapshot {
     return this.snapshot;
@@ -483,6 +510,9 @@ class AppLanguageClient {
       wsUrl,
       workspaceRootPath: wp.workspaceRootPath,
       workspaceName: wp.workspaceName,
+      // Forward the last configureClient hook — see lastConfigureClient's doc
+      // for why a reconnect-built client must not lose its overrides.
+      configureClient: this.lastConfigureClient,
     }).then(() => true);
   }
 
@@ -535,6 +565,9 @@ class AppLanguageClient {
       workspaceRootPath: params.workspaceRootPath,
       workspaceName: params.workspaceName,
     };
+    if (params.configureClient !== undefined) {
+      this.lastConfigureClient = params.configureClient;
+    }
 
     // Stop the old client (if any). Generation is bumped BEFORE we touch the
     // new transport so consumers can drop stale data the moment a new client is
@@ -605,6 +638,26 @@ class AppLanguageClient {
             workspaceName: params.workspaceName,
             stopped: null,
           };
+
+          // Pre-start configuration hook (request-handler overrides etc.).
+          // Runs BEFORE client.start() so pending handlers replace
+          // vscode-languageclient's auto-registered defaults. A configuration
+          // error fails the start rather than silently skipping the hook.
+          try {
+            params.configureClient?.(client);
+          } catch (e) {
+            if (this.snapshot.generation !== currentGen) {
+              finish();
+              return;
+            }
+            this.setSnapshot({
+              state: "Failed",
+              generation: currentGen,
+              error: `client configuration failed: ${errorMessage(e)}`,
+            });
+            finish();
+            return;
+          }
 
           client.onDidChangeState(({ oldState, newState }) => {
             // §9.1 self-stop suppression: if WE initiated a stop(), a `→ Stopped`
@@ -778,6 +831,24 @@ class AppLanguageClient {
   }
 
   /**
+   * Push a `workspace/didChangeConfiguration` notification (e.g. tinymist's
+   * `{ settings: { tinymist: { … } } }` section) to the RUNNING client.
+   * Returns false — sending nothing — when no client is running; callers that
+   * also need the start case subscribe to the `Ready` snapshot instead.
+   */
+  sendDidChangeConfiguration(settings: unknown): boolean {
+    const handle = this.handle;
+    if (handle === null || !handle.client.isRunning()) return false;
+    // A stop/restart racing between the isRunning() gate and the send rejects
+    // (ConnectionInactive / disposing writer). The push is advisory — the
+    // Ready subscription re-pushes on the new client — so swallow it.
+    handle.client
+      .sendNotification(DidChangeConfigurationNotification.type, { settings })
+      .catch(() => {});
+    return true;
+  }
+
+  /**
    * Whether any client has EVER reached `Ready` in this process lifetime
    * (sticky). The reconnect hook uses this instead of [`isRunning`](Self.isRunning)
    * so a `childCrash`/`settingsChange` generation bump still triggers a
@@ -818,6 +889,7 @@ class AppLanguageClient {
     this.everReachedReady = false;
     this.maxWsUrlGeneration = null;
     this.lastWorkspaceParams = null;
+    this.lastConfigureClient = undefined;
     this.snapshot = { state: "Disabled", generation: 0, error: null };
   }
 

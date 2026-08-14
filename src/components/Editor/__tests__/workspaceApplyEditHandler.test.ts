@@ -432,3 +432,12 @@ describe("applyDiskEdits", () => {
     ]);
   });
 });
+
+import { toEntryKindWire } from "../workspaceEditApplier";
+
+describe("toEntryKindWire (resource-op kind → backend EntryKind)", () => {
+  it("maps the LSP 'directory' literal onto the backend 'dir' wire enum", () => {
+    expect(toEntryKindWire("directory")).toBe("dir");
+    expect(toEntryKindWire("file")).toBe("file");
+  });
+});

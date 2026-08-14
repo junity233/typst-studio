@@ -8,6 +8,23 @@
 export type AffectedDoc = { id: DocumentId, path: string, };
 
 /**
+ * One document to render in a batch export: the backend tab id, the pinned
+ * revision, and the file stem used for the output name (`{name}.pdf`).
+ */
+export type BatchExportItem = { id: DocumentId, 
+/**
+ * Serialized as a JSON number by Tauri (u64 → bigint is overridden, same
+ * as every other wire revision field).
+ */
+revision: number, name: string, };
+
+/**
+ * Per-item outcome of a batch export: the written path on success, or the
+ * error message (a failed document never aborts the rest of the batch).
+ */
+export type BatchExportOutcome = { name: string, path?: string, error?: string, };
+
+/**
  * One bibliography entry surfaced to the Bibliography panel. CamelCase on the
  * wire to match the frontend TS interface (`{ key, entryType, title?, authors, year? }`).
  */
@@ -1257,6 +1274,51 @@ base: string, };
 export type ThemesChangedPayload = { themes: Array<ThemeInfo>, };
 
 /**
+ * Lifecycle state of the managed install, serialized camelCase to match the
+ * other wire enums (see `LspStatusKind`).
+ */
+export type TinymistInstallState = "unsupported" | "notInstalled" | "downloading" | "verifying" | "installed" | "failed";
+
+/**
+ * Snapshot of the managed-install state, broadcast as the `tinymist_install`
+ * event payload and returned by the IPC commands.
+ */
+export type TinymistInstallStatus = { state: TinymistInstallState, 
+/**
+ * True while an install attempt owns the slot (guards double triggers).
+ */
+inProgress: boolean, 
+/**
+ * The version an install targets / just installed.
+ */
+targetVersion: string, 
+/**
+ * Bytes of the archive received so far (0 unless downloading).
+ */
+receivedBytes: number, 
+/**
+ * Total archive bytes when `Content-Length` was present, else 0.
+ */
+totalBytes: number, 
+/**
+ * Version of the binary currently on disk, when installed.
+ */
+installedVersion: string | null, 
+/**
+ * Absolute path of the managed binary, when installed.
+ */
+installedPath: string | null, 
+/**
+ * Human-readable failure reason (state == failed).
+ */
+error: string | null, };
+
+/**
+ * One `.typ` file found by [`list_typst_files`] (absolute + workspace-relative).
+ */
+export type TypstFileEntry = { absPath: string, relPath: string, };
+
+/**
  * Wire payload for [`get_watcher_health`].
  */
 export type WatcherHealthPayload = { 
@@ -1289,6 +1351,21 @@ x?: number | null,
  * Outer y (px from the monitor's top). `None` ⇒ center on restore.
  */
 y?: number | null, maximized: boolean, fullscreen: boolean, };
+
+/**
+ * LSP `Position` (0-based line + UTF-16 character).
+ */
+export type WirePosition = { line: number, character: number, };
+
+/**
+ * LSP `Range`.
+ */
+export type WireRange = { start: WirePosition, end: WirePosition, };
+
+/**
+ * LSP `TextEdit` (`newText` arrives camelCase on the wire).
+ */
+export type WireTextEdit = { range: WireRange, newText: string, };
 
 /**
  * Identifier for the currently active workspace (§4.2 / §4.3).

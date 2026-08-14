@@ -50,7 +50,7 @@ Typst Studio 在 Rust 后端中内嵌了**官方 Typst 编译器**,配合 Monaco
 ### 诊断与语言特性
 
 - **诊断面板** —— 编译错误与警告,含严重度、位置与跳转到行。
-- **Tinymist 集成** —— 系统中安装了 [`tinymist`](https://github.com/Myriad-Dreamin/tinymist) 时自动启用更丰富的语言特性(可选,不随应用分发)。
+- **Tinymist 集成** —— 通过 [`tinymist`](https://github.com/Myriad-Dreamin/tinymist) 提供更丰富的语言特性。优先使用 `PATH` 上的 tinymist,其次使用托管安装(`~/.typststudio/`);两者都没有时会自动下载(可在「设置 → 语言服务器」中关闭或手动触发)。
 
 ### 导出
 

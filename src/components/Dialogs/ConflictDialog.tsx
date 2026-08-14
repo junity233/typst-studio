@@ -7,6 +7,7 @@ import {
 import {
   flushAndSaveAs,
   flushDocumentSnapshot,
+  maybeAutoExportAfterSave,
 } from "../../lib/saveDocument";
 import { useConflictDialogStore } from "../../store/conflictDialogStore";
 import { useDocumentsStore, type Document } from "../../store/documentsStore";
@@ -130,6 +131,8 @@ export function ConflictDialog() {
           .getState()
           .markSaved(openForId, doc.path, snapshot.revision);
       }
+      // "Overwrite disk" IS a save — auto-export-on-save applies here too.
+      maybeAutoExportAfterSave();
       close();
     } catch (e) {
       if (!isCancelled(e)) {

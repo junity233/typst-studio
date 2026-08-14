@@ -139,4 +139,6 @@ pub struct AppState {
     pub packages: Arc<crate::service::package_service::PackageService>,
     /// Workspace-scoped `.typstpro` project config (main compile file, etc.).
     pub project_config: Arc<ProjectConfigService>,
+    /// Managed tinymist install (auto-download into ~/.typststudio/).
+    pub tinymist: Arc<crate::lsp::installer::TinymistInstaller>,
 }

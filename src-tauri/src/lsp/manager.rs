@@ -515,14 +515,30 @@ impl LspManager {
     where
         F: Fn(LspStatus) + Send + Sync + 'static,
     {
+        Self::start_with_generation(config, 1, Arc::new(on_status_change)).await
+    }
+
+    /// [`start`] with an explicit initial generation. Used by
+    /// [`LspService::relaunch`](crate::service::lsp_service::LspService::relaunch),
+    /// which must continue ABOVE the previous manager's generation: the
+    /// frontend's status gate is forward-only (`shouldAcceptStatusEvent`),
+    /// so a replacement manager starting back at 1 would have its events
+    /// dropped as stale. `start_gen` is clamped to >= 1. The status callback
+    /// arrives as an `Arc` so a relaunch can share the service's original
+    /// callback with the replacement manager.
+    pub async fn start_with_generation(
+        config: LspConfig,
+        start_gen: u64,
+        on_status_change: Arc<dyn Fn(LspStatus) + Send + Sync>,
+    ) -> anyhow::Result<Self> {
         let available = Self::check_available(&config);
         let enabled = config.enabled;
+        let start_gen = start_gen.max(1);
 
         if !available || !config.enabled {
             tracing::warn!(
                 "tinymist not found or LSP disabled; LSP features will be unavailable"
             );
-            let on_status_change = Arc::new(on_status_change);
             let mgr = Self {
                 config,
                 ws_port: 0,
@@ -535,7 +551,7 @@ impl LspManager {
                 available,
                 enabled,
                 token: Arc::from(""),
-                generation: Arc::new(AtomicU64::new(1)),
+                generation: Arc::new(AtomicU64::new(start_gen)),
                 supervisor: Arc::new(Mutex::new(LspSupervisor::default())),
                 last_restart_reason: Arc::new(Mutex::new(None)),
                 last_message: Arc::new(Mutex::new(None)),
@@ -565,12 +581,13 @@ impl LspManager {
         // same Arc.
         let last_restart_reason = Arc::new(Mutex::new(None));
         let last_message = Arc::new(Mutex::new(None));
-        let on_status_change = Arc::new(on_status_change);
         // §6.1: capability token + initial generation. Both live for the
         // process lifetime; generation is bumped on restart/crash, the token
-        // never changes.
+        // never changes. The initial value is the caller's `start_gen` (1 for
+        // a fresh app start; above the old manager's generation for a
+        // relaunch — see `start_with_generation`'s doc).
         let token = Self::generate_token();
-        let generation = Arc::new(AtomicU64::new(1));
+        let generation = Arc::new(AtomicU64::new(start_gen));
 
         let running_clone = running.clone();
         let reconnecting_clone = reconnecting.clone();
@@ -785,8 +802,31 @@ impl LspManager {
         (self.on_status_change)(self.status());
     }
 
-    /// Shutdown the manager and kill any running children.
-    pub async fn shutdown(&mut self) {
+    /// The current LSP generation. Read by
+    /// [`LspService::relaunch`](crate::service::lsp_service::LspService::relaunch)
+    /// to start the replacement manager above this value.
+    pub fn current_generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
+    }
+
+    /// Supersede the live relay WITHOUT publishing a status event (unlike
+    /// [`restart`], which announces `Restarting` first). Used when the whole
+    /// manager is about to be replaced: the relay observes the signal as a
+    /// restart-supersede — neither bumping the generation nor emitting the
+    /// child-crash status — so no event from the dying manager can clobber
+    /// the replacement's announcements. The relay task kills its tinymist
+    /// child as part of winding down.
+    pub fn supersede_connection(&self) {
+        if let Some(tx) = self.conn_shutdown.lock().take() {
+            let _ = tx.send(());
+        }
+    }
+
+    /// Shutdown the manager and stop accepting connections. Any live relay
+    /// was already superseded (see [`supersede_connection`]); its detached
+    /// task reaps the tinymist child. Synchronous because it only fires the
+    /// shutdown watch — the accept loop exits asynchronously on its own.
+    pub fn shutdown(&mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(true);
         }

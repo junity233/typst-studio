@@ -8,5 +8,14 @@
   "loading": "加载中…",
   "zoomIn": "放大",
   "zoomOut": "缩小",
-  "actualSize": "实际大小"
+  "actualSize": "实际大小",
+  "search": {
+    "toggleTitle": "在预览中搜索(按源文本匹配,高亮对应页面)",
+    "placeholder": "在预览中查找…",
+    "count": "{{active}} / {{total}}",
+    "noMatches": "无匹配",
+    "prev": "上一个匹配 (Shift+Enter)",
+    "next": "下一个匹配 (Enter)",
+    "close": "关闭搜索 (Esc)"
+  }
 }

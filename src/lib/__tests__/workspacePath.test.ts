@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  fileUriToWorkspaceRel,
   isInWorkspace,
   joinWorkspacePath,
   relativeWithinWorkspace,
@@ -98,5 +99,41 @@ describe("relativeWithinWorkspace", () => {
 
   it("returns null for a null/empty root", () => {
     expect(relativeWithinWorkspace(null, "/work/book/a.typ")).toBeNull();
+  });
+});
+
+describe("fileUriToWorkspaceRel", () => {
+  it("decodes a POSIX file URI under the root", () => {
+    expect(
+      fileUriToWorkspaceRel("/work/book", "file:///work/book/chapters/one.typ"),
+    ).toBe("chapters/one.typ");
+  });
+
+  it("decodes a Windows file URI (drive letter) with percent-encoding", () => {
+    expect(
+      fileUriToWorkspaceRel(
+        "C:\\code\\my book",
+        "file:///C:/code/my%20book/a%20doc.typ",
+      ),
+    ).toBe("a doc.typ");
+  });
+
+  it("returns null outside the root or for a non-file scheme", () => {
+    expect(fileUriToWorkspaceRel("/work/book", "file:///etc/x.typ")).toBeNull();
+    expect(fileUriToWorkspaceRel("/work/book", "https://x/y.typ")).toBeNull();
+    expect(fileUriToWorkspaceRel(null, "file:///work/book/a.typ")).toBeNull();
+  });
+
+  it("reconstructs UNC network-share URIs with their host", () => {
+    expect(
+      fileUriToWorkspaceRel(
+        "\\\\server\\share\\book",
+        "file://server/share/book/ch1.typ",
+      ),
+    ).toBe("ch1.typ");
+    // localhost is the same machine — the host is dropped.
+    expect(fileUriToWorkspaceRel("D:\\ws", "file://localhost/D:/ws/a.typ")).toBe(
+      "a.typ",
+    );
   });
 });

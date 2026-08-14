@@ -6,9 +6,6 @@ import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
 import { useAboutModalStore } from "../../store/aboutModalStore";
 import {
-  exportPdf,
-  exportPng,
-  exportSvg,
   openFileByPath,
   openSettings,
 } from "../../lib/tauri";
@@ -19,38 +16,21 @@ import {
   handleSaveAs,
   labelFor,
 } from "../../hooks/useAppCommands";
-import { flushDocumentSnapshot } from "../../lib/saveDocument";
-import { joinWorkspacePath, workspacePathsEqual } from "../../lib/workspacePath";
-import { expandTemplate } from "../../lib/pathMacros";
+import { joinWorkspacePath } from "../../lib/workspacePath";
 import { useProjectConfigStore } from "../../store/projectConfigStore";
+import { runExport, defaultExportFormat } from "../../lib/exportTarget";
+import { useBatchExportStore } from "../../store/batchExportStore";
 import i18n from "../../i18n";
-
-/**
- * Resolve the document id to export: the project's main file when one is
- * configured AND currently open, otherwise the active tab. The main file must
- * already be open (have a compiled revision pinned) — opening it on demand here
- * would race the compile. In practice the project-preview flow opens it; if it
- * isn't open, we fall back to the active tab rather than surprising the user.
- */
-function resolveExportTargetId(): string | null {
-  const rootPath = useWorkspaceStore.getState().rootPath;
-  const main = useProjectConfigStore.getState().config?.main ?? null;
-  if (main !== null && rootPath !== null) {
-    const mainAbs = joinWorkspacePath(rootPath, main);
-    const docs = useDocumentsStore.getState().documents;
-    const mainDoc = Object.values(docs).find(
-      (d) => d.path !== null && workspacePathsEqual(d.path, mainAbs),
-    );
-    if (mainDoc) return mainDoc.id;
-  }
-  return useTabsStore.getState().activeId;
-}
 
 /**
  * In-tree 'workbench' extension: registers the core File/View/Export commands
  * that used to live as a hardcoded switch in dispatch(). Each handler reads
  * live state at call time via getState(), so enablement and active-tab lookups
  * reflect the moment of invocation, not the moment of registration.
+ *
+ * Export targeting/format logic lives in
+ * [`lib/exportTarget.ts`](../../lib/exportTarget.ts) (shared with
+ * auto-export-on-save); this module only registers the commands.
  *
  * Error handling (toIpcError / cancelled / window.alert) is centralized in
  * dispatch() — handlers throw freely.
@@ -192,41 +172,15 @@ export default function activate(ctx: HostApi): void {
     },
   });
 
-  /** Run one export format, honoring the project's `[export] outputPath` when
-   *  `useConfigPath` is set (macro-expanded + joined to the workspace root).
-   *  When no outputPath is configured, the backend shows its save dialog. */
+  /** Run one export format via the shared runner (`lib/exportTarget`), which
+   *  honors the project's `[export] outputPath` (macro-expanded + joined to
+   *  the workspace root). When no outputPath is configured, the backend shows
+   *  its save dialog. */
   async function doExport(
     format: "pdf" | "png" | "svg",
     useConfigPath: boolean,
   ): Promise<void> {
-    const id = resolveExportTargetId();
-    if (id === null) return;
-    const snapshot = await flushDocumentSnapshot(id);
-    let outputPath: string | undefined;
-    if (useConfigPath) {
-      const cfg = useProjectConfigStore.getState().config;
-      const rootPath = useWorkspaceStore.getState().rootPath;
-      const pattern = cfg?.export?.outputPath;
-      if (pattern && rootPath) {
-        const expanded = expandTemplate(pattern, {
-          workspace: rootPath,
-          title: cfg.title ?? "",
-        });
-        // Treat an already-absolute expansion as-is; otherwise anchor at root.
-        outputPath = /^([A-Za-z]:[\\/]|[\\/])./.test(expanded)
-          ? expanded
-          : joinWorkspacePath(rootPath, expanded);
-      }
-    }
-    if (format === "pdf") await exportPdf(id, snapshot.revision, outputPath);
-    else if (format === "png") await exportPng(id, snapshot.revision, outputPath);
-    else await exportSvg(id, snapshot.revision, outputPath);
-  }
-
-  /** Resolve the project's default export format (`[export] format`), "pdf" if unset. */
-  function defaultExportFormat(): "pdf" | "png" | "svg" {
-    const f = useProjectConfigStore.getState().config?.export?.format ?? "pdf";
-    return f === "png" || f === "svg" ? f : "pdf";
+    await runExport(format, useConfigPath);
   }
 
   ctx.registerCommand({
@@ -267,6 +221,16 @@ export default function activate(ctx: HostApi): void {
       await doExport("svg", true);
     },
     enablement: () => useTabsStore.getState().activeId !== null,
+  });
+
+  ctx.registerCommand({
+    id: "export-batch",
+    title: i18n.t("title", { ns: "batchExport" }),
+    category: "File",
+    handler: async () => {
+      await useBatchExportStore.getState().openDialog();
+    },
+    enablement: () => useWorkspaceStore.getState().rootPath !== null,
   });
 
   ctx.registerCommand({

@@ -3,6 +3,7 @@
 //! Filled in by Phase 3.
 
 pub mod pdf;
+pub mod pdf_options;
 pub mod outline;
 pub mod pipeline;
 pub mod png;

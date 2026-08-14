@@ -39,7 +39,14 @@
     "connected": "LSP：已连接",
     "lastTrigger": "上次触发：{{reason}}",
     "restartButton": "重启",
-    "restartButtonTitle": "重启 LSP 服务器"
+    "restartButtonTitle": "重启 LSP 服务器",
+    "downloading": "LSP：正在下载 tinymist…",
+    "downloadingPercent": "LSP：正在下载 tinymist… {{percent}}%",
+    "verifying": "LSP：正在校验 tinymist…",
+    "downloadFailed": "LSP：tinymist 下载失败",
+    "downloadButton": "下载",
+    "retryDownloadButton": "重试",
+    "downloadButtonTitle": "下载 tinymist 语言服务器到 ~/.typststudio/"
   },
   "startupProblems": {
     "count_one": "{{count}} 个启动问题",
@@ -55,5 +62,11 @@
     "dismissTitle": "关闭此面板",
     "detailsHeader": "Typst Studio——启动问题",
     "detailsCount": "数量：{{count}}"
+  },
+  "cursor": {
+    "position": "行 {{line}},列 {{column}}",
+    "selection": "已选 {{chars}} 字符({{words}} 词)",
+    "docStats": "{{chars}} 字符 · {{words}} 词",
+    "docStatsTitle": "全文字符数与词数(每个汉字计为一词)。"
   }
 }

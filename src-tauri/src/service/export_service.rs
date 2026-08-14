@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use typst_layout::PagedDocument;
+use typst_pdf::PdfOptions;
 
 use crate::domain::document::DocumentId;
 use crate::error::{AppError, Result};
@@ -123,17 +124,6 @@ impl ExportService {
         }
     }
 
-    /// Render the tab's document for `revision` to a single PDF byte buffer.
-    fn render_pdf_bytes(
-        &self,
-        id: DocumentId,
-        revision: u64,
-        revision_wait: Duration,
-    ) -> Result<Vec<u8>> {
-        let doc = self.doc_for_revision(id, revision, revision_wait)?;
-        self.pdf_renderer.render(&doc).map_err(AppError::from)
-    }
-
     /// Render each page to a PNG byte buffer. Returns `(name, bytes)` pairs
     /// where name is `{base_name}-{n}.png`. `pixel_per_pt` overrides the
     /// renderer's raster resolution (the `export.pngPixelPerPt` setting).
@@ -173,16 +163,22 @@ impl ExportService {
             .collect())
     }
 
-    /// Render to PDF bytes for `revision` (§9). Public entry point for the
-    /// command layer (which writes to disk asynchronously). `revision_wait` is
-    /// how long to wait for a pending compile before giving up.
-    pub fn render_pdf(
+    /// Render to PDF bytes for `revision` (§9) with explicit `PdfOptions`
+    /// (page ranges / PDF standard / tagging — the `export.pdf*` settings).
+    /// Public entry point for the command layer (which writes to disk
+    /// asynchronously). `revision_wait` is how long to wait for a pending
+    /// compile before giving up.
+    pub fn render_pdf_with_options(
         &self,
         id: DocumentId,
         revision: u64,
         revision_wait: Duration,
+        options: &PdfOptions,
     ) -> Result<Vec<u8>> {
-        self.render_pdf_bytes(id, revision, revision_wait)
+        let doc = self.doc_for_revision(id, revision, revision_wait)?;
+        self.pdf_renderer
+            .render_with_options(&doc, options)
+            .map_err(AppError::from)
     }
 
     /// Render to PNG bytes for `revision` (§9). Returns `(filename, bytes)` per
@@ -282,7 +278,9 @@ mod tests {
     fn render_pdf_produces_valid_pdf_bytes() {
         let (_editor, export, id, revision) =
             make_editor_with_tab("#set page(width: 10cm)\n\nExport me");
-        let bytes = export.render_pdf(id, revision, TEST_REVISION_WAIT).unwrap();
+        let bytes = export
+            .render_pdf_with_options(id, revision, TEST_REVISION_WAIT, &PdfOptions::default())
+            .unwrap();
         assert!(
             bytes.starts_with(b"%PDF-"),
             "rendered bytes must be a PDF"
@@ -337,7 +335,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        assert!(export.render_pdf(meta.id, 0, TEST_REVISION_WAIT).is_err());
+        assert!(export.render_pdf_with_options(meta.id, 0, TEST_REVISION_WAIT, &PdfOptions::default()).is_err());
     }
 
     // --- export bound to revision (§9) ---------------------------------------
@@ -368,13 +366,13 @@ mod tests {
         editor.update_text(id, "#set page(width: 10cm)\n\nSecond".into()).unwrap();
         wait_for_revision(&editor, id, 1);
         let bytes = export
-            .render_pdf(id, 1, TEST_REVISION_WAIT)
+            .render_pdf_with_options(id, 1, TEST_REVISION_WAIT, &PdfOptions::default())
             .expect("revision 1 should export");
         assert!(bytes.starts_with(b"%PDF-"), "export of revision 1 must be a PDF");
         // revision 0 is now superseded (the worker coalesced past it after the
         // edit landed). Exporting it must NOT silently hand back revision 1's
         // doc — it's a stale request.
-        let stale = export.render_pdf(id, 0, TEST_REVISION_WAIT);
+        let stale = export.render_pdf_with_options(id, 0, TEST_REVISION_WAIT, &PdfOptions::default());
         assert!(stale.is_err(), "exporting a superseded revision must error");
     }
 
@@ -393,7 +391,7 @@ mod tests {
         assert!(!state.success, "revision 1 must have failed");
 
         let err = export
-            .render_pdf(id, 1, TEST_REVISION_WAIT)
+            .render_pdf_with_options(id, 1, TEST_REVISION_WAIT, &PdfOptions::default())
             .err()
             .expect("export of a failed revision must error");
         let msg = err.to_string();
@@ -414,7 +412,7 @@ mod tests {
         editor.update_text(id, "#set page(width: 10cm)\n\nB".into()).unwrap();
         // Don't pre-wait — call export right away; doc_for_revision polls.
         let bytes = export
-            .render_pdf(id, 1, TEST_REVISION_WAIT)
+            .render_pdf_with_options(id, 1, TEST_REVISION_WAIT, &PdfOptions::default())
             .expect("should wait then render revision 1");
         assert!(bytes.starts_with(b"%PDF-"));
         // Confirm the wait actually landed on revision 1.
@@ -430,7 +428,7 @@ mod tests {
         let export = ExportService::new(editor.clone());
         let bogus = DocumentId::new();
         let err = export
-            .render_pdf(bogus, 0, TEST_REVISION_WAIT)
+            .render_pdf_with_options(bogus, 0, TEST_REVISION_WAIT, &PdfOptions::default())
             .err()
             .expect("unknown tab must error");
         assert!(err.to_string().contains("no open document"));
@@ -444,7 +442,7 @@ mod tests {
             make_editor_with_tab("#set page(width: 10cm)\n\nx");
         let start = std::time::Instant::now();
         let err = export
-            .render_pdf(id, 9_999, TEST_REVISION_WAIT)
+            .render_pdf_with_options(id, 9_999, TEST_REVISION_WAIT, &PdfOptions::default())
             .err()
             .expect("an unreachable revision must time out");
         let elapsed = start.elapsed();

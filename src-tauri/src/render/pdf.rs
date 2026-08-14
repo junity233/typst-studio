@@ -28,12 +28,26 @@ impl RenderPipeline for PdfRenderer {
     type Output = Vec<u8>;
 
     fn render(&self, doc: &PagedDocument) -> Result<Self::Output, RenderError> {
-        // `typst_pdf::pdf` is fallible: font/image/embedding errors surface as
-        // an `EcoVec<SourceDiagnostic>`. Propagate them so the export command
-        // can render an `AppError::Export` dialog instead of panicking through
-        // the async Tauri command (which would tear down the worker task). The
-        // eco vec isn't `Display`, so join the per-diagnostic messages.
-        pdf(doc, &PdfOptions::default()).map_err(|errs| {
+        self.render_with_options(doc, &PdfOptions::default())
+    }
+}
+
+impl PdfRenderer {
+    /// Render with explicit options (page ranges / PDF standard / tagging —
+    /// driven by the `export.pdf*` settings via
+    /// [`pdf_options_from_settings`](super::pdf_options::pdf_options_from_settings)).
+    ///
+    /// `typst_pdf::pdf` is fallible: font/image/embedding errors surface as
+    /// an `EcoVec<SourceDiagnostic>`. Propagate them so the export command
+    /// can render an `AppError::Export` dialog instead of panicking through
+    /// the async Tauri command (which would tear down the worker task). The
+    /// eco vec isn't `Display`, so join the per-diagnostic messages.
+    pub fn render_with_options(
+        &self,
+        doc: &PagedDocument,
+        options: &PdfOptions,
+    ) -> Result<Vec<u8>, RenderError> {
+        pdf(doc, options).map_err(|errs| {
             let msgs: Vec<&str> = errs.iter().map(|d| d.message.as_str()).collect();
             RenderError::new("pdf", msgs.join("; "))
         })

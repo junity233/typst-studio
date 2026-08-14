@@ -14,6 +14,8 @@ import graphiteCss from "../../src-tauri/themes/graphite/theme.css?raw";
 import sepiaMeta from "../../src-tauri/themes/sepia/theme.json";
 import sepiaCss from "../../src-tauri/themes/sepia/theme.css?raw";
 import type {
+  BatchExportItem,
+  BatchExportOutcome,
   CatalogFilter,
   CatalogListingPayload,
   BibEntry,
@@ -53,7 +55,10 @@ import type {
   StartupProblemsPayload,
   ThemesChangedPayload,
   ThemeInfo,
+  TinymistInstallStatus,
+  TypstFileEntry,
   WindowBounds,
+  WireTextEdit,
   WorkspaceMeta,
 } from "./types";
 import type {
@@ -519,6 +524,20 @@ export async function exportSvg(
   return invoke<string[]>("export_svg", { id, revision, outputPath: outputPath ?? null });
 }
 
+/**
+ * Batch-export several compiled documents as PDFs into one folder. Each item
+ * pins its own revision (§9 semantics, same as [`exportPdf`]); a failed item
+ * is reported per-item (`error`) without aborting the rest. The output FOLDER
+ * is picked by a native dialog inside the backend command (the same trust
+ * model as `exportPdf`'s save dialog — the webview never supplies a write
+ * path); cancelling the pick rejects with a cancelled error.
+ */
+export async function exportBatchPdf(
+  items: BatchExportItem[],
+): Promise<BatchExportOutcome[]> {
+  return invoke<BatchExportOutcome[]>("export_batch_pdf", { items });
+}
+
 // --- Workspace / filesystem -------------------------------------------------
 
 /** Open a folder via a native dialog and set it as the workspace. */
@@ -624,6 +643,27 @@ export async function deleteEntry(rel: string): Promise<DeleteResult> {
  */
 export async function deleteEntryPermanent(rel: string): Promise<DeleteResult> {
   return invoke<DeleteResult>("delete_entry_permanent", { rel });
+}
+
+/**
+ * Apply LSP `TextEdit[]` to a NOT-open workspace file (read → splice →
+ * atomic write). The disk half of `workspace/applyEdit` for renames that
+ * reach closed files; the watcher picks the write up like any external
+ * change. `uri` is the canonical `file:` URI the language server used.
+ */
+export async function applyTextEditsToDiskFile(
+  uri: string,
+  edits: WireTextEdit[],
+): Promise<void> {
+  await invoke("apply_text_edits_to_disk_file", { uri, edits });
+}
+
+/**
+ * List every `.typ` file under the workspace root (recursive; skips
+ * dot-dirs, `.git`, `node_modules`, `target`). Sorted by relative path.
+ */
+export async function listTypstFiles(): Promise<TypstFileEntry[]> {
+  return invoke<TypstFileEntry[]>("list_typst_files");
 }
 
 /**
@@ -827,6 +867,33 @@ export async function onLspStatus(
   handler: (payload: LspStatusPayload) => void,
 ): Promise<UnlistenFn> {
   return listen<LspStatusPayload>("lsp_status", (e) => handler(e.payload));
+}
+
+/**
+ * Subscribe to managed-tinymist-install events. Emitted on every download
+ * progress tick (~1/MiB), each phase transition, and the final
+ * installed/failed state.
+ */
+export async function onTinymistInstall(
+  handler: (payload: TinymistInstallStatus) => void,
+): Promise<UnlistenFn> {
+  return listen<TinymistInstallStatus>("tinymist_install", (e) =>
+    handler(e.payload),
+  );
+}
+
+/**
+ * Start (or join) the managed tinymist download into ~/.typststudio/.
+ * Fire-and-forget — resolves with the current status; progress arrives via
+ * `onTinymistInstall` events.
+ */
+export async function installTinymist(): Promise<TinymistInstallStatus> {
+  return tauriInvoke<TinymistInstallStatus>("install_tinymist");
+}
+
+/** Snapshot of the managed tinymist install (state, progress, paths). */
+export async function getTinymistInstall(): Promise<TinymistInstallStatus> {
+  return tauriInvoke<TinymistInstallStatus>("get_tinymist_install");
 }
 
 /** Subscribe to filesystem-change events (live file-tree refresh). */

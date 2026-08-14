@@ -140,11 +140,20 @@ export interface DiskApplyFailure {
 }
 
 /**
+ * The seam's resource-op kind (`"directory"`, mirroring the LSP
+ * CreateFile-side vocabulary) → the backend `create_entry` wire enum
+ * (`EntryKind = "file" | "dir"`). PURE.
+ */
+export function toEntryKindWire(kind: "file" | "directory"): "file" | "dir" {
+  return kind === "directory" ? "dir" : "file";
+}
+
+/**
  * The injected backend IPC surface for
  * [`applyDiskEdits`](Self.applyDiskEdits). Each method mirrors an existing
- * `lib/tauri.ts` IPC command. `applyTextEditsToDiskFile` is OPTIONAL: when
- * absent, an un-open-file text edit is reported as a failure (Phase D limitation
- * — see the module doc in [`workspaceApplyEditHandler.ts`](./workspaceApplyEditHandler.ts)).
+ * `lib/tauri.ts` IPC command; `applyTextEditsToDiskFile` is OPTIONAL only so
+ * tests can omit it — production always supplies it (backend command:
+ * `apply_text_edits_to_disk_file`).
  */
 export interface DiskApplyIpc {
   createEntry?: (rel: string, kind: "file" | "directory") => Promise<void>;
@@ -164,11 +173,6 @@ export interface DiskApplyIpc {
  * the absolute `file:` URIs to workspace-relative paths via the injected
  * `uriToRel`. A URI outside the workspace is a failure (the backend IPC only
  * operates on workspace-relative paths).
- *
- * Phase D scope: un-open-file TEXT edits require the OPTIONAL
- * `applyTextEditsToDiskFile` (a backend "read → edit → atomic write" command not
- * yet wired). When it's absent, such edits fail loudly rather than silently
- * dropping (the spec's "never silently corrupt" safety property).
  */
 export async function applyDiskEdits(
   diskEdits: PlannedDiskEdit[],

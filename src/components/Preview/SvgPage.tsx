@@ -29,7 +29,15 @@ interface SvgPageProps {
   /** Invoked with a 1-indexed source line on double-click. */
   onJumpToLine?: (line: number) => void;
   /**
-   * Fired when the rendered `<img>` finishes decoding its SVG blob. Used by
+   * Search-highlight rects (source-driven preview search): every mapped rect
+   * of a line matching the query, rendered with a distinct tint under the
+   * cursor-line highlight.
+   */
+  searchRects?: LineRect[];
+  /** The subset of `searchRects` belonging to the ACTIVE match (stronger tint). */
+  activeSearchRects?: LineRect[];
+  /**
+   * Fired when a page's rendered `<img>` finishes decoding its SVG blob. Used by
    * scroll-sync to re-read page geometry at the moment the height becomes
    * non-zero (the blob decode is async, so geometry read at render time is
    * still height:0). Fired once per `svg` change (SvgPage revokes + recreates
@@ -70,6 +78,8 @@ export const SvgPage = memo(function SvgPage({
   lineRects,
   activeLines,
   onJumpToLine,
+  searchRects,
+  activeSearchRects,
   onImgLoad,
   pageRef,
 }: SvgPageProps) {
@@ -162,12 +172,31 @@ export const SvgPage = memo(function SvgPage({
           }
         />
       )}
-      {url && ptSize && activeLineRects.length > 0 && (
+      {url && ptSize && (activeLineRects.length > 0 ||
+        (searchRects !== undefined && searchRects.length > 0)) && (
         <svg
           className="svg-page-overlay"
           viewBox={`0 0 ${ptSize.width} ${ptSize.height}`}
           aria-hidden="true"
         >
+          {(searchRects ?? []).map((r, i) => (
+            <rect
+              key={`s:${r.line}:${r.x}:${r.y}:${i}`}
+              className={
+                "svg-page-search-rect" +
+                (activeSearchRects?.some(
+                  (a) => a.line === r.line && a.x === r.x && a.y === r.y,
+                )
+                  ? " svg-page-search-rect--active"
+                  : "")
+              }
+              x={r.x}
+              y={r.y}
+              width={r.w}
+              height={r.h}
+              rx={1.5}
+            />
+          ))}
           {activeRail && (
             <rect
               className="svg-page-highlight-rail"

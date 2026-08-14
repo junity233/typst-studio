@@ -93,6 +93,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 tokio-tungstenite = "0.26"
 futures-util = "0.3"
 which = "7"
+
+# Managed tinymist install (lsp::installer): stream the release archive,
+# verify it against the release's sha256.sum, and extract the binary. Only
+# `zip` is genuinely new — tar/flate2/sha2 are already transitive deps
+# (declared directly here so their APIs are nameable).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+sha2 = "0.10"
+
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Rolling file appender for the diagnostic log (§7.4): daily rotation, max 5

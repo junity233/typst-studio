@@ -10,7 +10,6 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::error::{AppError, Result};
 use crate::ipc::state::AppState;
-use crate::lsp::manager::LspRestartReason;
 use crate::settings::{window, Manifest};
 
 /// The settings-key prefix reserved for initialize-time LSP settings (spec §18:
@@ -19,9 +18,8 @@ use crate::settings::{window, Manifest};
 /// only in the `initialize` payload and cannot be re-applied to a running
 /// server via `workspace/didChangeConfiguration`.
 ///
-/// NOTE: no `lsp.*` key exists in the manifest yet (forward-looking hook per
-/// Task 8 part B). Until one is added this branch is never taken; the hook is
-/// in place so the day an `lsp.*` setting lands, the restart is automatic.
+/// The first such key is `lsp.tinymistPath` (the binary to spawn); a change
+/// triggers a full LSP relaunch with a re-resolved config (see `set_setting`).
 const LSP_SETTING_PREFIX: &str = "lsp.";
 
 /// Pure decision helper for §18: whether a setting change at `key` should
@@ -63,11 +61,19 @@ pub async fn set_setting(
     state.settings.set(&path, value)?;
     // §18: only initialize-time LSP settings (`lsp.*`) require restarting
     // tinymist — they ride in the `initialize` payload and can't be re-applied
-    // to a running server. No such setting exists in the manifest yet, so this
-    // branch is dormant; the hook is here so the day one lands the restart is
-    // automatic. Non-LSP settings (editor.*, compiler.*, …) never restart.
+    // to a running server. Because the very first `lsp.*` key is the binary
+    // path (`lsp.tinymistPath`), the restart is a full RELAUNCH (fresh
+    // manager with a re-resolved config), not an in-place `restart()` —
+    // the running manager's config is baked in at start.
+    // Non-LSP settings (editor.*, compiler.*, …) never restart.
     if should_restart_for_setting(&path) {
-        state.lsp.request_restart(LspRestartReason::SettingsChange);
+        let config = crate::lsp::installer::resolve_lsp_config(&state.settings);
+        let lsp = state.lsp.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = lsp.relaunch(config).await {
+                tracing::warn!("LSP relaunch after `{path}` change failed: {e}");
+            }
+        });
     }
     Ok(())
 }
