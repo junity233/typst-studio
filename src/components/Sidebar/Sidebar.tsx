@@ -1,10 +1,11 @@
-import { Suspense, lazy, useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import { useViews } from "../../extensions/hooks";
 import type { ViewContribution } from "../../extensions/registry";
 import { useUiStore } from "../../store/uiStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { onFsChanged } from "../../lib/tauri";
+import { useTauriListener } from "../../hooks/useTauriListener";
 import { useProjectConfigStore } from "../../store/projectConfigStore";
 import { EmptyWorkspace } from "./EmptyWorkspace";
 
@@ -47,6 +48,23 @@ const VIEW_TITLE_KEYS: Record<string, string> = {
   "workbench.assistant": "sidebar:assistant.title",
 };
 
+/**
+ * Workspace-scoped view ids whose local state is bound to ONE workspace and
+ * must be rebuilt when the root changes. `openWorkspace` switches rootPath
+ * old→new without passing through null, and the keep-alive shell never
+ * unmounts mounted views — so the Project panel's half-edited form would
+ * otherwise survive into the new workspace, where a stray Save would write the
+ * OLD values into the new workspace's `.typstpro`. A `key={rootPath}` remount
+ * discards that state cleanly; on re-mount the panel seeds its form from the
+ * (still-old) config and the config-sync effect adopts the new workspace's
+ * config once the broadcast arrives.
+ */
+const REMOUNT_ON_ROOT_CHANGE = new Set(["workbench.project"]);
+
+/** Every view receives its current visibility so data-heavy panels can defer
+ *  fetching until the user actually opens the tab (see PackagesPanel). */
+type SidebarViewComponent = ComponentType<{ viewId: string; visible: boolean }>;
+
 /** Whether a contributed view may be shown in the current host state. */
 export function isSidebarViewVisible(
   view: Pick<ViewContribution, "id" | "when">,
@@ -67,32 +85,36 @@ export function shouldShowEmptyWorkspace(
   return rootPath === null && activeView?.when !== "always";
 }
 
-/** Mount a view on first activation, then keep its subtree alive. */
+/**
+ * Preload every eligible view at startup: mount on first render rather than on
+ * first activation, so switching tabs is instant. A view is ineligible only
+ * while it is workspace-gated and no workspace is open yet — once a root exists
+ * it too mounts eagerly. Visibility is still CSS-driven (`hidden` attribute),
+ * so non-active views stay alive but out of the layout.
+ */
 export function shouldMountSidebarView(
-  view: Pick<ViewContribution, "id" | "when">,
-  activeViewId: string | null,
-  visitedViewIds: ReadonlySet<string>,
+  view: Pick<ViewContribution, "when">,
   rootPath: string | null,
 ): boolean {
-  if (view.when === "workspace" && rootPath === null) return false;
-  return view.id === activeViewId || visitedViewIds.has(view.id);
+  return view.when !== "workspace" || rootPath !== null;
 }
 
 /**
- * The left sidebar: views mount lazily on first activation, then stay alive
- * and are toggled by CSS so switching tabs preserves their local state.
+ * The left sidebar: every eligible view is preloaded at startup and stays
+ * alive, toggled by CSS so switching tabs preserves its local state.
  *
  * Why keep-alive: each view owns ephemeral state (Explorer's inline-rename
  * buffer, Search's results + per-file collapse set, Source Control's commit
  * message + refreshed status, Outline's collapse set + active-row scroll
- * sync). Mounting only the active view — the previous design — wiped all of
- * that on every tab switch and forced a re-load (re-search, re-fetch, lost
- * cursor in the commit box). Rendering every view once and showing/hiding
- * via `hidden` preserves each view's component tree across switches (the
- * VSCode sidebar model). This only holds because each view's lazy wrapper is
- * memoized in `lazyViewCache` — recreating `lazy()` per render would change
- * each view's component type and force React to unmount it regardless of
- * `hidden`.
+ * sync). Mounting only the active view wiped all of that on every tab switch
+ * and forced a re-load (re-search, re-fetch, lost cursor in the commit box).
+ * Rendering every eligible view up front and showing/hiding via `hidden`
+ * preserves each view's component tree across switches (the VSCode sidebar
+ * model), and preloading means there is no first-click chunk fetch or
+ * initialization stall when a tab is opened for the first time. This only
+ * holds because each view's lazy wrapper is memoized in `lazyViewCache` —
+ * recreating `lazy()` per render would change each view's component type and
+ * force React to unmount it regardless of `hidden`.
  *
  * With no workspace open, the EmptyWorkspace prompt shows as a stacked layer
  * on top of the (idle) views, so re-opening a workspace restores whatever
@@ -104,43 +126,28 @@ export function Sidebar() {
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const refreshAll = useWorkspaceStore((s) => s.refreshAll);
   const views = useViews();
-  const [visitedViewIds, setVisitedViewIds] = useState<ReadonlySet<string>>(
-    () => new Set(activeViewId === null ? [] : [activeViewId]),
-  );
 
-  useEffect(() => {
-    if (activeViewId === null) return;
-    setVisitedViewIds((previous) => {
-      if (previous.has(activeViewId)) return previous;
-      const next = new Set(previous);
-      next.add(activeViewId);
-      return next;
-    });
-  }, [activeViewId]);
-
-  // Live-refresh the tree on external filesystem changes.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-    onFsChanged(() => {
-      void refreshAll();
+  // Live-refresh the tree on external filesystem changes. The tree refresh is
+  // immediate, but the .typ candidate rescan is debounced (500ms trailing):
+  // it walks every workspace .typ file, and each save itself fires a watcher
+  // event — bursting them would rescan repeatedly for one batch of changes.
+  const typRescanTimerRef = useRef<number | null>(null);
+  useTauriListener(onFsChanged, () => {
+    void refreshAll();
+    if (typRescanTimerRef.current !== null) window.clearTimeout(typRescanTimerRef.current);
+    typRescanTimerRef.current = window.setTimeout(() => {
+      typRescanTimerRef.current = null;
       // Keep the project-config main-file candidate list fresh too, so the
       // Project panel's dropdown reflects newly added/removed .typ files.
       void useProjectConfigStore.getState().refreshTypFiles();
-    }).then((fn) => {
-      if (cancelled) {
-        // Already cleaned up — release immediately so the listener never fires.
-        fn();
-      } else {
-        unlisten = fn;
-      }
-    });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-    // TODO(phase2): extract useTauriListener helper; App.tsx has the same race.
-  }, [refreshAll]);
+    }, 500);
+  });
+  useEffect(
+    () => () => {
+      if (typRescanTimerRef.current !== null) window.clearTimeout(typRescanTimerRef.current);
+    },
+    [],
+  );
 
   // The active view drives the header title.
   const activeView = views.find((v) => v.id === activeViewId);
@@ -163,21 +170,14 @@ export function Sidebar() {
             idle, so reopening a workspace restores their state instantly. */}
         {shouldShowEmptyWorkspace(activeView, rootPath) && <EmptyWorkspace />}
 
-        {/* A view mounts on first activation and is then kept alive. Visibility
-            is CSS-driven (`hidden` attribute), preserving its local state and
-            scroll position without eagerly loading every extension chunk. */}
+        {/* Every eligible view is preloaded up front and kept alive. Visibility
+            is CSS-driven (`hidden` attribute), preserving local state and scroll
+            position; preloading avoids a first-click chunk fetch/init stall. */}
         {views.map((v) => {
-          if (
-            !shouldMountSidebarView(
-              v,
-              activeViewId,
-              visitedViewIds,
-              rootPath,
-            )
-          ) {
+          if (!shouldMountSidebarView(v, rootPath)) {
             return null;
           }
-          const ViewComponent = getLazyView(v);
+          const ViewComponent = getLazyView(v) as SidebarViewComponent;
           // Workspace-gated views stay behind EmptyWorkspace without a root;
           // "always" views (notably Outline) remain usable for untitled docs.
           const visible = isSidebarViewVisible(v, activeViewId, rootPath);
@@ -198,7 +198,14 @@ export function Sidebar() {
               <Suspense
                 fallback={<div className="sidebar-loading">{t("loading")}</div>}
               >
-                <ViewComponent viewId={v.id} />
+                <ViewComponent
+                  viewId={v.id}
+                  visible={visible}
+                  // Views whose state is workspace-bound (see
+                  // REMOUNT_ON_ROOT_CHANGE) rebuild on workspace switch, so no
+                  // unsaved edits leak across workspaces.
+                  key={REMOUNT_ON_ROOT_CHANGE.has(v.id) ? rootPath : undefined}
+                />
               </Suspense>
             </div>
           );

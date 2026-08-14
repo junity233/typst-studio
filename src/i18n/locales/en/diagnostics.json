@@ -13,6 +13,7 @@
   "row": {
     "line": "line {{line}}",
     "column": "column {{column}}",
-    "jumpTitle": "Double-click to jump to line"
+    "jumpTitle": "Double-click or press Enter to jump to line",
+    "ariaLabel": "{{severity}} at line {{line}}, column {{column}}: {{message}}"
   }
 }

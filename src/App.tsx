@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { useTauriListener } from "./hooks/useTauriListener";
 import { Workbench } from "./components/Shell/Workbench";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { TitleBar } from "./components/TitleBar/TitleBar";
 import { StatusBar } from "./components/StatusBar/StatusBar";
 import { StartupProblemsPanel } from "./components/StatusBar/StartupProblemsPanel";
@@ -29,7 +31,7 @@ import {
   onRecoveryAvailable,
   openSettings,
 } from "./lib/tauri";
-import { isWindows } from "./lib/platform";
+import { isWindows, isTauri } from "./lib/platform";
 import { useStartupProblemsStore } from "./store/startupProblemsStore";
 import { useRecoveryStore } from "./store/recoveryStore";
 
@@ -70,45 +72,31 @@ export default function App() {
     void activateAll();
   }, []);
 
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    onSettingsWindow((open) => setSettingsOpen(open)).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
-  }, []);
+  useTauriListener(onSettingsWindow, (open) => setSettingsOpen(open));
 
   // Collect non-fatal startup problems (§6.5) into the store for a non-modal
   // banner. The full problem-panel UI is a later batch (S19); for now the
   // StatusBar reads the store count.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    onStartupProblems((problems) => {
-      useStartupProblemsStore.getState().setProblems(problems);
-    }).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
-  }, []);
+  useTauriListener(onStartupProblems, (problems) => {
+    useStartupProblemsStore.getState().setProblems(problems);
+  });
 
   // Crash recovery (§5.1.3): the backend emits `recovery_available` once at
   // startup if recoverable snapshots exist. Populate the recovery store, which
   // opens the RecoveryDialog. `useStartupSession` waits (bounded) for this
   // event + dialog resolution before doing the normal session restore, so
   // recovery wins over session for docs that have both.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    onRecoveryAvailable((payload) => {
-      useRecoveryStore.getState().offerRecovery(payload.snapshots);
-    }).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
-  }, []);
+  useTauriListener(onRecoveryAvailable, (payload) => {
+    useRecoveryStore.getState().offerRecovery(payload.snapshots);
+  });
 
   return (
+    <ErrorBoundary>
     <div className="app">
-      {isWindows && <TitleBar />}
+      {/* The custom TitleBar calls Tauri's getCurrentWindow() at render, which
+          throws outside the Tauri shell. Gate on isTauri so the frontend still
+          renders in a plain browser (e.g. for dev/visual checks). */}
+      {isWindows && isTauri && <TitleBar />}
       <Workbench />
       {/* §6.5: non-modal startup-problems panel. Overlays the workbench's
           bottom-right corner; non-blocking. Renders only when problems exist
@@ -133,5 +121,6 @@ export default function App() {
         />
       )}
     </div>
+    </ErrorBoundary>
   );
 }

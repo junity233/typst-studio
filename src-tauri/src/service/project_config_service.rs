@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 use parking_lot::RwLock;
 
 use crate::domain::project_config::{
-    validate_workspace_relative_path, ProjectConfig, CURRENT_SCHEMA_VERSION,
+    validate_export_format, validate_workspace_relative_path, ProjectConfig,
+    CURRENT_SCHEMA_VERSION,
 };
 use crate::error::{AppError, Result};
 use crate::persistence;
@@ -172,8 +173,9 @@ fn write_config(root: &Path, cfg: &ProjectConfig) -> Result<()> {
     persistence::write_bytes(&path, &bytes)
 }
 
-/// Validate every workspace-relative path field of `cfg`. Collects the first
-/// violation (the field that names it in the error message).
+/// Validate every workspace-relative path field (and the `export.format`
+/// enum) of `cfg`. Collects the first violation (the field that names it in
+/// the error message).
 fn validate_config_paths(cfg: &ProjectConfig) -> Result<()> {
     if let Some(main) = cfg.main.as_deref() {
         validate_workspace_relative_path(main, "main file path")?;
@@ -194,6 +196,14 @@ fn validate_config_paths(cfg: &ProjectConfig) -> Result<()> {
             for d in dirs {
                 validate_workspace_relative_path(d, "compile.extraFontDirs entry")?;
             }
+        }
+    }
+    // export.format is an enum, not a path — a hand-typed "PDF " / "jpeg" has
+    // no export command behind it, so reject it here (the panel path) with a
+    // named error. Loaded configs tolerate it (frontend falls back to pdf).
+    if let Some(export) = cfg.export.as_ref() {
+        if let Some(format) = export.format.as_deref() {
+            validate_export_format(format)?;
         }
     }
     Ok(())
@@ -494,6 +504,46 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.to_string().to_lowercase().contains("bibliography"));
+    }
+
+    #[test]
+    fn set_rejects_unknown_export_format() {
+        // A hand-edited panel value like "jpeg" has no export command behind
+        // it; set() must reject it with a named error instead of persisting a
+        // config the exporter silently ignores (falling back to pdf).
+        let root = tmp_root();
+        let (svc, _) = capturing_service();
+        use crate::domain::project_config::ExportConfig;
+        let err = svc
+            .set(
+                &root,
+                ProjectConfig {
+                    schema_version: 2,
+                    export: Some(ExportConfig {
+                        format: Some("jpeg".into()),
+                        output_path: None,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("export.format"),
+            "error must name the field, got: {err}"
+        );
+        // The known formats persist fine.
+        svc.set(
+            &root,
+            ProjectConfig {
+                schema_version: 2,
+                export: Some(ExportConfig {
+                    format: Some("png".into()),
+                    output_path: None,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     }
 
     #[test]

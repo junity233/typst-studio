@@ -81,6 +81,19 @@ pub struct AffectedDoc {
     pub conflict: ConflictState,
 }
 
+/// One WorkspaceFile tab's state as snapshotted for a world rebuild in
+/// [`DocumentService::rebuild_workspace_worlds`]. The CAS loop compares
+/// `meta.revision` + `text` against the live tab before swapping in the
+/// rebuilt world, so an edit landing between snapshot and swap is retried
+/// against instead of being overwritten.
+struct WorkspaceTabSnapshot {
+    meta: DocumentMeta,
+    text: String,
+    disk_version: Option<DiskVersion>,
+    file_identity: crate::domain::disk_version::FileIdentity,
+    canon: PathBuf,
+}
+
 /// The document-identity half of the editor (§6.1).
 ///
 /// Owns (via the shared [`TabStore`]) the document map, registry, loose-file
@@ -883,6 +896,43 @@ impl DocumentService {
             .collect()
     }
 
+    /// Like [`docs_under_path`](Self::docs_under_path) but ALSO includes
+    /// soft-closed (hidden) documents. Used by the DELETE flow
+    /// (`delete_entry` / `delete_entry_permanent`): once the backing file is
+    /// trashed, a hidden tab for it is a zombie — its reactivate-on-demand
+    /// promise can never be honored (the file is gone), so a CLEAN hidden doc
+    /// is hard-closed alongside the visible ones and its id returned in
+    /// `closed_doc_ids` (the frontend's removeDocFromStores filters the hidden
+    /// list too). A DIRTY hidden doc still holds unsaved edits the user parked
+    /// in the background, so it must BLOCK the delete exactly like a dirty
+    /// visible doc — silently trashing its buffer would lose those edits.
+    ///
+    /// The template-overwrite preflight keeps using
+    /// [`docs_at_paths`](Self::docs_at_paths) (visible-only) — see its docs.
+    pub fn docs_under_path_with_hidden(&self, prefix: &Path) -> Vec<AffectedDoc> {
+        let canon_prefix = match canonicalize_for_identity(prefix) {
+            Ok(p) => p,
+            Err(_) => return Vec::new(),
+        };
+        let tabs = self.store.tabs.read();
+        tabs.values()
+            .filter_map(|t| {
+                let rt = t.state.lock();
+                let canon = rt.meta.origin.canonical_path()?.to_path_buf();
+                if canon == canon_prefix || canon.starts_with(&canon_prefix) {
+                    Some(AffectedDoc {
+                        id: rt.meta.id,
+                        path: canon,
+                        dirty: rt.meta.dirty,
+                        conflict: rt.meta.conflict,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Collect every open document whose canonical path exactly matches one of
     /// `paths`. App-initiated writes use this to preflight template application
     /// before the disk is changed and before the watcher reports a surprising
@@ -957,24 +1007,6 @@ impl DocumentService {
                 }
             })
             .collect()
-    }
-
-    /// Mark known open documents as missing after an app-initiated delete
-    /// succeeds. The watcher may emit the same deletion later; `set_conflict`
-    /// suppresses an identical duplicate.
-    pub fn mark_docs_missing<I>(&self, ids: I)
-    where
-        I: IntoIterator<Item = DocumentId>,
-    {
-        let tabs_to_mark = {
-            let tabs = self.store.tabs.read();
-            ids.into_iter()
-                .filter_map(|id| tabs.get(&id).cloned().map(|tab| (id, tab)))
-                .collect::<Vec<_>>()
-        };
-        for (id, tab) in tabs_to_mark {
-            set_conflict(&tab, id, &self.store.emitter, ConflictState::Missing, None);
-        }
     }
 
     /// Rebind every open document whose canonical path equals or sits under
@@ -1130,34 +1162,123 @@ impl DocumentService {
     /// silently resolve to the wrong disk path until the tab is reopened. Like
     /// `reclassify_one`, the disk_version + file_identity are carried across the
     /// rebuild (the file itself didn't change — only its resolution anchor did).
+    ///
+    /// ## Snapshot→swap race (CAS)
+    ///
+    /// This runs on the watcher thread right after an external `.typstpro`
+    /// edit — i.e. at the exact moment the user may be typing. The world build
+    /// is expensive and runs OUTSIDE any lock, so an [`apply_text`](Self::apply_text)
+    /// can land between the snapshot and the tab insert; inserting the new tab
+    /// built from the OLD text/revision would silently discard that edit. The
+    /// loop below is a bounded compare-and-swap: snapshot under the state lock
+    /// → build → re-verify (revision AND text unchanged) under the same lock,
+    /// atomically with the insert → on mismatch, retry from a fresh snapshot.
+    /// Bounded: if the buffer keeps advancing through every attempt (user
+    /// typing furiously), the swap is skipped with a warn — a stale resolution
+    /// anchor until the next rebuild is annoying, a lost edit is not.
     pub fn rebuild_workspace_worlds(&self, ws: &WorkspaceService) {
         let Some(resolver) = ws.resolver() else { return; };
         let ids: Vec<DocumentId> = self.store.tabs.read().keys().copied().collect();
+        const MAX_ATTEMPTS: usize = 4;
         for id in ids {
-            let (meta, text, disk_version, file_identity, canon) = {
-                let tabs = self.store.tabs.read();
-                let Some(tab) = tabs.get(&id).cloned() else { continue; };
-                let rt = tab.state.lock();
-                // Only WorkspaceFile tabs are anchored at the workspace resolver
-                // — LooseFile/Untitled tabs are unaffected by a compile-root move.
-                if !matches!(rt.meta.origin, DocumentOrigin::WorkspaceFile { .. }) {
-                    continue;
-                }
-                let Some(canon) = rt.meta.origin.canonical_path().map(|p| p.to_path_buf()) else {
-                    continue;
+            let mut eligible = false;
+            let mut swapped = false;
+            for _attempt in 0..MAX_ATTEMPTS {
+                let Some(snap) = self.snapshot_workspace_tab(id) else {
+                    // Not a WorkspaceFile / untitled / already closed: nothing
+                    // to rebuild (the normal case for most tabs — not an error).
+                    break;
                 };
-                (rt.meta.clone(), tab.world.text(), rt.disk_version, rt.file_identity, canon)
-            };
-            let new_tab = self.build_tab(&meta, &text, Some(resolver.clone()), &canon);
-            self.swap_world(id, new_tab);
-            if let Some(dv) = disk_version {
-                if let Some(t) = self.store.tabs.read().get(&id) {
-                    let mut rt = t.state.lock();
-                    rt.disk_version = Some(dv);
-                    rt.file_identity = file_identity;
+                eligible = true;
+                let new_tab =
+                    self.build_tab(&snap.meta, &snap.text, Some(resolver.clone()), &snap.canon);
+                if self.cas_swap_world(id, &snap, new_tab) {
+                    // Restore the disk_version AND file_identity (the rebuild
+                    // reset both to None / UNKNOWN; the file is unchanged, so
+                    // the snapshot's values are still accurate).
+                    if let Some(dv) = snap.disk_version {
+                        if let Some(t) = self.store.tabs.read().get(&id) {
+                            let mut rt = t.state.lock();
+                            rt.disk_version = Some(dv);
+                            rt.file_identity = snap.file_identity;
+                        }
+                    }
+                    swapped = true;
+                    break;
                 }
+                // CAS failed: the buffer advanced since the snapshot — retry
+                // from a fresh one so the rebuilt world carries the newest text.
+            }
+            if eligible && !swapped {
+                tracing::warn!(
+                    ?id,
+                    attempts = MAX_ATTEMPTS,
+                    "compile-root rebuild kept losing the CAS race with edits; \
+                     leaving the tab on its old-resolution world (no edit lost)"
+                );
             }
         }
+    }
+
+    /// Snapshot one WorkspaceFile tab for a world rebuild (see
+    /// [`rebuild_workspace_worlds`](Self::rebuild_workspace_worlds)). `None`
+    /// when the tab is gone, untitled, or not workspace-anchored (nothing to
+    /// rebuild for those).
+    fn snapshot_workspace_tab(&self, id: DocumentId) -> Option<WorkspaceTabSnapshot> {
+        let tabs = self.store.tabs.read();
+        let tab = tabs.get(&id).cloned()?;
+        let rt = tab.state.lock();
+        // Only WorkspaceFile tabs are anchored at the workspace resolver —
+        // LooseFile/Untitled tabs are unaffected by a compile-root move.
+        if !matches!(rt.meta.origin, DocumentOrigin::WorkspaceFile { .. }) {
+            return None;
+        }
+        let canon = rt.meta.origin.canonical_path()?.to_path_buf();
+        Some(WorkspaceTabSnapshot {
+            meta: rt.meta.clone(),
+            text: tab.world.text(),
+            disk_version: rt.disk_version,
+            file_identity: rt.file_identity,
+            canon,
+        })
+    }
+
+    /// Compare-and-swap tail of [`rebuild_workspace_worlds`](Self::rebuild_workspace_worlds):
+    /// under the tabs write + state locks, verify the doc's buffer still
+    /// matches `snap` (revision AND text — text equality additionally covers
+    /// `apply_text`'s same-revision replacement path) and only then insert
+    /// `new_tab`. Returns `false` when the buffer advanced (caller retries
+    /// with a fresh snapshot); `true` when the swap happened or the tab had
+    /// already closed (nothing left to swap).
+    ///
+    /// Lock order (tabs → state) matches every other TabStore user; the
+    /// worker rotation runs after the write guard is released, mirroring
+    /// [`swap_world`](Self::swap_world).
+    fn cas_swap_world(
+        &self,
+        id: DocumentId,
+        snap: &WorkspaceTabSnapshot,
+        new_tab: Arc<TabState>,
+    ) -> bool {
+        {
+            let mut tabs = self.store.tabs.write();
+            let Some(tab) = tabs.get(&id) else {
+                // Closed mid-rebuild (user or LRU): nothing to swap, and
+                // nothing was lost — treat as handled.
+                return true;
+            };
+            let rt = tab.state.lock();
+            if rt.meta.revision != snap.meta.revision || tab.world.text() != snap.text {
+                return false; // CAS miss: an edit landed since the snapshot.
+            }
+            drop(rt);
+            tabs.insert(id, new_tab.clone());
+        }
+        // Same worker-rotation tail as `swap_world` (old worker dropped, fresh
+        // one signals an immediate recompile against the rebuilt world).
+        let _ = self.store.workers.write().remove(&id);
+        self.compile().create_worker(id, new_tab);
+        true
     }
 
     /// Reclassify a single document, if its origin should change under `ws`.
@@ -1288,6 +1409,55 @@ impl DocumentService {
         // Release the canonical-path slot so the file can be reopened.
         self.store.registry.write().unregister(id);
         Ok(())
+    }
+
+    /// Conditionally hard-close `id`: destroy it like
+    /// [`hard_close`](Self::hard_close), but ONLY if it is still clean (not
+    /// dirty, no active conflict) under its state lock. Returns whether the
+    /// doc was closed.
+    ///
+    /// This is the delete flow's close: the command preflights dirty docs
+    /// (§5.5 block), but the trash op between preflight and close can be slow
+    /// (the Windows recycle API especially), and a keystroke landing in that
+    /// window marks the doc dirty AFTER the preflight blessed the delete.
+    /// Destroying it then would silently discard the user's edit — so the
+    /// dirty flag is re-checked here, under the same state lock `apply_text`
+    /// uses, immediately before the close. A raced-dirty doc is NOT closed:
+    /// its buffer survives and it is marked
+    /// [`ConflictState::Missing`](crate::domain::document::ConflictState::Missing)
+    /// — exactly the state the watcher's `handle_external_change` would set
+    /// for the now-deleted backing file — with the conflict event emitted so
+    /// the frontend surfaces the recoverable "file gone" state instead of a
+    /// vanishing tab.
+    pub fn hard_close_if_clean(&self, id: DocumentId) -> bool {
+        let tab = {
+            let tabs = self.store.tabs.read();
+            match tabs.get(&id) {
+                Some(t) => t.clone(),
+                // Already closed (raced a concurrent close / LRU eviction):
+                // nothing to do, and nothing was closed by us.
+                None => return false,
+            }
+        };
+        let raced_dirty = {
+            let rt = tab.state.lock();
+            rt.meta.dirty || rt.meta.conflict.is_active()
+        };
+        if raced_dirty {
+            set_conflict(
+                &tab,
+                id,
+                &self.store.emitter,
+                ConflictState::Missing,
+                None,
+            );
+            tracing::warn!(
+                ?id,
+                "delete raced a late edit; keeping the dirty doc alive as Missing"
+            );
+            return false;
+        }
+        self.hard_close(id).is_ok()
     }
 
     /// Soft-close a tab: hide it from the tab strip but keep the worker,
@@ -2259,6 +2429,90 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `docs_under_path_with_hidden` is the DELETE-flow query: unlike
+    /// [`docs_under_path`](Self::docs_under_path) (visible-only), it MUST
+    /// include soft-closed docs. Once the backing file is trashed, a clean
+    /// hidden tab is a zombie (reactivate can never work) and must be
+    /// hard-closed like a visible one; a DIRTY hidden tab still holds unsaved
+    /// edits, so it must surface here (with `dirty == true`) to BLOCK the
+    /// delete — silently trashing its buffer would lose those edits.
+    #[test]
+    fn docs_under_path_with_hidden_includes_soft_closed_tabs() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir().join(format!("ts-hidden-del-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let dirty_path = dir.join("dirty.typ");
+        let clean_path = dir.join("clean.typ");
+        std::fs::write(&dirty_path, "x").unwrap();
+        std::fs::write(&clean_path, "y").unwrap();
+
+        // A dirty hidden doc + a clean hidden doc, both soft-closed.
+        let dirty = document.open_from_content(dirty_path.clone(), "x".into(), None).unwrap();
+        document.update_text(dirty.id, "unsaved".into()).unwrap();
+        let clean = document.open_from_content(clean_path.clone(), "y".into(), None).unwrap();
+        document.soft_close(dirty.id).unwrap();
+        document.soft_close(clean.id).unwrap();
+
+        // Visible-only query stays empty (existing contract)…
+        assert!(document.docs_under_path(&dir).is_empty());
+        // …but the delete preflight sees BOTH hidden docs — the dirty one to
+        // block on, the clean one to hard-close afterwards.
+        let with_hidden = document.docs_under_path_with_hidden(&dir);
+        assert_eq!(with_hidden.len(), 2, "both hidden docs must be reported");
+        assert!(with_hidden.iter().any(|d| d.id == dirty.id && d.dirty));
+        assert!(with_hidden.iter().any(|d| d.id == clean.id && !d.dirty));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §5.5 dirty-race regression (delete preflight vs. hard close): the trash
+    /// op between the preflight and the close can be slow, and a keystroke
+    /// landing in that window turns a preflight-clean doc dirty. Closing it
+    /// anyway would silently destroy the edit — `hard_close_if_clean` must
+    /// keep the doc alive and mark it `Missing` (the watcher-equivalent
+    /// recoverable state for a deleted backing file) instead.
+    #[test]
+    fn hard_close_if_clean_keeps_raced_dirty_doc_as_missing() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir().join(format!("ts-racedel-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.typ");
+        std::fs::write(&path, "x").unwrap();
+
+        let meta = document.open_from_content(path.clone(), "x".into(), None).unwrap();
+        // Simulate the race: preflight saw a clean doc, an edit lands AFTER it
+        // (the delete command's trash op is still running) and BEFORE the close.
+        document.update_text(meta.id, "late keystroke".into()).unwrap();
+        assert!(document.tab_meta(meta.id).unwrap().dirty);
+
+        assert!(
+            !document.hard_close_if_clean(meta.id),
+            "a raced-dirty doc must NOT be hard-closed"
+        );
+        // The doc survives with its buffer intact and is now Missing — the
+        // recoverable state, so the user can still save the edit elsewhere.
+        let after = document.tab_meta(meta.id).expect("raced-dirty doc must survive");
+        assert!(after.dirty, "the late edit must remain unsaved-dirty");
+        assert!(
+            matches!(after.conflict, ConflictState::Missing),
+            "conflict must be Missing, got {:?}",
+            after.conflict
+        );
+        assert_eq!(document.tab_text(meta.id).as_deref(), Some("late keystroke"));
+
+        // A clean doc IS closed (the normal delete-flow outcome).
+        let clean_path = dir.join("clean.typ");
+        std::fs::write(&clean_path, "y").unwrap();
+        let clean = document.open_from_content(clean_path, "y".into(), None).unwrap();
+        assert!(document.hard_close_if_clean(clean.id));
+        assert!(document.tab_meta(clean.id).is_none(), "clean doc must be closed");
+
+        // An already-closed id reports not-closed without erroring.
+        assert!(!document.hard_close_if_clean(clean.id));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `docs_at_paths_with_hidden` is the search-replace routing query: unlike
     /// [`docs_at_paths`](Self::docs_at_paths) (which skips hidden tabs for the
     /// delete/template preflights), it MUST include soft-closed docs. A hidden
@@ -2666,6 +2920,51 @@ mod tests {
         document.hard_close(meta.id).unwrap();
         assert!(document.tab_meta(meta.id).is_none());
         assert!(document.registry().read().get(meta.id).is_none());
+    }
+
+    /// Regression: deleting an open file must HARD-CLOSE its doc so the watcher
+    /// can't keep poking it. Before the fix, `delete_entry` only marked the doc
+    /// `Missing` (a zombie: still in `tabs`, still in the registry), so the
+    /// watcher's later `handle_external_change` for the deleted path resolved to
+    /// that doc and — on Windows, where the trash op emits intermediate events —
+    /// misclassified the delete as `Modified`, surfacing a spurious conflict
+    /// dialog. After hard-closing, the registry slot is gone, so the watcher
+    /// resolves no open document and is a no-op: no zombie, no conflict.
+    #[test]
+    fn hard_close_then_external_change_is_noop() {
+        let (document, _compile) = make_services();
+        let tmp = std::env::temp_dir()
+            .join(format!("ts-del-noconflict-{}.typ", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp, "x").unwrap();
+        let meta = document.open_from_content(tmp.clone(), "x".into(), None).unwrap();
+        let canon = canonicalize_for_identity(&tmp).unwrap();
+        assert!(document.registry().read().find_by_canonical(&canon).is_some());
+
+        // Simulate the delete path: trash the file, then hard-close the doc
+        // (exactly what `delete_entry` now does via `hard_close_affected`).
+        let _ = std::fs::remove_file(&tmp);
+        document.hard_close(meta.id).unwrap();
+
+        // No zombie: the doc and its registry slot are gone.
+        assert!(document.tab_meta(meta.id).is_none());
+        assert!(
+            document.registry().read().find_by_canonical(&canon).is_none(),
+            "registry slot must be released so the watcher resolves no open doc"
+        );
+
+        // The watcher fires for the now-deleted path. With the registry slot
+        // gone, `handle_external_change_locked` resolves no open document and
+        // returns without marking anything — no panic, no resurrected tab.
+        handle_external_change_locked(
+            &tmp,
+            &document.store.tabs,
+            &document.store.registry,
+            &document.store.emitter,
+        );
+        assert!(
+            document.store.tabs.read().get(&meta.id).is_none(),
+            "watcher must not resurrect the hard-closed doc"
+        );
     }
 
     /// Regression for the "self-save misreported as an external change" race.

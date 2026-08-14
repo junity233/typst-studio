@@ -26,6 +26,7 @@ import {
   type ParsedKeybinding,
 } from "../extensions/keybinding";
 import { readSetting } from "./useSetting";
+import { useTauriListener } from "./useTauriListener";
 // Import the workbench extension's lazy activator. Activating is deferred to
 // first dispatch() call (NOT module load) to avoid a circular init: this file
 // exports helpers that the workbench module imports back, so running activate()
@@ -77,15 +78,11 @@ function isEditableTarget(target: EventTarget | null): boolean {
  * Rust) and the local UI flags.
  */
 export function useAppCommands(): void {
+  useTauriListener(onMenuEvent, (payload) => {
+    void dispatch(payload.id);
+  });
+
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-
-    onMenuEvent((payload) => {
-      void dispatch(payload.id);
-    }).then((fn) => {
-      unlisten = fn;
-    });
-
     // Capture-phase keybinding dispatcher. The native menu's accelerator only
     // fires when the keypress reaches the OS — but Monaco (and the VS Code
     // services we wire via filesServiceOverride) can swallow Cmd+S etc. in the
@@ -138,7 +135,6 @@ export function useAppCommands(): void {
     document.addEventListener("keydown", onKeyDown, true);
 
     return () => {
-      unlisten?.();
       document.removeEventListener("keydown", onKeyDown, true);
     };
   }, []);
@@ -150,19 +146,9 @@ export function useAppCommands(): void {
    * Cancel dialog. `destroy()` (not `close()`) is used so CloseRequested isn't
    * re-emitted, which would loop back here.
    */
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-
-    onCloseRequested(() => {
-      void handleCloseRequested();
-    }).then((fn) => {
-      unlisten = fn;
-    });
-
-    return () => {
-      unlisten?.();
-    };
-  }, []);
+  useTauriListener(onCloseRequested, () => {
+    void handleCloseRequested();
+  });
 }
 
 /** Run the action for a menu id. Exported for testing / programmatic dispatch. */

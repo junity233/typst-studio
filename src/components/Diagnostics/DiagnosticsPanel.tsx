@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useDiagnosticsForDoc } from "../../store/diagnosticsStore";
 import type { Diagnostic, Range } from "../../lib/types";
@@ -49,6 +49,8 @@ export function DiagnosticsPanel({
   onGoto,
 }: DiagnosticsPanelProps) {
   const { t } = useTranslation("diagnostics");
+  // Links the collapse toggle (aria-controls) to the body it hides.
+  const bodyId = useId();
   // §13.1: the combined view (compiler + tinymist) for this doc. The selector
   // returns a stable empty array when there is nothing to show.
   const diagnostics = useDiagnosticsForDoc(tabId);
@@ -71,7 +73,12 @@ export function DiagnosticsPanel({
       data-diagnostics-collapsed={collapsed ? "true" : "false"}
     >
       <div className="diagnostics-header">
-        <button className="diagnostics-toggle" onClick={onToggle}>
+        <button
+          className="diagnostics-toggle"
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+          aria-controls={bodyId}
+        >
           {collapsed ? "▸" : "▾"} {t("title")}
           {sorted.length > 0 && (
             <span className="diagnostics-count">{sorted.length}</span>
@@ -79,9 +86,14 @@ export function DiagnosticsPanel({
         </button>
       </div>
       <div
+        id={bodyId}
         className={"diagnostics-body" + (dragging ? " dragging" : "")}
         style={
-          bodyHeight != null
+          /* Only apply the resize height when expanded — when collapsed the
+             CSS `.diagnostics.collapsed .diagnostics-body { max-height: 0 }`
+             rule must win so the body disappears under the floating thin bar.
+             Inline styles otherwise override that stylesheet rule. */
+          !collapsed && bodyHeight != null
             ? { maxHeight: bodyHeight, height: bodyHeight }
             : undefined
         }
@@ -98,13 +110,28 @@ export function DiagnosticsPanel({
               </tr>
             </thead>
             <tbody>
-              {sorted.map((d, i) => {
+              {sorted.map((d) => {
                 const sevClass = severityClass(d.severity);
                 return (
                 <tr
-                  key={i}
+                  key={`${d.range.start_line}:${d.range.start_column}:${d.message}`}
                   className={`diag-row ${sevClass}`}
                   onDoubleClick={() => onGoto(d.range)}
+                  onKeyDown={(e) => {
+                    // Keyboard parity with the double-click jump (Space would
+                    // otherwise scroll the pane).
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onGoto(d.range);
+                    }
+                  }}
+                  tabIndex={0}
+                  aria-label={t("row.ariaLabel", {
+                    severity: t(severityLabelKey(d.severity)),
+                    line: d.range.start_line,
+                    column: d.range.start_column,
+                    message: d.message,
+                  })}
                   title={t("row.jumpTitle")}
                 >
                   <td className="diag-col-sev">

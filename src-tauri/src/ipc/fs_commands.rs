@@ -140,17 +140,41 @@ pub struct AffectedDoc {
     pub path: String,
 }
 
-/// Result of a `delete_entry` command (§5.5): `"trashed"` (the default) or
-/// `"permanently_deleted"` (the explicit advanced action). Surfaced so the
-/// frontend can show the right confirmation.
+/// How a `delete_entry` command removed the entry: `"trashed"` (the default,
+/// recoverable from the OS trash) or `"permanently_deleted"` (the explicit
+/// advanced action). Surfaced so the frontend can show the right confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    feature = "export-types",
+    derive(ts_rs::TS),
+    ts(export_to = "../../src/lib/types.ts")
+)]
+pub enum DeleteOutcome {
+    Trashed,
+    PermanentlyDeleted,
+}
+
+/// Result of a `delete_entry` command (§5.5). Wire format is camelCase like
+/// every other IPC payload struct in this file.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(
     feature = "export-types",
     derive(ts_rs::TS),
     ts(export_to = "../../src/lib/types.ts")
 )]
 pub struct DeleteResult {
-    pub outcome: String,
+    pub outcome: DeleteOutcome,
+    /// The document ids of any OPEN documents (visible AND soft-closed/hidden)
+    /// that were hard-closed because their backing file lived at/under the
+    /// deleted entry. The frontend drops these from its tab/document stores
+    /// (including the hidden list). Almost always clean docs — dirty/conflicted
+    /// docs block the delete (`DeleteBlocked`) up front, and a doc that turned
+    /// dirty in the race window after the preflight is kept alive as `Missing`
+    /// (see `hard_close_if_clean`) rather than destroyed, so it never appears
+    /// here.
+    pub closed_doc_ids: Vec<String>,
 }
 
 /// Open `root` as the workspace (set root + resolver, start the watcher). Shared
@@ -174,9 +198,15 @@ fn open_path_as_workspace(
     // Project config hot-reload: an external edit to `<root>/.typstpro` is
     // re-read and re-broadcast. `load` fires `on_change` (→
     // `project_config_changed`) so the panel/preview/export react without each
-    // polling. Clone the service + root so the watcher closure is 'static.
+    // polling. Clone the service so the watcher closure is 'static.
     let project_config_for_cb = state.project_config.clone();
-    let root_for_cb = root.clone();
+    // The workspace service hands back the CANONICAL root — the exact form the
+    // watcher is anchored at (it watches the canonical path) — so the
+    // `.typstpro` comparison below matches the event paths. Comparing against
+    // the raw picked root instead broke on macOS (`/var` → `/private/var`) and
+    // on Windows (case/subst differences): the paths never compared equal and
+    // hot-reload silently never fired.
+    let workspace_for_cb = state.workspace.clone();
     let on_change: watcher::OnChange = Arc::new(move |paths: &[PathBuf]| {
         // §8.4: route each changed path to the editor so an open document whose
         // backing file changed is reloaded (clean buffer) or marked conflict
@@ -189,9 +219,12 @@ fn open_path_as_workspace(
         // == root so a `.typstpro` in a subdirectory (a backup, a package
         // example, …) doesn't spuriously reload the root config. `load` is
         // idempotent and degrades to None on a missing/corrupt file.
-        let config_path = root_for_cb.join(crate::service::project_config_service::CONFIG_FILENAME);
-        if paths.iter().any(|p| p == &config_path) {
-            project_config_for_cb.load(&root_for_cb);
+        if let Some(canonical_root) = workspace_for_cb.root() {
+            let config_path = canonical_root
+                .join(crate::service::project_config_service::CONFIG_FILENAME);
+            if paths.iter().any(|p| p == &config_path) {
+                project_config_for_cb.load(&canonical_root);
+            }
         }
         // Notify the frontend to refresh its file tree (independent of the
         // document-handling above — the tree shows all files, not just docs).
@@ -651,12 +684,13 @@ pub async fn rename_entry(
 /// Delete a workspace-relative file or directory via the system trash (§5.5).
 ///
 /// §5.5 dirty-delete protection: BEFORE trashing, scan the open-document
-/// registry for any doc whose canonical path is AT or UNDER the delete target.
-/// If ANY is dirty, the delete is REJECTED with `ErrorCode::DeleteBlocked`
-/// (carrying the affected doc ids + paths in `details`) — the frontend tells
-/// the user to save/close/discard those docs first. Clean open docs do NOT
-/// block (they'll get `ConflictState::Missing` via the watcher once the file is
-/// trashed, which is the correct recoverable state).
+/// registry for any doc (visible OR soft-closed/hidden) whose canonical path is
+/// AT or UNDER the delete target. If ANY is dirty or conflicted, the delete is
+/// REJECTED with `ErrorCode::DeleteBlocked` (carrying the affected doc ids +
+/// paths in `details`) — the frontend tells the user to save/close/discard
+/// those docs first. Clean open docs (visible and hidden) do NOT block — they
+/// are hard-closed after the trash op (see `hard_close_affected`) so they don't
+/// linger as zombies feeding the conflict dialog.
 #[tauri::command]
 pub async fn delete_entry(state: State<'_, AppState>, rel: String) -> Result<DeleteResult> {
     let ws = state.workspace.clone();
@@ -664,31 +698,36 @@ pub async fn delete_entry(state: State<'_, AppState>, rel: String) -> Result<Del
     // §5.5 open-doc check. The IPC layer has AppState (workspace + editor),
     // so this is the right place — WorkspaceService is disk-only.
     let affected = block_on_unsaved_or_conflicted(&state, &rel, &target)?;
-    // No unsaved/conflicted docs: proceed to trash. Clean open docs under the
-    // target are marked Missing immediately; the watcher duplicate is ignored.
-    let outcome = ws.delete_entry(&rel)?;
-    state
-        .editor
-        .document()
-        .mark_docs_missing(affected.into_iter().map(|doc| doc.id));
+    // No unsaved/conflicted docs: proceed to trash. The trash op is BLOCKING
+    // platform IO (the Windows recycle API is notoriously slow) — run it on
+    // the blocking pool so it can't stall other commands on the same async
+    // executor thread (same pattern as `copy_entry`). The double `?` unwraps
+    // the join error, then the service's own Result.
+    let outcome = tauri::async_runtime::spawn_blocking(move || ws.delete_entry(&rel))
+        .await
+        .map_err(|e| AppError::Other(format!("join error: {e}")))??;
+    let closed_doc_ids = hard_close_affected(&state, affected);
     Ok(DeleteResult {
         outcome: match outcome {
-            crate::service::trash::TrashOutcome::Trashed => "trashed",
-            crate::service::trash::TrashOutcome::PermanentlyDeleted => "permanently_deleted",
-        }
-        .to_string(),
+            crate::service::trash::TrashOutcome::Trashed => DeleteOutcome::Trashed,
+            crate::service::trash::TrashOutcome::PermanentlyDeleted => {
+                DeleteOutcome::PermanentlyDeleted
+            }
+        },
+        closed_doc_ids,
     })
 }
 
 /// Reject the operation with `DeleteBlocked` if any dirty or conflicted document
-/// is open AT or UNDER `target`. Returns all affected docs when the delete may
-/// proceed so the caller can mark clean open docs Missing immediately.
+/// (visible OR hidden — a dirty hidden tab still holds unsaved edits) is open AT
+/// or UNDER `target`. Returns all affected docs when the delete may proceed so
+/// the caller can hard-close the clean ones.
 fn block_on_unsaved_or_conflicted(
     state: &State<'_, AppState>,
     rel: &str,
     target: &std::path::Path,
 ) -> std::result::Result<Vec<crate::service::document_service::AffectedDoc>, AppError> {
-    let affected = state.editor.document().docs_under_path(target);
+    let affected = state.editor.document().docs_under_path_with_hidden(target);
     let blockers: Vec<&crate::service::document_service::AffectedDoc> = affected
         .iter()
         .filter(|d| d.dirty || d.conflict.is_active())
@@ -715,6 +754,37 @@ fn block_on_unsaved_or_conflicted(
     })
 }
 
+/// Hard-close every clean open document (visible or hidden) at/under a
+/// just-deleted entry. The disk delete already succeeded, so these docs now
+/// back a file that no longer exists. Keeping them alive left a "zombie"
+/// whose watcher events surfaced spurious conflict dialogs — and on Windows
+/// the trash op's intermediate events misclassified the delete as `Modified`.
+/// Hard-closing releases the worker + VFS + registry slot, so the watcher's
+/// later `handle_external_change` for the deleted path finds no open document
+/// and returns immediately.
+///
+/// Closes go through `hard_close_if_clean`, which re-checks dirty/conflict
+/// under the doc's state lock: a keystroke landing between the preflight and
+/// this close (the trash op in between can be slow) must NOT be silently
+/// destroyed — the raced-dirty doc is instead kept alive and marked `Missing`
+/// (the watcher-equivalent recoverable state) and is simply absent from the
+/// returned ids. Returns the closed ids as strings so the frontend can drop
+/// them from its stores.
+fn hard_close_affected(
+    state: &State<'_, AppState>,
+    affected: Vec<crate::service::document_service::AffectedDoc>,
+) -> Vec<String> {
+    affected
+        .into_iter()
+        .filter(|doc| {
+            // Best-effort: a doc can't race-close between the preflight and
+            // here in practice; a NotFound just means someone else closed it.
+            state.editor.document().hard_close_if_clean(doc.id)
+        })
+        .map(|doc| doc.id.to_string())
+        .collect()
+}
+
 /// Permanently delete a workspace-relative file or directory (§5.5 "永久删除只
 /// 作为明确标注的高级动作"). NOT recoverable. This is the explicit advanced
 /// action — the default [`delete_entry`] trashes. Same open-doc protection as
@@ -727,17 +797,20 @@ pub async fn delete_entry_permanent(
     let ws = state.workspace.clone();
     let target = ws.resolve_path(&rel)?;
     let affected = block_on_unsaved_or_conflicted(&state, &rel, &target)?;
-    let outcome = ws.delete_entry_permanent(&rel)?;
-    state
-        .editor
-        .document()
-        .mark_docs_missing(affected.into_iter().map(|doc| doc.id));
+    // `remove_dir_all` on a large tree is unbounded blocking IO — keep it off
+    // the async runtime (same pattern as `delete_entry` / `copy_entry`).
+    let outcome = tauri::async_runtime::spawn_blocking(move || ws.delete_entry_permanent(&rel))
+        .await
+        .map_err(|e| AppError::Other(format!("join error: {e}")))??;
+    let closed_doc_ids = hard_close_affected(&state, affected);
     Ok(DeleteResult {
         outcome: match outcome {
-            crate::service::trash::TrashOutcome::Trashed => "trashed",
-            crate::service::trash::TrashOutcome::PermanentlyDeleted => "permanently_deleted",
-        }
-        .to_string(),
+            crate::service::trash::TrashOutcome::Trashed => DeleteOutcome::Trashed,
+            crate::service::trash::TrashOutcome::PermanentlyDeleted => {
+                DeleteOutcome::PermanentlyDeleted
+            }
+        },
+        closed_doc_ids,
     })
 }
 

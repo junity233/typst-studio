@@ -80,6 +80,9 @@ async function doDeleteWithConfirm(
     message: confirmMessage,
     confirmLabel: i18n.t("delete", { ns: "common" }),
     cancelLabel: i18n.t("cancel", { ns: "common" }),
+    // Both delete paths destroy data (permanent irrecoverably) — start the
+    // dialog focused on Cancel so a stray Enter cannot confirm.
+    danger: true,
   });
   if (result !== "confirm") return;
   try {
@@ -231,6 +234,15 @@ export function Explorer(_props: { viewId?: string }) {
   // path. TreeRow flips into its inline editor when its own relative matches.
   const [pendingRename, setPendingRename] = useState<string | null>(null);
 
+  // Track the cut set so rows re-render with the `.tree-row-cut` style. Lives
+  // BEFORE the early return below: every hook must run on every render
+  // (Rules of Hooks), even when no workspace is open.
+  const cutRels = useMemo(
+    () =>
+      clipMode === "cut" ? new Set(clipEntries.map((e) => e.relative)) : new Set<string>(),
+    [clipMode, clipEntries],
+  );
+
   if (rootPath === null) return null;
 
   const handleNew = (kind: EntryKind) => {
@@ -367,12 +379,6 @@ export function Explorer(_props: { viewId?: string }) {
       }
     }
   };
-
-  const cutRels = useMemo(
-    () =>
-      clipMode === "cut" ? new Set(clipEntries.map((e) => e.relative)) : new Set<string>(),
-    [clipMode, clipEntries],
-  );
 
   return (
     <div className="explorer">

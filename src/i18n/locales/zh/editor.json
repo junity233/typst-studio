@@ -7,6 +7,7 @@
     "hide": "隐藏预览",
     "scrollSync": { "on": "同步滚动已开启", "off": "同步滚动已关闭" }
   },
+  "wordWrap": { "on": "自动换行已开启", "off": "自动换行已关闭" },
   "diagnostics": {
     "resizeLabel": "调整诊断面板大小"
   }

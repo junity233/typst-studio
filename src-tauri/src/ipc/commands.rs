@@ -253,13 +253,11 @@ pub async fn export_pdf(
 ) -> Result<String> {
     // When `output_path` is provided (the project's `[export] outputPath`,
     // macro-expanded by the frontend), skip the save dialog and write there
-    // directly; otherwise prompt as before.
+    // directly; otherwise prompt as before. The explicit path is containment-
+    // checked and normalized by `ensure_export_within_workspace`; the write
+    // then targets exactly the validated path.
     let path = match output_path {
-        Some(p) => {
-            let path = PathBuf::from(p);
-            ensure_export_within_workspace(&state, &path)?;
-            path
-        }
+        Some(p) => ensure_export_within_workspace(&state, &PathBuf::from(p))?,
         None => {
             let app_for_dialog = app.clone();
             let picked = tauri::async_runtime::spawn_blocking(move || {
@@ -309,11 +307,7 @@ pub async fn export_png(
     output_path: Option<String>,
 ) -> Result<Vec<String>> {
     let picked_path = match output_path {
-        Some(p) => {
-            let path = PathBuf::from(p);
-            ensure_export_within_workspace(&state, &path)?;
-            path
-        }
+        Some(p) => ensure_export_within_workspace(&state, &PathBuf::from(p))?,
         None => {
             let app_for_dialog = app.clone();
             let picked = tauri::async_runtime::spawn_blocking(move || {
@@ -376,11 +370,7 @@ pub async fn export_svg(
     output_path: Option<String>,
 ) -> Result<Vec<String>> {
     let picked_path = match output_path {
-        Some(p) => {
-            let path = PathBuf::from(p);
-            ensure_export_within_workspace(&state, &path)?;
-            path
-        }
+        Some(p) => ensure_export_within_workspace(&state, &PathBuf::from(p))?,
         None => {
             let app_for_dialog = app.clone();
             let picked = tauri::async_runtime::spawn_blocking(move || {
@@ -462,96 +452,75 @@ pub(crate) fn path_buf_from(picked: tauri_plugin_fs::FilePath) -> Result<PathBuf
         .map_err(|e| AppError::InvalidInput(format!("invalid file path: {e}")))
 }
 
-/// Check that `target` resolves at-or-under `root`, resolving symlinks on the
-/// nearest EXISTING ancestor. Used to keep an export `output_path` — which comes
-/// from a possibly-untrusted `.typstpro` and may carry an escaped `${title}`
-/// macro expansion — from writing outside the workspace.
+/// Validate an export `output_path` against the open workspace and return the
+/// normalized path the caller should actually write.
 ///
-/// A pure lexical `..`-fold is NOT sufficient: a repo-shipped symlink
-/// `build -> C:\outside` would pass a lexical check for `build/evil.pdf` but
-/// write outside the workspace. So we resolve the deepest existing ancestor via
-/// `canonicalize` (which also normalizes Windows drive/segment case), then fold
-/// the not-yet-existing tail (handling any remaining `..`) against that resolved
-/// base, and prefix-match against the canonicalized root. The OS save-dialog
-/// path is user-chosen and is NOT run through this check.
-pub(crate) fn within_workspace(root: &std::path::Path, target: &std::path::Path) -> bool {
-    use std::ffi::OsStr;
-    use std::path::PathBuf;
-
-    let abs = if target.is_absolute() {
-        target.to_path_buf()
-    } else {
-        root.join(target)
-    };
-
-    // Walk up from the target to the deepest ancestor that exists, remembering
-    // the not-yet-existing tail in reverse order.
-    let mut existing = abs.as_path();
-    let mut tail: Vec<std::ffi::OsString> = Vec::new();
-    loop {
-        if existing.exists() {
-            break;
-        }
-        match existing.file_name() {
-            Some(n) => tail.push(n.to_os_string()),
-            None => return false, // no filesystem anchor at all — reject
-        }
-        match existing.parent() {
-            Some(p) => existing = p,
-            None => return false,
-        }
-    }
-
-    // Resolve the existing ancestor through symlinks (also normalizes case).
-    let mut resolved: PathBuf = match existing.canonicalize() {
-        Ok(c) => c,
-        Err(_) => return false, // can't resolve — reject rather than risk escape
-    };
-
-    // Re-apply the tail, folding `..` against the resolved path so an escape
-    // like `build/../../evil` is rejected instead of passing a lexical
-    // prefix-match.
-    for comp in tail.iter().rev() {
-        let os: &OsStr = comp;
-        if os == OsStr::new("..") {
-            resolved = match resolved.parent() {
-                Some(p) => p.to_path_buf(),
-                None => return false,
-            };
-        } else if os != OsStr::new(".") && !os.is_empty() {
-            resolved = resolved.join(comp);
-        }
-    }
-
-    let root_canon = match root.canonicalize() {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    resolved.starts_with(&root_canon)
-}
-
-/// Reject an export `output_path` that escapes the open workspace root.
+/// Requires an open workspace: the ONLY legitimate source of an explicit
+/// `output_path` is the project's `[export] outputPath` macro-expanded by the
+/// frontend (`doExport` in `extensions/workbench`), and that flow bails to the
+/// save dialog when no workspace root exists — so `Some(path)` with no
+/// workspace can only come from a compromised/foreign frontend. The save-dialog
+/// path (`output_path: None`) never reaches here and stays user-chosen.
+///
+/// Containment is delegated to
+/// [`ensure_contained_path`](crate::domain::path::ensure_contained_path). A
+/// pure lexical `..`-fold is NOT sufficient, and neither is an
+/// `Path::exists()`-based ancestor walk: a repo-shipped DANGLING symlink
+/// (`build/evil.pdf -> C:\Users\x\missing.pdf`) has `exists() == false`, so an
+/// exists()-walk mistakes the link for a "missing tail", lexically appends it
+/// under the root, and passes the check — after which `std::fs::write` FOLLOWS
+/// the dangling link and creates the file outside the workspace.
+/// `ensure_contained_path` probes ancestors with `symlink_metadata` (which
+/// sees the link itself, dangling or not), so a symlink anywhere on the path
+/// either resolves via `canonicalize` (and is checked against the canonical
+/// root) or fails to canonicalize (a dangling link) and is rejected outright.
 fn ensure_export_within_workspace(
     state: &State<'_, AppState>,
     path: &std::path::Path,
-) -> Result<()> {
-    if let Some(root) = state.workspace.root() {
-        if !within_workspace(&root, path) {
-            return Err(AppError::InvalidInput(
-                "export output path escapes the workspace".into(),
-            ));
-        }
+) -> Result<std::path::PathBuf> {
+    let Some(root) = state.workspace.root() else {
+        return Err(AppError::InvalidInput(
+            "explicit export output path requires an open workspace".into(),
+        ));
+    };
+    // Anchor a relative pattern (e.g. `build/${title}.pdf` expanded relative)
+    // at the root before the containment walk.
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    match crate::domain::path::ensure_contained_path(&root, &abs) {
+        // Write the LEXICALLY NORMALIZED path that was validated, not the raw
+        // input: a pattern like `link/../x.pdf` folds to `root/x.pdf` here, so
+        // a symlink component can never be re-introduced between check and
+        // write via a `..` that lexically folded away.
+        Ok(validated) => Ok(validated),
+        Err(_) => Err(AppError::InvalidInput(
+            "export output path escapes the workspace".into(),
+        )),
     }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::within_workspace;
     use std::path::{Path, PathBuf};
 
-    /// A real temp dir (so `canonicalize` inside `within_workspace` succeeds),
-    /// already created on disk.
+    /// The containment policy `ensure_export_within_workspace` applies, as a
+    /// bool for assertions (production calls `ensure_contained_path`
+    /// directly; the wrapper anchors relative candidates at the root exactly
+    /// like the production call site does).
+    fn within_workspace(root: &Path, target: &Path) -> bool {
+        let abs = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            root.join(target)
+        };
+        crate::domain::path::ensure_contained_path(root, &abs).is_ok()
+    }
+
+    /// A real temp dir (so `canonicalize` inside `ensure_contained_path`
+    /// succeeds), already created on disk.
     fn tmp_root() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("typst-export-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -589,6 +558,46 @@ mod tests {
         std::fs::create_dir_all(root.join("safe")).unwrap();
         assert!(within_workspace(&root, &root.join("safe/ok.pdf")));
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// Regression: a DANGLING symlink under the root (`evil.pdf -> <missing>`
+    /// outside the workspace) has `exists() == false`, so the old exists()-based
+    /// ancestor walk treated it as a missing tail and passed the check; the
+    /// subsequent `std::fs::write` followed the link and created the file
+    /// OUTSIDE the workspace. The symlink_metadata-based containment must
+    /// reject it.
+    #[cfg(unix)]
+    #[test]
+    fn within_workspace_rejects_dangling_symlink_escape() {
+        use std::os::unix::fs::symlink;
+        let root = tmp_root();
+        let target =
+            std::env::temp_dir().join(format!("typst-dangling-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        symlink(&target, root.join("build/evil.pdf")).unwrap();
+        // Precondition: the link is dangling (target absent), so `exists()`
+        // lies — this is exactly the input shape the old walk mishandled.
+        assert!(!root.join("build/evil.pdf").exists());
+        assert!(!within_workspace(&root, &root.join("build/evil.pdf")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Windows variant of the dangling-link regression, best-effort: creating a
+    /// file symlink needs Developer Mode / admin privileges, so the test skips
+    /// silently when the OS refuses. The logic itself is covered on Unix CI.
+    #[cfg(windows)]
+    #[test]
+    fn within_workspace_rejects_dangling_symlink_escape_windows() {
+        let root = tmp_root();
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        let target = std::env::temp_dir().join("typst-dangling-missing.pdf");
+        if std::os::windows::fs::symlink_file(&target, root.join("build/evil.pdf")).is_err() {
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        assert!(!root.join("build/evil.pdf").exists());
+        assert!(!within_workspace(&root, &root.join("build/evil.pdf")));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[cfg(windows)]

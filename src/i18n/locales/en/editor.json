@@ -7,6 +7,7 @@
     "hide": "Hide preview",
     "scrollSync": { "on": "Scroll sync on", "off": "Scroll sync off" }
   },
+  "wordWrap": { "on": "Word wrap on", "off": "Word wrap off" },
   "diagnostics": {
     "resizeLabel": "Resize diagnostics panel"
   }

@@ -11,6 +11,14 @@ import {
 import type { ProjectConfig } from "../lib/types";
 
 /**
+ * The schema version this frontend writes into every `.typstpro` it creates
+ * (both the store's "no config yet" default and the Project panel's form).
+ * Single source of truth — never hardcode a version where a config object is
+ * assembled.
+ */
+export const CURRENT_PROJECT_SCHEMA_VERSION = 2;
+
+/**
  * Project config store: the workspace's `.typstpro` (main compile file + title)
  * kept in sync across windows via the backend-broadcast `project_config_changed`
  * event.
@@ -87,7 +95,7 @@ export const useProjectConfigStore = create<ProjectConfigState>()((set, get) => 
 
   update: async (patch) => {
     const current = get().config ?? {
-      schemaVersion: 1,
+      schemaVersion: CURRENT_PROJECT_SCHEMA_VERSION,
       main: null,
       title: null,
     };

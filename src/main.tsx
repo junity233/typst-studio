@@ -1,7 +1,8 @@
-import { Component, useEffect, type ErrorInfo, type ReactNode } from "react";
+import { useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { SettingsApp } from "./components/Settings/SettingsApp";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useSettingsStore } from "./store/settingsStore";
 import { useThemeStore } from "./store/themeStore";
 import { useTheme } from "./hooks/useTheme";
@@ -10,46 +11,6 @@ import { useLanguage } from "./hooks/useLanguage";
 // before any component that calls `useTranslation` renders.
 import "./i18n";
 import "./styles/global.css";
-
-class ErrorBoundary extends Component<
-  { children: ReactNode },
-  { error: Error | null }
-> {
-  state: { error: Error | null } = { error: null };
-
-  static getDerivedStateFromError(error: Error) {
-    return { error };
-  }
-
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("[ErrorBoundary]", error, info);
-  }
-
-  render() {
-    if (this.state.error) {
-      return (
-        <pre
-          style={{
-            margin: 0,
-            padding: 16,
-            color: "#ff3b30",
-            background: "#f5f5f7",
-            fontFamily: "SF Mono, Menlo, monospace",
-            fontSize: 12,
-            whiteSpace: "pre-wrap",
-            height: "100vh",
-            overflow: "auto",
-          }}
-        >
-          {this.state.error.name}: {this.state.error.message}
-          {"\n\n"}
-          {this.state.error.stack}
-        </pre>
-      );
-    }
-    return this.props.children;
-  }
-}
 
 /**
  * Detect whether this bundle loaded as the dedicated settings window

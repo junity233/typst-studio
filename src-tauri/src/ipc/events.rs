@@ -359,6 +359,7 @@ mod tests {
         crate::ipc::fs_commands::ReboundDoc::export(&cfg).unwrap();
         crate::ipc::fs_commands::DocsReboundPayload::export(&cfg).unwrap();
         crate::ipc::fs_commands::AffectedDoc::export(&cfg).unwrap();
+        crate::ipc::fs_commands::DeleteOutcome::export(&cfg).unwrap();
         crate::ipc::fs_commands::DeleteResult::export(&cfg).unwrap();
         crate::ipc::conflict_commands::ResolveConflictUseDiskResult::export(&cfg).unwrap();
         // §6.3 watcher-health payload.

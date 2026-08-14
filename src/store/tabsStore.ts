@@ -16,6 +16,7 @@ import {
   updateText,
 } from "../lib/tauri";
 import { useDiagnosticsStore } from "./diagnosticsStore";
+import { useConflictDialogStore } from "./conflictDialogStore";
 import { captureAndSaveSession, recordFile } from "../lib/session";
 import {
   documentFromOpened,
@@ -249,18 +250,7 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
       // Backend may reject (already gone); still drop the local tab.
       console.warn("[hardClose] backend rejected:", e);
     }
-    useDiagnosticsStore.getState().clearAll(id);
-    useDocumentsStore.getState().closeDocument(id);
-    useSaveStateStore.getState().clear(id);
-    set((s) => {
-      const tabs = s.tabs.filter((tabId) => tabId !== id);
-      const hidden = s.hidden.filter((h) => h !== id);
-      let activeId = s.activeId;
-      if (activeId === id) {
-        activeId = tabs.length > 0 ? tabs[tabs.length - 1] : null;
-      }
-      return { tabs, hidden, activeId };
-    });
+    removeDocFromStores(id);
     await captureAndSaveSession();
   },
 
@@ -297,6 +287,39 @@ export const useTabsStore = create<TabsState>()((set, get) => ({
 }));
 
 // --- view ↔ document selectors ---------------------------------------------
+
+/**
+ * Drop a document from ALL frontend stores — diagnostics, documents, saveState,
+ * and the tabs/hidden/activeId view state — WITHOUT a backend round-trip.
+ *
+ * Shared by the close-X path ([`hardClose`](#hardClose), which also tells the
+ * backend to release the worker/registry) and the delete path
+ * (`workspaceStore.deleteEntry`, where the backend already hard-closed the doc,
+ * so only the local cleanup is needed). When the removed doc was active,
+ * activation falls back to the last remaining visible tab (or `null`), mirroring
+ * `hardClose`/`softClose`.
+ */
+export function removeDocFromStores(id: string): void {
+  useDiagnosticsStore.getState().clearAll(id);
+  useDocumentsStore.getState().closeDocument(id);
+  useSaveStateStore.getState().clear(id);
+  // Close a conflict dialog targeting the removed doc. The watcher's conflict
+  // event and the delete's invoke response are independent IPCs; if the dialog
+  // won that race it would reference a doc id that exists in no store anymore
+  // (a dangling openForId rendering ConflictDialog against a missing doc).
+  if (useConflictDialogStore.getState().openForId === id) {
+    useConflictDialogStore.getState().close();
+  }
+  useTabsStore.setState((s) => {
+    const tabs = s.tabs.filter((tabId) => tabId !== id);
+    const hidden = s.hidden.filter((h) => h !== id);
+    let activeId = s.activeId;
+    if (activeId === id) {
+      activeId = tabs.length > 0 ? tabs[tabs.length - 1] : null;
+    }
+    return { tabs, hidden, activeId };
+  });
+}
 
 /**
  * Read the domain object for the active view, or `null` if none. Components

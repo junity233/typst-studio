@@ -20,27 +20,25 @@ describe("Sidebar visibility gates", () => {
     expect(shouldShowEmptyWorkspace(explorer, null)).toBe(true);
   });
 
-  it("mounts only the active or previously visited views", () => {
-    const visited = new Set(["workbench.explorer"]);
+  it("preloads every eligible view regardless of active/visited state", () => {
     const outline = { id: "workbench.outline", when: "always" as const };
     const search = { id: "workbench.search", when: "workspace" as const };
     const explorer = { id: "workbench.explorer", when: "workspace" as const };
 
-    expect(
-      shouldMountSidebarView(outline, "workbench.search", visited, "/workspace"),
-    ).toBe(false);
-    expect(
-      shouldMountSidebarView(search, "workbench.search", visited, "/workspace"),
-    ).toBe(true);
-    expect(
-      shouldMountSidebarView(explorer, "workbench.search", visited, "/workspace"),
-    ).toBe(true);
+    // With a workspace open, all views mount eagerly — preloaded up front,
+    // not gated behind activation or prior visits.
+    expect(shouldMountSidebarView(outline, "/workspace")).toBe(true);
+    expect(shouldMountSidebarView(search, "/workspace")).toBe(true);
+    expect(shouldMountSidebarView(explorer, "/workspace")).toBe(true);
+  });
+
+  it("preloads always-views even without a workspace", () => {
+    const outline = { id: "workbench.outline", when: "always" as const };
+    expect(shouldMountSidebarView(outline, null)).toBe(true);
   });
 
   it("does not mount a workspace-only view before a workspace exists", () => {
     const search = { id: "workbench.search", when: "workspace" as const };
-    expect(
-      shouldMountSidebarView(search, search.id, new Set([search.id]), null),
-    ).toBe(false);
+    expect(shouldMountSidebarView(search, null)).toBe(false);
   });
 });

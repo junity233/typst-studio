@@ -22,6 +22,13 @@ src/assets/grammar/*.json
 # output, not source.
 public/vendor/
 
+# tsc build output of vite.config.ts (js/d.ts) and incremental compilation
+# caches — build output, not source. vite.config.js would otherwise shadow
+# vite.config.ts (Vite resolves .js first).
+vite.config.js
+vite.config.d.ts
+*.tsbuildinfo
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

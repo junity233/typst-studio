@@ -10,7 +10,10 @@ vi.mock("../../lib/tauri", () => ({
   onProjectConfigChanged: vi.fn().mockResolvedValue(() => {}),
 }));
 
-import { useProjectConfigStore } from "../projectConfigStore";
+import {
+  CURRENT_PROJECT_SCHEMA_VERSION,
+  useProjectConfigStore,
+} from "../projectConfigStore";
 import {
   getProjectConfig,
   getProjectConfigPath,
@@ -24,7 +27,7 @@ import {
  * The store follows the live-apply pattern: mutators fire IPC and do NOT touch
  * local state — the `project_config_changed` event round-trip is the single
  * source of truth. These tests cover the hydrate loading path + the mutators'
- * IPC contracts + the `useMainFile` selector.
+ * IPC contracts.
  */
 describe("projectConfigStore", () => {
   beforeEach(() => {
@@ -93,7 +96,7 @@ describe("projectConfigStore", () => {
     await useProjectConfigStore.getState().update({ main: "paper.typ" });
 
     expect(setProjectConfig).toHaveBeenCalledWith({
-      schemaVersion: 1,
+      schemaVersion: CURRENT_PROJECT_SCHEMA_VERSION,
       main: "paper.typ",
       title: null,
     });

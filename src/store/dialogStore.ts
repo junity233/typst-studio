@@ -14,6 +14,12 @@ export interface ConfirmRequest {
   cancelLabel?: string;
   /** Label for a third "discard without saving" action (default "Don't Save"). */
   discardLabel?: string;
+  /**
+   * Marks the confirm action as destructive/irreversible (delete, permanent
+   * delete, …). The dialog then places the INITIAL focus on Cancel instead of
+   * Confirm, so an accidental Enter cannot trigger the destructive action.
+   */
+  danger?: true;
   resolve: (result: ConfirmResult) => void;
 }
 

@@ -13,6 +13,7 @@
   "row": {
     "line": "第 {{line}} 行",
     "column": "第 {{column}} 列",
-    "jumpTitle": "双击跳转到该行"
+    "jumpTitle": "双击或按 Enter 跳转到该行",
+    "ariaLabel": "第 {{line}} 行第 {{column}} 列的{{severity}}:{{message}}"
   }
 }

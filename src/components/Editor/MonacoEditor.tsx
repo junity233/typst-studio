@@ -13,7 +13,6 @@ import type { Tab } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
-import { useDebouncedCallback } from "../../hooks/useDebounce";
 import { useLspStatus } from "../../store/lspStore";
 import { useSetting } from "../../hooks/useSetting";
 import {
@@ -253,21 +252,94 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
 
   // `editor.updateDebounceMs` drives the compile-push debouncer below. Read
   // here (before `pushToBackend`) so it is in scope; the value is also a normal
-  // settings option consumed via the options memo further down.
+  // settings option consumed via the options memo further down. Timer creation
+  // reads it through a ref so a settings change applies to new timers without
+  // re-creating the push function.
   const [updateDebounceMs] = useSetting<number>("editor.updateDebounceMs");
+  const pushDebounceMs = updateDebounceMs ?? 100;
+  const pushDebounceMsRef = useRef(pushDebounceMs);
+  pushDebounceMsRef.current = pushDebounceMs;
 
-  // Debounced backend push for the compile pipeline (SVG preview). The window
-  // is the `editor.updateDebounceMs` setting; rebuilding on its change is
-  // intended (useDebouncedCallback keys its stable callback on `delay`).
-  const pushToBackend = useDebouncedCallback((
-    id: string,
-    value: string,
-    revision: number,
-  ) => {
-    void updateText(id, value, revision).catch((e) =>
+  // Per-document debounced backend push for the compile pipeline (SVG
+  // preview). The editor instance is SHARED across docs (§10.5 model swap, no
+  // remount on tab switch), so a single debouncer keyed on call args would let
+  // doc B's keystrokes cancel doc A's pending push — A's backend text would
+  // then stall until its next edit, with no self-heal while the preview is
+  // hidden or autoRefresh is off (and `editor.updateDebounceMs` up to 2000ms
+  // widens the stall). Buckets are per doc id: each doc waits out its OWN
+  // window. Within a bucket the latest (value, revision) wins — the same
+  // latest-args semantics as the previous single `useDebouncedCallback` — and
+  // the revision still refers to the exact store revision captured after
+  // `updateContent` (see handleTextChanged).
+  interface PendingPush {
+    value: string;
+    revision: number;
+  }
+  const pendingPushesRef = useRef<Map<string, PendingPush>>(new Map());
+  const pushTimersRef = useRef<Map<string, number>>(new Map());
+
+  /** Send doc `id`'s pending push now (if any) and clear its timer. */
+  const flushPendingPush = useCallback((id: string) => {
+    const timer = pushTimersRef.current.get(id);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      pushTimersRef.current.delete(id);
+    }
+    const pending = pendingPushesRef.current.get(id);
+    if (pending === undefined) return;
+    pendingPushesRef.current.delete(id);
+    void updateText(id, pending.value, pending.revision).catch((e) =>
       console.warn("[MonacoEditor] updateText failed:", e),
     );
-  }, updateDebounceMs ?? 100);
+  }, []);
+
+  /** Drop doc `id`'s pending push WITHOUT sending it (doc closed/destroyed). */
+  const cancelPendingPush = useCallback((id: string) => {
+    const timer = pushTimersRef.current.get(id);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      pushTimersRef.current.delete(id);
+    }
+    pendingPushesRef.current.delete(id);
+  }, []);
+
+  const pushToBackend = useCallback(
+    (id: string, value: string, revision: number) => {
+      pendingPushesRef.current.set(id, { value, revision });
+      const timers = pushTimersRef.current;
+      const existing = timers.get(id);
+      if (existing !== undefined) window.clearTimeout(existing);
+      timers.set(
+        id,
+        window.setTimeout(() => {
+          timers.delete(id);
+          flushPendingPush(id);
+        }, pushDebounceMsRef.current),
+      );
+    },
+    [flushPendingPush],
+  );
+
+  // Deliver (not drop) any pending pushes on unmount — an edit the user
+  // already made must reach the backend even if its debounce window hadn't
+  // elapsed yet.
+  useEffect(() => {
+    return () => {
+      for (const id of [...pendingPushesRef.current.keys()]) {
+        flushPendingPush(id);
+      }
+    };
+  }, [flushPendingPush]);
+
+  // On a tab switch, flush the OUTGOING doc's pending push so its latest text
+  // reaches the backend immediately instead of idling out its (up to 2s)
+  // debounce window while the user edits another doc.
+  useEffect(() => {
+    const outgoingId = tab.id;
+    return () => {
+      flushPendingPush(outgoingId);
+    };
+  }, [tab.id, flushPendingPush]);
 
   // Memoize the language-client config on `wsUrl` ONLY (not workspace). A
   // workspace-open must not rebuild the config for a mounted editor — that
@@ -617,6 +689,10 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     for (const id of plan.toClose) {
       monacoModelRegistry.closeModel(id);
       seenIdsRef.current.delete(id);
+      // Drop any pending debounce push for the closed doc: its backend state
+      // was destroyed by the close path, and a straggling updateText for a
+      // dead id would only log a warning.
+      cancelPendingPush(id);
     }
 
     // 2. Open newly-appeared docs (§10.1). openModel is idempotent per id;
@@ -675,6 +751,7 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     getEditor,
     vscodeApiReady,
     typstHighlightingReady,
+    cancelPendingPush,
   ]);
 
   // Save-As origin-transition effect (spec §11, Task 9). When a Save As (or a

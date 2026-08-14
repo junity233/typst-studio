@@ -19,15 +19,22 @@ import type { BibEntry, BibEntryEditable, BibFileInfo } from "../../../lib/types
  * citation / copy key / edit / delete); double-click to edit. The `+` button
  * next to the search box opens the add-reference modal.
  *
- * Discovery runs on mount and whenever the workspace root changes. Only shown
- * when a folder is open (`when: "workspace"` in the extension), so the empty-
- * workspace prompt is handled by the sidebar shell.
+ * Discovery runs the first time the view becomes visible and whenever the
+ * workspace root changes. Only shown when a folder is open
+ * (`when: "workspace"` in the extension), so the empty-workspace prompt is
+ * handled by the sidebar shell.
  *
  * CRUD is delegated to `bibliographyStore` (which round-trips through the
  * backend's serialize-and-write command). Delete asks for confirmation via
  * `dialogStore.confirm` BEFORE calling the store (the store just executes).
  */
-export function BibliographyPanel() {
+export function BibliographyPanel({
+  visible = true,
+}: {
+  /** The sidebar passes the view id (unused here) + current visibility. */
+  viewId?: string;
+  visible?: boolean;
+}) {
   const { t } = useTranslation("bibliography");
   const rootPath = useWorkspaceStore((s) => s.rootPath);
 
@@ -73,15 +80,22 @@ export function BibliographyPanel() {
     setQuery(debouncedInput);
   }, [debouncedInput, setQuery]);
 
-  // Discover files on mount + whenever the workspace root changes. When the
-  // workspace closes, reset everything so stale entries don't linger.
+  // Discover workspace bibliography files the first time the view is VISIBLE
+  // (the sidebar pre-mounts every view, and the scan should not run at startup
+  // for a tab the user may never open), and again whenever the workspace root
+  // changes while the panel is (or later becomes) visible. When the workspace
+  // closes, reset everything so stale entries don't linger.
+  const [discoveredRoot, setDiscoveredRoot] = useState<string | null>(null);
   useEffect(() => {
     if (rootPath === null) {
       clear();
+      setDiscoveredRoot(null);
       return;
     }
+    if (!visible || discoveredRoot === rootPath) return;
+    setDiscoveredRoot(rootPath);
     void discoverFiles(rootPath);
-  }, [rootPath, discoverFiles, clear]);
+  }, [rootPath, visible, discoveredRoot, discoverFiles, clear]);
 
   // Auto-select the first discovered file so the panel shows references
   // immediately without requiring a manual pick (matches the "just works"
@@ -152,6 +166,7 @@ export function BibliographyPanel() {
         message: t("confirmDeleteMessage", { key }),
         confirmLabel: t("delete"),
         cancelLabel: t("cancel"),
+        danger: true,
       });
       if (result === "confirm") {
         void deleteEntry(key);

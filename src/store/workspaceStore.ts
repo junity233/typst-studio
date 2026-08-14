@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { DirEntry, EntryKind } from "../lib/types";
+import type { DeleteOutcome, DirEntry, EntryKind } from "../lib/types";
 import {
   closeWorkspace as closeWorkspaceBE,
   copyEntry as copyEntryBE,
@@ -13,8 +13,25 @@ import {
   readDir as readDirBE,
   renameEntry as renameEntryBE,
 } from "../lib/tauri";
-import { recordWorkspace, loadSession } from "../lib/session";
+import { recordWorkspace, loadSession, captureAndSaveSession } from "../lib/session";
 import { useProjectConfigStore } from "./projectConfigStore";
+import { removeDocFromStores } from "./tabsStore";
+
+/**
+ * Shared body of `deleteEntry` / `deleteEntryPermanent`: the backend preflight
+ * hard-closed any clean open docs (incl. hidden) under the deleted entry (so
+ * they don't linger as zombies feeding the conflict dialog); drop them from
+ * the frontend stores too, re-activate a neighbor, and re-capture the session.
+ */
+async function deleteEntryCommon(
+  rel: string,
+  backendDelete: (rel: string) => Promise<{ outcome: DeleteOutcome; closedDocIds: string[] }>,
+): Promise<void> {
+  const res = await backendDelete(rel);
+  for (const id of res.closedDocIds) removeDocFromStores(id);
+  await useWorkspaceStore.getState().refresh(parentRel(rel));
+  if (res.closedDocIds.length > 0) void captureAndSaveSession();
+}
 
 /**
  * Workspace store: the open folder, its lazily-loaded file tree, and the file
@@ -239,15 +256,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     await get().refresh(parentRel(to));
   },
 
-  deleteEntry: async (rel) => {
-    await deleteEntryBE(rel);
-    await get().refresh(parentRel(rel));
-  },
+  deleteEntry: (rel) => deleteEntryCommon(rel, deleteEntryBE),
 
-  deleteEntryPermanent: async (rel) => {
-    await deleteEntryPermanentBE(rel);
-    await get().refresh(parentRel(rel));
-  },
+  deleteEntryPermanent: (rel) => deleteEntryCommon(rel, deleteEntryPermanentBE),
 
   copyEntry: async (from, to) => {
     await copyEntryBE(from, to);

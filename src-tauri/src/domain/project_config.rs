@@ -186,6 +186,28 @@ pub fn validate_workspace_relative_path(path: &str, field: &str) -> Result<()> {
     Ok(())
 }
 
+/// The export formats `[export].format` accepts. Mirrors the three backend
+/// export commands (`export_pdf` / `export_png` / `export_svg`) and the
+/// frontend's `defaultExportFormat` dispatch — any other value has no command
+/// to run, so it is rejected at `set()` time with an explicit error instead of
+/// being silently accepted and later falling back to PDF.
+pub const EXPORT_FORMATS: [&str; 3] = ["pdf", "png", "svg"];
+
+/// Validate `[export].format`: must be one of [`EXPORT_FORMATS`] when present.
+/// A hand-edited config may carry anything here; `set()` (the panel path)
+/// rejects unknown values, while `load()` tolerates them (the frontend's
+/// `defaultExportFormat` already falls back to "pdf" for unknown strings).
+pub fn validate_export_format(format: &str) -> Result<()> {
+    if EXPORT_FORMATS.contains(&format) {
+        Ok(())
+    } else {
+        Err(AppError::InvalidInput(format!(
+            "export.format must be one of {} (got '{format}')",
+            EXPORT_FORMATS.join("/")
+        )))
+    }
+}
+
 /// Back-compat delegate for the main-file field. Prefer
 /// [`validate_workspace_relative_path`] at new call sites.
 pub fn validate_main_path(main: &str) -> Result<()> {
@@ -350,6 +372,21 @@ outputPath = "build/${title}.pdf"
         assert!(validate_workspace_relative_path("chapters/intro.typ", "bibliography entry").is_ok());
         assert!(validate_workspace_relative_path("src", "compile.root").is_ok());
         assert!(validate_main_path("a/b/c.typ").is_ok());
+    }
+
+    #[test]
+    fn validate_export_format_accepts_known_and_rejects_others() {
+        for ok in ["pdf", "png", "svg"] {
+            assert!(validate_export_format(ok).is_ok(), "{ok} must be accepted");
+        }
+        // Case variants, unknown formats, and empty are all rejected — none
+        // has an export command behind it.
+        for bad in ["PDF", "Png", "jpeg", "html", ""] {
+            assert!(
+                validate_export_format(bad).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
     }
 
     #[test]

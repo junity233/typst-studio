@@ -27,7 +27,13 @@ function useDebounced<T>(value: T, delay: number): T {
  * derived from the UNFILTERED index — keeps all options regardless of the
  * current selection.
  */
-export function PackagesPanel() {
+export function PackagesPanel({
+  visible = true,
+}: {
+  /** The sidebar passes the view id (unused here) + current visibility. */
+  viewId?: string;
+  visible?: boolean;
+}) {
   const { t } = useTranslation("packages");
   const activeTab = usePackagesStore((s) => s.activeTab);
   const setActiveTab = usePackagesStore((s) => s.setActiveTab);
@@ -50,12 +56,19 @@ export function PackagesPanel() {
     setFilter({ query: debouncedQuery || undefined });
   }, [debouncedQuery, setFilter]);
 
-  // Load the full index once on mount (filtering is client-side, so no
-  // re-fetch on filter changes).
+  // Load the full index the FIRST time the view becomes visible — not on
+  // mount. The sidebar pre-mounts every view for instant tab switches, and
+  // `loadCatalog`/`refreshIndex` download the complete Typst Universe index
+  // when the disk cache is empty, far too heavy to run at startup for a tab
+  // the user may never open. `fetched` guarantees it runs at most once per
+  // mount; filtering is client-side, so filters never re-fetch.
+  const [fetched, setFetched] = useState(false);
   useEffect(() => {
+    if (!visible || fetched) return;
+    setFetched(true);
     void loadCatalog();
     void loadInstalled();
-  }, [loadCatalog, loadInstalled]);
+  }, [visible, fetched, loadCatalog, loadInstalled]);
 
   // The Installed tab doesn't use the search box.
   const showSearch = activeTab !== "installed";

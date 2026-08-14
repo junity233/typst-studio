@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Save, Trash2, StarOff, FolderOpen, FileText } from "lucide-react";
-import { useProjectConfigStore } from "../../../store/projectConfigStore";
+import {
+  CURRENT_PROJECT_SCHEMA_VERSION,
+  useProjectConfigStore,
+} from "../../../store/projectConfigStore";
 import { useWorkspaceStore } from "../../../store/workspaceStore";
 import { useUiStore } from "../../../store/uiStore";
 import { useDialogStore } from "../../../store/dialogStore";
 import { pickPath } from "../../../lib/tauri";
+import { toIpcError } from "../../../lib/ipc-error";
 import { relativeWithinWorkspace } from "../../../lib/workspacePath";
 import type { ProjectConfig } from "../../../lib/types";
 
@@ -74,7 +78,7 @@ function formToConfig(form: Form): ProjectConfig {
         }
       : null;
   return {
-    schemaVersion: 2,
+    schemaVersion: CURRENT_PROJECT_SCHEMA_VERSION,
     main: form.main || null,
     title: form.title || null,
     bibliography: parseList(form.bibliography),
@@ -115,11 +119,32 @@ export function ProjectPanel() {
   const [form, setForm] = useState<Form>(() => configToForm(config));
   const [saving, setSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
-  const [browseWarning, setBrowseWarning] = useState<string | null>(null);
+  // Inline, auto-dismissing notice for failed actions (save/delete/pick) and
+  // rejected picks — the panel has no toast layer, so this is the UI feedback.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const formRef = useRef(form);
   formRef.current = form;
   const prevFormRef = useRef<Form>(form);
+  // Timeout ids for the "Saved" flash and the error auto-dismiss; kept in refs
+  // so unmount (incl. the workspace-switch remount) can clear pending timers.
+  const savedFlashTimer = useRef<number | null>(null);
+  const errorTimer = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (savedFlashTimer.current !== null) window.clearTimeout(savedFlashTimer.current);
+      if (errorTimer.current !== null) window.clearTimeout(errorTimer.current);
+    },
+    [],
+  );
+
+  /** Show an inline error notice that dismisses itself after a few seconds. */
+  const showError = (message: string) => {
+    setActionError(message);
+    if (errorTimer.current !== null) window.clearTimeout(errorTimer.current);
+    errorTimer.current = window.setTimeout(() => setActionError(null), 6000);
+  };
 
   // Sync the form when the backend-broadcast config changes, WITHOUT clobbering
   // a field the user is actively editing. For each field, adopt the incoming
@@ -141,8 +166,11 @@ export function ProjectPanel() {
     return <div className="project-panel empty">{t("noWorkspace")}</div>;
   }
 
-  const dirty = Object.keys(form).some(
-    (k) => form[k as keyof Form] !== configToForm(config)[k as keyof Form],
+  // Derive the config form ONCE — recomputing it inside the `some` callback
+  // rebuilt the whole object on every field comparison.
+  const configForm = configToForm(config);
+  const dirty = (Object.keys(form) as (keyof Form)[]).some(
+    (k) => form[k] !== configForm[k],
   );
   const storedMain = config?.main ?? "";
   const mainMissing = storedMain !== "" && !typFiles.includes(storedMain);
@@ -160,15 +188,16 @@ export function ProjectPanel() {
     if (rootPath === null) return;
     const abs = await pickPath(kind).catch((e) => {
       console.warn("[project] path picker failed:", e);
+      showError(t("pickFailed", { message: toIpcError(e).message }));
       return null;
     });
     if (abs === null) return;
     const rel = relativeWithinWorkspace(rootPath, abs);
     if (rel === null) {
-      setBrowseWarning(t("pathOutsideWorkspace"));
+      showError(t("pathOutsideWorkspace"));
       return;
     }
-    setBrowseWarning(null);
+    setActionError(null);
     apply(rel);
   };
 
@@ -176,10 +205,13 @@ export function ProjectPanel() {
     setSaving(true);
     try {
       await update(formToConfig(form));
+      setActionError(null);
       setSavedFlash(true);
-      window.setTimeout(() => setSavedFlash(false), 1200);
+      if (savedFlashTimer.current !== null) window.clearTimeout(savedFlashTimer.current);
+      savedFlashTimer.current = window.setTimeout(() => setSavedFlash(false), 1200);
     } catch (e) {
       console.error("[project] save failed:", e);
+      showError(t("saveFailed", { message: toIpcError(e).message }));
     } finally {
       setSaving(false);
     }
@@ -190,6 +222,7 @@ export function ProjectPanel() {
       title: t("confirmClearMainTitle"),
       message: t("confirmClearMainMessage"),
       confirmLabel: t("clearMainFile"),
+      danger: true,
     });
     if (result !== "confirm") return;
     setForm((f) => ({ ...f, main: "" }));
@@ -197,6 +230,7 @@ export function ProjectPanel() {
       await setMainFile(null);
     } catch (e) {
       console.error("[project] clear main failed:", e);
+      showError(t("actionFailed", { message: toIpcError(e).message }));
     }
   };
 
@@ -205,12 +239,14 @@ export function ProjectPanel() {
       title: t("confirmDeleteTitle"),
       message: t("confirmDeleteMessage"),
       confirmLabel: t("deleteConfig"),
+      danger: true,
     });
     if (result !== "confirm") return;
     try {
       await clear();
     } catch (e) {
       console.error("[project] delete failed:", e);
+      showError(t("actionFailed", { message: toIpcError(e).message }));
     }
   };
 
@@ -232,8 +268,9 @@ export function ProjectPanel() {
       </header>
 
       <div className="project-scroll">
-        {/* Inline "outside workspace" warning after a failed pick. */}
-        {browseWarning && <p className="project-warning">{browseWarning}</p>}
+        {/* Inline notice after a failed action (save/delete/pick) or a pick
+            outside the workspace; dismisses itself after a few seconds. */}
+        {actionError && <p className="project-warning">{actionError}</p>}
 
         {/* General */}
         <section className="project-card">

@@ -74,9 +74,11 @@ describe("dispatch forwards active tab revision to export IPC (§9)", () => {
       content: "",
       revision: 11,
     });
+    // outputPath is null when no project export.outputPath pattern is set.
     expect(invokeMock).toHaveBeenCalledWith("export_pdf", {
       id: "active",
       revision: 11,
+      outputPath: null,
     });
   });
 
@@ -91,6 +93,7 @@ describe("dispatch forwards active tab revision to export IPC (§9)", () => {
     expect(invokeMock).toHaveBeenCalledWith("export_png", {
       id: "active",
       revision: 22,
+      outputPath: null,
     });
   });
 
@@ -105,6 +108,7 @@ describe("dispatch forwards active tab revision to export IPC (§9)", () => {
     expect(invokeMock).toHaveBeenCalledWith("export_svg", {
       id: "active",
       revision: 33,
+      outputPath: null,
     });
   });
 
@@ -119,6 +123,7 @@ describe("dispatch forwards active tab revision to export IPC (§9)", () => {
     expect(invokeMock).toHaveBeenCalledWith("export_pdf", {
       id: "active",
       revision: 0,
+      outputPath: null,
     });
   });
 

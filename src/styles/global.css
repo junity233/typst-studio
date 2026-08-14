@@ -694,26 +694,21 @@ button {
 .diagnostics-body.dragging {
   transition: none;
 }
-.diagnostics.collapsed {
-  /* 收起后整块脱离文档流、贴底悬浮成贯通细条，不占布局空间。 */
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 5;
-}
+/* 收起后留在文档流中：整块塌缩成一条仅 ~22px 高的细条（仅头部可见，
+   body 高度归零）。占用极少的布局空间，但不会悬浮遮挡编辑器文字和
+   底部水平滚动条。 */
 .diagnostics.collapsed .diagnostics-header {
-  /* 头部收窄成细条：高度压到 22px，分隔线移到顶部。 */
+  /* 头部收窄成细条：高度压到 22px。去掉自身 border-top（.diagnostics 的
+     border-top 已提供与编辑区的分隔线，避免出现双重发丝线）。 */
   height: 22px;
   border-bottom: none;
-  border-top: 1px solid var(--color-hairline);
   padding: 0 var(--space-md);
 }
 .diagnostics.collapsed .diagnostics-body {
   max-height: 0;
   height: auto;
   overflow: hidden;
-  /* 收起瞬间瞬时贴底为细条，避免 0.2s 过渡期间出现正在缩小的悬浮大块。 */
+  /* 收起瞬间瞬时塌缩为细条，避免 0.2s 过渡期间出现正在缩小的大块。 */
   transition: none;
 }
 .diag-empty {
@@ -1968,8 +1963,6 @@ button {
   width: 100%;
 }
 .editor-area {
-  /* relative 锚定收起态诊断面板的贴底悬浮细条（见 .diagnostics.collapsed）。 */
-  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -1986,7 +1979,8 @@ button {
   min-width: 0;
 }
 .preview-toggle,
-.scroll-sync-toggle {
+.scroll-sync-toggle,
+.word-wrap-toggle {
   flex: 0 0 auto;
   align-self: center;
   margin-right: var(--space-xs);
@@ -2006,16 +2000,19 @@ button {
   margin-right: var(--space-xxs);
 }
 .preview-toggle:hover,
-.scroll-sync-toggle:hover {
+.scroll-sync-toggle:hover,
+.word-wrap-toggle:hover {
   background: var(--color-canvas-parchment);
   color: var(--color-ink);
 }
 .preview-toggle[aria-pressed="true"],
-.scroll-sync-toggle[aria-pressed="true"] {
+.scroll-sync-toggle[aria-pressed="true"],
+.word-wrap-toggle[aria-pressed="true"] {
   color: var(--color-ink);
 }
 .preview-toggle:active,
-.scroll-sync-toggle:active {
+.scroll-sync-toggle:active,
+.word-wrap-toggle:active {
   transform: scale(0.95);
 }
 .editor-area-main {
@@ -4157,35 +4154,6 @@ button {
 .bibliography-item-meta { font: var(--text-nav-link); color: var(--color-ink-muted-48); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bibliography-empty { margin: 0; padding: var(--space-lg) var(--space-sm); text-align: center; font: var(--text-caption); color: var(--color-ink-muted-48); }
 
-/* --- Project panel (.typstpro) -------------------------------------------- */
-.project-panel { display: flex; flex-direction: column; gap: var(--space-sm); padding: var(--space-sm); }
-.project-panel.empty { padding: var(--space-lg) var(--space-sm); text-align: center; font: var(--text-caption); color: var(--color-ink-muted-48); }
-.project-field { display: flex; flex-direction: column; gap: 4px; }
-.project-label { font: var(--text-caption); color: var(--color-ink-muted-80); }
-.project-select, .project-input { padding: 7px 11px; border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); background: var(--color-canvas); color: var(--color-ink); font-size: 13px; letter-spacing: -0.1px; transition: border-color 0.12s ease, box-shadow 0.12s ease; width: 100%; box-sizing: border-box; }
-.project-select { cursor: pointer; appearance: none; -webkit-appearance: none; }
-.project-select:hover, .project-input:hover { border-color: var(--color-ink-muted-48); }
-.project-select:focus, .project-input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-focus-ring); }
-.project-hint { margin: 0; font: var(--text-fine-print); color: var(--color-ink-muted-48); }
-.project-hint.warn { color: var(--color-error); }
-.project-actions { display: flex; gap: var(--space-xs); flex-wrap: wrap; }
-.project-btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border: 1px solid var(--color-hairline); border-radius: var(--radius-sm); background: var(--color-canvas); color: var(--color-ink); font: var(--text-button-utility); cursor: pointer; transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease; }
-.project-btn:hover:not(:disabled) { background: var(--color-surface-pearl); border-color: var(--color-ink-muted-48); }
-.project-btn:active:not(:disabled) { transform: scale(0.96); }
-.project-btn:disabled { opacity: 0.45; cursor: default; }
-.project-btn.primary { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
-.project-btn.primary:hover:not(:disabled) { background: var(--color-primary-focus); border-color: var(--color-primary-focus); }
-.project-btn.danger { color: var(--color-error); border-color: var(--color-hairline); align-self: flex-start; }
-.project-btn.danger:hover:not(:disabled) { background: var(--color-danger-soft); border-color: var(--color-error); }
-.project-radio-group { display: flex; gap: var(--space-sm); }
-.project-radio { display: inline-flex; align-items: center; gap: 5px; font: var(--text-caption); color: var(--color-ink); cursor: pointer; }
-.project-radio input { cursor: pointer; }
-.project-radio input:disabled + span, .project-radio:has(input:disabled) { opacity: 0.5; cursor: default; }
-.project-status { display: flex; flex-direction: column; gap: 2px; padding-top: var(--space-xs); border-top: 1px solid var(--color-divider-soft); }
-.project-status-label { font: var(--text-fine-print); color: var(--color-ink-muted-48); }
-.project-status-path { font: var(--text-fine-print); font-family: var(--font-mono); color: var(--color-ink-muted-80); word-break: break-all; }
-.project-section { font: var(--text-caption-strong); color: var(--color-ink-muted-80); text-transform: uppercase; letter-spacing: 0.04em; padding-top: var(--space-xs); border-top: 1px solid var(--color-divider-soft); margin-top: var(--space-xxs); }
-.project-section:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
 /* --- Project panel (.typstpro) -------------------------------------------- */
 .project-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .project-panel.empty { padding: var(--space-lg) var(--space-sm); text-align: center; font: var(--text-caption); color: var(--color-ink-muted-48); }

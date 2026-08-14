@@ -151,24 +151,26 @@ fn normalize_lexical(path: &Path) -> Option<PathBuf> {
 
 /// Platform-specific normalization applied on top of `canonicalize`'s output.
 ///
-/// On Windows, `std::fs::canonicalize` returns a `\\?\`-prefixed verbatim UNC
-/// path with an upper-case drive letter. We strip the verbatim prefix so the
-/// result compares equal to the paths the rest of the app constructs (which do
-/// not carry the prefix). Drive-letter casing is already consistent from
+/// On Windows, `std::fs::canonicalize` returns a `\\?\`-prefixed verbatim path
+/// with an upper-case drive letter. We strip the verbatim prefix so the result
+/// compares equal to the paths the rest of the app constructs (which do not
+/// carry the prefix). Drive-letter casing is already consistent from
 /// `canonicalize`, so no further work is needed.
+///
+/// Delegates to `dunce::simplified` rather than a naive `strip_prefix(r"\\?\")`
+/// for one critical reason: a canonicalized UNC path comes back as
+/// `\\?\UNC\server\share\a`, and stripping the literal `\\?\` prefix yields the
+/// RELATIVE path `UNC\server\share\a` — no longer absolute, never equal to the
+/// workspace root `WorkspaceService::open` stores. That fork made every
+/// `starts_with` containment check (`WorkspaceService::contains`,
+/// `docs_under_path`, …) fail for UNC workspaces, classifying all their files
+/// as loose. `dunce::simplified` strips the disk prefix (`\\?\C:\…` → `C:\…`)
+/// and deliberately KEEPS verbatim UNC as-is (stripping could break long UNC
+/// paths); consistency is what fixes containment — the root (`open`) and every
+/// canonicalized path (here) now flow through the SAME normalization, so the
+/// verbatim forms compare equal component-wise.
 fn normalize_platform(path: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let s = path.to_string_lossy();
-        if let Some(stripped) = s.strip_prefix(r"\\?\") {
-            return PathBuf::from(stripped);
-        }
-        path
-    }
-    #[cfg(not(windows))]
-    {
-        path
-    }
+    dunce::simplified(&path).to_path_buf()
 }
 
 #[cfg(test)]
@@ -285,5 +287,86 @@ mod tests {
         assert!(ensure_contained_path(&root, &link.join("escape.png")).is_err());
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// A DANGLING symlink (target missing) must also be rejected: `Path::exists`
+    /// is false for it, so a naive exists()-based walk treats the link as a
+    /// "missing tail" and lexically appends it under the root — passing the
+    /// containment check even though a later write would FOLLOW the link and
+    /// create the file outside the root. `symlink_metadata` sees the link
+    /// itself, and `canonicalize` then fails on the unresolvable target, so
+    /// `ensure_contained_path` errors.
+    #[test]
+    fn containment_rejects_dangling_symlink() {
+        let root = std::env::temp_dir().join(format!("ts-dangling-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let link = root.join("evil.pdf");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            std::env::temp_dir().join("ts-dangling-missing-target.pdf"),
+            &link,
+        )
+        .unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_file(
+            std::env::temp_dir().join("ts-dangling-missing-target.pdf"),
+            &link,
+        )
+        .is_err()
+        {
+            // Symlink creation needs Developer Mode / admin on some Windows
+            // setups; the containment logic itself is covered by the Unix CI.
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+
+        // The link itself must be seen as present-but-unresolvable (symlink_
+        // metadata Ok, canonicalize Err), never as a plain missing tail.
+        assert!(!link.exists(), "precondition: the link target is missing");
+        assert!(std::fs::symlink_metadata(&link).is_ok());
+        assert!(std::fs::canonicalize(&link).is_err());
+        assert!(ensure_contained_path(&root, &link).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `normalize_platform` must strip the verbatim DISK prefix and keep
+    /// verbatim UNC in the same form `WorkspaceService::open` stores (both
+    /// flow through `dunce::simplified`), so containment compares equal. The
+    /// old `strip_prefix(r"\\?\")` fork turned `\\?\UNC\server\share\a` into
+    /// the RELATIVE `UNC\server\share\a`, which broke every containment check
+    /// for UNC-rooted workspaces. String-built paths — no real UNC share
+    /// needed.
+    #[test]
+    #[cfg(windows)]
+    fn normalize_strips_verbatim_disk_and_keeps_unc_form_consistent() {
+        assert_eq!(
+            normalize_platform(PathBuf::from(r"\\?\C:\code\ws")),
+            PathBuf::from(r"C:\code\ws")
+        );
+        // A non-verbatim path is untouched.
+        assert_eq!(
+            normalize_platform(PathBuf::from(r"C:\code\ws")),
+            PathBuf::from(r"C:\code\ws")
+        );
+        // Verbatim UNC stays verbatim (dunce deliberately keeps it — stripping
+        // could break long UNC paths)…
+        assert_eq!(
+            normalize_platform(PathBuf::from(r"\\?\UNC\server\share\a")),
+            PathBuf::from(r"\\?\UNC\server\share\a")
+        );
+        // …and, crucially, it is still ABSOLUTE. The old fork produced the
+        // relative `UNC\server\share\a`, which could never `starts_with` any
+        // absolute root — the root cause of the UNC containment breakage.
+        assert!(normalize_platform(PathBuf::from(r"\\?\UNC\server\share\a")).is_absolute());
+        // Root and file canonicalize through the SAME normalization, so the
+        // containment prefix-match works for UNC roots (the property
+        // `WorkspaceService::contains` depends on).
+        let root = normalize_platform(PathBuf::from(r"\\?\UNC\server\share\ws"));
+        let file = normalize_platform(PathBuf::from(r"\\?\UNC\server\share\ws\a.typ"));
+        assert!(file.starts_with(&root), "{file:?} must contain {root:?}");
+        // And a sibling outside the root still does not match.
+        let outside = normalize_platform(PathBuf::from(r"\\?\UNC\server\share\other\x.typ"));
+        assert!(!outside.starts_with(&root));
     }
 }

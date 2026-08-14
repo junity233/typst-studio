@@ -389,8 +389,36 @@ pub fn run() {
                 if !last_workspace.is_empty() {
                     let ws_root = std::path::PathBuf::from(&last_workspace);
                     if let Some(cfg) = crate::service::project_config_service::ProjectConfigService::peek(&ws_root) {
+                        // Project font dirs are lexically validated at config
+                        // load, but a repo-shipped SYMLINK could still redirect
+                        // `ws_root.join(dir)` outside the workspace — the warm
+                        // scan would then crawl foreign directories. Canonicalize
+                        // each joined dir and keep it only when it stays under
+                        // the canonical workspace root; drop (warn) the rest.
+                        // A dir that fails to canonicalize (missing) is useless
+                        // to the scan anyway and is dropped with a warn.
+                        let canon_root = std::fs::canonicalize(&ws_root)
+                            .map(|c| dunce::simplified(&c).to_path_buf())
+                            .unwrap_or_else(|_| ws_root.clone());
                         for d in cfg.extra_font_dirs() {
-                            extra_font_dirs.push(ws_root.join(d));
+                            let joined = ws_root.join(d);
+                            match std::fs::canonicalize(&joined)
+                                .map(|c| dunce::simplified(&c).to_path_buf())
+                            {
+                                Ok(resolved) if resolved.starts_with(&canon_root) => {
+                                    extra_font_dirs.push(resolved);
+                                }
+                                Ok(resolved) => tracing::warn!(
+                                    dir = %d,
+                                    resolved = ?resolved,
+                                    "project extraFontDir resolves outside the workspace; ignoring"
+                                ),
+                                Err(e) => tracing::warn!(
+                                    dir = %d,
+                                    error = %e,
+                                    "project extraFontDir does not resolve; ignoring"
+                                ),
+                            }
                         }
                     }
                 }

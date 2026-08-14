@@ -149,10 +149,7 @@ impl WorkspaceService {
         // workspace root itself when none is designated. `self.root` keeps the
         // true workspace root (used for containment, search, meta.root) — only
         // the resolver's anchor changes.
-        let effective = match &compile_root {
-            Some(rel) if !rel.as_os_str().is_empty() => canonical.join(rel),
-            _ => canonical.clone(),
-        };
+        let effective = Self::resolve_effective_root(&canonical, compile_root.as_deref());
         // Swap root + resolver. Mint a fresh workspace id each open so
         // reclassification can distinguish docs owned by a *prior* workspace
         // from those owned by the current one (§4.3).
@@ -185,10 +182,7 @@ impl WorkspaceService {
         let Some(ws_root) = self.root.read().clone() else {
             return false;
         };
-        let effective = match &compile_root {
-            Some(rel) if !rel.as_os_str().is_empty() => ws_root.join(rel),
-            _ => ws_root,
-        };
+        let effective = Self::resolve_effective_root(&ws_root, compile_root.as_deref());
         let Some(resolver) = self.resolver.read().clone() else {
             return false;
         };
@@ -197,6 +191,58 @@ impl WorkspaceService {
         }
         resolver.set_root(effective);
         true
+    }
+
+    /// Resolve the EFFECTIVE compile root (Typst's `--root`) for a designated
+    /// workspace-relative `compile_root`, or the workspace root itself when
+    /// none is designated — degrading to the workspace root whenever the
+    /// designation is unusable.
+    ///
+    /// `compile.root` is already lexically validated (no `..` / absolute
+    /// components) at config set/load time, but a repo-shipped SYMLINK
+    /// (`compile.root = "link"` + `link -> /home/<user>`) still redirects the
+    /// joined path outside the workspace — a lexical join cannot see that, and
+    /// the resolver's root is the anchor typst resolves `#read` / `#image`
+    /// against, i.e. the compile sandbox boundary. So the joined path is
+    /// canonicalized (resolving symlinks) and must remain under the workspace
+    /// root. Any failure — the path doesn't exist (canonicalize errors), or it
+    /// resolves outside — falls back to the workspace root with a warn rather
+    /// than widening the sandbox.
+    ///
+    /// The canonicalized result is `dunce::simplified` so it compares
+    /// like-for-like with `ws_root` (already simplified by [`open`](Self::open))
+    /// and with the resolver's previously-set root (idempotency check in
+    /// [`reanchor_compile_root`](Self::reanchor_compile_root)).
+    fn resolve_effective_root(ws_root: &Path, compile_root: Option<&Path>) -> PathBuf {
+        let Some(rel) = compile_root else {
+            return ws_root.to_path_buf();
+        };
+        if rel.as_os_str().is_empty() {
+            return ws_root.to_path_buf();
+        }
+        let joined = ws_root.join(rel);
+        match std::fs::canonicalize(&joined).map(|c| dunce::simplified(&c).to_path_buf()) {
+            Ok(resolved) if resolved.starts_with(ws_root) => resolved,
+            Ok(resolved) => {
+                tracing::warn!(
+                    compile_root = ?rel,
+                    resolved = ?resolved,
+                    workspace_root = ?ws_root,
+                    "compile.root resolves outside the workspace (symlink escape?); \
+                     falling back to the workspace root"
+                );
+                ws_root.to_path_buf()
+            }
+            Err(e) => {
+                tracing::warn!(
+                    compile_root = ?rel,
+                    path = ?joined,
+                    error = %e,
+                    "compile.root does not resolve on disk; falling back to the workspace root"
+                );
+                ws_root.to_path_buf()
+            }
+        }
     }
 
     /// Close the workspace (stops the watcher, drops the resolver). Open tabs
@@ -669,5 +715,111 @@ mod tests {
         }
         assert!(seen, "workspace watcher should report the change");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- compile.root anchoring (open + reanchor) ---------------------------
+
+    /// The canonical form `resolve_effective_root` produces, for assertions.
+    fn canon(p: &Path) -> PathBuf {
+        dunce::simplified(&p.canonicalize().unwrap()).to_path_buf()
+    }
+
+    /// `reanchor_compile_root` moves the resolver's root and reports the
+    /// change; re-anchoring at the SAME root is a no-op (returns false).
+    #[test]
+    fn reanchor_compile_root_moves_resolver_and_is_idempotent() {
+        let dir = tmp_dir();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let ws = WorkspaceService::new();
+        ws.open(dir.clone(), std::time::Duration::from_millis(300), noop_on_change(), None)
+            .unwrap();
+        let dir_canon = canon(&dir);
+        let resolver = ws.resolver().expect("resolver after open");
+        assert_eq!(resolver.root(), dir_canon, "no compile.root → workspace root");
+
+        // Anchor at src/ → the resolver moves and the call reports true.
+        assert!(ws.reanchor_compile_root(Some(dir.join("src"))));
+        assert_eq!(resolver.root(), canon(&dir.join("src")));
+
+        // Same designation again → no change, returns false (idempotent).
+        assert!(!ws.reanchor_compile_root(Some(dir.join("src"))));
+        assert_eq!(resolver.root(), canon(&dir.join("src")));
+
+        // Clearing the designation returns to the workspace root.
+        assert!(ws.reanchor_compile_root(None));
+        assert_eq!(resolver.root(), dir_canon);
+        assert!(!ws.reanchor_compile_root(None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A compile.root that does not exist on disk cannot anchor anything
+    /// (Typst would fail every `#read`/`#image` under it) — the resolver falls
+    /// back to the workspace root with a warn instead.
+    #[test]
+    fn compile_root_missing_falls_back_to_workspace_root() {
+        let dir = tmp_dir();
+        let ws = WorkspaceService::new();
+        ws.open(
+            dir.clone(),
+            std::time::Duration::from_millis(300),
+            noop_on_change(),
+            Some(PathBuf::from("does-not-exist")),
+        )
+        .unwrap();
+        assert_eq!(
+            ws.resolver().unwrap().root(),
+            canon(&dir),
+            "missing compile.root must degrade to the workspace root"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Sandbox-escape regression (task: compile.root symlink): a repo-shipped
+    /// symlink `link -> <outside>` plus `compile.root = "link"` must NOT widen
+    /// the Typst resolution root beyond the workspace — the joined path is
+    /// canonicalized and containment-checked, degrading to the workspace root.
+    /// Covers both `open` (initial anchor) and `reanchor_compile_root` (the
+    /// `.typstpro` hot-reload path).
+    #[test]
+    fn compile_root_symlink_escape_falls_back_to_workspace_root() {
+        let dir = tmp_dir();
+        let outside = std::env::temp_dir().join(format!("typst-ws-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = dir.join("link");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&outside, &link).is_err() {
+            // Directory symlinks need Developer Mode / admin on some Windows
+            // setups; the escape logic is identical cross-platform and covered
+            // by the Unix CI + the missing-root fallback test above.
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_dir_all(&outside);
+            return;
+        }
+
+        // open() with the escaping designation.
+        let ws = WorkspaceService::new();
+        ws.open(
+            dir.clone(),
+            std::time::Duration::from_millis(300),
+            noop_on_change(),
+            Some(PathBuf::from("link")),
+        )
+        .unwrap();
+        assert_eq!(
+            ws.resolver().unwrap().root(),
+            canon(&dir),
+            "symlinked compile.root must fall back to the workspace root"
+        );
+        assert_ne!(ws.resolver().unwrap().root(), canon(&outside));
+
+        // reanchor_compile_root() with the same escaping designation.
+        assert!(!ws.reanchor_compile_root(Some(PathBuf::from("link"))));
+        assert_eq!(ws.resolver().unwrap().root(), canon(&dir));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 }

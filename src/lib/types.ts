@@ -138,6 +138,22 @@ svg: string, };
 export type CompareRecovery = { snapshot: string, disk?: string | null, };
 
 /**
+ * The `[compile]` table: compile-time project overrides.
+ */
+export type CompileConfig = { 
+/**
+ * Workspace-relative directory Typst treats as `--root` for absolute-path
+ * / `#image()` resolution. `None` = the workspace root itself.
+ */
+root?: string | null, 
+/**
+ * Workspace-relative font directories (e.g. a `fonts/` folder checked into
+ * the project). Takes effect after restart (folded into the startup font
+ * scan, like the global `compiler.extraFontDirs`).
+ */
+extraFontDirs?: Array<string> | null, };
+
+/**
  * Result of compiling a single document.
  */
 export type CompileOutcome = { 
@@ -257,11 +273,28 @@ diskContent: string | null, };
 export type ConflictState = "none" | "modified" | "missing" | "permission_changed" | "replaced";
 
 /**
- * Result of a `delete_entry` command (§5.5): `"trashed"` (the default) or
- * `"permanently_deleted"` (the explicit advanced action). Surfaced so the
- * frontend can show the right confirmation.
+ * How a `delete_entry` command removed the entry: `"trashed"` (the default,
+ * recoverable from the OS trash) or `"permanently_deleted"` (the explicit
+ * advanced action). Surfaced so the frontend can show the right confirmation.
  */
-export type DeleteResult = { outcome: string, };
+export type DeleteOutcome = "trashed" | "permanently_deleted";
+
+/**
+ * Result of a `delete_entry` command (§5.5). Wire format is camelCase like
+ * every other IPC payload struct in this file.
+ */
+export type DeleteResult = { outcome: DeleteOutcome, 
+/**
+ * The document ids of any OPEN documents (visible AND soft-closed/hidden)
+ * that were hard-closed because their backing file lived at/under the
+ * deleted entry. The frontend drops these from its tab/document stores
+ * (including the hidden list). Almost always clean docs — dirty/conflicted
+ * docs block the delete (`DeleteBlocked`) up front, and a doc that turned
+ * dirty in the race window after the preflight is kept alive as `Missing`
+ * (see `hard_close_if_clean`) rather than destroyed, so it never appears
+ * here.
+ */
+closedDocIds: Array<string>, };
 
 /**
  * A single diagnostic, IPC/serialization-friendly.
@@ -453,6 +486,21 @@ export type EntryKind = "file" | "dir";
  * generated TypeScript literal union.
  */
 export type ErrorCode = "permission_denied" | "read_only" | "disk_full" | "target_missing" | "parent_missing" | "path_occupied" | "external_conflict" | "already_open" | "invalid_path" | "delete_blocked" | "io_transient" | "not_found" | "invalid_input" | "compile" | "export" | "cancelled" | "package_not_found" | "package_install_failed" | "package_uninstall_failed" | "index_fetch_failed" | "template_init_failed" | "other";
+
+/**
+ * The `[export]` table: export defaults.
+ */
+export type ExportConfig = { 
+/**
+ * Default export format: `"pdf"` / `"png"` / `"svg"`.
+ */
+format?: string | null, 
+/**
+ * Output path pattern (e.g. `"build/${title}.pdf"`). When set, export
+ * writes directly here (skipping the save dialog). Macros expand on the
+ * frontend (mirrors paste-image path macros).
+ */
+outputPath?: string | null, };
 
 /**
  * Payload of the `focus_view` event (§6.1): the frontend activates the tab
@@ -771,6 +819,66 @@ updatedAt: number,
  * `Some` ⇒ this entry is also a template.
  */
 template?: TemplateMeta | null, };
+
+/**
+ * The project-level config stored in `<workspace>/.typstpro`.
+ *
+ * All fields are optional — an empty/missing file is a valid "no project
+ * metadata" state. Path-typed fields (`main`, `bibliography[]`,
+ * `new_file_template`, `compile.root`, `compile.extra_font_dirs[]`) are
+ * workspace-relative and validated to stay within the workspace.
+ */
+export type ProjectConfig = { 
+/**
+ * Schema version. Defaults to `0` when absent on disk so the migrator can
+ * forward it to [`CURRENT_SCHEMA_VERSION`]; always stamped to the current
+ * version on write.
+ */
+schemaVersion: number, 
+/**
+ * Workspace-relative path to the project's main compile file.
+ */
+main?: string | null, 
+/**
+ * Optional human-readable project title. Also the `${title}` macro source
+ * for `[export] outputPath`.
+ */
+title?: string | null, 
+/**
+ * Declared bibliography files (workspace-relative). The Bibliography panel
+ * prefers these over scan-discovery when set.
+ */
+bibliography?: Array<string> | null, 
+/**
+ * Workspace-relative file whose contents seed a new document. Precedence
+ * in `new_tab`: explicit content > this > global `document.defaultTemplate`.
+ */
+newFileTemplate?: string | null, 
+/**
+ * Per-project ignore globs (matched against workspace-relative paths with
+ * forward slashes), applied to workspace search + the main-file picker.
+ */
+exclude?: Array<string> | null, 
+/**
+ * The `[compile]` table.
+ */
+compile?: CompileConfig | null, 
+/**
+ * The `[export]` table.
+ */
+export?: ExportConfig | null, };
+
+/**
+ * Payload of the `project_config_changed` event: the new project config, or
+ * `None` when the workspace has no `.typstpro` (or no workspace is open). Emitted
+ * after every load/set/clear and on external `.typstpro` edits picked up by the
+ * workspace watcher. The frontend replaces its cached config on each event.
+ */
+export type ProjectConfigChangedPayload = { 
+/**
+ * The new config, or `None` when no `.typstpro` exists.
+ */
+config?: ProjectConfig | null, };
 
 /**
  * A 1-indexed text range (Monaco-friendly). Half-open `[start, end)`.
@@ -1203,8 +1311,3 @@ root: string,
  * Display name (the root folder's basename).
  */
 name: string, };
-
-export type CompileConfig = { root?: string | null, extraFontDirs?: (string)[] | null, };
-export type ExportConfig = { format?: string | null, outputPath?: string | null, };
-export type ProjectConfig = { schemaVersion: number, main?: string | null, title?: string | null, bibliography?: (string)[] | null, newFileTemplate?: string | null, exclude?: (string)[] | null, compile?: CompileConfig | null, export?: ExportConfig | null, };
-export type ProjectConfigChangedPayload = { config?: ProjectConfig | null, };
