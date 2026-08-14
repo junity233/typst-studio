@@ -44,10 +44,38 @@ jobs:
         with:
           node-version: 20
 
+      # No package-lock.json in the repo (resolved per-install by policy), so
+      # cache the npm tarball store keyed on the manifest — installs then skip
+      # re-downloading every package on each build.
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package.json') }}
+          restore-keys: npm-${{ runner.os }}-
+
+      # fetch-grammar re-extracts every run but caches the downloaded
+      # tinymist VSIX under node_modules/.cache/grammar (keyed on the script,
+      # which pins the version) — with it cached, no network fetch at all.
+      - name: Cache fetched frontend assets
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.cache/grammar
+          key: grammar-vsix-${{ hashFiles('scripts/fetch-grammar.mjs') }}
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin x86_64-apple-darwin' || '' }}
+
+      # Cache the cargo registry + compiled dependencies (keyed on
+      # Cargo.lock, segmented per matrix job — the two macOS targets get
+      # separate target-dir caches). Dependency compilation is the bulk of
+      # each job; this cuts warm builds from ~15-20 min to a few minutes.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
