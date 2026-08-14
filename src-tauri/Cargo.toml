@@ -1,6 +1,6 @@
 [package]
 name = "typst-studio"
-version = "0.1.2"
+version = "0.1.3"
 description = "A Typst visual editor with live SVG preview"
 authors = ["Typst Studio"]
 license = "MIT"
