@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useContextMenuStore, type MenuItem } from "./contextMenuStore";
+import { useClampedPopupPosition } from "../../hooks/useClampedPopupPosition";
+import { usePopupDismiss } from "../../hooks/usePopupDismiss";
 
 /**
  * A floating context menu rendered into `document.body` when the
@@ -19,63 +21,18 @@ export function ContextMenu() {
   const current = useContextMenuStore((s) => s.current);
   const close = useContextMenuStore((s) => s.close);
   const ref = useRef<HTMLDivElement>(null);
+  const anchor = { x: current?.x ?? 0, y: current?.y ?? 0 };
   // Final position after viewport clamping (so the menu can flip/shift).
-  const [pos, setPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-
-  // Clamp the menu inside the viewport once it has been measured.
-  useLayoutEffect(() => {
-    if (current === null) return;
-    const el = ref.current;
-    const x = current.x;
-    const y = current.y;
-    if (el === null) {
-      setPos({ x, y });
-      return;
-    }
-    const rect = el.getBoundingClientRect();
-    const margin = 4;
-    let nx = x;
-    let ny = y;
-    if (x + rect.width + margin > window.innerWidth) {
-      nx = Math.max(margin, window.innerWidth - rect.width - margin);
-    }
-    if (y + rect.height + margin > window.innerHeight) {
-      ny = Math.max(margin, window.innerHeight - rect.height - margin);
-    }
-    setPos({ x: nx, y: ny });
-  }, [current]);
+  const pos = useClampedPopupPosition(anchor, ref);
 
   // Dismiss handlers — wired only while a menu is open.
-  useEffect(() => {
-    if (current === null) return;
-    const onPointerDown = (e: PointerEvent) => {
-      // Submenus are portaled directly to document.body, so they are not DOM
-      // descendants of `ref`. Treat every panel in the active menu chain as
-      // inside; otherwise pointerdown on a submenu leaf closes/unmounts the
-      // menu during capture, before that leaf's React onClick can run.
-      if (
-        e.target instanceof Element &&
-        e.target.closest("[data-context-menu-panel]")
-      ) {
-        return;
-      }
-      close();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    const onScrollOrResize = () => close();
-    window.addEventListener("pointerdown", onPointerDown, true);
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("scroll", onScrollOrResize, true);
-    window.addEventListener("resize", onScrollOrResize);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown, true);
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("scroll", onScrollOrResize, true);
-      window.removeEventListener("resize", onScrollOrResize);
-    };
-  }, [current, close]);
+  usePopupDismiss(current !== null, close, (target) => {
+    // Submenus are portaled directly to document.body, so they are not DOM
+    // descendants of `ref`. Treat every panel in the active menu chain as
+    // inside; otherwise pointerdown on a submenu leaf closes/unmounts the
+    // menu during capture, before that leaf's React onClick can run.
+    return target instanceof Element && target.closest("[data-context-menu-panel]") !== null;
+  });
 
   if (current === null) return null;
 

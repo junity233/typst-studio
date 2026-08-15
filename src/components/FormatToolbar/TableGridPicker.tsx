@@ -1,13 +1,14 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { useClampedPopupPosition } from "../../hooks/useClampedPopupPosition";
+import { usePopupDismiss } from "../../hooks/usePopupDismiss";
 
 /**
- * The grid dimension (rows == cols == GRID_SIZE). Hard-coded 8 per the spec
- * (Notion/Google-Docs-style "insert table" hover grid). Exported so tests can
- * assert the total cell count without a magic number.
+ * The grid dimension (rows == cols). Hard-coded 8 per the spec
+ * (Notion/Google-Docs-style "insert table" hover grid).
  */
-export const GRID_SIZE = 8;
+const GRID_SIZE = 8;
 
 export interface TableGridPickerProps {
   /** Anchor position (screen coords) for the popup. */
@@ -41,50 +42,14 @@ export function TableGridPicker({ anchor, onSelect, onCancel }: TableGridPickerP
     cols: 1,
   });
   // Final position after viewport clamping.
-  const [pos, setPos] = useState<{ x: number; y: number }>({ x: anchor.x, y: anchor.y });
-
-  // Clamp the popup inside the viewport once it has been measured. Mirrors
-  // ContextMenu.tsx's pattern; re-runs if the anchor moves.
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (el === null) {
-      setPos({ x: anchor.x, y: anchor.y });
-      return;
-    }
-    const rect = el.getBoundingClientRect();
-    const margin = 4;
-    let nx = anchor.x;
-    let ny = anchor.y;
-    if (anchor.x + rect.width + margin > window.innerWidth) {
-      nx = Math.max(margin, window.innerWidth - rect.width - margin);
-    }
-    if (anchor.y + rect.height + margin > window.innerHeight) {
-      ny = Math.max(margin, window.innerHeight - rect.height - margin);
-    }
-    setPos({ x: nx, y: ny });
-  }, [anchor.x, anchor.y]);
+  const pos = useClampedPopupPosition(anchor, ref);
 
   // Dismiss handlers — Esc, outside pointerdown, scroll, window resize. Wired
   // once on mount; follows ContextMenu.tsx exactly.
-  useEffect(() => {
-    const onPointerDown = (e: PointerEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onCancel();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
-    };
-    const onScrollOrResize = () => onCancel();
-    window.addEventListener("pointerdown", onPointerDown, true);
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("scroll", onScrollOrResize, true);
-    window.addEventListener("resize", onScrollOrResize);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown, true);
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("scroll", onScrollOrResize, true);
-      window.removeEventListener("resize", onScrollOrResize);
-    };
-  }, [onCancel]);
+  usePopupDismiss(true, onCancel, (target) => {
+    const el = ref.current;
+    return el !== null && target instanceof Node && el.contains(target);
+  });
 
   return createPortal(
     <div
