@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, ZoomIn, ZoomOut } from "lucide-react";
-import { readFileBytesCached, fsChangeAffectsPath } from "../../lib/viewerByteCache";
-import { onFsChanged } from "../../lib/tauri";
-import { useTauriListener } from "../../hooks/useTauriListener";
+import { ZoomIn, ZoomOut } from "lucide-react";
+import { readFileBytesCached } from "../../lib/viewerByteCache";
 import { toIpcError } from "../../lib/ipc-error";
 import i18n from "../../i18n";
+import { useFsReloadKey } from "../../hooks/useFsReloadKey";
+import { ViewerStatus } from "./ViewerStatus";
 
 /**
  * In-app image viewer for `DocumentKind === "image"` tabs (png/jpg/jpeg/gif/
@@ -28,16 +28,8 @@ export function ImageViewer({ path }: { path: string }): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   // Bumped when the backend watcher reports this file (or a generic refresh)
-  // changed, so the currently-open image reloads with fresh bytes. The cache
-  // entry itself is dropped globally in App.tsx; bumping here just re-runs the
-  // load effect, whose readFileBytesCached then hits disk.
-  const [reloadKey, setReloadKey] = useState(0);
-
-  useTauriListener(onFsChanged, ({ paths }) => {
-    if (paths.length === 0 || fsChangeAffectsPath(path, paths)) {
-      setReloadKey((k) => k + 1);
-    }
-  });
+  // changed; see useFsReloadKey.
+  const reloadKey = useFsReloadKey(path);
 
   // (Re)load the image whenever the path changes. Each load mints a fresh
   // object URL and revokes the previous one to avoid leaking blob memory when
@@ -79,22 +71,8 @@ export function ImageViewer({ path }: { path: string }): React.JSX.Element {
     };
   }, [path, reloadKey]);
 
-  if (error) {
-    return (
-      <div className="pane pane-empty image-viewer-error">
-        <AlertTriangle size={28} />
-        <p>
-          {i18n.t("couldNotOpen", {
-            ns: "errors",
-            message: error,
-          })}
-        </p>
-      </div>
-    );
-  }
-
-  if (url === null) {
-    return <div className="pane pane-empty">{i18n.t("loading", { ns: "preview" })}</div>;
+  if (error !== null || url === null) {
+    return <ViewerStatus error={error} errorClassName="image-viewer-error" />;
   }
 
   return (

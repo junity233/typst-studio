@@ -1,16 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle } from "lucide-react";
 // pdf.js entry. The worker is loaded as a URL by Vite so it ships as a separate
 // chunk (decoded off-main-thread, matching pdfjs's performance model).
 import * as pdfjsLib from "pdfjs-dist";
 // The `?url` suffix tells Vite to emit the worker as a separate asset and give
 // us its resolved URL at runtime. This is the pdfjs-recommended Vite setup.
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { readFileBytesCached, fsChangeAffectsPath } from "../../lib/viewerByteCache";
-import { onFsChanged } from "../../lib/tauri";
-import { useTauriListener } from "../../hooks/useTauriListener";
+import { readFileBytesCached } from "../../lib/viewerByteCache";
 import { toIpcError } from "../../lib/ipc-error";
-import i18n from "../../i18n";
+import { useFsReloadKey } from "../../hooks/useFsReloadKey";
+import { ViewerStatus } from "./ViewerStatus";
 
 // Configure the worker once per module load. pdfjs forks a Web Worker to parse
 // PDFs off the main thread; without this it falls back to a fake worker that
@@ -35,16 +33,8 @@ export function PdfViewer({ path }: { path: string }): React.JSX.Element {
   const [pageCanvases, setPageCanvases] = useState<React.JSX.Element[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   // Bumped when the backend watcher reports this file (or a generic refresh)
-  // changed, so the currently-open PDF reloads with fresh bytes. The cache
-  // entry itself is dropped globally in App.tsx; bumping here just re-runs the
-  // load effect, whose readFileBytesCached then hits disk.
-  const [reloadKey, setReloadKey] = useState(0);
-
-  useTauriListener(onFsChanged, ({ paths }) => {
-    if (paths.length === 0 || fsChangeAffectsPath(path, paths)) {
-      setReloadKey((k) => k + 1);
-    }
-  });
+  // changed; see useFsReloadKey.
+  const reloadKey = useFsReloadKey(path);
 
   useEffect(() => {
     let cancelled = false;
@@ -120,22 +110,8 @@ export function PdfViewer({ path }: { path: string }): React.JSX.Element {
     };
   }, [path, reloadKey]);
 
-  if (error) {
-    return (
-      <div className="pane pane-empty pdf-viewer-error">
-        <AlertTriangle size={28} />
-        <p>
-          {i18n.t("couldNotOpen", {
-            ns: "errors",
-            message: error,
-          })}
-        </p>
-      </div>
-    );
-  }
-
-  if (loading) {
-    return <div className="pane pane-empty">{i18n.t("loading", { ns: "preview" })}</div>;
+  if (error !== null || loading) {
+    return <ViewerStatus error={error} errorClassName="pdf-viewer-error" />;
   }
 
   return (
