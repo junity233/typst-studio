@@ -356,8 +356,9 @@ function splitPath(relative: string): { dir: string; name: string } {
  * astral-plane char (emoji, etc.) sits before the offset: it is 1 scalar but
  * 2 UTF-16 units. Walks the line code-point by code-point, accumulating the
  * UTF-16 length until the scalar count is reached; clamps at the line end.
+ * Exported for unit tests（模块内唯一 scalar→UTF-16 换算点）.
  */
-function scalarOffsetToUtf16(line: string, scalarOffset: number): number {
+export function scalarOffsetToUtf16(line: string, scalarOffset: number): number {
   let u16 = 0;
   let scalars = 0;
   while (scalars < scalarOffset && u16 < line.length) {
