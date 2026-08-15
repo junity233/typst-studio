@@ -70,91 +70,45 @@ export interface SearchState {
 // response (seq !== runSeq) is discarded so it can't overwrite newer results.
 let runSeq = 0;
 
-export const useSearchStore = create<SearchState>((set, get) => ({
-  query: "",
-  isRegex: false,
-  caseSensitive: false,
-  wholeWord: false,
-  results: [],
-  searching: false,
-  error: null,
+/**
+ * Build the wire `SearchQuery` from the given live option fields. Shared by
+ * `run` and the replace actions so the two can never drift on caps/flags.
+ */
+function buildQuery(s: {
+  query: string;
+  isRegex: boolean;
+  caseSensitive: boolean;
+  wholeWord: boolean;
+}): SearchQuery {
+  return {
+    pattern: s.query,
+    isRegex: s.isRegex,
+    caseSensitive: s.caseSensitive,
+    wholeWord: s.wholeWord,
+    includeGlob: null,
+    maxPerFile: readSetting<number>("search.maxPerFile", 200),
+    maxTotal: readSetting<number>("search.maxTotal", 2000),
+  };
+}
 
-  replaceValue: "",
-  preserveCase: false,
-  replacing: false,
-  replaceFailures: [],
-
-  setQuery: (q) => set({ query: q }),
-  setOption: (key, v) => set({ [key]: v } as Pick<SearchState, typeof key>),
-
-  run: async () => {
-    const { query, isRegex, caseSensitive, wholeWord } = get();
-    if (!query.trim()) {
-      set({ results: [], error: null });
-      return;
-    }
-    const seq = ++runSeq;
-    set({ searching: true, error: null });
-    try {
-      const req: SearchQuery = {
-        pattern: query,
-        isRegex,
-        caseSensitive,
-        wholeWord,
-        includeGlob: null,
-        maxPerFile: readSetting<number>("search.maxPerFile", 200),
-        maxTotal: readSetting<number>("search.maxTotal", 2000),
-      };
-      const hits = await searchWorkspace(req);
-      if (seq !== runSeq) return; // a newer run superseded this one — discard
-      set({ results: hits, searching: false });
-    } catch (e) {
-      if (seq !== runSeq) return;
-      // Backend rejections are serialized IpcError objects — toIpcError
-      // extracts the message (a plain String(e) would be "[object Object]").
-      set({
-        results: [],
-        searching: false,
-        error: toIpcError(e).message,
-      });
-    }
-  },
-
-  invalidateResults: () => {
-    ++runSeq;
-    set({ results: [], error: null, searching: false });
-  },
-
-  clear: () => {
-    // Bumping runSeq discards any in-flight run(); resetting `searching` too,
-    // because that run's completion is now guarded out and would otherwise
-    // leave the "Searching…" indicator stuck on.
-    ++runSeq;
-    set({ query: "", results: [], error: null, searching: false });
-  },
-
-  setReplaceValue: (v) => set({ replaceValue: v }),
-  setPreserveCase: (v) => set({ preserveCase: v }),
-
-  replaceAll: async () => {
-    const { query, isRegex, caseSensitive, wholeWord, preserveCase, replaceValue } = get();
+export const useSearchStore = create<SearchState>((set, get) => {
+  /**
+   * Shared body of `replaceAll` / `replaceOne`: run `replace_in_files` with
+   * `target` (null = every match), mirror open-doc replacements into Monaco,
+   * surface closed-file failures, and re-run the search. `target` is the only
+   * difference between the two actions.
+   */
+  const replace = async (target: TargetRef | null) => {
+    const { query, isRegex, preserveCase, replaceValue } = get();
     if (!query.trim()) return;
     const seq = ++runSeq;
     set({ replacing: true, error: null, replaceFailures: [] });
     try {
       const req: ReplaceRequest = {
-        query: {
-          pattern: query,
-          isRegex,
-          caseSensitive,
-          wholeWord,
-          includeGlob: null,
-          maxPerFile: readSetting<number>("search.maxPerFile", 200),
-          maxTotal: readSetting<number>("search.maxTotal", 2000),
-        },
+        query: buildQuery(get()),
         replacement: replaceValue,
         preserveCase: preserveCase && !isRegex, // regex ignores preserve-case
-        target: null,
+        target,
       };
       const outcome = await replaceInFiles(req);
       // Mirror each open-doc replacement into Monaco + the document store
@@ -169,58 +123,81 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     } catch (e) {
       if (seq !== runSeq) return;
       // Serialized IpcError objects — narrow via toIpcError for the message.
-      set({
-        error: toIpcError(e).message,
-      });
+      set({ error: toIpcError(e).message });
     } finally {
       // `replacing` is a UI "in progress" flag, not a result-guard — clear it
       // unconditionally so a stray run() (which bumps runSeq) can't strand it
       // on. The result staleness guard (`seq !== runSeq`) above handles data.
       set({ replacing: false });
     }
-  },
+  };
 
-  replaceOne: async (hit: SearchHit) => {
-    const { query, isRegex, caseSensitive, wholeWord, preserveCase, replaceValue } = get();
-    if (!query.trim()) return;
-    const seq = ++runSeq;
-    set({ replacing: true, error: null, replaceFailures: [] });
-    try {
-      const target: TargetRef = {
+  return {
+    query: "",
+    isRegex: false,
+    caseSensitive: false,
+    wholeWord: false,
+    results: [],
+    searching: false,
+    error: null,
+
+    replaceValue: "",
+    preserveCase: false,
+    replacing: false,
+    replaceFailures: [],
+
+    setQuery: (q) => set({ query: q }),
+    setOption: (key, v) => set({ [key]: v } as Pick<SearchState, typeof key>),
+
+    run: async () => {
+      const { query } = get();
+      if (!query.trim()) {
+        set({ results: [], error: null });
+        return;
+      }
+      const seq = ++runSeq;
+      set({ searching: true, error: null });
+      try {
+        const hits = await searchWorkspace(buildQuery(get()));
+        if (seq !== runSeq) return; // a newer run superseded this one — discard
+        set({ results: hits, searching: false });
+      } catch (e) {
+        if (seq !== runSeq) return;
+        // Backend rejections are serialized IpcError objects — toIpcError
+        // extracts the message (a plain String(e) would be "[object Object]").
+        set({
+          results: [],
+          searching: false,
+          error: toIpcError(e).message,
+        });
+      }
+    },
+
+    invalidateResults: () => {
+      ++runSeq;
+      set({ results: [], error: null, searching: false });
+    },
+
+    clear: () => {
+      // Bumping runSeq discards any in-flight run(); resetting `searching` too,
+      // because that run's completion is now guarded out and would otherwise
+      // leave the "Searching…" indicator stuck on.
+      ++runSeq;
+      set({ query: "", results: [], error: null, searching: false });
+    },
+
+    setReplaceValue: (v) => set({ replaceValue: v }),
+    setPreserveCase: (v) => set({ preserveCase: v }),
+
+    replaceAll: () => replace(null),
+    replaceOne: (hit) =>
+      replace({
         relative: hit.relative,
         line: hit.line,
         column: hit.column,
-      };
-      const req: ReplaceRequest = {
-        query: {
-          pattern: query,
-          isRegex,
-          caseSensitive,
-          wholeWord,
-          includeGlob: null,
-          maxPerFile: readSetting<number>("search.maxPerFile", 200),
-          maxTotal: readSetting<number>("search.maxTotal", 2000),
-        },
-        replacement: replaceValue,
-        preserveCase: preserveCase && !isRegex,
-        target,
-      };
-      const outcome = await replaceInFiles(req);
-      await applyReplaceOutcome(outcome.openDocs);
-      if (seq !== runSeq) return;
-      set({ replaceFailures: outcome.failed });
-      await get().run();
-    } catch (e) {
-      if (seq !== runSeq) return;
-      // Serialized IpcError objects — narrow via toIpcError for the message.
-      set({
-        error: toIpcError(e).message,
-      });
-    } finally {
-      set({ replacing: false });
-    }
-  },
-}));
+      }),
+  };
+});
 
 /**
  * Apply the open-document portion of a replace outcome via a "controlled
