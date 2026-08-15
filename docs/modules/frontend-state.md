@@ -13,13 +13,16 @@ stores; stores call commands through `src/lib/tauri.ts`.
 - `documentsStore.ts` — normalized `documents: Record<id, Document>`;
   open/upsert/close, revision-bumped `updateContent`, revision-guarded
   `setStatus`/`setPages`, `setConflict`, `markSaved` (revision compare-and-
-  set), `rebindDocPath`.
+  set), `rebindDocPath`; module-level `findOpenDocByPath(abs)` is the
+  canonical "is this file already open?" lookup (`workspacePathsEqual`).
 - `tabsStore.ts` — view state only (`tabs`/`hidden` LRU/`activeId`);
   `openTab`/`openPath`/`softClose`/`reactivate`/`hardClose`; module helpers
-  `useActiveDocument`, `removeDocFromStores` (coordinated teardown).
+  `useActiveDocument`, `hasActiveTab` (the shared command-enablement
+  predicate), `removeDocFromStores` (coordinated teardown).
 
 **Workspace & files**: `workspaceStore.ts` (root, lazy `tree`, `expanded`;
-CRUD ops), `explorerSelectionStore.ts`, `fileClipboardStore.ts` (copy/cut;
+CRUD ops; programmatic opens go through `openWorkspaceByPath` — the shared
+adopt tail with the dialog-based open — `adoptOpenedWorkspace`), `explorerSelectionStore.ts`, `fileClipboardStore.ts` (copy/cut;
 lazy cut — the move happens on paste), `watcherHealthStore.ts` (polls
 `get_watcher_health`).
 
@@ -42,7 +45,8 @@ tools, approval gate, system prompt), `symbolsStore.ts`,
 `editorStatsStore.ts`.
 
 **UI/dialog stores**: `uiStore.ts` (pane toggles, `activeViewId`),
-`dialogStore.ts` (queued one-at-a-time confirm), `conflictDialogStore.ts`,
+`dialogStore.ts` (queued one-at-a-time confirm + the boolean
+`confirmAction` helper for two-way confirms), `conflictDialogStore.ts`,
 `recoveryStore.ts`, `commandPaletteStore.ts`, `aboutModalStore.ts`,
 `formulaModalStore.ts`.
 

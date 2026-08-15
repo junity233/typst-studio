@@ -53,7 +53,7 @@ feature). Highlights:
 |---|---|---|
 | `commands.rs` | `new_tab`, `open_file`, `soft/hard_close_tab`, `reactivate_tab`, `update_text`, `save_file/save_all`, `export_pdf/png/svg`, `export_batch_pdf`, `get_diagnostics`, `restart_lsp`, `install_tinymist` | editor facade, export, lsp, save coordinator |
 | `fs_commands.rs` (largest) | `open_workspace*`, `close_workspace`, `read_dir`, `search_workspace`, `replace_in_files`, `create/rename/delete/copy_entry`, `open_file_by_path`, `read_file_bytes`, `save_as`, `apply_text_edits_to_disk_file`, `list_typst_files` | workspace_service, editor, fs::search, trash |
-| `git_commands.rs` | `git_status`, `git_stage/unstage`, `git_commit`, `git_log` | `crate::git` directly via `spawn_blocking` (no service layer) |
+| `git_commands.rs` | `git_status`, `git_stage/unstage`, `git_commit`, `git_log` (shared `run_git` root+spawn_blocking tail) | `crate::git` directly via `spawn_blocking` (no service layer) |
 | `settings_commands.rs` | `get_all_settings`, `set_setting`, `get_settings_manifest`, `open_settings`, `open_log_dir`, `list_fonts`, `pick_path` | settings service (dialogs/font listing live in Rust because the Settings window has no dialog/fs capability) |
 | `theme_commands.rs`, `session_commands.rs`, `recovery_commands.rs`, `conflict_commands.rs`, `package_commands.rs`, `bib_commands.rs`, `project_config_commands.rs` | feature surfaces (themes, session, recovery, conflicts, ~10 `package_*`, bibliography parse/save, `.typstpro` get/set) | respective services; bib parsing is pure domain |
 | `ai_commands.rs` | `ai_proxy_stream` | net client (key injected Rust-side, single-origin allowlist) |

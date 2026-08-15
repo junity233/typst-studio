@@ -42,7 +42,9 @@ WebKit dev packages (see `.github/workflows/ci.yml`). Clippy runs without
   `src/**/__tests__/*.test.ts(x)`. `npm run test:run` is the full suite;
   run single files with `npx vitest run <file>` (the narrowest evidence for
   a diff). Real Monaco/WebSocket code can't run under jsdom — pure seams
-  are deliberately split out for tests. `src/lib/tauri.ts` emulates IPC
+  are deliberately split out for tests. Component/hook suites render
+  through the shared `src/test/react.tsx` `reactHarness()` (createRoot +
+  act + cleanup, sets IS_REACT_ACT_ENVIRONMENT). `src/lib/tauri.ts` emulates IPC
   in-browser for tests.
 - Rust: `#[cfg(test)]` modules in-file plus `src-tauri/tests/`
   (e.g. `bib_yml_check.rs` pins bibliography parsing against
