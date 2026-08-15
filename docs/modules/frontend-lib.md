@@ -24,7 +24,11 @@ orchestration, and the paste-conversion pipeline.
   `./types` — no manual mirrors to keep in sync.
 - `ipc-error.ts` — `toIpcError` narrowing of `{code, message, details?,
   recoverable}` rejections; `isCancelled`; `formatSaveErrorMessage` (i18n
-  per code). The `Cancelled` code is never a failure.
+  per code); `alertIpcError` (the shared alert-an-`errors`-namespace-message
+  catch-block shape used across components/hooks);
+  `extractDetailPaths` (pull `path` strings out of an error's `details`
+  arrays — `delete_blocked.affectedDocs`, `template_init_failed.openDocs`).
+  The `Cancelled` code is never a failure.
 
 ## Save / export / session orchestration
 

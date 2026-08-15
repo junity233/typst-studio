@@ -47,7 +47,8 @@ tools, approval gate, system prompt), `symbolsStore.ts`,
 
 ## Hook inventory
 
-`useTauriListener` (race-safe subscription), `useTypstCompile` (event →
+`useTauriListener` (race-safe subscription), `useFsReloadKey` (binary-viewer
+reload key bumped by path-matching `fs_changed`), `useTypstCompile` (event →
 store wiring incl. conflict surfacing rules), `useAppCommands` (dispatch,
 keybinding overrides, close guard, session capture), `useStartupSession`,
 `useAutosave` (off/afterDelay/onFocusChange; pure `selectAutosavable`),

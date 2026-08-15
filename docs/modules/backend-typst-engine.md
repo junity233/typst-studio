@@ -51,6 +51,9 @@ them could trigger a network download).
   sorted by (page, y).
 - `outline.rs` — `build_outline`: heading tree from the introspector via
   `HeadingElem::ELEM.select()`; parents filled by a level stack.
+- `test_world.rs` (`#[cfg(test)]`) — the shared `MiniWorld` in-memory
+  `typst::World` (embedded fonts, one source) the svg/png/pdf renderer tests
+  compile against.
 
 ## Export contract (`service/export_service.rs`)
 

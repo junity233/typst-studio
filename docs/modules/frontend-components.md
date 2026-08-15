@@ -51,8 +51,9 @@ zustand stores and call typed wrappers in `src/lib/tauri.ts` — never
   Cmd/Ctrl-click jump-to-source; zoom via wrapper width.
 - `PdfViewer.tsx` — pdfjs-dist (worker as a Vite `?url` chunk), bytes via
   `readFileBytesCached`, DPR-scaled canvases, `destroy()` teardown,
-  `fs_changed` reload.
-- `ImageViewer.tsx` (Blob URL), `MarkdownPreview.tsx` (debounced
+  `fs_changed` reload (shared `useFsReloadKey` + `ViewerStatus` with
+  ImageViewer).
+- `ImageViewer.tsx` (Blob URL; zoom toolbar), `MarkdownPreview.tsx` (debounced
   react-markdown), `previewMapping.ts` (client-px ↔ page-pt),
   `previewSearch.ts` (line-rect buckets).
 
@@ -77,7 +78,8 @@ git commands exist and the `workbench.scm` title key is reserved.
   (ConfirmDialog; danger dialogs focus Cancel) and dedicated open/close
   stores (Conflict, Recovery, BatchExport) rendered once at app root.
   Close-on-Escape goes through `hooks/useEscapeToClose` (About, Recovery,
-  Conflict, Confirm, BibEdit); BatchExportDialog keeps its own listener
+  Conflict, Confirm, BibEdit, Link, Formula, and the assistant diff modal);
+  BatchExportDialog keeps its own listener
   (document-level, no stopPropagation, disabled mid-export).
   `DiffCompareView.tsx` — shared allocation-bounded side-by-side diff.
 - `Assistant/AssistantPanel.tsx` — chat UI over `assistantStore`;

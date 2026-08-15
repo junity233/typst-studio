@@ -138,3 +138,6 @@ without `-D warnings` because of the one known warning in
   (`pick_file`/`save_file`/`pick_folder`): `spawn_blocking` + the blocking
   picker, `FilePath` converted via `commands::path_buf_from`. Cancel
   semantics stay at the call site (`Ok(None)` vs a `Cancelled` error).
+- Paste-destination containment (workspace root or app config dir) is
+  centralized in `ipc::ensure_paste_dest`, shared by `write_bytes_to_file`
+  and `fetch_url_to_file`.
