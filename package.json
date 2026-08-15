@@ -22,7 +22,6 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
     "@codingame/monaco-vscode-files-service-override": "^25.1.2",
-    "@codingame/monaco-vscode-languages-service-override": "^25.1.2",
     "@codingame/monaco-vscode-textmate-service-override": "^25.1.2",
     "@codingame/monaco-vscode-theme-service-override": "^25.1.2",
     "@earendil-works/pi-agent-core": "^0.74.2",
