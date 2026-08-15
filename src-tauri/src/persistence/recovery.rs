@@ -663,37 +663,7 @@ impl RecoveryService {
         text: &str,
         disk_version: Option<DiskVersion>,
     ) -> Result<()> {
-        let id_str = meta.id.to_string();
-        let captured_at = now_millis();
-        let snapshot = RecoverySnapshot {
-            schema_version: CURRENT_SCHEMA_VERSION,
-            document_id: id_str.clone(),
-            origin: origin_tag(meta),
-            canonical_path: meta.origin.canonical_path().map(|p| p.to_string_lossy().into_owned()),
-            title: meta.title.clone(),
-            content: text.to_string(),
-            revision: meta.revision,
-            disk_version,
-            captured_at,
-            app_version: app_version_string(),
-        };
-        let snapshot_path = self.documents_dir.join(format!("{id_str}.json"));
-        write_json(&snapshot_path, &snapshot)?;
-
-        // Upsert the manifest entry.
-        let entry = SnapshotRef {
-            document_id: id_str,
-            canonical_path: snapshot.canonical_path.clone(),
-            title: snapshot.title.clone(),
-            revision: snapshot.revision,
-            captured_at,
-        };
-        if let Some(existing) = manifest.snapshots.iter_mut().find(|s| s.document_id == entry.document_id) {
-            *existing = entry;
-        } else {
-            manifest.snapshots.push(entry);
-        }
-        Ok(())
+        write_snapshot_entry(&self.documents_dir, manifest, meta.id, meta, text, disk_version)
     }
 
     /// Flush all pending snapshots to disk + persist the manifest. Runs on the
@@ -743,35 +713,13 @@ impl RecoveryService {
                 tracing::debug!(?id, "recovery: skipping flushed snapshot for discarded id");
                 continue;
             }
-            let id_str = id.to_string();
-            let snapshot = RecoverySnapshot {
-                schema_version: CURRENT_SCHEMA_VERSION,
-                document_id: id_str.clone(),
-                origin: origin_tag(&p.meta),
-                canonical_path: p.meta.origin.canonical_path().map(|x| x.to_string_lossy().into_owned()),
-                title: p.meta.title.clone(),
-                content: p.text,
-                revision: p.meta.revision,
-                disk_version: p.disk_version,
-                captured_at: now_millis(),
-                app_version: app_version_string(),
-            };
-            let path = documents_dir.join(format!("{id_str}.json"));
-            if let Err(e) = write_json(&path, &snapshot) {
-                tracing::warn!(?path, error = %e, "recovery: flush snapshot write failed");
+            // Same write + manifest upsert as the synchronous path; log and
+            // continue so one bad entry can't block the rest of the flush.
+            if let Err(e) =
+                write_snapshot_entry(&documents_dir, &mut manifest, id, &p.meta, &p.text, p.disk_version)
+            {
+                tracing::warn!(?id, error = %e, "recovery: flush snapshot write failed");
                 continue;
-            }
-            let entry = SnapshotRef {
-                document_id: id_str,
-                canonical_path: snapshot.canonical_path.clone(),
-                title: snapshot.title.clone(),
-                revision: snapshot.revision,
-                captured_at: snapshot.captured_at,
-            };
-            if let Some(existing) = manifest.snapshots.iter_mut().find(|s| s.document_id == entry.document_id) {
-                *existing = entry;
-            } else {
-                manifest.snapshots.push(entry);
             }
         }
         let bytes = match serde_json::to_vec_pretty(&manifest) {
@@ -852,6 +800,58 @@ fn now_millis() -> i64 {
 /// at compile time so there's no runtime cost.
 fn app_version_string() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// Write one snapshot to `documents/<id>.json` and upsert its manifest entry —
+/// the shared body of the synchronous (`write_one_snapshot`) and worker
+/// (`flush_pending`) write paths, so their snapshot shape and upsert semantics
+/// cannot drift. Error policy stays at the caller (propagate vs log-and-
+/// continue).
+fn write_snapshot_entry(
+    documents_dir: &Path,
+    manifest: &mut RecoveryManifest,
+    id: DocumentId,
+    meta: &DocumentMeta,
+    text: &str,
+    disk_version: Option<DiskVersion>,
+) -> Result<()> {
+    let id_str = id.to_string();
+    let captured_at = now_millis();
+    let snapshot = RecoverySnapshot {
+        schema_version: CURRENT_SCHEMA_VERSION,
+        document_id: id_str.clone(),
+        origin: origin_tag(meta),
+        canonical_path: meta
+            .origin
+            .canonical_path()
+            .map(|p| p.to_string_lossy().into_owned()),
+        title: meta.title.clone(),
+        content: text.to_string(),
+        revision: meta.revision,
+        disk_version,
+        captured_at,
+        app_version: app_version_string(),
+    };
+    let snapshot_path = documents_dir.join(format!("{id_str}.json"));
+    write_json(&snapshot_path, &snapshot)?;
+
+    let entry = SnapshotRef {
+        document_id: id_str,
+        canonical_path: snapshot.canonical_path.clone(),
+        title: snapshot.title.clone(),
+        revision: snapshot.revision,
+        captured_at,
+    };
+    if let Some(existing) = manifest
+        .snapshots
+        .iter_mut()
+        .find(|s| s.document_id == entry.document_id)
+    {
+        *existing = entry;
+    } else {
+        manifest.snapshots.push(entry);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
