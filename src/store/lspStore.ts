@@ -1,8 +1,7 @@
-import { useEffect } from "react";
 import { create } from "zustand";
-import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getLspStatus, onLspStatus } from "../lib/tauri";
 import { appLanguageClient } from "../components/Editor/appLanguageClient";
+import { createRefCountedSubscription } from "./refCountedSubscription";
 import type {
   LspStatusPayload,
   LspStatusKind,
@@ -124,14 +123,8 @@ export function payloadToStatus(p: LspStatusPayload): LspStatus {
 
 // --- the single shared subscription -----------------------------------------
 //
-// The subscription is established lazily and shared across all readers. The
-// whole "fetch once + listen once" sequence is collapsed into a single
-// memoized Promise so concurrent mounters (StatusBar + MonacoEditor mount in
-// the same render) all await the same in-flight operation — `listen()` runs
-// exactly once, and the returned unlisten handle is never overwritten by a
-// late-resolving duplicate.
-
-let acquirePromise: Promise<UnlistenFn> | null = null;
+// The subscription is established lazily and shared across all readers (the
+// fetch-once + listen-once lifecycle lives in `createRefCountedSubscription`).
 
 /**
  * Apply a wire `LspStatusPayload` to the store, honoring the §6.4 generation
@@ -149,68 +142,16 @@ export function applyPayload(p: LspStatusPayload): void {
   store.setStatus(payloadToStatus(p));
 }
 
-/**
- * Start (or join an in-progress) subscription. Resolves to the single unlisten
- * handle. Idempotent: concurrent callers share one Promise and one `listen()`.
- */
-function acquireSubscription(): Promise<UnlistenFn> {
-  if (acquirePromise !== null) return acquirePromise;
-
-  acquirePromise = (async () => {
-    // Seed with the current status so readers aren't stuck "offline" before
-    // the first transition. Race against a timeout so a hung IPC can't leave
-    // the editor gated on "Loading..." forever — local IPC resolves in ms,
-    // 5s is a generous backstop. The fetch returns the wire payload type, so
-    // it goes through `applyPayload` (which also seeds the generation).
-    try {
-      const initial = await Promise.race<LspStatusPayload>([
-        getLspStatus(),
-        new Promise<LspStatusPayload>((_, reject) =>
-          setTimeout(
-            () => reject(new Error("get_lsp_status timed out")),
-            5000,
-          ),
-        ),
-      ]);
-      applyPayload(initial);
-    } catch {
-      // ignore — the event subscription catches up if the backend recovers.
-    } finally {
-      useLspStore.getState().setLoading(false);
-    }
-
-    // Exactly one listen() per acquirePromise. The handle is returned to the
-    // caller; release happens only when refCount drops to 0 (see below).
-    return onLspStatus((p) => applyPayload(p));
-  })();
-
-  // If the acquire itself fails (shouldn't, but be safe), clear the memo so a
-  // later mount can retry instead of being stuck on a rejected promise.
-  acquirePromise.catch(() => {
-    acquirePromise = null;
+const { useSubscription: useLspSubscription } =
+  createRefCountedSubscription<LspStatusPayload>({
+    fetch: getLspStatus,
+    listen: (onEvent) => onLspStatus(onEvent),
+    apply: applyPayload,
+    timeoutLabel: "get_lsp_status timed out",
+    setLoading: (loading) => useLspStore.getState().setLoading(loading),
+    setRefCount: (fn) => useLspStore.getState().setRefCount(fn),
+    getRefCount: () => useLspStore.getState().refCount,
   });
-
-  return acquirePromise;
-}
-
-function releaseSubscription(): void {
-  // Only release when no readers remain. We don't await acquirePromise here —
-  // if a mount/unmount/remount cycle happens within the fetch window, the
-  // refCount going 1→0→1 means a new acquire joins the still-in-flight
-  // promise (idempotent), and the eventual release (when refCount truly hits
-  // 0) unhooks the one and only listener.
-  if (useLspStore.getState().refCount === 0 && acquirePromise !== null) {
-    const pending = acquirePromise;
-    acquirePromise = null;
-    // If the acquire rejects (listen() failed), there is no unlisten handle
-    // to call — and the .catch above already cleared acquirePromise. Swallow
-    // the derived rejection here to avoid an unhandled-rejection warning.
-    void pending.then(
-      (unlisten) => unlisten(),
-      () => {},
-    );
-  }
-}
 
 // --- generation mirror (appLanguageClient → lspStore) -----------------------
 //
@@ -242,18 +183,12 @@ appLanguageClient.subscribe((snap) => {
 /**
  * Read LSP status with a single shared subscription. Mount this in any
  * component that needs `status`, `loading`, or `generation`; the subscription
- * is ref-counted so it stays alive while at least one reader is mounted.
- *
- * Lifecycle: the first mount triggers `acquireSubscription()` (fetch + listen,
- * memoized so concurrent mounters share one operation). Each mount bumps
- * `refCount`; cleanup decrements it. When it reaches zero the status
- * subscription is released, but the release is deferred to a microtask so a
- * synchronous unmount+remount (tab switch, React re-render) doesn't tear down
- * and rebuild it. The generation mirror is installed once at module load (see
- * the `appLanguageClient.subscribe` block above) and is NOT ref-counted — it
- * stays live for the process lifetime so module-level consumers (e.g. the
- * diagnostics bridge) can gate on the generation independent of any React
- * reader being mounted.
+ * is ref-counted so it stays alive while at least one reader is mounted (the
+ * lifecycle lives in `createRefCountedSubscription`). The generation mirror is
+ * installed once at module load (see the `appLanguageClient.subscribe` block
+ * above) and is NOT ref-counted — it stays live for the process lifetime so
+ * module-level consumers (e.g. the diagnostics bridge) can gate on the
+ * generation independent of any React reader being mounted.
  */
 export function useLspStatus(): {
   status: LspStatus;
@@ -263,22 +198,7 @@ export function useLspStatus(): {
   const status = useLspStore((s) => s.status);
   const loading = useLspStore((s) => s.loading);
   const generation = useLspStore((s) => s.generation);
-  const setRefCount = useLspStore((s) => s.setRefCount);
-
-  useEffect(() => {
-    setRefCount((n) => n + 1);
-    if (acquirePromise === null) {
-      acquireSubscription();
-    }
-    // The generation mirror is installed once at module load (see above), so
-    // there's nothing to acquire/release per-reader here.
-    return () => {
-      setRefCount((n) => n - 1);
-      queueMicrotask(() => {
-        releaseSubscription();
-      });
-    };
-  }, [setRefCount]);
+  useLspSubscription();
 
   return { status, loading, generation };
 }

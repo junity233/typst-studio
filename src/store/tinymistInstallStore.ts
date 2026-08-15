@@ -1,7 +1,6 @@
-import { useEffect } from "react";
 import { create } from "zustand";
-import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getTinymistInstall, onTinymistInstall } from "../lib/tauri";
+import { createRefCountedSubscription } from "./refCountedSubscription";
 import type { TinymistInstallStatus } from "../lib/types";
 
 /**
@@ -51,54 +50,21 @@ export function downloadPercent(status: TinymistInstallStatus): number | null {
 }
 
 // --- the single shared subscription -----------------------------------------
+//
+// The subscription lifecycle (fetch once + listen once, ref-counted release)
+// lives in `createRefCountedSubscription`; the backend broadcasts the same
+// wire payload both as the command result and as the event, so `apply` stores
+// the payload directly — no mapping layer.
 
-let acquirePromise: Promise<UnlistenFn> | null = null;
-
-function acquireSubscription(): Promise<UnlistenFn> {
-  if (acquirePromise !== null) return acquirePromise;
-
-  acquirePromise = (async () => {
-    try {
-      const initial = await Promise.race<TinymistInstallStatus>([
-        getTinymistInstall(),
-        new Promise<TinymistInstallStatus>((_, reject) =>
-          setTimeout(
-            () => reject(new Error("get_tinymist_install timed out")),
-            5000,
-          ),
-        ),
-      ]);
-      useTinymistInstallStore.getState().setStatus(initial);
-    } catch {
-      // ignore — the event subscription catches up.
-    } finally {
-      useTinymistInstallStore.getState().setLoading(false);
-    }
-    return onTinymistInstall((p) =>
-      useTinymistInstallStore.getState().setStatus(p),
-    );
-  })();
-
-  acquirePromise.catch(() => {
-    acquirePromise = null;
-  });
-
-  return acquirePromise;
-}
-
-function releaseSubscription(): void {
-  if (
-    useTinymistInstallStore.getState().refCount === 0 &&
-    acquirePromise !== null
-  ) {
-    const pending = acquirePromise;
-    acquirePromise = null;
-    void pending.then(
-      (unlisten) => unlisten(),
-      () => {},
-    );
-  }
-}
+const { useSubscription } = createRefCountedSubscription<TinymistInstallStatus>({
+  fetch: getTinymistInstall,
+  listen: (onEvent) => onTinymistInstall(onEvent),
+  apply: (status) => useTinymistInstallStore.getState().setStatus(status),
+  timeoutLabel: "get_tinymist_install timed out",
+  setLoading: (loading) => useTinymistInstallStore.getState().setLoading(loading),
+  setRefCount: (fn) => useTinymistInstallStore.getState().setRefCount(fn),
+  getRefCount: () => useTinymistInstallStore.getState().refCount,
+});
 
 /**
  * Read the tinymist install status with a single shared subscription.
@@ -110,20 +76,7 @@ export function useTinymistInstall(): {
 } {
   const status = useTinymistInstallStore((s) => s.status);
   const loading = useTinymistInstallStore((s) => s.loading);
-  const setRefCount = useTinymistInstallStore((s) => s.setRefCount);
-
-  useEffect(() => {
-    setRefCount((n) => n + 1);
-    if (acquirePromise === null) {
-      acquireSubscription();
-    }
-    return () => {
-      setRefCount((n) => n - 1);
-      queueMicrotask(() => {
-        releaseSubscription();
-      });
-    };
-  }, [setRefCount]);
+  useSubscription();
 
   return { status, loading };
 }
