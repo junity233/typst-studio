@@ -210,20 +210,13 @@ fn validate(def: &SettingDef, value: &Value) -> Result<()> {
             }
             check_range(&def.extra, key, f)?;
         }
-        "string" => {
-            if !value.is_string() {
-                return Err(AppError::InvalidInput(format!(
-                    "{key} expects a string"
-                )));
-            }
-        }
         // `font` and `path` are string-valued (font family name / filesystem
         // path) but rendered with specialized pickers. We don't whitelist the
         // value set: a `font` may be a system font not present on this machine
         // (e.g. a config carried over from another OS), and a `path` may point
         // anywhere the OS allows. Empty string = "unset" (use the default
         // stack / no path). Only the type is enforced here.
-        "font" | "path" => {
+        "string" | "font" | "path" => {
             if !value.is_string() {
                 return Err(AppError::InvalidInput(format!(
                     "{key} expects a string"
