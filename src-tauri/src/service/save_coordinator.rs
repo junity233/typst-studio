@@ -240,43 +240,21 @@ impl SaveCoordinator {
             .document
             .prepare_save(id)
             .map_err(|e| IpcError::from(&e))?;
-        let path_for_write = path.clone();
 
         // 3. Saving.
         self.set_state(id, SaveState::Saving { revision });
 
-        // 4. Atomic write on a blocking thread. Don't map_err on the await so we
-        // can record the Failed state in the JoinError branch below.
-        let write_result: std::result::Result<
-            std::result::Result<(), crate::error::AppError>,
-            tokio::task::JoinError,
-        > = spawn_blocking(move || write_bytes(&path_for_write, text.as_bytes())).await;
-
-        match write_result {
-            Ok(Ok(())) => {
-                // 5. Success → clear dirty + record disk version, then Saved.
-                // Pass `revision` so mark_saved can CAS against the current
-                // revision: if the user typed during the spawn_blocking write,
-                // dirty stays true (the new edit is unsaved) — no lost update.
-                self.document.mark_saved(id, revision);
-                self.set_state(id, SaveState::Saved { revision });
-                Ok(())
-            }
-            Ok(Err(app_err)) => {
-                // 6. Failure → classify via the AppError → IpcError mapping,
-                // KEEP DIRTY TRUE (mark_saved never ran), Failed state.
-                Err(self.fail(id, revision, IpcError::from(&app_err)))
-            }
-            Err(join_err) => {
-                // spawn_blocking task panicked/join error — transient, dirty stays.
-                let message = format!("save join error: {join_err}");
-                Err(self.fail(
-                    id,
-                    revision,
-                    IpcError::new(ErrorCode::IoTransient, message, true),
-                ))
-            }
-        }
+        // 4. Atomic write on a blocking thread + shared result reduction. On
+        // success `mark_saved` clears dirty + records the disk version with
+        // `revision` so it can CAS against the current revision: if the user
+        // typed during the spawn_blocking write, dirty stays true (the new
+        // edit is unsaved) — no lost update.
+        self.finish_write(id, revision, "save", path, text, || {
+            self.document.mark_saved(id, revision);
+            self.set_state(id, SaveState::Saved { revision });
+            Ok(())
+        })
+        .await
     }
 
     /// Save As: snapshot the current buffer, atomically write it to `target`,
@@ -305,41 +283,22 @@ impl SaveCoordinator {
 
         self.set_state(id, SaveState::Saving { revision });
 
-        let target_for_write = target.clone();
-        // Don't map_err on the await so we can record the Failed state below.
-        let write_result: std::result::Result<
-            std::result::Result<(), crate::error::AppError>,
-            tokio::task::JoinError,
-        > = spawn_blocking(move || write_bytes(&target_for_write, text.as_bytes())).await;
-
-        match write_result {
-            Ok(Ok(())) => {
-                // §5.2: only now (replace succeeded) do we rebind path / registry
-                // / resolver / watcher / LSP URI. rebind_path also re-seeds the
-                // disk version so the watcher event for our own write is
-                // recognized as self-induced.
-                if let Err(e) =
-                    self.document
-                        .rebind_path_after_save(id, target.clone(), revision)
-                {
-                    return Err(self.fail(id, revision, IpcError::from(&e)));
-                }
-                self.set_state(id, SaveState::Saved { revision });
-                Ok(target)
+        self.finish_write(id, revision, "save_as", target.clone(), text, move || {
+            // §5.2: only now (replace succeeded) do we rebind path / registry
+            // / resolver / watcher / LSP URI. rebind_path also re-seeds the
+            // disk version so the watcher event for our own write is
+            // recognized as self-induced. On failure path/registry/etc. stay
+            // UNCHANGED (rebind never ran) and the error rides `fail`.
+            if let Err(e) =
+                self.document
+                    .rebind_path_after_save(id, target.clone(), revision)
+            {
+                return Err(self.fail(id, revision, IpcError::from(&e)));
             }
-            Ok(Err(app_err)) => {
-                // Write failed → path/registry/etc. UNCHANGED (rebind never ran).
-                Err(self.fail(id, revision, IpcError::from(&app_err)))
-            }
-            Err(join_err) => {
-                let message = format!("save_as join error: {join_err}");
-                Err(self.fail(
-                    id,
-                    revision,
-                    IpcError::new(ErrorCode::IoTransient, message, true),
-                ))
-            }
-        }
+            self.set_state(id, SaveState::Saved { revision });
+            Ok(target)
+        })
+        .await
     }
 
     /// Save each document in `ids` in order (§5.3 Save All).
@@ -412,6 +371,46 @@ impl SaveCoordinator {
             },
         );
         ipc
+    }
+
+    /// Shared write tail of [`save_core`](Self::save_core) and
+    /// [`save_as`](Self::save_as): runs the blocking atomic write and reduces
+    /// its result. `label` names the join-error message (`save` / `save_as`).
+    /// `on_ok` owns the success-path transition — `mark_saved` for in-place
+    /// saves, `rebind_path_after_save` for Save As — and its error (if any)
+    /// still rides the shared `fail` recording. Both failure branches keep
+    /// dirty true (`mark_saved`/rebind never ran).
+    async fn finish_write<T>(
+        &self,
+        id: DocumentId,
+        revision: u64,
+        label: &str,
+        path: PathBuf,
+        text: String,
+        on_ok: impl FnOnce() -> Result<T, IpcError>,
+    ) -> Result<T, IpcError> {
+        // Don't map_err on the await so we can record the Failed state in the
+        // JoinError branch below.
+        let write_result: std::result::Result<
+            std::result::Result<(), crate::error::AppError>,
+            tokio::task::JoinError,
+        > = spawn_blocking(move || write_bytes(&path, text.as_bytes())).await;
+
+        match write_result {
+            Ok(Ok(())) => on_ok(),
+            Ok(Err(app_err)) => {
+                Err(self.fail(id, revision, IpcError::from(&app_err)))
+            }
+            Err(join_err) => {
+                // spawn_blocking task panicked/join error — transient, dirty stays.
+                let message = format!("{label} join error: {join_err}");
+                Err(self.fail(
+                    id,
+                    revision,
+                    IpcError::new(ErrorCode::IoTransient, message, true),
+                ))
+            }
+        }
     }
 }
 
