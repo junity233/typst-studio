@@ -125,9 +125,6 @@ export interface TabsState {
   markSaved: (id: string, path: string, savedRevision?: number) => void;
 }
 
-export const DEFAULT_CONTENT =
-  "#set page(width: 21cm, height: 29.7cm)\n\nHello, Typst!\n";
-
 /**
  * Maximum number of soft-closed (hidden) docs retained for instant reactivation
  * (Phase B2 LRU). When `hidden` would exceed this, the oldest hidden doc is
@@ -335,15 +332,6 @@ export function useActiveDocument(): Document | null {
 }
 
 /**
- * Read the domain object for a specific view id, subscribing to updates.
- */
-export function useDocument(id: string | null | undefined): Document | null {
-  return useDocumentsStore((s) =>
-    id !== null && id !== undefined ? (s.documents[id] ?? null) : null,
-  );
-}
-
-/**
  * Snapshot the active document id + domain object for session capture. Reads
  * both stores once (no subscription). Returns `null` content-bearing entries as
  * `CaptureTab`s so [`session.ts`] can serialize them without a static import of
@@ -404,26 +392,6 @@ export function readAllDocuments(): {
     ...tabs.map((id) => map(id, false)),
     ...hidden.map((id) => map(id, true)),
   ].filter((x): x is NonNullable<typeof x> => x !== null);
-}
-
-let initStarted = false;
-let initDone = false;
-
-/**
- * Ensure at least one tab exists on app startup. Idempotent and guarded
- * against React strict-mode double effect invocation.
- */
-export async function initTabs(): Promise<void> {
-  if (initStarted || initDone) return;
-  initStarted = true;
-  try {
-    if (useTabsStore.getState().tabs.length === 0) {
-      await useTabsStore.getState().openTab();
-    }
-    initDone = true;
-  } finally {
-    initStarted = false;
-  }
 }
 
 // Re-export so callers that build a Document from outside (session restore)
