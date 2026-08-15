@@ -265,29 +265,16 @@ impl SaveCoordinator {
             Ok(Err(app_err)) => {
                 // 6. Failure → classify via the AppError → IpcError mapping,
                 // KEEP DIRTY TRUE (mark_saved never ran), Failed state.
-                let ipc = IpcError::from(&app_err);
-                self.set_state(
-                    id,
-                    SaveState::Failed {
-                        revision,
-                        code: ipc.code,
-                        message: ipc.message.clone(),
-                    },
-                );
-                Err(ipc)
+                Err(self.fail(id, revision, IpcError::from(&app_err)))
             }
             Err(join_err) => {
                 // spawn_blocking task panicked/join error — transient, dirty stays.
                 let message = format!("save join error: {join_err}");
-                self.set_state(
+                Err(self.fail(
                     id,
-                    SaveState::Failed {
-                        revision,
-                        code: ErrorCode::IoTransient,
-                        message: message.clone(),
-                    },
-                );
-                Err(IpcError::new(ErrorCode::IoTransient, message, true))
+                    revision,
+                    IpcError::new(ErrorCode::IoTransient, message, true),
+                ))
             }
         }
     }
@@ -335,44 +322,22 @@ impl SaveCoordinator {
                     self.document
                         .rebind_path_after_save(id, target.clone(), revision)
                 {
-                    let ipc = IpcError::from(&e);
-                    self.set_state(
-                        id,
-                        SaveState::Failed {
-                            revision,
-                            code: ipc.code,
-                            message: ipc.message.clone(),
-                        },
-                    );
-                    return Err(ipc);
+                    return Err(self.fail(id, revision, IpcError::from(&e)));
                 }
                 self.set_state(id, SaveState::Saved { revision });
                 Ok(target)
             }
             Ok(Err(app_err)) => {
                 // Write failed → path/registry/etc. UNCHANGED (rebind never ran).
-                let ipc = IpcError::from(&app_err);
-                self.set_state(
-                    id,
-                    SaveState::Failed {
-                        revision,
-                        code: ipc.code,
-                        message: ipc.message.clone(),
-                    },
-                );
-                Err(ipc)
+                Err(self.fail(id, revision, IpcError::from(&app_err)))
             }
             Err(join_err) => {
                 let message = format!("save_as join error: {join_err}");
-                self.set_state(
+                Err(self.fail(
                     id,
-                    SaveState::Failed {
-                        revision,
-                        code: ErrorCode::IoTransient,
-                        message: message.clone(),
-                    },
-                );
-                Err(IpcError::new(ErrorCode::IoTransient, message, true))
+                    revision,
+                    IpcError::new(ErrorCode::IoTransient, message, true),
+                ))
             }
         }
     }
@@ -431,6 +396,22 @@ impl SaveCoordinator {
                 SaveStateChangedPayload { id, state },
             );
         }
+    }
+
+    /// Record the `Failed` state for `id` at `revision` and return the same
+    /// error — the shared tail of every save-failure branch (write failure,
+    /// join failure, rebind failure), so none can record a state that
+    /// disagrees with what it returns.
+    fn fail(&self, id: DocumentId, revision: u64, ipc: IpcError) -> IpcError {
+        self.set_state(
+            id,
+            SaveState::Failed {
+                revision,
+                code: ipc.code,
+                message: ipc.message.clone(),
+            },
+        );
+        ipc
     }
 }
 
