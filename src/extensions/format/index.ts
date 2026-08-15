@@ -1,6 +1,6 @@
 import type { HostApi } from "../api";
 import i18n from "../../i18n";
-import { useTabsStore } from "../../store/tabsStore";
+import { hasActiveTab } from "../../store/tabsStore";
 
 /**
  * In-tree 'format' extension. Registers the "Format Document" command, bound
@@ -36,6 +36,6 @@ export default function activate(ctx: HostApi): void {
         window.alert(i18n.t("formatRequiresLsp", { ns: "command" }));
       }
     },
-    enablement: () => useTabsStore.getState().activeId !== null,
+    enablement: hasActiveTab,
   });
 }

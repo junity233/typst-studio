@@ -1,6 +1,6 @@
 import type { HostApi } from "../api";
 import i18n from "../../i18n";
-import { useTabsStore } from "../../store/tabsStore";
+import { hasActiveTab } from "../../store/tabsStore";
 import { editorApiRef } from "../../components/Editor/editorApiRef";
 
 /**
@@ -85,7 +85,7 @@ export default function activate(ctx: HostApi): void {
           api.toggleLinePrefix(linePrefix!);
         }
       },
-      enablement: () => useTabsStore.getState().activeId !== null,
+      enablement: hasActiveTab,
     });
   }
 }

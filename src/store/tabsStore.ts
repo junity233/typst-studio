@@ -332,6 +332,16 @@ export function useActiveDocument(): Document | null {
 }
 
 /**
+ * Whether a tab is active right now — the shared `enablement` predicate for
+ * commands that act on the active document (save, close, export, …). Reads
+ * live state at call time so enablement reflects the moment of invocation,
+ * not registration.
+ */
+export function hasActiveTab(): boolean {
+  return useTabsStore.getState().activeId !== null;
+}
+
+/**
  * Snapshot the active document id + domain object for session capture. Reads
  * both stores once (no subscription). Returns `null` content-bearing entries as
  * `CaptureTab`s so [`session.ts`] can serialize them without a static import of

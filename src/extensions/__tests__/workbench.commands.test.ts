@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { commandRegistry } from "../registry";
+import { useTabsStore } from "../../store/tabsStore";
 
 // Importing the workbench extension module + calling ensureActivated() runs the
 // same activate() path that dispatch() and App.tsx (via activateAll()) use.
@@ -55,5 +56,24 @@ describe("workbench commands registered", () => {
   it("open-folder has no keybinding (collision-avoidance)", () => {
     const cmd = commandRegistry.get("open-folder");
     expect(cmd?.keybinding).toBeUndefined();
+  });
+
+  // The active-tab commands share one enablement predicate (hasActiveTab) that
+  // reads live state — pins the wiring, not just the registration.
+  it("active-tab commands' enablement tracks the live tab state", () => {
+    const gated = ["save", "save-as", "close-tab", "export", "export-pdf", "export-png", "export-svg"];
+    const prev = useTabsStore.getState().activeId;
+    try {
+      useTabsStore.setState({ activeId: null });
+      for (const id of gated) {
+        expect(commandRegistry.get(id)?.enablement?.(), `command ${id}`).toBe(false);
+      }
+      useTabsStore.setState({ activeId: "test-doc" });
+      for (const id of gated) {
+        expect(commandRegistry.get(id)?.enablement?.(), `command ${id}`).toBe(true);
+      }
+    } finally {
+      useTabsStore.setState({ activeId: prev });
+    }
   });
 });

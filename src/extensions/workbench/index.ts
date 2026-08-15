@@ -1,6 +1,9 @@
 import type { HostApi } from "../api";
 import { commandRegistry } from "../registry";
-import { useTabsStore } from "../../store/tabsStore";
+import {
+  hasActiveTab,
+  useTabsStore,
+} from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
@@ -107,7 +110,7 @@ export default function activate(ctx: HostApi): void {
           : null;
       await handleSave(activeId, activeTab);
     },
-    enablement: () => useTabsStore.getState().activeId !== null,
+    enablement: hasActiveTab,
   });
 
   ctx.registerCommand({
@@ -119,7 +122,7 @@ export default function activate(ctx: HostApi): void {
       const { activeId } = useTabsStore.getState();
       await handleSaveAs(activeId);
     },
-    enablement: () => useTabsStore.getState().activeId !== null,
+    enablement: hasActiveTab,
   });
 
   ctx.registerCommand({
@@ -131,7 +134,7 @@ export default function activate(ctx: HostApi): void {
       const { activeId } = useTabsStore.getState();
       if (activeId !== null) await closeTabWithConfirm(activeId);
     },
-    enablement: () => useTabsStore.getState().activeId !== null,
+    enablement: hasActiveTab,
   });
 
   ctx.registerCommand({
@@ -183,45 +186,31 @@ export default function activate(ctx: HostApi): void {
     await runExport(format, useConfigPath);
   }
 
-  ctx.registerCommand({
-    id: "export",
-    title: labelFor("export-pdf"),
-    category: "File",
-    handler: async () => {
-      await doExport(defaultExportFormat(), true);
-    },
-    enablement: () => useTabsStore.getState().activeId !== null,
-  });
-
-  ctx.registerCommand({
-    id: "export-pdf",
-    title: labelFor("export-pdf"),
-    category: "File",
-    handler: async () => {
-      await doExport("pdf", true);
-    },
-    enablement: () => useTabsStore.getState().activeId !== null,
-  });
-
-  ctx.registerCommand({
-    id: "export-png",
-    title: labelFor("export-png"),
-    category: "File",
-    handler: async () => {
-      await doExport("png", true);
-    },
-    enablement: () => useTabsStore.getState().activeId !== null,
-  });
-
-  ctx.registerCommand({
-    id: "export-svg",
-    title: labelFor("export-svg"),
-    category: "File",
-    handler: async () => {
-      await doExport("svg", true);
-    },
-    enablement: () => useTabsStore.getState().activeId !== null,
-  });
+  // The four export commands differ only in the format they pin: the plain
+  // "export" defers to the project's `[export] format` setting
+  // (defaultExportFormat), while the explicit variants pin one format. The
+  // plain command reuses the PDF label (labelFor has no "export" case — the
+  // native menu shows it as "Export as PDF…" for the default format).
+  const exportCommands: ReadonlyArray<{
+    id: string;
+    format: "pdf" | "png" | "svg" | null;
+  }> = [
+    { id: "export", format: null },
+    { id: "export-pdf", format: "pdf" },
+    { id: "export-png", format: "png" },
+    { id: "export-svg", format: "svg" },
+  ];
+  for (const { id, format } of exportCommands) {
+    ctx.registerCommand({
+      id,
+      title: labelFor(id === "export" ? "export-pdf" : id),
+      category: "File",
+      handler: async () => {
+        await doExport(format ?? defaultExportFormat(), true);
+      },
+      enablement: hasActiveTab,
+    });
+  }
 
   ctx.registerCommand({
     id: "export-batch",

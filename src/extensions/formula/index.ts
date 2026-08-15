@@ -1,6 +1,6 @@
 import type { HostApi } from "../api";
 import i18n from "../../i18n";
-import { useTabsStore } from "../../store/tabsStore";
+import { hasActiveTab } from "../../store/tabsStore";
 import { useFormulaModalStore } from "../../store/formulaModalStore";
 
 /**
@@ -32,6 +32,6 @@ export default function activate(ctx: HostApi): void {
     handler: () => {
       useFormulaModalStore.getState().open();
     },
-    enablement: () => useTabsStore.getState().activeId !== null,
+    enablement: hasActiveTab,
   });
 }
