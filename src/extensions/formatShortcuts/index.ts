@@ -12,11 +12,11 @@ import { editorApiRef } from "../../components/Editor/editorApiRef";
  * logic, and toggling is idempotent either way (pressing Ctrl+B on `*foo*`
  * removes the bold, just like clicking the Bold button).
  *
- * The Typst literal strings below are pinned to formatActions.ts (the toolbar's
- * single source of truth) so a typo here is caught by the unit tests that
- * cross-check the two, rather than discovered in the UI:
- *   bold `*…*`, italic `_…_`, strike `#strike[…]`, inline code `` `…` ``,
- *   headings `= ` / `== ` / `=== `.
+ * The commands are declared as one data table below: the Typst literals stay
+ * pinned to formatActions.ts (the toolbar's single source of truth) so a typo
+ * is caught by the unit tests that cross-check the two, rather than discovered
+ * in the UI: bold `*…*`, italic `_…_`, strike `#strike[…]`, inline code
+ * `` `…` ``, headings `= ` / `== ` / `=== `.
  *
  * Activation is module-load-time (self-registering via
  * [`activateAll`](../index.ts) → `import.meta.glob`), so the commands are in the
@@ -36,6 +36,32 @@ import { editorApiRef } from "../../components/Editor/editorApiRef";
  * `keybinding` field here.
  */
 
+/** One row per formatting command: a wrap action (`prefix…suffix`) or a
+ *  heading action (line prefix). The third wrap element is the placeholder
+ *  label toggleWrap inserts around an empty selection. */
+const FORMAT_COMMANDS: ReadonlyArray<{
+  id: string;
+  titleKey: string;
+  keybinding: string;
+  wrap?: [prefix: string, suffix: string, placeholder: string];
+  linePrefix?: string;
+}> = [
+  // ---- Inline emphasis (wrap actions) ----
+  { id: "format.bold", titleKey: "bold", keybinding: "Ctrl+B", wrap: ["*", "*", "bold"] },
+  { id: "format.italic", titleKey: "italic", keybinding: "Ctrl+I", wrap: ["_", "_", "italic"] },
+  {
+    id: "format.strikethrough",
+    titleKey: "strikethrough",
+    keybinding: "Ctrl+Shift+X",
+    wrap: ["#strike[", "]", "text"],
+  },
+  { id: "format.code", titleKey: "inlineCode", keybinding: "Ctrl+`", wrap: ["`", "`", "code"] },
+  // ---- Headings (line-prefix actions) ----
+  { id: "format.heading1", titleKey: "heading1", keybinding: "Ctrl+1", linePrefix: "= " },
+  { id: "format.heading2", titleKey: "heading2", keybinding: "Ctrl+2", linePrefix: "== " },
+  { id: "format.heading3", titleKey: "heading3", keybinding: "Ctrl+3", linePrefix: "=== " },
+];
+
 /** Marker the editor isn't ready yet — keeps the type narrow at call sites. */
 function noEditor(): void {
   // No-op: editorApiRef.current is null until the editor reports ready. A
@@ -44,96 +70,22 @@ function noEditor(): void {
 }
 
 export default function activate(ctx: HostApi): void {
-  // ---- Inline emphasis (wrap actions) ----
-  ctx.registerCommand({
-    id: "format.bold",
-    title: i18n.t("bold", { ns: "command" }),
-    category: "Format",
-    keybinding: "Ctrl+B",
-    handler: () => {
-      const api = editorApiRef.current;
-      if (!api) return noEditor();
-      api.toggleWrap("*", "*", "bold");
-    },
-    enablement: () => useTabsStore.getState().activeId !== null,
-  });
-
-  ctx.registerCommand({
-    id: "format.italic",
-    title: i18n.t("italic", { ns: "command" }),
-    category: "Format",
-    keybinding: "Ctrl+I",
-    handler: () => {
-      const api = editorApiRef.current;
-      if (!api) return noEditor();
-      api.toggleWrap("_", "_", "italic");
-    },
-    enablement: () => useTabsStore.getState().activeId !== null,
-  });
-
-  ctx.registerCommand({
-    id: "format.strikethrough",
-    title: i18n.t("strikethrough", { ns: "command" }),
-    category: "Format",
-    keybinding: "Ctrl+Shift+X",
-    handler: () => {
-      const api = editorApiRef.current;
-      if (!api) return noEditor();
-      api.toggleWrap("#strike[", "]", "text");
-    },
-    enablement: () => useTabsStore.getState().activeId !== null,
-  });
-
-  ctx.registerCommand({
-    id: "format.code",
-    title: i18n.t("inlineCode", { ns: "command" }),
-    category: "Format",
-    keybinding: "Ctrl+`",
-    handler: () => {
-      const api = editorApiRef.current;
-      if (!api) return noEditor();
-      api.toggleWrap("`", "`", "code");
-    },
-    enablement: () => useTabsStore.getState().activeId !== null,
-  });
-
-  // ---- Headings (line-prefix actions) ----
-  ctx.registerCommand({
-    id: "format.heading1",
-    title: i18n.t("heading1", { ns: "command" }),
-    category: "Format",
-    keybinding: "Ctrl+1",
-    handler: () => {
-      const api = editorApiRef.current;
-      if (!api) return noEditor();
-      api.toggleLinePrefix("= ");
-    },
-    enablement: () => useTabsStore.getState().activeId !== null,
-  });
-
-  ctx.registerCommand({
-    id: "format.heading2",
-    title: i18n.t("heading2", { ns: "command" }),
-    category: "Format",
-    keybinding: "Ctrl+2",
-    handler: () => {
-      const api = editorApiRef.current;
-      if (!api) return noEditor();
-      api.toggleLinePrefix("== ");
-    },
-    enablement: () => useTabsStore.getState().activeId !== null,
-  });
-
-  ctx.registerCommand({
-    id: "format.heading3",
-    title: i18n.t("heading3", { ns: "command" }),
-    category: "Format",
-    keybinding: "Ctrl+3",
-    handler: () => {
-      const api = editorApiRef.current;
-      if (!api) return noEditor();
-      api.toggleLinePrefix("=== ");
-    },
-    enablement: () => useTabsStore.getState().activeId !== null,
-  });
+  for (const { id, titleKey, keybinding, wrap, linePrefix } of FORMAT_COMMANDS) {
+    ctx.registerCommand({
+      id,
+      title: i18n.t(titleKey, { ns: "command" }),
+      category: "Format",
+      keybinding,
+      handler: () => {
+        const api = editorApiRef.current;
+        if (!api) return noEditor();
+        if (wrap) {
+          api.toggleWrap(wrap[0], wrap[1], wrap[2]);
+        } else {
+          api.toggleLinePrefix(linePrefix!);
+        }
+      },
+      enablement: () => useTabsStore.getState().activeId !== null,
+    });
+  }
 }
