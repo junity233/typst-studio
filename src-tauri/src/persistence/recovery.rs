@@ -263,9 +263,6 @@ pub struct RecoveryService {
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// Sender into the debounce worker. Cloned per `schedule_snapshot` call.
     sender: std::sync::mpsc::Sender<Msg>,
-    /// Debounce window. Stored for tests that want to assert on it.
-    #[allow(dead_code)]
-    debounce: Duration,
 }
 
 impl RecoveryService {
@@ -400,7 +397,6 @@ impl RecoveryService {
             discarded_since_queued,
             worker: Mutex::new(Some(handle)),
             sender,
-            debounce,
         })
     }
 
@@ -603,12 +599,7 @@ impl RecoveryService {
     pub fn load_snapshot(&self, id: &str) -> Option<RecoverySnapshot> {
         let path = self.documents_dir.join(format!("{id}.json"));
         let raw = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&raw).ok()
-    }
-
-    /// The recovery directory (for diagnostics / "open recovery folder").
-    pub fn recovery_dir(&self) -> &Path {
-        &self.recovery_dir
+        serde_json::from_str(&raw).ok()?
     }
 
     // --- internals -----------------------------------------------------------

@@ -66,8 +66,8 @@ pub struct ReboundDoc {
     pub new_path: PathBuf,
 }
 
-/// One open document at/under a path of interest (§5.5). Returned by
-/// [`DocumentService::docs_under_path`]; the IPC delete command inspects
+/// One open document at/under a path of interest (§5.5). Returned by the
+/// docs-under-path queries; the IPC delete command inspects
 /// `dirty` to decide whether to block (§5.5 "dirty 文档存在时阻止删除").
 #[derive(Debug, Clone)]
 pub struct AffectedDoc {
@@ -931,11 +931,12 @@ impl DocumentService {
     /// forever, even though the user believes they closed it. The hidden tab's
     /// state survives for zero-cost reactivate (§B2) and is naturally reclaimed
     /// when LRU hard-closes it.
+    #[cfg(test)]
     pub fn docs_under_path(&self, prefix: &Path) -> Vec<AffectedDoc> {
         self.docs_under_path_impl(prefix, false)
     }
 
-    /// Like [`docs_under_path`](Self::docs_under_path) but ALSO includes
+    /// Like `docs_under_path` (visible-only) but ALSO includes
     /// soft-closed (hidden) documents. Used by the DELETE flow
     /// (`delete_entry` / `delete_entry_permanent`): once the backing file is
     /// trashed, a hidden tab for it is a zombie — its reactivate-on-demand
@@ -989,8 +990,8 @@ impl DocumentService {
     /// before the disk is changed and before the watcher reports a surprising
     /// external modification.
     ///
-    /// Soft-closed (hidden) documents are excluded — see
-    /// [`docs_under_path`](Self::docs_under_path) for the rationale.
+    /// Soft-closed (hidden) documents are excluded — see `docs_under_path`'s
+    /// rationale above.
     pub fn docs_at_paths(&self, paths: &[PathBuf]) -> Vec<AffectedDoc> {
         self.docs_at_paths_impl(paths, false)
     }

@@ -428,8 +428,6 @@ pub(crate) fn validate_handshake(
 
 /// Manages the tinymist child process and its WebSocket bridge.
 pub struct LspManager {
-    #[allow(dead_code)]
-    config: LspConfig,
     ws_port: u16,
     /// Accept-loop shutdown (kills the whole bridge).
     shutdown_tx: Option<watch::Sender<bool>>,
@@ -540,7 +538,6 @@ impl LspManager {
                 "tinymist not found or LSP disabled; LSP features will be unavailable"
             );
             let mgr = Self {
-                config,
                 ws_port: 0,
                 shutdown_tx: None,
                 wake_tx: None,
@@ -628,7 +625,6 @@ impl LspManager {
         });
 
         Ok(Self {
-            config,
             ws_port,
             shutdown_tx: Some(shutdown_tx),
             wake_tx: Some(wake_tx),
