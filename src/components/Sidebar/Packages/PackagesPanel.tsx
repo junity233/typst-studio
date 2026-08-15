@@ -2,20 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
 import { selectCategories, usePackagesStore } from "../../../store/packagesStore";
+import { useDebounce } from "../../../hooks/useDebounce";
 import { TemplateGallery } from "./TemplateGallery";
 import { PackageList } from "./PackageList";
 import { InstalledList } from "./InstalledList";
 import { PackageDetail } from "./PackageDetail";
-
-/** Debounce a fast-changing value by `delay` ms. */
-function useDebounced<T>(value: T, delay: number): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const id = setTimeout(() => setDebounced(value), delay);
-    return () => clearTimeout(id);
-  }, [value, delay]);
-  return debounced;
-}
 
 /**
  * The Packages sidebar view: three tabs (Templates / Packages / Installed)
@@ -49,7 +40,7 @@ export function PackagesPanel({
   const indexCount = usePackagesStore((s) => s.index.length);
 
   const [query, setQuery] = useState(filter.query ?? "");
-  const debouncedQuery = useDebounced(query, 300);
+  const debouncedQuery = useDebounce(query, 300);
 
   // Push the debounced query into the store filter (applied client-side).
   useEffect(() => {
