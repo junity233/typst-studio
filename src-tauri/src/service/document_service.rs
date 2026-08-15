@@ -940,32 +940,7 @@ impl DocumentService {
     /// state survives for zero-cost reactivate (§B2) and is naturally reclaimed
     /// when LRU hard-closes it.
     pub fn docs_under_path(&self, prefix: &Path) -> Vec<AffectedDoc> {
-        // Canonicalize the prefix once so the per-doc comparison is in the same
-        // form as the docs' stored canonical paths.
-        let canon_prefix = match canonicalize_for_identity(prefix) {
-            Ok(p) => p,
-            Err(_) => return Vec::new(),
-        };
-        let tabs = self.store.tabs.read();
-        tabs.values()
-            .filter_map(|t| {
-                let rt = t.state.lock();
-                if rt.meta.hidden {
-                    return None;
-                }
-                let canon = rt.meta.origin.canonical_path()?.to_path_buf();
-                if canon == canon_prefix || canon.starts_with(&canon_prefix) {
-                    Some(AffectedDoc {
-                        id: rt.meta.id,
-                        path: canon,
-                        dirty: rt.meta.dirty,
-                        conflict: rt.meta.conflict,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect()
+        self.docs_under_path_impl(prefix, false)
     }
 
     /// Like [`docs_under_path`](Self::docs_under_path) but ALSO includes
@@ -982,6 +957,15 @@ impl DocumentService {
     /// The template-overwrite preflight keeps using
     /// [`docs_at_paths`](Self::docs_at_paths) (visible-only) — see its docs.
     pub fn docs_under_path_with_hidden(&self, prefix: &Path) -> Vec<AffectedDoc> {
+        self.docs_under_path_impl(prefix, true)
+    }
+
+    /// Shared body of the docs-under-path queries. `include_hidden` selects
+    /// between the visible-only and with-hidden policies (see the two public
+    /// wrappers above for their rationales).
+    fn docs_under_path_impl(&self, prefix: &Path, include_hidden: bool) -> Vec<AffectedDoc> {
+        // Canonicalize the prefix once so the per-doc comparison is in the same
+        // form as the docs' stored canonical paths.
         let canon_prefix = match canonicalize_for_identity(prefix) {
             Ok(p) => p,
             Err(_) => return Vec::new(),
@@ -990,6 +974,9 @@ impl DocumentService {
         tabs.values()
             .filter_map(|t| {
                 let rt = t.state.lock();
+                if !include_hidden && rt.meta.hidden {
+                    return None;
+                }
                 let canon = rt.meta.origin.canonical_path()?.to_path_buf();
                 if canon == canon_prefix || canon.starts_with(&canon_prefix) {
                     Some(AffectedDoc {
@@ -1013,36 +1000,7 @@ impl DocumentService {
     /// Soft-closed (hidden) documents are excluded — see
     /// [`docs_under_path`](Self::docs_under_path) for the rationale.
     pub fn docs_at_paths(&self, paths: &[PathBuf]) -> Vec<AffectedDoc> {
-        use std::collections::HashSet;
-
-        let targets: HashSet<PathBuf> = paths
-            .iter()
-            .filter_map(|p| canonicalize_existing_or_target(p).ok())
-            .collect();
-        if targets.is_empty() {
-            return Vec::new();
-        }
-
-        let tabs = self.store.tabs.read();
-        tabs.values()
-            .filter_map(|t| {
-                let rt = t.state.lock();
-                if rt.meta.hidden {
-                    return None;
-                }
-                let canon = rt.meta.origin.canonical_path()?.to_path_buf();
-                if targets.contains(&canon) {
-                    Some(AffectedDoc {
-                        id: rt.meta.id,
-                        path: canon,
-                        dirty: rt.meta.dirty,
-                        conflict: rt.meta.conflict,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect()
+        self.docs_at_paths_impl(paths, false)
     }
 
     /// Like [`docs_at_paths`](Self::docs_at_paths) but ALSO includes
@@ -1052,6 +1010,13 @@ impl DocumentService {
     /// NOT from disk (which would silently discard its unsaved edits). The
     /// template/delete paths keep using `docs_at_paths` (visible tabs only).
     pub fn docs_at_paths_with_hidden(&self, paths: &[PathBuf]) -> Vec<AffectedDoc> {
+        self.docs_at_paths_impl(paths, true)
+    }
+
+    /// Shared body of the docs-at-paths queries. `include_hidden` selects
+    /// between the visible-only and with-hidden policies (see the two public
+    /// wrappers above for their rationales).
+    fn docs_at_paths_impl(&self, paths: &[PathBuf], include_hidden: bool) -> Vec<AffectedDoc> {
         use std::collections::HashSet;
 
         let targets: HashSet<PathBuf> = paths
@@ -1066,6 +1031,9 @@ impl DocumentService {
         tabs.values()
             .filter_map(|t| {
                 let rt = t.state.lock();
+                if !include_hidden && rt.meta.hidden {
+                    return None;
+                }
                 let canon = rt.meta.origin.canonical_path()?.to_path_buf();
                 if targets.contains(&canon) {
                     Some(AffectedDoc {
