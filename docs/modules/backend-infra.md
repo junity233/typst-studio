@@ -14,7 +14,9 @@
 - `resolver.rs` — `FileResolver`: FileId ↔ disk path, Project-root vs
   Package-root dispatch.
 - `search.rs` — line-based literal/regex workspace search + replace
-  computation (pure; writes happen in the service). Replace byte offsets
+  computation (pure; writes happen in the service). The shared
+  `walk_candidates` prelude (dir/include/exclude/target filters + byte
+  guard) serves `search`, `replace_candidates`, and `replace_compute`. Replace byte offsets
   are computed in the original string's byte space because Unicode case
   folding changes byte lengths. Cross-line patterns unsupported; columns
   are char counts; astral-plane matches can mis-highlight.
@@ -23,7 +25,8 @@
   packages` cache on Windows).
 - `package_index.rs` — Typst Universe `index.json` fetch/cache
   (`https://packages.typst.org/preview/index.json`, 16 MiB cap), cached at
-  `<app-config>/typst-studio/cache/package-index.json`.
+  `<app-config>/typst-studio/cache/package-index.json` (written via
+  `atomic::write_bytes` — a crash can't leave a torn cache).
 - `downloader.rs` — reqwest+rustls `Downloader` impl for typst-kit (avoids
   ureq/openssl).
 - `text_edits.rs` — apply LSP `TextEdit[]` (UTF-16 positions, applied
@@ -57,7 +60,8 @@ host:port is refused.
 - `installer.rs` — managed install into `~/.typststudio/` from GitHub
   releases (pinned tinymist version). Verify-before-extract: SHA-256
   against the release `sha256.sum` (3 attempts) BEFORE extraction;
-  `--version` smoke test before committing the version marker; every
+  `--version` smoke test before committing the version marker (written
+  atomically); every
   failure path removes unverified binaries and restores the parked `.old`.
   Discovery order: `lsp.tinymistPath` setting → `~/.typststudio/tinymist`
   → PATH. Uses a dedicated reqwest client with a stall-only read timeout

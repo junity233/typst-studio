@@ -134,4 +134,7 @@ without `-D warnings` because of the one known warning in
   interior locking and compiles lock-free.
 - Project `extraFontDirs` are canonicalized, must stay under the workspace
   root (symlink-escape defense), and take effect only after restart.
-- Native dialogs use `spawn_blocking` + the blocking picker.
+- Native dialogs are centralized in `ipc/dialog.rs`
+  (`pick_file`/`save_file`/`pick_folder`): `spawn_blocking` + the blocking
+  picker, `FilePath` converted via `commands::path_buf_from`. Cancel
+  semantics stay at the call site (`Ok(None)` vs a `Cancelled` error).

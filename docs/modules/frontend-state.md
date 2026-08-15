@@ -55,7 +55,9 @@ keybinding overrides, close guard, session capture), `useStartupSession`,
 `readSetting`, `useLspWorkspaceReconnect` (reconnects only after the client
 reached Ready once — first-connecter-wins backend rule),
 `useExternalFileRouting`, `useWindowRestore`, `useTheme`, `useLanguage`,
-`useWheelZoom` (clamped step zoom), `useDebounce`.
+`useWheelZoom` (clamped step zoom), `useDebounce`,
+`useEscapeToClose` (window-level close-on-Escape for modal portals;
+callbacks in refs so the listener attaches only while active).
 
 ## Patterns
 

@@ -76,6 +76,9 @@ git commands exist and the `workbench.scm` title key is reserved.
 - `Dialogs/` — two orchestrations: promise-queue `useDialogStore.confirm()`
   (ConfirmDialog; danger dialogs focus Cancel) and dedicated open/close
   stores (Conflict, Recovery, BatchExport) rendered once at app root.
+  Close-on-Escape goes through `hooks/useEscapeToClose` (About, Recovery,
+  Conflict, Confirm, BibEdit); BatchExportDialog keeps its own listener
+  (document-level, no stopPropagation, disabled mid-export).
   `DiffCompareView.tsx` — shared allocation-bounded side-by-side diff.
 - `Assistant/AssistantPanel.tsx` — chat UI over `assistantStore`;
   `aiStream.ts` (pi-agent-core + OpenAI/Anthropic SDKs with custom fetch);

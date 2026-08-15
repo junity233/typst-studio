@@ -13,11 +13,15 @@ orchestration, and the paste-conversion pipeline.
   (tabs, workspace, fs, export, packages, bibliography, session, recovery,
   conflicts), plus a full in-browser fallback (`browserInvoke` + localStorage
   settings + inlined themes) gated on `isTauri` so vitest/jsdom works.
+  `on*` event wrappers are consts built by the internal `onEvent` /
+  `onProjectedEvent` factories.
 - `types.ts` — ts-rs-generated wire types (`OpenedDocument`, `Session`,
   `ErrorCode`, `CompiledPayload`, …). Do not edit manually; regenerate with
   `cargo test --features export-types` (src-tauri).
-- `ui-types.ts` — hand-written frontend-only payload types; the mirrored
-  `CompiledPayload` here must be kept in sync manually.
+- `ui-types.ts` — hand-written frontend-only types (`MenuEventPayload`);
+  the wire payload types (`CompileStatus`, `CompiledPayload`,
+  `DiagnosticsPayload`, `StatusPayload`, LSP payloads) are re-exported from
+  `./types` — no manual mirrors to keep in sync.
 - `ipc-error.ts` — `toIpcError` narrowing of `{code, message, details?,
   recoverable}` rejections; `isCancelled`; `formatSaveErrorMessage` (i18n
   per code). The `Cancelled` code is never a failure.
@@ -65,7 +69,9 @@ orchestration, and the paste-conversion pipeline.
   editable target), `aiProxy.ts` (Tauri Channel streaming; desktop-only),
   `aiLog.ts` (dev-only logging, no-op in prod), `compileTiming.ts`
   (dev-only latency instrumentation, cap 5 revisions), `textStats.ts`
-  (CJK-aware word count), `appInfo.ts`, `platform.ts`.
+  (CJK-aware word count), `appInfo.ts`, `platform.ts`, `layoutPrefs.ts`
+  (pane-geometry localStorage keys + `readStoredNumber`, shared by the pane
+  components' restore path and `useAppCommands`' session capture).
 
 ## htmlToTypst paste pipeline (`src/lib/htmlToTypst/`)
 
