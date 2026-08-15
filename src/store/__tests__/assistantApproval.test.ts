@@ -139,16 +139,15 @@ vi.mock("../../lib/tauri", () => ({
   openFileByPath: vi.fn(),
   searchWorkspace: vi.fn(),
   updateText: vi.fn(),
+  createEntry: vi.fn(() => Promise.resolve()),
   // readForContent chains `.catch()` on the result — the mock must return a
   // Promise like the real IPC wrapper does.
   hardCloseTab: vi.fn(() => Promise.resolve()),
 }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const { useAssistantStore } = await import("../assistantStore");
 const { editorApiRef } = await import("../../components/Editor/editorApiRef");
-const { openFileByPath, updateText } = await import("../../lib/tauri");
-const { invoke } = await import("@tauri-apps/api/core");
+const { createEntry, openFileByPath, updateText } = await import("../../lib/tauri");
 
 beforeEach(() => {
   captured = null;
@@ -158,7 +157,8 @@ beforeEach(() => {
   tabsState.hidden = [];
   vi.mocked(openFileByPath).mockReset();
   vi.mocked(updateText).mockReset();
-  vi.mocked(invoke).mockReset();
+  vi.mocked(createEntry).mockReset();
+  vi.mocked(createEntry).mockImplementation(() => Promise.resolve());
   // mockClear (not mockReset) keeps the true-returning implementation while
   // dropping call history, so "not called" assertions only see THIS test.
   (editorApiRef.current!.strReplace as ReturnType<typeof vi.fn>).mockClear();
@@ -333,10 +333,7 @@ describe("approval gate (Strategy A)", () => {
 
     await useAssistantStore.getState().sendMessage("write it");
 
-    expect(invoke).toHaveBeenCalledWith("create_entry", {
-      rel: "new.typ",
-      kind: "file",
-    });
+    expect(createEntry).toHaveBeenCalledWith("new.typ", "file");
     expect(openFileByPath).toHaveBeenCalledWith("/ws/new.typ");
     // openPath registered the doc as a tab AND its content landed in the
     // store + backend with the bumped revision.
