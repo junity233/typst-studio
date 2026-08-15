@@ -1,12 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-
-// React 19 only runs `act`'s effect-flushing + warning behavior when this flag
-// is set. We render via react-dom/client directly (no @testing-library/react),
-// so opt in here. Mirrors ImageViewer.reload.test.tsx / useDebounce.test.tsx.
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
+// Shared createRoot + act harness (also sets IS_REACT_ACT_ENVIRONMENT).
+import { reactHarness } from "../../../test/react";
 
 // `MarkdownLink` routes external links through the opener plugin; mock it so a
 // stray click (or import-time IPC) never reaches the Tauri bridge.
@@ -35,87 +30,74 @@ import { MarkdownPreview } from "../MarkdownPreview";
  * `setState` runs inside `act`.
  */
 
-let container: HTMLDivElement;
-let root: Root;
+const h = reactHarness();
 
 beforeEach(() => {
   vi.useFakeTimers();
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  root = createRoot(container);
 });
 
 afterEach(() => {
-  act(() => root.unmount());
-  container.remove();
+  h.cleanup();
   vi.useRealTimers();
 });
 
-function render(source: string, debounceMs?: number): void {
-  act(() => {
-    root.render(
-      <MarkdownPreview source={source} debounceMs={debounceMs} />,
-    );
-  });
-}
-
 describe("MarkdownPreview", () => {
   it("renders markdown source to HTML via the GFM pipeline", () => {
-    render("# Hello");
-    const h1 = container.querySelector("h1");
+    h.render(<MarkdownPreview source="# Hello" />);
+    const h1 = h.container.querySelector("h1");
     expect(h1).not.toBeNull();
     expect(h1?.textContent).toBe("Hello");
   });
 
   it("passes the initial source through with no first-frame delay", () => {
-    render("first frame");
-    expect(container.textContent).toContain("first frame");
+    h.render(<MarkdownPreview source="first frame" />);
+    expect(h.container.textContent).toContain("first frame");
   });
 
   it("lags source updates until the default 150ms debounce elapses", () => {
-    render("old");
-    render("new");
+    h.render(<MarkdownPreview source="old" />);
+    h.rerender(<MarkdownPreview source="new" />);
     // Mid-window: the debounce still shows the OLD value.
-    expect(container.textContent).toContain("old");
-    expect(container.textContent).not.toContain("new");
+    expect(h.container.textContent).toContain("old");
+    expect(h.container.textContent).not.toContain("new");
     act(() => {
       vi.advanceTimersByTime(150);
     });
-    expect(container.textContent).toContain("new");
-    expect(container.textContent).not.toContain("old");
+    expect(h.container.textContent).toContain("new");
+    expect(h.container.textContent).not.toContain("old");
   });
 
   it("honors a custom debounceMs", () => {
-    render("old", 50);
-    render("new", 50);
+    h.render(<MarkdownPreview source="old" debounceMs={50} />);
+    h.rerender(<MarkdownPreview source="new" debounceMs={50} />);
     act(() => {
       vi.advanceTimersByTime(49);
     });
-    expect(container.textContent).toContain("old");
+    expect(h.container.textContent).toContain("old");
     act(() => {
       vi.advanceTimersByTime(1);
     });
-    expect(container.textContent).toContain("new");
+    expect(h.container.textContent).toContain("new");
   });
 
   it("coalesces a burst of edits into one update on the last value", () => {
-    render("a");
-    render("b");
-    render("c");
+    h.render(<MarkdownPreview source="a" />);
+    h.rerender(<MarkdownPreview source="b" />);
+    h.rerender(<MarkdownPreview source="c" />);
     act(() => {
       vi.advanceTimersByTime(150);
     });
     // Only "c" ever renders — "b" was superseded mid-window, never queued.
-    expect(container.textContent).toContain("c");
-    expect(container.textContent).not.toContain("a");
+    expect(h.container.textContent).toContain("c");
+    expect(h.container.textContent).not.toContain("a");
   });
 
   it("renders external links with target=_blank and rel=noopener noreferrer", () => {
-    render("[x](https://example.com)");
+    h.render(<MarkdownPreview source="[x](https://example.com)" />);
     act(() => {
       vi.advanceTimersByTime(150);
     });
-    const a = container.querySelector("a");
+    const a = h.container.querySelector("a");
     expect(a).not.toBeNull();
     expect(a?.getAttribute("href")).toBe("https://example.com");
     expect(a?.getAttribute("target")).toBe("_blank");

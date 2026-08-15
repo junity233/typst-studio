@@ -1,15 +1,11 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { describe, it, expect, afterEach } from "vitest";
 // Initialize i18next so `useTranslation("dialog")` resolves real labels — the
 // no-differences note and the unchanged-lines plural come from the "dialog"
 // namespace, and the assertions pin their English text (jsdom's
 // navigator.language is en-US, so `resolveLanguage` picks "en").
 import "../../../i18n";
-// React 19 only runs `act`'s effect-flushing + warning behavior when this flag
-// is set. We render via react-dom/client directly (no @testing-library/react),
-// so opt in here. Mirrors TableGridPicker.test.tsx / FormatToolbar.test.tsx.
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+// Shared createRoot + act harness (also sets IS_REACT_ACT_ENVIRONMENT).
+import { reactHarness } from "../../../test/react";
 import { DiffCompareView } from "../DiffCompareView";
 
 /**
@@ -39,35 +35,13 @@ const PROPS = {
   rightLabel: "Disk",
 } as const;
 
-let container: HTMLDivElement | null = null;
-let root: Root | null = null;
+const h = reactHarness();
 
 const renderDiff = (props: {
   leftText: string;
   rightText: string | null;
   rightMissingLabel?: string;
-}): HTMLDivElement => {
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  const r = createRoot(container);
-  root = r;
-  act(() => {
-    r.render(<DiffCompareView {...PROPS} {...props} />);
-  });
-  return container;
-};
-
-const cleanup = () => {
-  if (root !== null && container !== null) {
-    const r = root;
-    act(() => {
-      r.unmount();
-    });
-    container.remove();
-  }
-  root = null;
-  container = null;
-};
+}): HTMLDivElement => h.render(<DiffCompareView {...PROPS} {...props} />);
 
 /** The row that has BOTH a del cell and an add cell — i.e. a paired change. */
 const pairRow = (c: HTMLElement): HTMLElement => {
@@ -81,7 +55,7 @@ const pairRow = (c: HTMLElement): HTMLElement => {
 };
 
 describe("DiffCompareView", () => {
-  beforeEach(cleanup);
+  afterEach(() => h.cleanup());
 
   it("renders both column headers and the aria-labelled body region", () => {
     const c = renderDiff({ leftText: "a", rightText: "b" });

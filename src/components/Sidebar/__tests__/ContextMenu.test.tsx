@@ -1,14 +1,11 @@
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// Shared createRoot + act harness (also sets IS_REACT_ACT_ENVIRONMENT).
+import { reactHarness } from "../../../test/react";
 import { ContextMenu } from "../ContextMenu";
 import { useContextMenuStore } from "../contextMenuStore";
 
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
-
-let container: HTMLDivElement;
-let root: Root;
+const h = reactHarness();
 
 function button(label: string): HTMLButtonElement {
   const match = Array.from(
@@ -24,15 +21,11 @@ function pointerDown(target: Element): void {
 
 beforeEach(() => {
   useContextMenuStore.setState({ current: null });
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  root = createRoot(container);
-  act(() => root.render(<ContextMenu />));
+  h.render(<ContextMenu />);
 });
 
 afterEach(() => {
-  act(() => root.unmount());
-  container.remove();
+  h.cleanup();
   useContextMenuStore.setState({ current: null });
 });
 

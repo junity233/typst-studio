@@ -1,11 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, type ReactElement } from "react";
-import { createRoot, type Root } from "react-dom/client";
-// React 19 only runs `act`'s effect-flushing behavior when this flag is set;
-// we render via react-dom/client directly (no @testing-library/react). Mirrors
-// useEscapeToClose.test.tsx.
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
+import { act } from "react";
+// Shared createRoot + act harness (also sets IS_REACT_ACT_ENVIRONMENT).
+import { reactHarness } from "../../test/react";
 import { createRefCountedSubscription } from "../refCountedSubscription";
 
 /**
@@ -62,20 +58,17 @@ function Probe({ harness }: { harness: Harness }) {
   return null;
 }
 
-function mount(harness: Harness, readers = 1): { root: Root; container: HTMLDivElement } {
-  const container = document.createElement("div");
-  document.body.appendChild(container);
-  const root = createRoot(container);
-  act(() => {
-    root.render(
-      <>
-        {Array.from({ length: readers }, (_, i) => (
-          <Probe key={i} harness={harness} />
-        ))}
-      </> as ReactElement,
-    );
-  });
-  return { root, container };
+// The tests below name their mock harness `h`, so the render harness is `rh`.
+const rh = reactHarness();
+
+function mount(harness: Harness, readers = 1): void {
+  rh.render(
+    <>
+      {Array.from({ length: readers }, (_, i) => (
+        <Probe key={i} harness={harness} />
+      ))}
+    </>,
+  );
 }
 
 /** Flush the microtask queue (release runs in `queueMicrotask`). */
@@ -85,9 +78,8 @@ async function flushMicrotasks(): Promise<void> {
   });
 }
 
-async function unmount({ root, container }: { root: Root; container: HTMLDivElement }) {
-  act(() => root.unmount());
-  container.remove();
+async function unmount(): Promise<void> {
+  rh.cleanup();
   await flushMicrotasks();
 }
 
@@ -101,37 +93,33 @@ describe("createRefCountedSubscription", () => {
 
   it("first mount fetches once, listens once, and applies the seed", async () => {
     const h = makeHarness();
-    const m = mount(h);
+    mount(h);
     await flushMicrotasks();
     expect(h.fetch).toHaveBeenCalledTimes(1);
     expect(h.listen).toHaveBeenCalledTimes(1);
     expect(h.apply).toHaveBeenCalledWith({ seed: true });
-    await unmount(m);
+    await unmount();
   });
 
   it("concurrent readers share one acquire (no duplicate fetch/listen)", async () => {
     const h = makeHarness();
-    const m = mount(h, 3);
+    mount(h, 3);
     await flushMicrotasks();
     expect(h.fetch).toHaveBeenCalledTimes(1);
     expect(h.listen).toHaveBeenCalledTimes(1);
-    await unmount(m);
+    await unmount();
   });
 
   it("release waits for the last reader: unlisten only at refCount 0", async () => {
     const h = makeHarness();
-    const { root } = mount(h, 2);
+    mount(h, 2);
     await flushMicrotasks();
     // Drop one reader — one remains, so the subscription must survive.
-    act(() => {
-      root.render(<Probe harness={h} />);
-    });
+    rh.rerender(<Probe harness={h} />);
     await flushMicrotasks();
     expect(h.unlisten).not.toHaveBeenCalled();
     // Drop the last reader — the deferred release unhooks the listener.
-    act(() => {
-      root.render(<></>);
-    });
+    rh.rerender(<></>);
     await flushMicrotasks();
     expect(h.unlisten).toHaveBeenCalledTimes(1);
   });
@@ -148,15 +136,15 @@ describe("createRefCountedSubscription", () => {
           : Promise.resolve(unlisten);
       },
     );
-    const first = mount(h);
+    mount(h);
     await flushMicrotasks();
     expect(calls).toBe(1);
-    await unmount(first);
+    await unmount();
     // Remount: the rejected memo must not stick — acquire runs again.
-    const second = mount(h);
+    mount(h);
     await flushMicrotasks();
     expect(calls).toBe(2);
-    await unmount(second);
+    await unmount();
   });
 
   it("a hung fetch times out, clears loading, and still wires the listener", async () => {
@@ -165,14 +153,14 @@ describe("createRefCountedSubscription", () => {
       () => new Promise(() => {}), // never resolves
       () => Promise.resolve(unlisten),
     );
-    const m = mount(h);
+    mount(h);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5000);
     });
     expect(h.apply).not.toHaveBeenCalled();
     expect(h.setLoading).toHaveBeenCalledWith(false);
     expect(h.listen).toHaveBeenCalledTimes(1);
-    await unmount(m);
+    await unmount();
   });
 
   it("event payloads funnel through apply", async () => {
@@ -185,12 +173,12 @@ describe("createRefCountedSubscription", () => {
         return Promise.resolve(unlisten);
       },
     );
-    const m = mount(h);
+    mount(h);
     await flushMicrotasks();
     act(() => {
       emit?.({ push: 1 });
     });
     expect(h.apply).toHaveBeenCalledWith({ push: 1 });
-    await unmount(m);
+    await unmount();
   });
 });

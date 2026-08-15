@@ -1,10 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { act, type ReactElement } from "react";
-import { createRoot, type Root } from "react-dom/client";
-// React 19 only runs `act`'s effect-flushing + warning behavior when this flag
-// is set. We render via react-dom/client directly (no @testing-library/react),
-// so opt in here. Mirrors DiffCompareView.test.tsx / FormatToolbar.test.tsx.
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+import { act } from "react";
+// Shared createRoot + act harness (also sets IS_REACT_ACT_ENVIRONMENT).
+import { reactHarness } from "../../test/react";
 import { useDebounce, useDebouncedCallback } from "../useDebounce";
 
 /**
@@ -51,31 +48,10 @@ function CallbackProbe({
   return null;
 }
 
-let container: HTMLDivElement | null = null;
-let root: Root | null = null;
-
-function render(element: ReactElement): void {
-  if (container === null) {
-    container = document.createElement("div");
-    document.body.appendChild(container);
-    root = createRoot(container);
-  }
-  const r = root!;
-  act(() => {
-    r.render(element);
-  });
-}
+const h = reactHarness();
 
 const cleanup = () => {
-  if (root !== null && container !== null) {
-    const r = root;
-    act(() => {
-      r.unmount();
-    });
-    container.remove();
-  }
-  root = null;
-  container = null;
+  h.cleanup();
   outputs.length = 0;
   handle.current = null;
 };
@@ -92,7 +68,7 @@ describe("useDebounce(value, delay)", () => {
   });
 
   it("passes the initial value through immediately (no delay)", () => {
-    render(<Probe value="a" delay={300} />);
+    h.render(<Probe value="a" delay={300} />);
     expect(outputs).toEqual(["a"]);
     // Even after the full delay with no changes, the value stays "a".
     act(() => {
@@ -102,11 +78,11 @@ describe("useDebounce(value, delay)", () => {
   });
 
   it("lags behind value updates until the delay elapses", () => {
-    render(<Probe value="a" delay={300} />);
+    h.render(<Probe value="a" delay={300} />);
     act(() => {
       vi.advanceTimersByTime(100);
     });
-    render(<Probe value="b" delay={300} />);
+    h.rerender(<Probe value="b" delay={300} />);
     // Not yet: the debounce window restarted with the new value.
     expect(outputs[outputs.length - 1]).toBe("a");
     act(() => {
@@ -120,12 +96,12 @@ describe("useDebounce(value, delay)", () => {
   });
 
   it("coalesces rapid consecutive changes into one update on the last value", () => {
-    render(<Probe value="a" delay={300} />);
+    h.render(<Probe value="a" delay={300} />);
     for (const v of ["b", "c", "d"]) {
       act(() => {
         vi.advanceTimersByTime(100);
       });
-      render(<Probe value={v} delay={300} />);
+      h.rerender(<Probe value={v} delay={300} />);
     }
     // Each rerender resets the timer: 3 × 100ms < 300ms → still "a".
     expect(outputs[outputs.length - 1]).toBe("a");
@@ -141,11 +117,11 @@ describe("useDebounce(value, delay)", () => {
   });
 
   it("clears its timer on unmount (no update, no throw when time advances)", () => {
-    render(<Probe value="a" delay={300} />);
+    h.render(<Probe value="a" delay={300} />);
     act(() => {
       vi.advanceTimersByTime(100);
     });
-    render(<Probe value="b" delay={300} />);
+    h.rerender(<Probe value="b" delay={300} />);
     // One pending debounce timer scheduled by the value change.
     expect(vi.getTimerCount()).toBe(1);
     cleanup();
@@ -172,7 +148,7 @@ describe("useDebouncedCallback(cb, delay)", () => {
 
   it("fires once after the quiet period, with the LAST call's args", () => {
     const cb = vi.fn();
-    render(<CallbackProbe cb={cb} delay={300} />);
+    h.render(<CallbackProbe cb={cb} delay={300} />);
     handle.current!("first");
     handle.current!("second");
     act(() => {
@@ -189,7 +165,7 @@ describe("useDebouncedCallback(cb, delay)", () => {
 
   it("resets the timer on every call (a burst fires exactly once)", () => {
     const cb = vi.fn();
-    render(<CallbackProbe cb={cb} delay={300} />);
+    h.render(<CallbackProbe cb={cb} delay={300} />);
     handle.current!("x");
     act(() => {
       vi.advanceTimersByTime(200);
@@ -207,14 +183,14 @@ describe("useDebouncedCallback(cb, delay)", () => {
 
   it("schedules with the NEW delay after the delay prop changes", () => {
     const cb = vi.fn();
-    render(<CallbackProbe cb={cb} delay={100} />);
+    h.render(<CallbackProbe cb={cb} delay={100} />);
     handle.current!("old-delay");
     act(() => {
       vi.advanceTimersByTime(100);
     });
     expect(cb).toHaveBeenCalledTimes(1);
 
-    render(<CallbackProbe cb={cb} delay={300} />);
+    h.rerender(<CallbackProbe cb={cb} delay={300} />);
     handle.current!("new-delay");
     act(() => {
       vi.advanceTimersByTime(299);
@@ -230,14 +206,14 @@ describe("useDebouncedCallback(cb, delay)", () => {
   it("a cb identity change does NOT reset the pending timer, but the LATEST cb fires", () => {
     const cb1 = vi.fn();
     const cb2 = vi.fn();
-    render(<CallbackProbe cb={cb1} delay={100} />);
+    h.render(<CallbackProbe cb={cb1} delay={100} />);
     handle.current!("arg");
     act(() => {
       vi.advanceTimersByTime(50);
     });
     // Rerender with a different callback mid-window (fresh closure every
     // render is the normal case in components).
-    render(<CallbackProbe cb={cb2} delay={100} />);
+    h.rerender(<CallbackProbe cb={cb2} delay={100} />);
     // Complete the ORIGINAL 100ms window (only 50ms remain). If the rerender
     // had restarted the timer, nothing would have fired yet.
     act(() => {
@@ -250,7 +226,7 @@ describe("useDebouncedCallback(cb, delay)", () => {
 
   it("can schedule again after firing (timer slot is released)", () => {
     const cb = vi.fn();
-    render(<CallbackProbe cb={cb} delay={100} />);
+    h.render(<CallbackProbe cb={cb} delay={100} />);
     handle.current!("one");
     act(() => {
       vi.advanceTimersByTime(100);

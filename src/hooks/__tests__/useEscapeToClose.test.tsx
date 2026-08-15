@@ -1,11 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { act, type ReactElement } from "react";
-import { createRoot, type Root } from "react-dom/client";
-// React 19 only runs `act`'s effect-flushing behavior when this flag is set;
-// we render via react-dom/client directly (no @testing-library/react). Mirrors
-// useDebounce.test.tsx.
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
+import { act } from "react";
+// Shared createRoot + act harness (also sets IS_REACT_ACT_ENVIRONMENT).
+import { reactHarness } from "../../test/react";
 import { useState } from "react";
 import { useEscapeToClose } from "../useEscapeToClose";
 
@@ -29,14 +25,7 @@ function Probe({
   return null;
 }
 
-function mount(
-  element: ReactElement,
-  container: HTMLElement,
-): Root {
-  const root = createRoot(container);
-  act(() => root.render(element));
-  return root;
-}
+const h = reactHarness();
 
 function pressEscape(): void {
   act(() => {
@@ -46,37 +35,30 @@ function pressEscape(): void {
 
 describe("useEscapeToClose", () => {
   it("closes on Escape", () => {
-    const container = document.createElement("div");
     const onClose = vi.fn();
-    const root = mount(<Probe active onClose={onClose} />, container);
+    h.render(<Probe active onClose={onClose} />);
     pressEscape();
     expect(onClose).toHaveBeenCalledTimes(1);
-    act(() => root.unmount());
+    h.unmount();
   });
 
   it("no listener while inactive", () => {
-    const container = document.createElement("div");
     const onClose = vi.fn();
-    const root = mount(<Probe active={false} onClose={onClose} />, container);
+    h.render(<Probe active={false} onClose={onClose} />);
     pressEscape();
     expect(onClose).not.toHaveBeenCalled();
-    act(() => root.unmount());
+    h.unmount();
   });
 
   it("ignoreWhile swallows Escape without closing (busy guard)", () => {
-    const container = document.createElement("div");
     const onClose = vi.fn();
-    const root = mount(
-      <Probe active onClose={onClose} ignoreWhile={() => true} />,
-      container,
-    );
+    h.render(<Probe active onClose={onClose} ignoreWhile={() => true} />);
     pressEscape();
     expect(onClose).not.toHaveBeenCalled();
-    act(() => root.unmount());
+    h.unmount();
   });
 
   it("re-arms when active flips true after mount", () => {
-    const container = document.createElement("div");
     const onClose = vi.fn();
     let open = false;
     function Toggle() {
@@ -87,14 +69,14 @@ describe("useEscapeToClose", () => {
         <button onClick={() => setActive(true)}>open</button>
       );
     }
-    const root = mount(<Toggle />, container);
+    h.render(<Toggle />);
     pressEscape(); // inactive — nothing to close
     expect(onClose).not.toHaveBeenCalled();
-    const button = container.querySelector("button")!;
+    const button = h.container.querySelector("button")!;
     act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(open).toBe(true);
     pressEscape(); // now active — closes
     expect(onClose).toHaveBeenCalledTimes(1);
-    act(() => root.unmount());
+    h.unmount();
   });
 });

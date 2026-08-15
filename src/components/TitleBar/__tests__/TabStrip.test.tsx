@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
+import { reactHarness } from "../../../test/react";
 
 const mocks = vi.hoisted(() => ({
   activate: vi.fn(),
@@ -44,24 +41,19 @@ vi.mock("react-i18next", () => ({
 
 import { TabStrip } from "../TabStrip";
 
-let container: HTMLDivElement;
-let root: Root;
+const h = reactHarness();
 
 beforeEach(() => {
   mocks.activate.mockReset();
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  root = createRoot(container);
-  act(() => root.render(<TabStrip />));
+  h.render(<TabStrip />);
 });
 
 afterEach(() => {
-  act(() => root.unmount());
-  container.remove();
+  h.cleanup();
 });
 
 const tabs = () =>
-  Array.from(container.querySelectorAll<HTMLElement>('[role="tab"]'));
+  Array.from(h.container.querySelectorAll<HTMLElement>('[role="tab"]'));
 
 function press(element: HTMLElement, key: string) {
   act(() => {

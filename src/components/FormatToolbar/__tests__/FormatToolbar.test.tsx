@@ -1,15 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
 // Initialize i18next so `useTranslation("formatToolbar")` resolves real labels
 // (the toolbar now translates button titles via t(button.id)); without this the
 // rendered title would be the raw key, not the English label the assertions pin.
 import "../../../i18n";
-// React 19 only runs `act`'s effect-flushing + warning behavior when this flag
-// is set. @testing-library/react sets it automatically; since we render via
-// react-dom/client directly, we opt in here so renders/clicks are fully
-// flushed before assertions.
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+// Shared createRoot + act harness (also sets IS_REACT_ACT_ENVIRONMENT).
+import { reactHarness } from "../../../test/react";
 import { FormatToolbar, dispatchAction } from "../FormatToolbar";
 import {
   FORMAT_BUTTON_GROUPS,
@@ -95,33 +91,12 @@ const makeMockApi = (): FormatApi & {
 
 const FAKE_TAB = { id: "doc-1", path: null } as unknown as Tab;
 
-// Minimal DOM container + root, with afterEach cleanup to avoid leaking across
-// tests (jsdom persists between files but not within a single root).
-let container: HTMLDivElement | null = null;
-let root: Root | null = null;
+// Shared DOM container + root (react-dom/client via the test harness, which
+// also sets IS_REACT_ACT_ENVIRONMENT); the module-level afterEach unmounts to
+// avoid leaking across tests.
+const h = reactHarness();
 
-const render = (ui: React.ReactElement): HTMLDivElement => {
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  const r = createRoot(container);
-  root = r;
-  act(() => {
-    r.render(ui);
-  });
-  return container;
-};
-
-const cleanup = () => {
-  if (root !== null && container !== null) {
-    const r = root;
-    act(() => {
-      r.unmount();
-    });
-    container.remove();
-  }
-  root = null;
-  container = null;
-};
+afterEach(() => h.cleanup());
 
 // ----------------------------------------------------------------------------
 // dispatchAction — the pure dispatch matrix
@@ -245,10 +220,8 @@ describe("dispatchAction — per-kind dispatch", () => {
 // ----------------------------------------------------------------------------
 
 describe("FormatToolbar — rendered structure", () => {
-  beforeEach(cleanup);
-
   it("renders a toolbar with role=toolbar and the right aria-label", () => {
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={makeMockApi()}
         tab={FAKE_TAB}
@@ -262,7 +235,7 @@ describe("FormatToolbar — rendered structure", () => {
   });
 
   it("renders exactly 16 buttons", () => {
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={makeMockApi()}
         tab={FAKE_TAB}
@@ -274,7 +247,7 @@ describe("FormatToolbar — rendered structure", () => {
   });
 
   it("renders exactly 3 dividers (between 4 groups)", () => {
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={makeMockApi()}
         tab={FAKE_TAB}
@@ -286,7 +259,7 @@ describe("FormatToolbar — rendered structure", () => {
   });
 
   it("every button carries its label as the title (tooltip)", () => {
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={makeMockApi()}
         tab={FAKE_TAB}
@@ -303,7 +276,7 @@ describe("FormatToolbar — rendered structure", () => {
   });
 
   it("buttons render in the documented group + button order", () => {
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={makeMockApi()}
         tab={FAKE_TAB}
@@ -322,10 +295,8 @@ describe("FormatToolbar — rendered structure", () => {
 // ----------------------------------------------------------------------------
 
 describe("FormatToolbar — disabled state", () => {
-  beforeEach(cleanup);
-
   it("disables every button when disabled=true", () => {
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={makeMockApi()}
         tab={FAKE_TAB}
@@ -340,7 +311,7 @@ describe("FormatToolbar — disabled state", () => {
   });
 
   it("disables every button when api=null (defensive)", () => {
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={null}
         tab={FAKE_TAB}
@@ -354,7 +325,7 @@ describe("FormatToolbar — disabled state", () => {
   });
 
   it("enables every button when api + tab present and not disabled", () => {
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={makeMockApi()}
         tab={FAKE_TAB}
@@ -373,8 +344,6 @@ describe("FormatToolbar — disabled state", () => {
 // ----------------------------------------------------------------------------
 
 describe("FormatToolbar — click wires to the right FormatApi method", () => {
-  beforeEach(cleanup);
-
   // Helper: find a button by its label's title attribute and click it.
   const clickByTitle = (container: HTMLElement, title: string) => {
     const btn = container.querySelector<HTMLButtonElement>(
@@ -388,7 +357,7 @@ describe("FormatToolbar — click wires to the right FormatApi method", () => {
 
   it("Bold (wrap) → toggleWrap('*', '*', 'bold') (idempotent)", () => {
     const api = makeMockApi();
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={api}
         tab={FAKE_TAB}
@@ -405,7 +374,7 @@ describe("FormatToolbar — click wires to the right FormatApi method", () => {
 
   it("Heading 1 (linePrefix) → toggleLinePrefix('= ')", () => {
     const api = makeMockApi();
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={api}
         tab={FAKE_TAB}
@@ -419,7 +388,7 @@ describe("FormatToolbar — click wires to the right FormatApi method", () => {
 
   it("Code block (replace) → replaceSelection('```lang\\n\\n```\\n')", () => {
     const api = makeMockApi();
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={api}
         tab={FAKE_TAB}
@@ -433,7 +402,7 @@ describe("FormatToolbar — click wires to the right FormatApi method", () => {
 
   it("a disabled button does not dispatch", () => {
     const api = makeMockApi();
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={api}
         tab={FAKE_TAB}
@@ -450,8 +419,6 @@ describe("FormatToolbar — click wires to the right FormatApi method", () => {
 // ----------------------------------------------------------------------------
 
 describe("FormatToolbar — aria-pressed state", () => {
-  beforeEach(cleanup);
-
   // Helper: find a button by title.
   const findByTitle = (container: HTMLElement, title: string) => {
     const btn = container.querySelector<HTMLButtonElement>(
@@ -465,7 +432,7 @@ describe("FormatToolbar — aria-pressed state", () => {
     const api = makeMockApi();
     // Simulate the caret sitting inside `*…*` (bold) but not `_…_` (italic).
     api.spies.isInsideWrap.mockImplementation((prefix) => prefix === "*");
-    const c = render(
+    const c = h.render(
       <FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />,
     );
     expect(findByTitle(c, "Bold").getAttribute("aria-pressed")).toBe("true");
@@ -476,7 +443,7 @@ describe("FormatToolbar — aria-pressed state", () => {
     const api = makeMockApi();
     // Simulate every selected line already carrying `= ` (H1) but not `== `.
     api.spies.isLinePrefixActive.mockImplementation((p) => p === "= ");
-    const c = render(
+    const c = h.render(
       <FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />,
     );
     expect(findByTitle(c, "Heading 1").getAttribute("aria-pressed")).toBe("true");
@@ -485,7 +452,7 @@ describe("FormatToolbar — aria-pressed state", () => {
 
   it("replace / custom buttons are never pressed", () => {
     const api = makeMockApi();
-    const c = render(
+    const c = h.render(
       <FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />,
     );
     // Code block is a `replace`; Insert table / image / link are `custom`.
@@ -497,7 +464,7 @@ describe("FormatToolbar — aria-pressed state", () => {
     const api = makeMockApi();
     api.spies.isInsideWrap.mockReturnValue(true);
     api.spies.isLinePrefixActive.mockReturnValue(true);
-    const c = render(
+    const c = h.render(
       <FormatToolbar api={api} tab={FAKE_TAB} disabled={true} />,
     );
     // computePressed short-circuits on isDisabled → every button reports false.
@@ -507,7 +474,7 @@ describe("FormatToolbar — aria-pressed state", () => {
   });
 
   it("api=null → no button is pressed", () => {
-    const c = render(
+    const c = h.render(
       <FormatToolbar api={null} tab={FAKE_TAB} disabled={false} />,
     );
     for (const b of Array.from(c.querySelectorAll("button.format-toolbar-button"))) {
@@ -517,7 +484,7 @@ describe("FormatToolbar — aria-pressed state", () => {
 
   it("subscribes to onDidChangeCursorPosition when api present + enabled", () => {
     const api = makeMockApi();
-    render(<FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />);
+    h.render(<FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />);
     expect(api.spies.onDidChangeCursorPosition).toHaveBeenCalledTimes(1);
     expect(api.spies.onDidChangeCursorPosition).toHaveBeenCalledWith(
       expect.any(Function),
@@ -526,11 +493,11 @@ describe("FormatToolbar — aria-pressed state", () => {
 
   it("does not subscribe when disabled or api is null", () => {
     const api = makeMockApi();
-    render(<FormatToolbar api={api} tab={FAKE_TAB} disabled={true} />);
+    h.render(<FormatToolbar api={api} tab={FAKE_TAB} disabled={true} />);
     expect(api.spies.onDidChangeCursorPosition).not.toHaveBeenCalled();
 
     const api2 = makeMockApi();
-    render(<FormatToolbar api={null} tab={FAKE_TAB} disabled={false} />);
+    h.render(<FormatToolbar api={null} tab={FAKE_TAB} disabled={false} />);
     expect(api2.spies.onDidChangeCursorPosition).not.toHaveBeenCalled();
   });
 
@@ -542,7 +509,7 @@ describe("FormatToolbar — aria-pressed state", () => {
     const api = makeMockApi();
     let inside = false;
     api.spies.isInsideWrap.mockImplementation(() => inside);
-    const c = render(
+    const c = h.render(
       <FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />,
     );
     const bold = () => findByTitle(c, "Bold");
@@ -564,10 +531,8 @@ describe("FormatToolbar — aria-pressed state", () => {
     const disposed = vi.fn();
     const api = makeMockApi();
     api.spies.onDidChangeCursorPosition.mockReturnValue(disposed);
-    render(<FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />);
-    act(() => {
-      cleanup();
-    });
+    h.render(<FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />);
+    h.cleanup();
     expect(disposed).toHaveBeenCalledTimes(1);
   });
 });
@@ -577,8 +542,6 @@ describe("FormatToolbar — aria-pressed state", () => {
 // ----------------------------------------------------------------------------
 
 describe("FormatToolbar — link flow", () => {
-  beforeEach(cleanup);
-
   // Find a button by its title attribute and click it (portal modal renders
   // into document.body, but the toolbar buttons live in the container).
   const clickLink = (container: HTMLElement) => {
@@ -633,7 +596,7 @@ describe("FormatToolbar — link flow", () => {
   it("clicking Link captures the selection as the modal's initial label", () => {
     const api = makeMockApi();
     api.spies.getSelectionText.mockReturnValue("click here");
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={api}
         tab={FAKE_TAB}
@@ -651,7 +614,7 @@ describe("FormatToolbar — link flow", () => {
   it("typed label + selection present → replaceSelection with full #link(\"url\")[label]", () => {
     const api = makeMockApi();
     api.spies.getSelectionText.mockReturnValue("click here");
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={api}
         tab={FAKE_TAB}
@@ -670,7 +633,7 @@ describe("FormatToolbar — link flow", () => {
   it("no typed label + selection present → wrapSelection around the selection", () => {
     const api = makeMockApi();
     api.spies.getSelectionText.mockReturnValue("click here");
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={api}
         tab={FAKE_TAB}
@@ -691,7 +654,7 @@ describe("FormatToolbar — link flow", () => {
   it("no typed label + no selection → bare #link(\"url\") via replaceSelection", () => {
     const api = makeMockApi();
     api.spies.getSelectionText.mockReturnValue(""); // no selection
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={api}
         tab={FAKE_TAB}
@@ -709,7 +672,7 @@ describe("FormatToolbar — link flow", () => {
 
   it("escapes the URL via escapeTypstStr", () => {
     const api = makeMockApi();
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={api}
         tab={FAKE_TAB}
@@ -723,7 +686,7 @@ describe("FormatToolbar — link flow", () => {
 
   it("confirming the modal closes it", () => {
     const api = makeMockApi();
-    const c = render(
+    const c = h.render(
       <FormatToolbar
         api={api}
         tab={FAKE_TAB}
@@ -748,8 +711,6 @@ describe("FormatToolbar — link flow", () => {
 // ----------------------------------------------------------------------------
 
 describe("FormatToolbar — table flow", () => {
-  beforeEach(cleanup);
-
   const clickTableButton = (container: HTMLElement) => {
     const btn = container.querySelector<HTMLButtonElement>(
       'button.format-toolbar-button[title="Insert table"]',
@@ -762,7 +723,7 @@ describe("FormatToolbar — table flow", () => {
 
   it("clicking Insert table mounts the TableGridPicker portal", () => {
     const api = makeMockApi();
-    const c = render(
+    const c = h.render(
       <FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />,
     );
     expect(document.body.querySelector(".table-grid-picker")).toBeNull();
@@ -772,7 +733,7 @@ describe("FormatToolbar — table flow", () => {
 
   it("selecting a 3×2 grid inserts buildTableSnippet(3, 2) via replaceSelection", () => {
     const api = makeMockApi();
-    const c = render(
+    const c = h.render(
       <FormatToolbar api={api} tab={FAKE_TAB} disabled={false} />,
     );
     clickTableButton(c);
@@ -798,7 +759,7 @@ describe("FormatToolbar — table flow", () => {
   });
 
   it("the table button is disabled when the toolbar is disabled", () => {
-    const c = render(
+    const c = h.render(
       <FormatToolbar api={makeMockApi()} tab={FAKE_TAB} disabled={true} />,
     );
     const btn = c.querySelector<HTMLButtonElement>(

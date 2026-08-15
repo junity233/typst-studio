@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+import { reactHarness } from "../../../../test/react";
 
 const mocks = vi.hoisted(() => ({
   openDialog: vi.fn(),
@@ -112,8 +110,7 @@ vi.mock("react-i18next", () => ({
 
 import { PackageDetail } from "../PackageDetail";
 
-let container: HTMLDivElement;
-let root: Root;
+const h = reactHarness();
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -131,23 +128,16 @@ beforeEach(async () => {
   mocks.confirm.mockReturnValue(true);
   mocks.dialogConfirm.mockResolvedValue("confirm");
 
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  root = createRoot(container);
-  await act(async () => {
-    root.render(<PackageDetail />);
-    await Promise.resolve();
-  });
+  await h.renderAsync(<PackageDetail />);
 });
 
 afterEach(() => {
-  act(() => root.unmount());
-  container.remove();
+  h.cleanup();
   vi.unstubAllGlobals();
 });
 
 async function clickUseTemplate() {
-  const button = Array.from(container.querySelectorAll("button")).find(
+  const button = Array.from(h.container.querySelectorAll("button")).find(
     (el) => el.textContent === "useTemplate",
   );
   expect(button).toBeDefined();

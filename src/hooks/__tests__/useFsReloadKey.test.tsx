@@ -1,11 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, type ReactElement } from "react";
-import { createRoot, type Root } from "react-dom/client";
-// React 19 only runs `act`'s effect-flushing behavior when this flag is set;
-// we render via react-dom/client directly (no @testing-library/react). Mirrors
-// useEscapeToClose.test.tsx.
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
+import { act } from "react";
+// Shared createRoot + act harness (also sets IS_REACT_ACT_ENVIRONMENT).
+import { reactHarness } from "../../test/react";
 import { useFsReloadKey } from "../useFsReloadKey";
 
 /**
@@ -30,11 +26,10 @@ function Probe({ path, onKey }: { path: string; onKey: (key: number) => void }) 
   return null;
 }
 
-function mountProbe(onKey: (key: number) => void): Root {
-  const container = document.createElement("div");
-  const root = createRoot(container);
-  act(() => root.render(<Probe path="/w/a.png" onKey={onKey} /> as ReactElement));
-  return root;
+const h = reactHarness();
+
+function mountProbe(onKey: (key: number) => void): void {
+  h.render(<Probe path="/w/a.png" onKey={onKey} />);
 }
 
 describe("useFsReloadKey", () => {
@@ -44,26 +39,26 @@ describe("useFsReloadKey", () => {
 
   it("starts at 0 and bumps on a change to the watched path", () => {
     const keys: number[] = [];
-    const root = mountProbe((k) => keys.push(k));
+    mountProbe((k) => keys.push(k));
     expect(keys[0]).toBe(0);
     act(() => emit?.(["/w/a.png"]));
     expect(keys[keys.length - 1]).toBe(1);
-    act(() => root.unmount());
+    h.unmount();
   });
 
   it("bumps on a generic refresh (empty paths)", () => {
     const keys: number[] = [];
-    const root = mountProbe((k) => keys.push(k));
+    mountProbe((k) => keys.push(k));
     act(() => emit?.([]));
     expect(keys[keys.length - 1]).toBe(1);
-    act(() => root.unmount());
+    h.unmount();
   });
 
   it("does NOT bump for an unrelated path", () => {
     const keys: number[] = [];
-    const root = mountProbe((k) => keys.push(k));
+    mountProbe((k) => keys.push(k));
     act(() => emit?.(["/w/other/b.typ"]));
     expect(keys).toEqual([0]);
-    act(() => root.unmount());
+    h.unmount();
   });
 });

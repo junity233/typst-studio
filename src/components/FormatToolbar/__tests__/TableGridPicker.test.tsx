@@ -1,13 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
 // Initialize i18next so the picker's size label resolves to its plural form
 // with the row/col count (the test asserts the count appears in the label).
 import "../../../i18n";
-// React 19 only runs `act`'s effect-flushing + warning behavior when this flag
-// is set. We render via react-dom/client directly (no @testing-library/react),
-// so opt in here. Mirrors FormatToolbar.test.tsx.
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+// Shared createRoot + act harness (also sets IS_REACT_ACT_ENVIRONMENT).
+import { reactHarness } from "../../../test/react";
 import { TableGridPicker } from "../TableGridPicker";
 
 /**
@@ -23,31 +20,9 @@ import { TableGridPicker } from "../TableGridPicker";
  *  - Esc → onCancel. Outside pointerdown → onCancel.
  */
 
-let container: HTMLDivElement | null = null;
-let root: Root | null = null;
-
-const render = (ui: React.ReactElement): HTMLDivElement => {
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  const r = createRoot(container);
-  root = r;
-  act(() => {
-    r.render(ui);
-  });
-  return container;
-};
-
-const cleanup = () => {
-  if (root !== null && container !== null) {
-    const r = root;
-    act(() => {
-      r.unmount();
-    });
-    container.remove();
-  }
-  root = null;
-  container = null;
-};
+// The picker portals into document.body, so cells land in `document.body`, not
+// the harness container.
+const h = reactHarness();
 
 const ANCHOR = { x: 100, y: 200 };
 
@@ -61,10 +36,10 @@ const cell = (n: number): HTMLElement => {
 };
 
 describe("TableGridPicker", () => {
-  beforeEach(cleanup);
+  afterEach(() => h.cleanup());
 
   it("renders an 8×8 grid (64 cells) in a portal", () => {
-    render(
+    h.render(
       <TableGridPicker anchor={ANCHOR} onSelect={() => {}} onCancel={() => {}} />,
     );
     const cells = document.body.querySelectorAll(".table-grid-cell");
@@ -72,7 +47,7 @@ describe("TableGridPicker", () => {
   });
 
   it("highlights the rectangle from origin to the hovered cell", () => {
-    render(
+    h.render(
       <TableGridPicker anchor={ANCHOR} onSelect={() => {}} onCancel={() => {}} />,
     );
     // Hover cell at grid position (r=2, c=3) → index = 2*8 + 3 = 19.
@@ -88,7 +63,7 @@ describe("TableGridPicker", () => {
   });
 
   it("updates the size label to 'rows × cols' on hover", () => {
-    render(
+    h.render(
       <TableGridPicker anchor={ANCHOR} onSelect={() => {}} onCancel={() => {}} />,
     );
     const label = () => document.body.querySelector(".table-grid-picker-label");
@@ -105,7 +80,7 @@ describe("TableGridPicker", () => {
 
   it("click on a cell → onSelect(rows, cols) with the hovered size", () => {
     const onSelect = vi.fn();
-    render(
+    h.render(
       <TableGridPicker anchor={ANCHOR} onSelect={onSelect} onCancel={() => {}} />,
     );
     // Hover cell (r=1, c=1) → index 9 → size 2×2.
@@ -120,7 +95,7 @@ describe("TableGridPicker", () => {
 
   it("Escape key → onCancel", () => {
     const onCancel = vi.fn();
-    render(
+    h.render(
       <TableGridPicker anchor={ANCHOR} onSelect={() => {}} onCancel={onCancel} />,
     );
     act(() => {
@@ -131,7 +106,7 @@ describe("TableGridPicker", () => {
 
   it("pointerdown outside the picker → onCancel", () => {
     const onCancel = vi.fn();
-    render(
+    h.render(
       <TableGridPicker anchor={ANCHOR} onSelect={() => {}} onCancel={onCancel} />,
     );
     // A pointerdown on document.body (which is not inside the picker portal's
@@ -149,7 +124,7 @@ describe("TableGridPicker", () => {
 
   it("window scroll → onCancel", () => {
     const onCancel = vi.fn();
-    render(
+    h.render(
       <TableGridPicker anchor={ANCHOR} onSelect={() => {}} onCancel={onCancel} />,
     );
     act(() => {
@@ -160,7 +135,7 @@ describe("TableGridPicker", () => {
 
   it("window resize → onCancel", () => {
     const onCancel = vi.fn();
-    render(
+    h.render(
       <TableGridPicker anchor={ANCHOR} onSelect={() => {}} onCancel={onCancel} />,
     );
     act(() => {
@@ -171,7 +146,7 @@ describe("TableGridPicker", () => {
 
   it("pointerdown inside the picker does NOT cancel", () => {
     const onCancel = vi.fn();
-    render(
+    h.render(
       <TableGridPicker anchor={ANCHOR} onSelect={() => {}} onCancel={onCancel} />,
     );
     act(() => {
@@ -183,7 +158,7 @@ describe("TableGridPicker", () => {
   });
 
   it("positions itself at the clamped anchor via inline left/top", () => {
-    render(
+    h.render(
       <TableGridPicker anchor={ANCHOR} onSelect={() => {}} onCancel={() => {}} />,
     );
     const el = document.body.querySelector<HTMLElement>(".table-grid-picker");

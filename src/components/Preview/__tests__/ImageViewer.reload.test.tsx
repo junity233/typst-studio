@@ -1,9 +1,7 @@
 import { afterEach, beforeAll, beforeEach, afterAll, describe, expect, it, vi } from "vitest";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
+// Shared createRoot + act harness (also sets IS_REACT_ACT_ENVIRONMENT).
+import { reactHarness } from "../../../test/react";
 
 // Viewer path under test (single-backslash Windows form). A TS constant is used
 // because JSX ATTRIBUTE string literals do not process backslash escapes —
@@ -56,8 +54,7 @@ afterAll(() => {
   URL.revokeObjectURL = originalRevokeObjectURL;
 });
 
-let container: HTMLDivElement;
-let root: Root;
+const h = reactHarness();
 
 beforeEach(async () => {
   mocks.handlers.length = 0;
@@ -65,17 +62,11 @@ beforeEach(async () => {
   mocks.readFileBytesCached.mockImplementation(
     () => Promise.resolve(new Uint8Array([1, 2, 3])),
   );
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  root = createRoot(container);
-  await act(async () => {
-    root.render(<ImageViewer path={VIEWER_PATH} />);
-  });
+  await h.renderAsync(<ImageViewer path={VIEWER_PATH} />);
 });
 
 afterEach(() => {
-  act(() => root.unmount());
-  container.remove();
+  h.cleanup();
 });
 
 /** Emit a `fs_changed` payload to every registered listener. */
@@ -89,15 +80,15 @@ describe("ImageViewer reloads on fs_changed", () => {
   it("loads once on mount and renders the image", () => {
     expect(mocks.readFileBytesCached).toHaveBeenCalledTimes(1);
     expect(mocks.readFileBytesCached).toHaveBeenCalledWith(VIEWER_PATH);
-    expect(container.querySelector("img")).not.toBeNull();
+    expect(h.container.querySelector("img")).not.toBeNull();
   });
 
   it("reloads when the payload contains an equivalent path (case/separator-insensitive)", async () => {
-    const before = container.querySelector("img")?.getAttribute("src");
+    const before = h.container.querySelector("img")?.getAttribute("src");
     await emitFsChanged(["D:/unrelated.txt", "d:/ws/IMG/chart.PNG"]);
 
     expect(mocks.readFileBytesCached).toHaveBeenCalledTimes(2);
-    const after = container.querySelector("img")?.getAttribute("src");
+    const after = h.container.querySelector("img")?.getAttribute("src");
     expect(after).not.toBe(before);
   });
 

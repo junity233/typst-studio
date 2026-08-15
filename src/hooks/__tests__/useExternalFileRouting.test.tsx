@@ -1,12 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
 import type { OpenedDocument } from "../../lib/types";
 import type { Document } from "../../store/documentsStore";
-// React 19 only runs `act`'s effect-flushing + warning behavior when this flag
-// is set. We render via react-dom/client directly (no @testing-library/react),
-// so opt in here. Mirrors DiffCompareView.test.tsx.
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+// Shared createRoot + act harness (also sets IS_REACT_ACT_ENVIRONMENT).
+import { reactHarness } from "../../test/react";
 
 /**
  * FIRST tests for `useExternalFileRouting` — single-instance file routing
@@ -111,8 +108,7 @@ function Routing() {
   return null;
 }
 
-let container: HTMLDivElement | null = null;
-let root: Root | null = null;
+const h = reactHarness();
 
 /** Macrotask boundary — flushes every pending microtask chain once. */
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -152,12 +148,7 @@ describe("useExternalFileRouting (single-instance file routing)", () => {
     // assert on its (non-)invocation.
     alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
 
-    container = document.createElement("div");
-    document.body.appendChild(container);
-    root = createRoot(container);
-    act(() => {
-      root!.render(<Routing />);
-    });
+    h.render(<Routing />);
     // Let both subscribe promises resolve (handlers are captured during the
     // effect, synchronously; the unlisten resolution needs a flush).
     await act(async () => {
@@ -168,15 +159,7 @@ describe("useExternalFileRouting (single-instance file routing)", () => {
   });
 
   afterEach(() => {
-    if (root !== null && container !== null) {
-      const r = root;
-      act(() => {
-        r.unmount();
-      });
-      container.remove();
-    }
-    root = null;
-    container = null;
+    h.cleanup();
     vi.restoreAllMocks();
     resetStores();
   });

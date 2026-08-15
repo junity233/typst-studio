@@ -1,12 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
 // Initialize i18next so the modal's translated labels/placeholders resolve.
 import "../../../i18n";
-// React 19 only flushes effects under act when this flag is set (matches
-// LinkModal.test.tsx / FormatToolbar.test.tsx).
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
+// Shared createRoot + act harness (also sets IS_REACT_ACT_ENVIRONMENT).
+import { reactHarness } from "../../../test/react";
 
 // --- Mocks ------------------------------------------------------------------
 // KaTeX renders into the DOM via innerHTML; under jsdom its output is junk, so
@@ -59,30 +56,12 @@ import { useFormulaModalStore } from "../../../store/formulaModalStore";
  * with the wrapped Typst math and then closes. KaTeX + the IPC are mocked.
  */
 
-let container: HTMLDivElement | null = null;
-let root: Root | null = null;
-
-const render = (): HTMLElement => {
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  const r = createRoot(container);
-  root = r;
-  act(() => {
-    r.render(<FormulaModal />);
-  });
-  return document.body;
-};
+// The modal portals into document.body, so the getters below query
+// `document.body` rather than the harness container.
+const h = reactHarness();
 
 const cleanup = () => {
-  if (root !== null && container !== null) {
-    const r = root;
-    act(() => {
-      r.unmount();
-    });
-    container.remove();
-  }
-  root = null;
-  container = null;
+  h.cleanup();
   // Reset to the closed state. Use the store's own close() so the action
   // methods are preserved (a bare setState with only data fields is also fine
   // since Zustand shallow-merges, but this is unambiguous).
@@ -111,12 +90,12 @@ describe("FormulaModal", () => {
   afterEach(cleanup);
 
   it("renders nothing when the store is closed", () => {
-    render();
+    h.render(<FormulaModal />);
     expect(getTextarea()).toBeNull();
   });
 
   it("renders the textarea + preview + insert button when opened", () => {
-    render();
+    h.render(<FormulaModal />);
     act(() => {
       useFormulaModalStore.getState().open();
     });
@@ -126,7 +105,7 @@ describe("FormulaModal", () => {
   });
 
   it("autofocuses the textarea on open", () => {
-    render();
+    h.render(<FormulaModal />);
     act(() => {
       useFormulaModalStore.getState().open();
     });
@@ -141,7 +120,7 @@ describe("FormulaModal", () => {
   });
 
   it("seeds the textarea from the store's initialLatex", () => {
-    render();
+    h.render(<FormulaModal />);
     act(() => {
       useFormulaModalStore.getState().open("\\frac{a}{b}");
     });
@@ -149,7 +128,7 @@ describe("FormulaModal", () => {
   });
 
   it("Esc closes the modal", () => {
-    render();
+    h.render(<FormulaModal />);
     act(() => {
       useFormulaModalStore.getState().open();
     });
@@ -162,7 +141,7 @@ describe("FormulaModal", () => {
   });
 
   it("clicking the overlay closes the modal", () => {
-    render();
+    h.render(<FormulaModal />);
     act(() => {
       useFormulaModalStore.getState().open();
     });
@@ -173,7 +152,7 @@ describe("FormulaModal", () => {
   });
 
   it("Cancel button closes the modal", () => {
-    render();
+    h.render(<FormulaModal />);
     act(() => {
       useFormulaModalStore.getState().open();
     });
@@ -184,7 +163,7 @@ describe("FormulaModal", () => {
   });
 
   it("empty input disables the insert button", () => {
-    render();
+    h.render(<FormulaModal />);
     act(() => {
       useFormulaModalStore.getState().open();
     });
@@ -192,7 +171,7 @@ describe("FormulaModal", () => {
   });
 
   it("typing LaTeX + Insert → converts, wraps inline, inserts at cursor, closes", async () => {
-    render();
+    h.render(<FormulaModal />);
     act(() => {
       useFormulaModalStore.getState().open();
     });
@@ -215,7 +194,7 @@ describe("FormulaModal", () => {
   });
 
   it("display mode wraps as `$ … $`", async () => {
-    render();
+    h.render(<FormulaModal />);
     act(() => {
       useFormulaModalStore.getState().open();
     });
@@ -252,7 +231,7 @@ describe("FormulaModal", () => {
     fakeEditor.getModelLines.mockReturnValue(["$x + ", ""]);
     // Echo the converted body for "+1" so the bare-insert assertion holds.
     convertMock.mockResolvedValue({ output: "+1", warnings: [] });
-    render();
+    h.render(<FormulaModal />);
     act(() => {
       useFormulaModalStore.getState().open();
     });
@@ -278,7 +257,7 @@ describe("FormulaModal", () => {
     const saved = mod.editorApiRef.current;
     mod.editorApiRef.current = null;
     try {
-      render();
+      h.render(<FormulaModal />);
       act(() => {
         useFormulaModalStore.getState().open();
       });
