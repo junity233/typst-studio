@@ -189,41 +189,9 @@ mod tests {
     /// Test revision-wait matching the pre-setting default (10s). Generous so
     /// the "wait for compile" tests don't flake under load.
     const TEST_REVISION_WAIT: Duration = Duration::from_secs(10);
-    use crate::domain::diagnostics::Diagnostic;
+    use crate::service::test_support::{wait_until, NoopEmitter};
 
     fn make_editor() -> Arc<EditorService> {
-        struct NoopEmitter;
-        impl crate::service::editor_service::Emitter for NoopEmitter {
-            fn emit_compiled(
-                &self,
-                _: DocumentId,
-                _: u64,
-                _: usize,
-                _: bool,
-                _: Vec<crate::ipc::events::ChangedPage>,
-                _: Vec<crate::domain::source_map::LineRect>,
-                _: Vec<crate::domain::outline::OutlineNode>,
-                _: u64,
-            ) {
-            }
-            fn emit_diagnostics(&self, _: DocumentId, _: u64, _: Vec<Diagnostic>) {}
-            fn emit_status(
-                &self,
-                _: DocumentId,
-                _: u64,
-                _: crate::ipc::events::CompileStatus,
-                _: Option<u64>,
-            ) {
-            }
-            fn emit_conflict(
-                &self,
-                _: DocumentId,
-                _: u64,
-                _: crate::domain::document::ConflictState,
-                _: Option<String>,
-            ) {
-            }
-        }
         Arc::new(EditorService::new(Arc::new(NoopEmitter)))
     }
 
@@ -236,17 +204,20 @@ mod tests {
         // Wait for the initial async compile (revision 0) to finish so last_doc
         // is populated AND last_compiled_revision == 0.
         let id = meta.id;
-        for _ in 0..80 {
-            let done = editor
-                .last_compile_state(id)
-                .map(|s| s.last_compiled_revision == Some(0))
-                .unwrap_or(false);
-            if done {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
+        wait_until(80, || compiled_revision_is(&editor, id, 0));
         (editor, export, id, 0)
+    }
+
+    /// `last_compiled_revision` for `id` has reached `revision`.
+    fn compiled_revision_is(
+        editor: &EditorService,
+        id: DocumentId,
+        revision: u64,
+    ) -> bool {
+        editor
+            .last_compile_state(id)
+            .map(|s| s.last_compiled_revision == Some(revision))
+            .unwrap_or(false)
     }
 
     #[test]
@@ -300,16 +271,7 @@ mod tests {
         let export = ExportService::new(editor.clone());
         let meta = editor.new_tab(Some("#assert(false)\n".into()));
         // Wait for the failed compile (revision 0) to land.
-        for _ in 0..80 {
-            let done = editor
-                .last_compile_state(meta.id)
-                .map(|s| s.last_compiled_revision == Some(0))
-                .unwrap_or(false);
-            if done {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
+        wait_until(80, || compiled_revision_is(&editor, meta.id, 0));
         assert!(export.render_pdf_with_options(meta.id, 0, TEST_REVISION_WAIT, &PdfOptions::default()).is_err());
     }
 
@@ -317,17 +279,9 @@ mod tests {
 
     /// Wait until the tab's `last_compiled_revision` reaches `revision`.
     fn wait_for_revision(editor: &EditorService, id: DocumentId, revision: u64) {
-        for _ in 0..120 {
-            let done = editor
-                .last_compile_state(id)
-                .map(|s| s.last_compiled_revision == Some(revision))
-                .unwrap_or(false);
-            if done {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
+        if !wait_until(120, || compiled_revision_is(editor, id, revision)) {
+            panic!("revision {revision} never compiled for {id}");
         }
-        panic!("revision {revision} never compiled for {id}");
     }
 
     #[test]

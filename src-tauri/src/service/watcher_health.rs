@@ -192,64 +192,19 @@ impl Drop for WatcherHealth {
 mod tests {
     use super::*;
     use crate::domain::document::{ConflictState, DocumentId};
-    use crate::domain::diagnostics::Diagnostic;
-    use crate::domain::source_map::LineRect;
     use crate::service::editor_service::Emitter;
     use crate::service::tab_state::TabState;
-    use parking_lot::Mutex as PlMutex;
+    use crate::service::test_support::NoopEmitter;
     use std::fs;
     use std::path::PathBuf;
 
-    /// A recording emitter that captures conflict emits (the observable
-    /// side-effect of handle_external_change finding a divergence).
-    #[derive(Default)]
-    struct ConflictsEmitter {
-        conflicts: PlMutex<Vec<(DocumentId, ConflictState)>>,
-    }
-
-    impl Emitter for ConflictsEmitter {
-        fn emit_compiled(
-            &self,
-            _id: DocumentId,
-            _revision: u64,
-            _page_count: usize,
-            _full: bool,
-            _changed_pages: Vec<crate::ipc::events::ChangedPage>,
-            _line_map: Vec<LineRect>,
-            _outline: Vec<crate::domain::outline::OutlineNode>,
-            _duration_ms: u64,
-        ) {
-        }
-        fn emit_diagnostics(
-            &self,
-            _id: DocumentId,
-            _revision: u64,
-            _diagnostics: Vec<Diagnostic>,
-        ) {
-        }
-        fn emit_status(
-            &self,
-            _id: DocumentId,
-            _revision: u64,
-            _status: crate::domain::compile_status::CompileStatus,
-            _duration_ms: Option<u64>,
-        ) {
-        }
-        fn emit_conflict(
-            &self,
-            id: DocumentId,
-            _revision: u64,
-            conflict: ConflictState,
-            _disk_content: Option<String>,
-        ) {
-            self.conflicts.lock().push((id, conflict));
-        }
-    }
-
     /// Open a clean doc backed by a real temp file, with the registry + tabs
     /// wired exactly as the editor does. Returns the store + id + file path.
+    /// (No emitter assertions here — the polls assert on store state — so a
+    /// no-op emitter suffices; the old local `ConflictsEmitter` recorded
+    /// conflicts nothing ever read.)
     fn open_doc(text: &str) -> (TabStore, DocumentId, PathBuf) {
-        let emitter: Arc<dyn Emitter> = Arc::new(ConflictsEmitter::default());
+        let emitter: Arc<dyn Emitter> = Arc::new(NoopEmitter);
         let store = TabStore::new(emitter);
         let id = DocumentId::new();
         let dir = std::env::temp_dir().join(format!("typst-wh-{}", uuid::Uuid::new_v4()));
@@ -325,7 +280,7 @@ mod tests {
 
     #[test]
     fn watcher_failed_flag_toggles() {
-        let emitter: Arc<dyn Emitter> = Arc::new(ConflictsEmitter::default());
+        let emitter: Arc<dyn Emitter> = Arc::new(NoopEmitter);
         let store = TabStore::new(emitter);
         let health = WatcherHealth::start(store);
         assert!(!health.watcher_failed(), "starts healthy");

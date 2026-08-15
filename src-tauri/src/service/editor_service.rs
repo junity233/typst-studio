@@ -384,147 +384,11 @@ impl EditorService {
 mod tests {
     use super::*;
     use crate::render::pipeline::RenderPipeline;
-    use parking_lot::Mutex;
+    use crate::service::test_support::{wait_until, CapturedEvent, CapturingEmitter};
 
     // --- test doubles --------------------------------------------------------
-
-    /// An event captured by `CapturingEmitter`, for assertion in tests.
-    ///
-    /// The payload fields mirror the real wire format so a test asserting on
-    /// specifics (pages, diagnostics, status) has the data available, even
-    /// though current assertions only check event presence + id. The `revision`
-    /// field is the document revision the result corresponds to (§7).
-    #[allow(dead_code)]
-    #[derive(Clone, Debug)]
-    enum CapturedEvent {
-        Compiled {
-            id: DocumentId,
-            revision: u64,
-            page_count: usize,
-            full: bool,
-            changed_pages: Vec<crate::ipc::events::ChangedPage>,
-            line_map: Vec<LineRect>,
-            outline: Vec<crate::domain::outline::OutlineNode>,
-            duration_ms: u64,
-        },
-        Diagnostics {
-            id: DocumentId,
-            revision: u64,
-            diagnostics: Vec<Diagnostic>,
-        },
-        Status {
-            id: DocumentId,
-            revision: u64,
-            status: CompileStatus,
-            duration_ms: Option<u64>,
-        },
-        Conflict {
-            id: DocumentId,
-            revision: u64,
-            conflict: ConflictState,
-            disk_content: Option<String>,
-        },
-    }
-
-    /// Records every emit into a vector so tests can assert on the event stream.
-    struct CapturingEmitter {
-        events: Mutex<Vec<CapturedEvent>>,
-    }
-
-    impl CapturingEmitter {
-        fn new() -> Self {
-            Self {
-                events: Mutex::new(Vec::new()),
-            }
-        }
-        fn snapshot(&self) -> Vec<CapturedEvent> {
-            self.events.lock().clone()
-        }
-        fn clear(&self) {
-            self.events.lock().clear();
-        }
-        fn statuses_for(&self, id: DocumentId) -> Vec<CompileStatus> {
-            self.snapshot()
-                .into_iter()
-                .filter_map(|e| match e {
-                    CapturedEvent::Status { id: eid, status, .. } if eid == id => Some(status),
-                    _ => None,
-                })
-                .collect()
-        }
-        /// Revisions of all `compiled` events for `id`, in emit order.
-        fn compiled_revisions_for(&self, id: DocumentId) -> Vec<u64> {
-            self.snapshot()
-                .into_iter()
-                .filter_map(|e| match e {
-                    CapturedEvent::Compiled { id: eid, revision, .. } if eid == id => Some(revision),
-                    _ => None,
-                })
-                .collect()
-        }
-        /// Conflict states emitted for `id`, in emit order.
-        fn conflicts_for(&self, id: DocumentId) -> Vec<ConflictState> {
-            self.snapshot()
-                .into_iter()
-                .filter_map(|e| match e {
-                    CapturedEvent::Conflict { id: eid, conflict, .. } if eid == id => Some(conflict),
-                    _ => None,
-                })
-                .collect()
-        }
-    }
-
-    impl Emitter for CapturingEmitter {
-        fn emit_compiled(
-            &self,
-            id: DocumentId,
-            revision: u64,
-            page_count: usize,
-            full: bool,
-            changed_pages: Vec<crate::ipc::events::ChangedPage>,
-            line_map: Vec<LineRect>,
-            outline: Vec<crate::domain::outline::OutlineNode>,
-            duration_ms: u64,
-        ) {
-            self.events.lock().push(CapturedEvent::Compiled {
-                id,
-                revision,
-                page_count,
-                full,
-                changed_pages,
-                line_map,
-                outline,
-                duration_ms,
-            });
-        }
-        fn emit_diagnostics(&self, id: DocumentId, revision: u64, diagnostics: Vec<Diagnostic>) {
-            self.events
-                .lock()
-                .push(CapturedEvent::Diagnostics { id, revision, diagnostics });
-        }
-        fn emit_status(
-            &self,
-            id: DocumentId,
-            revision: u64,
-            status: CompileStatus,
-            duration_ms: Option<u64>,
-        ) {
-            self.events
-                .lock()
-                .push(CapturedEvent::Status { id, revision, status, duration_ms });
-        }
-        fn emit_conflict(
-            &self,
-            id: DocumentId,
-            revision: u64,
-            conflict: ConflictState,
-            disk_content: Option<String>,
-        ) {
-            self.events
-                .lock()
-                .push(CapturedEvent::Conflict { id, revision, conflict, disk_content });
-        }
-    }
+    // The recording emitter + captured-event type live in
+    // `service::test_support`, shared across the service test suites.
 
     /// Build an `EditorService` backed by a capturing emitter.
     fn make_service() -> (EditorService, Arc<CapturingEmitter>) {
@@ -537,17 +401,9 @@ mod tests {
     /// after a timeout). Needed because `new_tab` compiles asynchronously on
     /// the worker thread.
     fn wait_for_compiled(emitter: &CapturingEmitter, id: DocumentId) {
-        for _ in 0..60 {
-            let got = emitter
-                .snapshot()
-                .iter()
-                .any(|e| matches!(e, CapturedEvent::Compiled { id: eid, .. } if *eid == id));
-            if got {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
+        if !wait_until(60, || emitter.compiled_ids().contains(&id)) {
+            panic!("no compiled event for {id} within timeout");
         }
-        panic!("no compiled event for {id} within timeout");
     }
 
     /// Render a document's pages to a single SVG string for equality checks.

@@ -2094,67 +2094,18 @@ impl DocumentService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::compile_status::CompileStatus;
-    use crate::domain::diagnostics::Diagnostic;
     use crate::domain::document::DocumentOrigin;
-    use crate::domain::source_map::LineRect;
     use crate::service::compile_service::CompileService;
     use crate::service::editor_service::Emitter;
     use crate::service::tab_store::TabStore;
-    use parking_lot::Mutex;
-
-    /// Minimal capturing emitter — records whether a `compiled` event for
-    /// `id` has been seen, plus each event's `full` flag (enough for these
-    /// service-level tests).
-    struct SpyEmitter {
-        compiled_ids: Mutex<Vec<DocumentId>>,
-        /// `(id, full)` per emit_compiled — used by the dedup-reopen replay
-        /// assertion.
-        compiled_full: Mutex<Vec<(DocumentId, bool)>>,
-    }
-    impl Emitter for SpyEmitter {
-        fn emit_compiled(
-            &self,
-            id: DocumentId,
-            _revision: u64,
-            _page_count: usize,
-            full: bool,
-            _changed_pages: Vec<crate::ipc::events::ChangedPage>,
-            _line_map: Vec<LineRect>,
-            _outline: Vec<crate::domain::outline::OutlineNode>,
-            _duration_ms: u64,
-        ) {
-            self.compiled_ids.lock().push(id);
-            self.compiled_full.lock().push((id, full));
-        }
-        fn emit_diagnostics(&self, _id: DocumentId, _revision: u64, _d: Vec<Diagnostic>) {}
-        fn emit_status(
-            &self,
-            _id: DocumentId,
-            _revision: u64,
-            _s: CompileStatus,
-            _d: Option<u64>,
-        ) {
-        }
-        fn emit_conflict(
-            &self,
-            _id: DocumentId,
-            _revision: u64,
-            _c: ConflictState,
-            _d: Option<String>,
-        ) {
-        }
-    }
+    use crate::service::test_support::{wait_until, CapturingEmitter};
 
     /// Build a wired pair of (DocumentService, CompileService) sharing one store,
     /// exactly as `EditorService::new` does — but exercising the services
     /// directly, not through the facade. This proves they are real, working
     /// services rather than dead shells.
     fn make_services() -> (Arc<DocumentService>, Arc<CompileService>) {
-        let emitter: Arc<dyn Emitter> = Arc::new(SpyEmitter {
-            compiled_ids: Mutex::new(Vec::new()),
-            compiled_full: Mutex::new(Vec::new()),
-        });
+        let emitter: Arc<dyn Emitter> = Arc::new(CapturingEmitter::new());
         let store = TabStore::new(emitter);
         let document = Arc::new(DocumentService::new(store.clone()));
         let compile = Arc::new(CompileService::new(store));
@@ -2162,15 +2113,13 @@ mod tests {
         (document, compile)
     }
 
-    /// Like [`make_services`] but also hands back the concrete [`SpyEmitter`] so
+    /// Like [`make_services`] but also hands back the concrete emitter so
     /// a test can inspect which `compiled` events were emitted (e.g. the
     /// reactivate-replay assertion). The emitter is the same `Arc` shared with
-    /// the services, so its `compiled_ids` reflect everything the services emit.
-    fn make_services_with_spy() -> (Arc<DocumentService>, Arc<CompileService>, Arc<SpyEmitter>) {
-        let emitter = Arc::new(SpyEmitter {
-            compiled_ids: Mutex::new(Vec::new()),
-            compiled_full: Mutex::new(Vec::new()),
-        });
+    /// the services, so its captured events reflect everything they emit.
+    fn make_services_with_spy()
+    -> (Arc<DocumentService>, Arc<CompileService>, Arc<CapturingEmitter>) {
+        let emitter = Arc::new(CapturingEmitter::new());
         let store = TabStore::new(emitter.clone());
         let document = Arc::new(DocumentService::new(store.clone()));
         let compile = Arc::new(CompileService::new(store));
@@ -2181,13 +2130,9 @@ mod tests {
     fn wait_for_compiled(compile: &CompileService, id: DocumentId) {
         // last_doc is Some only after a compile completes and stored its result,
         // so polling it is a reliable "compile finished" signal.
-        for _ in 0..60 {
-            if compile.last_doc(id).is_some() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
+        if !wait_until(60, || compile.last_doc(id).is_some()) {
+            panic!("no compiled document for {id} within timeout");
         }
-        panic!("no compiled document for {id} within timeout");
     }
 
     #[test]
@@ -2482,12 +2427,7 @@ mod tests {
         let meta = document.new_tab(None);
         document.update_text(meta.id, "#assert(false)\n".into()).unwrap();
         // Wait for the worker to land the failing compile.
-        for _ in 0..40 {
-            if !compile.get_diagnostics(meta.id).is_empty() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
+        wait_until(40, || !compile.get_diagnostics(meta.id).is_empty());
         let diags = compile.get_diagnostics(meta.id);
         assert!(!diags.is_empty(), "failing source must surface diagnostics via CompileService");
         let state = compile.last_compile_state(meta.id).expect("state present");
@@ -3223,7 +3163,7 @@ mod tests {
         // The replayed `compiled` event was emitted for this doc (the original
         // initial-compile event plus the reactivate replay both land here).
         assert!(
-            emitter.compiled_ids.lock().contains(&meta.id),
+            emitter.compiled_ids().contains(&meta.id),
             "reactivate should replay a compiled event for a doc with a cached last_doc"
         );
     }
@@ -3263,7 +3203,7 @@ mod tests {
             .unwrap();
         wait_for_compiled(&compile, meta.id);
         // Isolate the dedup reopen: drop the initial compile's events.
-        emitter.compiled_full.lock().clear();
+        emitter.clear();
 
         // Reopen the same path — dedup returns the SAME doc (no new tab)…
         let again = document
@@ -3272,7 +3212,7 @@ mod tests {
         assert_eq!(again.id, meta.id, "reopen must dedup to the existing doc");
 
         // …and replays the cached compile as a full payload.
-        let fulls = emitter.compiled_full.lock().clone();
+        let fulls = emitter.compiled_full();
         assert!(
             fulls.iter().any(|(id, full)| *id == meta.id && *full),
             "dedup reopen must emit a full compiled replay, got {fulls:?}"

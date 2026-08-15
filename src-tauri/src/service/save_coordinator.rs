@@ -421,58 +421,13 @@ mod tests {
     use crate::service::compile_service::CompileService;
     use crate::service::editor_service::Emitter;
     use crate::service::tab_store::TabStore;
-    use parking_lot::Mutex;
-
-    /// Minimal capturing emitter — only counts compiled events for the wait
-    /// helper (we don't assert on save events here).
-    struct SpyEmitter {
-        compiled_ids: Mutex<Vec<DocumentId>>,
-    }
-    impl Emitter for SpyEmitter {
-        fn emit_compiled(
-            &self,
-            id: DocumentId,
-            _revision: u64,
-            _page_count: usize,
-            _full: bool,
-            _changed_pages: Vec<crate::ipc::events::ChangedPage>,
-            _line_map: Vec<crate::domain::source_map::LineRect>,
-            _outline: Vec<crate::domain::outline::OutlineNode>,
-            _duration_ms: u64,
-        ) {
-            self.compiled_ids.lock().push(id);
-        }
-        fn emit_diagnostics(
-            &self,
-            _id: DocumentId,
-            _revision: u64,
-            _d: Vec<crate::domain::diagnostics::Diagnostic>,
-        ) {
-        }
-        fn emit_status(
-            &self,
-            _id: DocumentId,
-            _revision: u64,
-            _s: crate::domain::compile_status::CompileStatus,
-            _d: Option<u64>,
-        ) {
-        }
-        fn emit_conflict(
-            &self,
-            _id: DocumentId,
-            _revision: u64,
-            _c: crate::domain::document::ConflictState,
-            _d: Option<String>,
-        ) {
-        }
-    }
+    use crate::service::test_support::{wait_until, NoopEmitter};
 
     /// Build a wired (DocumentService, CompileService, SaveCoordinator) trio for
     /// tests — no AppHandle, so `set_state` only updates the in-memory map.
+    /// These tests never assert on events, so a no-op emitter suffices.
     fn make_coordinator() -> (Arc<DocumentService>, SaveCoordinator) {
-        let emitter: Arc<dyn Emitter> = Arc::new(SpyEmitter {
-            compiled_ids: Mutex::new(Vec::new()),
-        });
+        let emitter: Arc<dyn Emitter> = Arc::new(NoopEmitter);
         let store = TabStore::new(emitter);
         let document = Arc::new(DocumentService::new(store.clone()));
         let compile = Arc::new(CompileService::new(store));
@@ -485,14 +440,10 @@ mod tests {
     /// wired before we save).
     fn wait_compiled(document: &DocumentService, id: DocumentId) {
         // The shared store's compile result is Some once the first compile lands.
-        for _ in 0..60 {
-            if document.tab_text(id).is_some() {
-                // tab exists; compile may still be in flight but save doesn't
-                // depend on it. Just give it a beat to settle.
-                std::thread::sleep(std::time::Duration::from_millis(15));
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
+        if wait_until(60, || document.tab_text(id).is_some()) {
+            // tab exists; compile may still be in flight but save doesn't
+            // depend on it. Just give it a beat to settle.
+            std::thread::sleep(std::time::Duration::from_millis(15));
         }
     }
 

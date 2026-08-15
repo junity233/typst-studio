@@ -626,81 +626,13 @@ mod tests {
     use crate::domain::document::{ConflictState, DocumentId};
     use crate::domain::source_map::LineRect;
     use crate::service::compile_supervisor::PANIC_BACKOFF_THRESHOLD;
+    use crate::service::test_support::CapturingEmitter;
     use parking_lot::Mutex as PlMutex;
     use std::time::Duration;
 
-    /// Recorded per `emit_status`: (document, revision, status, duration_ms).
-    type StatusLog = Vec<(DocumentId, u64, CompileStatus, Option<u64>)>;
-
-    /// A recording emitter that captures every status emit into a shared vec.
-    /// Used to assert the supervision behavior without a Tauri AppHandle. The
-    /// other emit methods are no-ops — only `emit_status` matters for the
-    /// supervision assertions.
-    #[derive(Default)]
-    struct RecordingEmitter {
-        statuses: PlMutex<StatusLog>,
-        /// Captured (page_count, full, changed_count) per emit_compiled, for
-        /// the incremental-rendering perf test.
-        compiled: PlMutex<Vec<(usize, bool, usize)>>,
-    }
-
-    impl Emitter for RecordingEmitter {
-        fn emit_compiled(
-            &self,
-            _id: DocumentId,
-            _revision: u64,
-            page_count: usize,
-            full: bool,
-            changed_pages: Vec<crate::ipc::events::ChangedPage>,
-            _line_map: Vec<LineRect>,
-            _outline: Vec<crate::domain::outline::OutlineNode>,
-            _duration_ms: u64,
-        ) {
-            self.compiled
-                .lock()
-                .push((page_count, full, changed_pages.len()));
-            let _ = _line_map;
-            let _ = _outline;
-        }
-        fn emit_diagnostics(
-            &self,
-            _id: DocumentId,
-            _revision: u64,
-            _diagnostics: Vec<Diagnostic>,
-        ) {
-        }
-        fn emit_status(
-            &self,
-            id: DocumentId,
-            revision: u64,
-            status: CompileStatus,
-            duration_ms: Option<u64>,
-        ) {
-            self.statuses.lock().push((id, revision, status, duration_ms));
-        }
-        fn emit_conflict(
-            &self,
-            _id: DocumentId,
-            _revision: u64,
-            _conflict: ConflictState,
-            _disk_content: Option<String>,
-        ) {
-        }
-    }
-
-    /// Build a minimal tab + tabs map + supervisor for a do_compile_for_tab call.
-    /// Returns the typed emitter (for assertions) and the trait-object view (for
-    /// passing into `do_compile_for_tab`, which expects `&Arc<dyn Emitter>`).
-    fn fixtures(
-        cap: usize,
-    ) -> (
-        Arc<TabState>,
-        Arc<RecordingEmitter>,
-        Arc<dyn Emitter>,
-        CompileSupervisor,
-        super::super::tab_store::Tabs,
-        DocumentId,
-    ) {
+    /// Build one minimal tab (meta + `Hello` text) — the shared body of
+    /// `fixtures` and the panic-tail test.
+    fn make_tab() -> (Arc<TabState>, DocumentId) {
         let id = DocumentId::new();
         let meta = crate::domain::document::DocumentMeta {
             id,
@@ -713,13 +645,34 @@ mod tests {
             kind: crate::domain::document::DocumentKind::Typst,
             hidden: false,
         };
-        let tab = Arc::new(TabState::with_meta(meta, "Hello".into()));
-        let emitter_typed = Arc::new(RecordingEmitter::default());
-        let emitter_dyn: Arc<dyn Emitter> = emitter_typed.clone();
-        let supervisor = CompileSupervisor::with_cap(cap);
+        (Arc::new(TabState::with_meta(meta, "Hello".into())), id)
+    }
+
+    /// A single-tab tabs map (the `Tabs` alias shape `do_compile_for_tab` takes).
+    fn tabs_with(tab: &Arc<TabState>, id: DocumentId) -> super::super::tab_store::Tabs {
         let mut map = std::collections::HashMap::new();
         map.insert(id, tab.clone());
-        let tabs = Arc::new(parking_lot::RwLock::new(map));
+        Arc::new(parking_lot::RwLock::new(map))
+    }
+
+    /// Build a minimal tab + tabs map + supervisor for a do_compile_for_tab call.
+    /// Returns the typed emitter (for assertions) and the trait-object view (for
+    /// passing into `do_compile_for_tab`, which expects `&Arc<dyn Emitter>`).
+    fn fixtures(
+        cap: usize,
+    ) -> (
+        Arc<TabState>,
+        Arc<CapturingEmitter>,
+        Arc<dyn Emitter>,
+        CompileSupervisor,
+        super::super::tab_store::Tabs,
+        DocumentId,
+    ) {
+        let (tab, id) = make_tab();
+        let emitter_typed = Arc::new(CapturingEmitter::new());
+        let emitter_dyn: Arc<dyn Emitter> = emitter_typed.clone();
+        let supervisor = CompileSupervisor::with_cap(cap);
+        let tabs = tabs_with(&tab, id);
         (tab, emitter_typed, emitter_dyn, supervisor, tabs, id)
     }
 
@@ -739,7 +692,7 @@ mod tests {
             &DependencyGraph::new(),
             id,
         );
-        let statuses = emitter_typed.statuses.lock().clone();
+        let statuses = emitter_typed.statuses();
         // Must end in Success (plain text compiles fine).
         assert!(
             statuses.iter().any(|(_, _, s, _)| *s == CompileStatus::Success),
@@ -772,7 +725,7 @@ mod tests {
         tab.world.set_text(src);
 
         // First compile: full.
-        emitter_typed.compiled.lock().clear();
+        emitter_typed.clear();
         CompileService::do_compile_for_tab(
             &tab,
             &emitter_dyn,
@@ -781,7 +734,7 @@ mod tests {
             &DependencyGraph::new(),
             id,
         );
-        let first = emitter_typed.compiled.lock().clone();
+        let first = emitter_typed.compiled_summaries();
         assert!(first.len() == 1, "expected one emit_compiled, got {first:?}");
         let (page_count, full1, changed1) = first[0];
         println!("\n=== incremental_rendering_skips_unchanged_pages ===");
@@ -801,7 +754,7 @@ mod tests {
         );
 
         // Second compile: should be incremental.
-        emitter_typed.compiled.lock().clear();
+        emitter_typed.clear();
         CompileService::do_compile_for_tab(
             &tab,
             &emitter_dyn,
@@ -810,7 +763,7 @@ mod tests {
             &DependencyGraph::new(),
             id,
         );
-        let second = emitter_typed.compiled.lock().clone();
+        let second = emitter_typed.compiled_summaries();
         assert!(second.len() == 1, "expected one emit, got {second:?}");
         let (page_count2, full2, changed2) = second[0];
         println!(
@@ -843,7 +796,7 @@ mod tests {
             &DependencyGraph::new(),
             id,
         );
-        let statuses = emitter_typed.statuses.lock().clone();
+        let statuses = emitter_typed.statuses();
         assert!(statuses.is_empty(), "closed doc must not emit, got {statuses:?}");
     }
 
@@ -876,7 +829,7 @@ mod tests {
         );
 
         assert!(
-            emitter_typed.statuses.lock().is_empty(),
+            emitter_typed.statuses().is_empty(),
             "an old worker must not emit after TabState replacement"
         );
     }
@@ -893,7 +846,7 @@ mod tests {
             &DependencyGraph::new(),
             id,
         );
-        let statuses = emitter_typed.statuses.lock().clone();
+        let statuses = emitter_typed.statuses();
         assert!(
             statuses.is_empty(),
             "shutdown must suppress all emits, got {statuses:?}"
@@ -920,7 +873,7 @@ mod tests {
             id,
         );
         // Skipped: no statuses at all (the backoff check returns before emit).
-        let statuses = emitter_typed.statuses.lock().clone();
+        let statuses = emitter_typed.statuses();
         assert!(
             statuses.is_empty(),
             "backoff must skip the compile entirely, got {statuses:?}"
@@ -940,7 +893,7 @@ mod tests {
     fn render_tail_panic_is_caught_and_surfaces_error() {
         #[derive(Default)]
         struct PanicOnCompiledEmitter {
-            statuses: PlMutex<StatusLog>,
+            statuses: PlMutex<Vec<crate::service::test_support::StatusLog>>,
             diagnostics: PlMutex<Vec<String>>,
         }
         impl Emitter for PanicOnCompiledEmitter {
@@ -986,25 +939,11 @@ mod tests {
             }
         }
 
-        let id = DocumentId::new();
-        let meta = crate::domain::document::DocumentMeta {
-            id,
-            path: None,
-            title: "t".into(),
-            dirty: false,
-            origin: crate::domain::document::DocumentOrigin::Untitled,
-            revision: 1,
-            conflict: ConflictState::None,
-            kind: crate::domain::document::DocumentKind::Typst,
-            hidden: false,
-        };
-        let tab = Arc::new(TabState::with_meta(meta, "Hello".into()));
+        let (tab, id) = make_tab();
         let emitter_typed = Arc::new(PanicOnCompiledEmitter::default());
         let emitter_dyn: Arc<dyn Emitter> = emitter_typed.clone();
         let supervisor = CompileSupervisor::with_cap(2);
-        let mut map = std::collections::HashMap::new();
-        map.insert(id, tab.clone());
-        let tabs = Arc::new(parking_lot::RwLock::new(map));
+        let tabs = tabs_with(&tab, id);
 
         CompileService::do_compile_for_tab(
             &tab,
