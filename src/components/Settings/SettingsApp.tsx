@@ -34,7 +34,7 @@ import {
   pickPath,
 } from "../../lib/tauri";
 import { alertIpcError } from "../../lib/ipc-error";
-import { useDialogStore } from "../../store/dialogStore";
+import { confirmAction } from "../../store/dialogStore";
 import i18n from "../../i18n";
 import {
   localizedCategoryLabel,
@@ -366,7 +366,7 @@ function ActionControl({ def }: { def: SettingDef }) {
     // WKWebView (see Explorer.tsx's doDeleteWithConfirm).
     if (def.action === "clearRecentWorkspaces" || def.action === "clearRecoveryData") {
       const alsoRecovery = def.action === "clearRecoveryData";
-      const result = await useDialogStore.getState().confirm({
+      const ok = await confirmAction({
         title: localizedSettingLabel(def),
         message: alsoRecovery
           ? i18n.t("confirmClearRecovery", { ns: "errors" })
@@ -377,7 +377,7 @@ function ActionControl({ def }: { def: SettingDef }) {
         // stray Enter cannot confirm.
         danger: true,
       });
-      if (result !== "confirm") return;
+      if (!ok) return;
     }
     setBusy(true);
     try {

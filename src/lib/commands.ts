@@ -2,7 +2,7 @@ import { discardRecovery } from "./tauri";
 import { flushAndSaveAs, flushAndSaveInPlace } from "./saveDocument";
 import { useTabsStore } from "../store/tabsStore";
 import { useDocumentsStore } from "../store/documentsStore";
-import { useDialogStore } from "../store/dialogStore";
+import { confirmAction, useDialogStore } from "../store/dialogStore";
 import { useConflictDialogStore } from "../store/conflictDialogStore";
 import {
   formatSaveErrorMessage,
@@ -52,16 +52,17 @@ export async function saveTab(id: string): Promise<boolean> {
     }
     // For permission/readonly/path-occupied codes, offer Save As first.
     if (SAVE_AS_RECOVERY_CODES.has(err.code) && tab.path !== null) {
-      const choice = await useDialogStore.getState().confirm({
-        title: i18n.t("saveFailed.title", { ns: "dialog" }),
-        message: i18n.t("saveFailed.saveAsInstead", {
-          ns: "dialog",
-          reason: formatSaveErrorMessage(e),
-        }),
-        confirmLabel: i18n.t("saveAs", { ns: "common" }),
-        cancelLabel: i18n.t("cancel", { ns: "common" }),
-      });
-      if (choice === "confirm") {
+      if (
+        await confirmAction({
+          title: i18n.t("saveFailed.title", { ns: "dialog" }),
+          message: i18n.t("saveFailed.saveAsInstead", {
+            ns: "dialog",
+            reason: formatSaveErrorMessage(e),
+          }),
+          confirmLabel: i18n.t("saveAs", { ns: "common" }),
+          cancelLabel: i18n.t("cancel", { ns: "common" }),
+        })
+      ) {
         try {
           const saved = await flushAndSaveAs(id);
           useTabsStore.getState().markSaved(id, saved.path, saved.revision);

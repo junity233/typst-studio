@@ -7,7 +7,7 @@ import {
 } from "../../../store/projectConfigStore";
 import { useWorkspaceStore } from "../../../store/workspaceStore";
 import { useUiStore } from "../../../store/uiStore";
-import { useDialogStore } from "../../../store/dialogStore";
+import { confirmAction } from "../../../store/dialogStore";
 import { pickPath } from "../../../lib/tauri";
 import { toIpcError } from "../../../lib/ipc-error";
 import { relativeWithinWorkspace } from "../../../lib/workspacePath";
@@ -218,13 +218,13 @@ export function ProjectPanel() {
   };
 
   const handleClearMain = async () => {
-    const result = await useDialogStore.getState().confirm({
+    const ok = await confirmAction({
       title: t("confirmClearMainTitle"),
       message: t("confirmClearMainMessage"),
       confirmLabel: t("clearMainFile"),
       danger: true,
     });
-    if (result !== "confirm") return;
+    if (!ok) return;
     setForm((f) => ({ ...f, main: "" }));
     try {
       await setMainFile(null);
@@ -235,13 +235,13 @@ export function ProjectPanel() {
   };
 
   const handleDelete = async () => {
-    const result = await useDialogStore.getState().confirm({
+    const ok = await confirmAction({
       title: t("confirmDeleteTitle"),
       message: t("confirmDeleteMessage"),
       confirmLabel: t("deleteConfig"),
       danger: true,
     });
-    if (result !== "confirm") return;
+    if (!ok) return;
     try {
       await clear();
     } catch (e) {

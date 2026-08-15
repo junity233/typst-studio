@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { useDialogStore } from "../../../store/dialogStore";
+import { confirmAction } from "../../../store/dialogStore";
 import { usePackagesStore } from "../../../store/packagesStore";
 import i18n from "../../../i18n";
 
@@ -34,7 +34,7 @@ export function InstalledList() {
               onClick={async () => {
                 // Styled ConfirmDialog, not native confirm — window.confirm
                 // is dead in the macOS WKWebView (see Explorer.tsx).
-                const result = await useDialogStore.getState().confirm({
+                const ok = await confirmAction({
                   title: `${p.name} ${p.version}`,
                   message: t("confirmUninstall", { name: p.name, version: p.version }),
                   confirmLabel: t("uninstall"),
@@ -43,7 +43,7 @@ export function InstalledList() {
                   // on Cancel so a stray Enter cannot confirm.
                   danger: true,
                 });
-                if (result !== "confirm") return;
+                if (!ok) return;
                 if (await uninstall(p.name, p.version)) await loadInstalled();
               }}
             >

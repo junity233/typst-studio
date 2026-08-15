@@ -14,7 +14,7 @@ import {
   openWorkspaceByPath,
 } from "../../../lib/tauri";
 import { toIpcError, alertIpcError, extractDetailPaths } from "../../../lib/ipc-error";
-import { useDialogStore } from "../../../store/dialogStore";
+import { confirmAction } from "../../../store/dialogStore";
 import { editorApiRef } from "../../Editor/editorApiRef";
 import i18n from "../../../i18n";
 import { useActiveDocument } from "../../../store/tabsStore";
@@ -109,7 +109,7 @@ export function PackageDetail() {
    *  the macOS WKWebView, see Explorer.tsx) whether to overwrite existing
    *  files at the template destination. */
   const confirmOverwrite = async () => {
-    const result = await useDialogStore.getState().confirm({
+    return confirmAction({
       title: t("useTemplate"),
       message: t("confirmOverwrite"),
       confirmLabel: i18n.t("confirm", { ns: "common" }),
@@ -118,7 +118,6 @@ export function PackageDetail() {
       // stray Enter cannot confirm.
       danger: true,
     });
-    return result === "confirm";
   };
 
   const applyTemplate = async () => {

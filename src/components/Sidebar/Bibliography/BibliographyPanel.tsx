@@ -5,7 +5,7 @@ import { useDebounce } from "../../../hooks/useDebounce";
 import { useBibliographyStore } from "../../../store/bibliographyStore";
 import { useWorkspaceStore } from "../../../store/workspaceStore";
 import { useProjectConfigStore } from "../../../store/projectConfigStore";
-import { useDialogStore } from "../../../store/dialogStore";
+import { confirmAction } from "../../../store/dialogStore";
 import { joinWorkspacePath } from "../../../lib/workspacePath";
 import { editorApiRef } from "../../Editor/editorApiRef";
 import { BibEntryItem } from "./BibEntryItem";
@@ -161,14 +161,14 @@ export function BibliographyPanel({
   const handleDelete = useCallback(
     async (key: string) => {
       // Confirm BEFORE calling the store — the store just executes the delete.
-      const result = await useDialogStore.getState().confirm({
+      const ok = await confirmAction({
         title: t("confirmDeleteTitle"),
         message: t("confirmDeleteMessage", { key }),
         confirmLabel: t("delete"),
         cancelLabel: t("cancel"),
         danger: true,
       });
-      if (result === "confirm") {
+      if (ok) {
         void deleteEntry(key);
       }
     },

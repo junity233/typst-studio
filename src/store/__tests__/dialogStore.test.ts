@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useDialogStore } from "../dialogStore";
+import { confirmAction, useDialogStore } from "../dialogStore";
 
 describe("dialogStore", () => {
   beforeEach(() => {
@@ -26,5 +26,16 @@ describe("dialogStore", () => {
     useDialogStore.getState().resolve("cancel");
     await expect(second).resolves.toBe("cancel");
     expect(useDialogStore.getState().current).toBeNull();
+  });
+
+  it("confirmAction resolves true only on confirm (cancel and discard are false)", async () => {
+    for (const result of ["cancel", "discard"] as const) {
+      const pending = confirmAction({ title: "T", message: "M" });
+      useDialogStore.getState().resolve(result);
+      await expect(pending).resolves.toBe(false);
+    }
+    const pending = confirmAction({ title: "T", message: "M" });
+    useDialogStore.getState().resolve("confirm");
+    await expect(pending).resolves.toBe(true);
   });
 });

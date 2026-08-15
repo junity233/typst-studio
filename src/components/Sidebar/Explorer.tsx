@@ -23,7 +23,7 @@ import { useTabsStore, readAllDocuments } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { useFileClipboardStore, readClipboard } from "../../store/fileClipboardStore";
 import { useExplorerSelectionStore } from "../../store/explorerSelectionStore";
-import { useDialogStore } from "../../store/dialogStore";
+import { confirmAction } from "../../store/dialogStore";
 import { openFileByPath, revealInFinder, updateText } from "../../lib/tauri";
 import { toIpcError, alertIpcError, extractDetailPaths } from "../../lib/ipc-error";
 import i18n from "../../i18n";
@@ -75,7 +75,7 @@ async function doDeleteWithConfirm(
   confirmMessage: string,
   errKey: string,
 ) {
-  const result = await useDialogStore.getState().confirm({
+  const ok = await confirmAction({
     title: entry.name,
     message: confirmMessage,
     confirmLabel: i18n.t("delete", { ns: "common" }),
@@ -84,7 +84,7 @@ async function doDeleteWithConfirm(
     // dialog focused on Cancel so a stray Enter cannot confirm.
     danger: true,
   });
-  if (result !== "confirm") return;
+  if (!ok) return;
   try {
     await deleteFn(entry.relative);
   } catch (e) {

@@ -57,3 +57,15 @@ export const useDialogStore = create<DialogState>()((set, get) => ({
     current.resolve(result);
   },
 }));
+
+/**
+ * Boolean flavor of [`confirm`](DialogState.confirm) for the common
+ * "proceed or bail" shape: resolves `true` only when the user picked the
+ * confirm action. Call sites that need to distinguish a third "discard"
+ * choice keep using `confirm` directly.
+ */
+export async function confirmAction(
+  req: Omit<ConfirmRequest, "resolve">,
+): Promise<boolean> {
+  return (await useDialogStore.getState().confirm(req)) === "confirm";
+}
