@@ -367,6 +367,29 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
   );
 }
 
+/**
+ * Factory for the `on*` subscription wrappers below: binds one backend event
+ * name to the common shape `(payloadHandler) => Promise<UnlistenFn>`, with the
+ * event payload unwrapped before the handler sees it.
+ */
+function onEvent<P>(
+  eventName: string,
+): (handler: (payload: P) => void) => Promise<UnlistenFn> {
+  return (handler) => listen<P>(eventName, (event) => handler(event.payload));
+}
+
+/**
+ * Like `onEvent`, but projects the raw wire payload (e.g. unwraps `.config`)
+ * before the handler sees it — for events whose wire shape is a wrapper.
+ */
+function onProjectedEvent<P, V>(
+  eventName: string,
+  project: (payload: P) => V,
+): (handler: (value: V) => void) => Promise<UnlistenFn> {
+  return (handler) =>
+    listen<P>(eventName, (event) => handler(project(event.payload)));
+}
+
 function isMissingTauriRuntimeError(error: unknown): boolean {
   const message =
     error instanceof Error ? error.message : typeof error === "string" ? error : "";
@@ -843,45 +866,24 @@ export async function convertLatexToTypst(
 // --- Event subscriptions ----------------------------------------------------
 
 /** Subscribe to compiled (svg pages) events. Returns an unlisten function. */
-export async function onCompiled(
-  handler: (payload: CompiledPayload) => void,
-): Promise<UnlistenFn> {
-  return listen<CompiledPayload>("compiled", (e) => handler(e.payload));
-}
+export const onCompiled = onEvent<CompiledPayload>("compiled");
 
 /** Subscribe to diagnostics events. Returns an unlisten function. */
-export async function onDiagnostics(
-  handler: (payload: DiagnosticsPayload) => void,
-): Promise<UnlistenFn> {
-  return listen<DiagnosticsPayload>("diagnostics", (e) => handler(e.payload));
-}
+export const onDiagnostics = onEvent<DiagnosticsPayload>("diagnostics");
 
 /** Subscribe to status events. Returns an unlisten function. */
-export async function onStatus(
-  handler: (payload: StatusPayload) => void,
-): Promise<UnlistenFn> {
-  return listen<StatusPayload>("status", (e) => handler(e.payload));
-}
+export const onStatus = onEvent<StatusPayload>("status");
 
 /** Subscribe to LSP status events (connect/disconnect transitions). */
-export async function onLspStatus(
-  handler: (payload: LspStatusPayload) => void,
-): Promise<UnlistenFn> {
-  return listen<LspStatusPayload>("lsp_status", (e) => handler(e.payload));
-}
+export const onLspStatus = onEvent<LspStatusPayload>("lsp_status");
 
 /**
  * Subscribe to managed-tinymist-install events. Emitted on every download
  * progress tick (~1/MiB), each phase transition, and the final
  * installed/failed state.
  */
-export async function onTinymistInstall(
-  handler: (payload: TinymistInstallStatus) => void,
-): Promise<UnlistenFn> {
-  return listen<TinymistInstallStatus>("tinymist_install", (e) =>
-    handler(e.payload),
-  );
-}
+export const onTinymistInstall =
+  onEvent<TinymistInstallStatus>("tinymist_install");
 
 /**
  * Start (or join) the managed tinymist download into ~/.typststudio/.
@@ -898,11 +900,7 @@ export async function getTinymistInstall(): Promise<TinymistInstallStatus> {
 }
 
 /** Subscribe to filesystem-change events (live file-tree refresh). */
-export async function onFsChanged(
-  handler: (payload: FsChangedPayload) => void,
-): Promise<UnlistenFn> {
-  return listen<FsChangedPayload>("fs_changed", (e) => handler(e.payload));
-}
+export const onFsChanged = onEvent<FsChangedPayload>("fs_changed");
 
 /**
  * Subscribe to theme-list change events. Emitted by the backend watcher
@@ -910,22 +908,14 @@ export async function onFsChanged(
  * carrying the full refreshed theme list. The frontend replaces its picker
  * options and re-applies the current theme's CSS.
  */
-export async function onThemesChanged(
-  handler: (payload: ThemesChangedPayload) => void,
-): Promise<UnlistenFn> {
-  return listen<ThemesChangedPayload>("themes_changed", (e) => handler(e.payload));
-}
+export const onThemesChanged = onEvent<ThemesChangedPayload>("themes_changed");
 
 /**
  * Subscribe to docs-rebound events (§6.4). Emitted after a rename/move rebinds
  * open documents to their new paths; the handler mirrors the new path into the
  * frontend document store (tab title, breadcrumb, active-file highlight).
  */
-export async function onDocsRebound(
-  handler: (payload: DocsReboundPayload) => void,
-): Promise<UnlistenFn> {
-  return listen<DocsReboundPayload>("docs_rebound", (e) => handler(e.payload));
-}
+export const onDocsRebound = onEvent<DocsReboundPayload>("docs_rebound");
 
 /**
  * Subscribe to external-modification conflict events (§8.4). Emitted when the
@@ -933,11 +923,7 @@ export async function onDocsRebound(
  * that could not be auto-applied (dirty buffer → Modified; deleted → Missing).
  * `diskContent` is present on `Modified` so the UI can show a diff.
  */
-export async function onConflict(
-  handler: (payload: ConflictPayload) => void,
-): Promise<UnlistenFn> {
-  return listen<ConflictPayload>("conflict", (e) => handler(e.payload));
-}
+export const onConflict = onEvent<ConflictPayload>("conflict");
 
 /**
  * Subscribe to per-document save-state transitions (§5.3). The backend
@@ -945,20 +931,11 @@ export async function onConflict(
  * /`Failed` transition so the frontend can drive a saving indicator + red
  * save-failed status. The frontend mirrors these into `saveStateStore`.
  */
-export async function onSaveStateChanged(
-  handler: (payload: SaveStateChangedPayload) => void,
-): Promise<UnlistenFn> {
-  return listen<SaveStateChangedPayload>("save_state_changed", (e) =>
-    handler(e.payload),
-  );
-}
+export const onSaveStateChanged =
+  onEvent<SaveStateChangedPayload>("save_state_changed");
 
 /** Subscribe to native menu activation events. */
-export async function onMenuEvent(
-  handler: (payload: MenuEventPayload) => void,
-): Promise<UnlistenFn> {
-  return listen<MenuEventPayload>("menu_event", (e) => handler(e.payload));
-}
+export const onMenuEvent = onEvent<MenuEventPayload>("menu_event");
 
 // --- Settings ----------------------------------------------------------------
 
@@ -1057,13 +1034,9 @@ export async function openThemesDir(): Promise<string> {
  * successful `set_setting`, carrying the full runtime config object. Returns
  * an unlisten function (same shape as the other `on*` wrappers).
  */
-export async function onSettingsChanged(
-  handler: (data: Record<string, unknown>) => void,
-): Promise<UnlistenFn> {
-  return listen<Record<string, unknown>>("settings_changed", (e) =>
-    handler(e.payload),
-  );
-}
+export const onSettingsChanged = onEvent<Record<string, unknown>>(
+  "settings_changed",
+);
 
 // --- Project config (.typstpro) ---------------------------------------------
 
@@ -1121,13 +1094,10 @@ export async function listTypFiles(): Promise<string[]> {
  * external `.typstpro` edits picked up by the workspace watcher. The payload
  * carries the new config, or `null` when none exists.
  */
-export async function onProjectConfigChanged(
-  handler: (config: ProjectConfig | null) => void,
-): Promise<UnlistenFn> {
-  return listen<{ config: ProjectConfig | null }>("project_config_changed", (e) =>
-    handler(e.payload.config ?? null),
-  );
-}
+export const onProjectConfigChanged = onProjectedEvent<
+  { config: ProjectConfig | null },
+  ProjectConfig | null
+>("project_config_changed", (payload) => payload.config ?? null);
 
 /**
  * Subscribe to Settings window visibility. The backend broadcasts
@@ -1135,13 +1105,10 @@ export async function onProjectConfigChanged(
  * can show a modal overlay (it floats `always_on_top`, but Tauri has no native
  * cross-platform modal that blocks parent input).
  */
-export async function onSettingsWindow(
-  handler: (open: boolean) => void,
-): Promise<UnlistenFn> {
-  return listen<{ open: boolean }>("settings_window", (e) =>
-    handler(e.payload.open),
-  );
-}
+export const onSettingsWindow = onProjectedEvent<{ open: boolean }, boolean>(
+  "settings_window",
+  (payload) => payload.open,
+);
 
 /**
  * Subscribe to the main window's close request. The backend intercepts the OS
@@ -1162,24 +1129,16 @@ export async function onCloseRequested(
  * already open — activate its tab. Emitted by the single-instance plugin
  * callback when the canonical path matches an existing document.
  */
-export async function onFocusView(
-  handler: (payload: FocusViewPayload) => void,
-): Promise<UnlistenFn> {
-  return listen<FocusViewPayload>("focus_view", (e) => handler(e.payload));
-}
+export const onFocusView = onEvent<FocusViewPayload>("focus_view");
 
 /**
  * Subscribe to `open_external_file`: a second app instance requested a file
  * that is not yet open — open a new tab at the absolute `path` via the existing
  * `openFileByPath` flow. Emitted by the single-instance plugin callback.
  */
-export async function onOpenExternalFile(
-  handler: (payload: OpenExternalFilePayload) => void,
-): Promise<UnlistenFn> {
-  return listen<OpenExternalFilePayload>("open_external_file", (e) =>
-    handler(e.payload),
-  );
-}
+export const onOpenExternalFile = onEvent<OpenExternalFilePayload>(
+  "open_external_file",
+);
 
 // --- Startup problems (§6.5) ------------------------------------------------
 
@@ -1189,13 +1148,10 @@ export async function onOpenExternalFile(
  * carries a list of non-fatal problems for a non-modal banner. Empty list → no
  * event is emitted.
  */
-export async function onStartupProblems(
-  handler: (payload: StartupProblem[]) => void,
-): Promise<UnlistenFn> {
-  return listen<StartupProblemsPayload>("startup_problems", (e) =>
-    handler(e.payload.problems),
-  );
-}
+export const onStartupProblems = onProjectedEvent<
+  StartupProblemsPayload,
+  StartupProblem[]
+>("startup_problems", (payload) => payload.problems);
 
 // --- Session memory ----------------------------------------------------------
 
@@ -1276,13 +1232,9 @@ export async function setDirty(
  * disk). The frontend shows a `RecoveryDialog` with one row per snapshot.
  * Empty payload is never emitted — no event means no recovery offered.
  */
-export async function onRecoveryAvailable(
-  handler: (payload: RecoveryAvailablePayload) => void,
-): Promise<UnlistenFn> {
-  return listen<RecoveryAvailablePayload>("recovery_available", (e) =>
-    handler(e.payload),
-  );
-}
+export const onRecoveryAvailable = onEvent<RecoveryAvailablePayload>(
+  "recovery_available",
+);
 
 /**
  * Re-fetch the recoverable list (§5.1.3). The dialog already receives the list
