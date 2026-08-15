@@ -70,20 +70,27 @@ fn dir_filter<'a>(root: &'a Path, exclude: Option<&'a GlobSet>) -> impl Fn(&walk
     }
 }
 
-/// Recursively search `root` for lines matching `query`.
+/// The shared candidate-file walk underpinning `search`, `replace_candidates`,
+/// and `replace_compute` — the three must never drift on which files they
+/// visit. Yields `(workspace-relative forward-slashed path, absolute path)`
+/// for every file that passes the traversal filters:
 ///
-/// - Skips `IGNORED_DIRS` (same set as the Explorer tree).
-/// - Skips non-UTF-8 / unreadable files.
-/// - Caps per-file hits at `max_per_file` and total at `max_total`.
-pub fn search(
+/// - `dir_filter` (IGNORED_DIRS + exclude-glob directory pruning),
+/// - the `include` filename glob,
+/// - the per-relative-path exclude check,
+/// - the `target` pin (when set, every file but the target is skipped),
+/// - the byte-size guard: files larger than [`REPLACE_MAX_FILE_BYTES`] are
+///   skipped. The hit caps only bound the RESULT list, not the read; without
+///   this a multi-GB log/data file in the workspace would be fully buffered
+///   (and huge binary files would be fully read before UTF-8 validation
+///   rejects them).
+fn walk_candidates(
     root: &Path,
-    query: &SearchQuery,
     exclude: Option<&GlobSet>,
-) -> Result<Vec<SearchHit>> {
-    let matcher = build_matcher(query)?;
-    let include = query.include_glob.as_deref();
-    let mut hits: Vec<SearchHit> = Vec::new();
-
+    include: Option<&str>,
+    target: Option<&TargetRef>,
+) -> Vec<(String, PathBuf)> {
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
     for entry in walkdir::WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -110,20 +117,38 @@ pub fn search(
         if path_excluded(exclude, &rel, false) {
             continue;
         }
-        // Skip files too large to buffer wholesale — same ceiling as the
-        // replace path (see REPLACE_MAX_FILE_BYTES). The per-file/total hit
-        // caps only bound the RESULT list, not the read; without this a
-        // multi-GB log/data file in the workspace would be fully buffered.
-        // This also avoids full-size reads of huge binary files before UTF-8
-        // validation fails.
+        if let Some(t) = target {
+            if t.relative != rel {
+                continue;
+            }
+        }
         if let Ok(meta) = std::fs::metadata(path) {
             if meta.len() > REPLACE_MAX_FILE_BYTES {
                 continue;
             }
         }
+        out.push((rel, path.to_path_buf()));
+    }
+    out
+}
+
+/// Recursively search `root` for lines matching `query`.
+///
+/// - Skips `IGNORED_DIRS` (same set as the Explorer tree).
+/// - Skips non-UTF-8 / unreadable files.
+/// - Caps per-file hits at `max_per_file` and total at `max_total`.
+pub fn search(
+    root: &Path,
+    query: &SearchQuery,
+    exclude: Option<&GlobSet>,
+) -> Result<Vec<SearchHit>> {
+    let matcher = build_matcher(query)?;
+    let mut hits: Vec<SearchHit> = Vec::new();
+
+    for (rel, path) in walk_candidates(root, exclude, query.include_glob.as_deref(), None) {
         // Skip non-UTF-8 / unreadable files (best-effort: the Search view is
         // informational, never blocking).
-        let text = match std::fs::read_to_string(path) {
+        let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(_) => continue,
         };
@@ -651,51 +676,18 @@ pub(crate) fn replace_candidates(
     req: &ReplaceRequest,
     exclude: Option<&GlobSet>,
 ) -> Vec<ReplaceCandidate> {
-    let target = req.target.as_ref();
-    let include = req.query.include_glob.as_deref();
-    let mut out: Vec<ReplaceCandidate> = Vec::new();
-
-    for entry in walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(dir_filter(root, exclude))
-    {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        if let Some(glob) = include {
-            let name = entry.file_name().to_string_lossy();
-            if !matches_simple_glob(glob, &name) {
-                continue;
-            }
-        }
-        let path = entry.path();
-        let rel = match path.strip_prefix(root) {
-            Ok(r) => r.to_string_lossy().replace('\\', "/").to_string(),
-            Err(_) => continue,
-        };
-        if path_excluded(exclude, &rel, false) {
-            continue;
-        }
-        // If a target is set, skip every file that isn't it.
-        if let Some(t) = target {
-            if t.relative != rel {
-                continue;
-            }
-        }
-        // Same byte guard as replace_compute (see REPLACE_MAX_FILE_BYTES).
-        if let Ok(meta) = std::fs::metadata(path) {
-            if meta.len() > REPLACE_MAX_FILE_BYTES {
-                continue;
-            }
-        }
-        out.push(ReplaceCandidate { relative: rel, abs_path: path.to_path_buf() });
-    }
-    out
+    walk_candidates(
+        root,
+        exclude,
+        req.query.include_glob.as_deref(),
+        req.target.as_ref(),
+    )
+    .into_iter()
+    .map(|(relative, abs_path)| ReplaceCandidate {
+        relative,
+        abs_path,
+    })
+    .collect()
 }
 
 /// Walk `root` (same traversal as [`search`]) and, for every file that has at
@@ -719,55 +711,21 @@ pub fn replace_compute(
     exclude: Option<&GlobSet>,
 ) -> Result<Vec<FileReplacement>> {
     let matcher = build_replace_matcher(req)?;
-    let target = req.target.as_ref();
-    let include = req.query.include_glob.as_deref();
     let mut out: Vec<FileReplacement> = Vec::new();
 
-    for entry in walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(dir_filter(root, exclude))
-    {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        if let Some(glob) = include {
-            let name = entry.file_name().to_string_lossy();
-            if !matches_simple_glob(glob, &name) {
-                continue;
-            }
-        }
-        let path = entry.path();
-        let rel = match path.strip_prefix(root) {
-            Ok(r) => r.to_string_lossy().replace('\\', "/").to_string(),
-            Err(_) => continue,
-        };
-        if path_excluded(exclude, &rel, false) {
-            continue;
-        }
-        // If a target is set, skip every file that isn't it.
-        if let Some(t) = target {
-            if t.relative != rel {
-                continue;
-            }
-        }
+    for (rel, path) in walk_candidates(
+        root,
+        exclude,
+        req.query.include_glob.as_deref(),
+        req.target.as_ref(),
+    ) {
         // Skip non-UTF-8 / unreadable files (best-effort, same as `search`).
-        // Also skip files larger than the byte guard (see REPLACE_MAX_FILE_BYTES).
-        if let Ok(meta) = std::fs::metadata(path) {
-            if meta.len() > REPLACE_MAX_FILE_BYTES {
-                continue;
-            }
-        }
-        let text = match std::fs::read_to_string(path) {
+        let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(_) => continue,
         };
 
-        if let Some(fr) = compute_file_replacement(&text, req, &matcher, &rel, path.to_path_buf()) {
+        if let Some(fr) = compute_file_replacement(&text, req, &matcher, &rel, path) {
             out.push(fr);
         }
     }
