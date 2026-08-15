@@ -905,14 +905,14 @@ fn block_on_unsaved_or_conflicted(
         .collect();
     let n = affected_wire.len();
     let details = serde_json::json!({ "affectedDocs": affected_wire });
-    Err(AppError::Code {
-        code: crate::ipc::error::ErrorCode::DeleteBlocked,
-        message: format!(
+    Err(AppError::ipc(
+        crate::ipc::error::ErrorCode::DeleteBlocked,
+        format!(
             "{n} unsaved or conflicted document(s) open under '{rel}'; save, resolve, close, or discard them before deleting."
         ),
-        recoverable: true,
-        details: Some(details),
-    })
+        true,
+        Some(details),
+    ))
 }
 
 /// Hard-close every clean open document (visible or hidden) at/under a
@@ -1202,12 +1202,12 @@ pub async fn save_as(
     let Some(picked) = picked else {
         // §5.3: a cancelled dialog is surfaced as the Cancelled code (not a
         // generic Other). The frontend no-ops on this.
-        return Err(AppError::Code {
-            code: crate::ipc::error::ErrorCode::Cancelled,
-            message: "save cancelled".into(),
-            recoverable: false,
-            details: None,
-        });
+        return Err(AppError::ipc(
+            crate::ipc::error::ErrorCode::Cancelled,
+            "save cancelled",
+            false,
+            None,
+        ));
     };
     let path = picked
         .into_path()
@@ -1218,15 +1218,7 @@ pub async fn save_as(
         .save
         .save_as(id, path.clone())
         .await
-        .map_err(|ipc| match ipc.code {
-            crate::ipc::error::ErrorCode::NotFound => AppError::NotFound(ipc.message),
-            _ => AppError::Code {
-                code: ipc.code,
-                message: ipc.message,
-                recoverable: ipc.recoverable,
-                details: ipc.details,
-            },
-        })?;
+        .map_err(AppError::from)?;
     Ok(path.to_string_lossy().into_owned())
 }
 

@@ -69,19 +69,7 @@ pub async fn resolve_conflict_overwrite(
     state: State<'_, AppState>,
     id: DocumentId,
 ) -> Result<()> {
-    state
-        .save
-        .save_overwrite(id)
-        .await
-        .map_err(|ipc| match ipc.code {
-            crate::ipc::error::ErrorCode::NotFound => AppError::NotFound(ipc.message),
-            _ => AppError::Code {
-                code: ipc.code,
-                message: ipc.message,
-                recoverable: ipc.recoverable,
-                details: ipc.details,
-            },
-        })
+    state.save.save_overwrite(id).await.map_err(AppError::from)
 }
 
 /// Clear the conflict flag WITHOUT touching the buffer or dirty state (§5.4

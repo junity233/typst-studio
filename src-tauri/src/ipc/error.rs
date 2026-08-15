@@ -255,6 +255,27 @@ impl From<AppError> for IpcError {
     }
 }
 
+/// Re-wrap an already-classified [`IpcError`] back into an [`AppError`] so it
+/// flows through the usual `Result<T, AppError>` command contract (used where
+/// a service like `SaveCoordinator` speaks `IpcError` but the IPC boundary
+/// speaks `AppError`). `NotFound` maps to the typed [`AppError::NotFound`]
+/// variant; every other code rides the [`AppError::Code`] escape hatch,
+/// round-tripping message/recoverable/details unchanged — the producer
+/// already classified them, so re-classifying would only lose information.
+impl From<IpcError> for AppError {
+    fn from(ipc: IpcError) -> Self {
+        match ipc.code {
+            ErrorCode::NotFound => AppError::NotFound(ipc.message),
+            _ => AppError::Code {
+                code: ipc.code,
+                message: ipc.message,
+                recoverable: ipc.recoverable,
+                details: ipc.details,
+            },
+        }
+    }
+}
+
 /// Heuristic: does the message look like it's about a path (vs. generic input)?
 fn looks_path_related(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
@@ -429,6 +450,39 @@ mod tests {
         let ipc = IpcError::cancelled("user dismissed the dialog");
         assert_eq!(ipc.code, ErrorCode::Cancelled);
         assert!(!ipc.recoverable);
+    }
+
+    #[test]
+    fn ipc_error_into_app_error_preserves_classification() {
+        // The re-wrap used wherever a service speaks IpcError but the command
+        // boundary speaks AppError: code/message/recoverable/details must
+        // survive verbatim (only NotFound maps to its typed variant).
+        let err: AppError = IpcError::new(ErrorCode::ReadOnly, "read-only", true)
+            .with_details(serde_json::json!({ "path": "/x" }))
+            .into();
+        let AppError::Code {
+            code,
+            message,
+            recoverable,
+            details,
+        } = err
+        else {
+            panic!("non-NotFound codes must ride AppError::Code");
+        };
+        assert_eq!(code, ErrorCode::ReadOnly);
+        assert_eq!(message, "read-only");
+        assert!(recoverable);
+        assert_eq!(details, Some(serde_json::json!({ "path": "/x" })));
+    }
+
+    #[test]
+    fn ipc_error_into_app_error_maps_not_found_to_typed_variant() {
+        let err: AppError = IpcError::new(ErrorCode::NotFound, "tab gone", false).into();
+        assert!(matches!(err, AppError::NotFound(ref msg) if msg == "tab gone"));
+        // Round-trip back through the AppError → IpcError direction keeps the
+        // code (NotFound variant re-classifies to ErrorCode::NotFound).
+        let ipc = IpcError::from(&err);
+        assert_eq!(ipc.code, ErrorCode::NotFound);
     }
 
     #[test]

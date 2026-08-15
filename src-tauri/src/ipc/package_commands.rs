@@ -123,7 +123,7 @@ pub async fn package_init_template(
                 })
             })
             .collect();
-        return Err(ipc(
+        return Err(AppError::ipc(
             ErrorCode::TemplateInitFailed,
             "template would overwrite or create files that are currently open; close or resolve those tabs first",
             true,
@@ -217,14 +217,14 @@ pub async fn package_get_thumbnail(
 
 fn map_op_err(e: PackageOpError) -> AppError {
     match e {
-        PackageOpError::NotFound => ipc(ErrorCode::PackageNotFound, "package not found", false, None),
+        PackageOpError::NotFound => AppError::ipc(ErrorCode::PackageNotFound, "package not found", false, None),
         PackageOpError::Install(msg) => {
-            ipc(ErrorCode::PackageInstallFailed, &msg, true, None)
+            AppError::ipc(ErrorCode::PackageInstallFailed, &msg, true, None)
         }
         PackageOpError::Uninstall(msg) => {
-            ipc(ErrorCode::PackageUninstallFailed, &msg, true, None)
+            AppError::ipc(ErrorCode::PackageUninstallFailed, &msg, true, None)
         }
-        PackageOpError::TemplateInit { copied, cause } => ipc(
+        PackageOpError::TemplateInit { copied, cause } => AppError::ipc(
             ErrorCode::TemplateInitFailed,
             &cause,
             false,
@@ -236,24 +236,9 @@ fn map_op_err(e: PackageOpError) -> AppError {
 }
 
 fn map_index_err(e: IndexFetchError) -> AppError {
-    ipc(ErrorCode::IndexFetchFailed, &e.to_string(), true, None)
+    AppError::ipc(ErrorCode::IndexFetchFailed, &e.to_string(), true, None)
 }
 
-/// Build an `AppError::Code` (the structured escape hatch in error.rs) from an
-/// IPC code/message/recoverability + optional details.
-fn ipc(
-    code: ErrorCode,
-    message: &str,
-    recoverable: bool,
-    details: Option<serde_json::Value>,
-) -> AppError {
-    AppError::Code {
-        code,
-        message: message.to_string(),
-        recoverable,
-        details,
-    }
-}
 
 #[cfg(test)]
 mod tests {

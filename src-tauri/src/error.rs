@@ -66,6 +66,25 @@ pub enum AppError {
 
 pub type Result<T> = std::result::Result<T, AppError>;
 
+impl AppError {
+    /// Build the structured [`AppError::Code`] escape hatch in one call —
+    /// the shape IPC-boundary code constructs when it already knows the
+    /// classified code (e.g. `Cancelled` from a dismissed dialog).
+    pub fn ipc(
+        code: ErrorCode,
+        message: impl Into<String>,
+        recoverable: bool,
+        details: Option<serde_json::Value>,
+    ) -> Self {
+        AppError::Code {
+            code,
+            message: message.into(),
+            recoverable,
+            details,
+        }
+    }
+}
+
 impl serde::Serialize for AppError {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where

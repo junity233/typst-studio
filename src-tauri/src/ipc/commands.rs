@@ -195,22 +195,10 @@ pub async fn update_text(
 /// returned `AppError` as that object so the frontend can branch on `code`.
 #[tauri::command]
 pub async fn save_file(state: State<'_, AppState>, id: DocumentId) -> Result<()> {
-    state.save.save(id).await.map_err(|ipc| {
-        // Re-wrap the classified IpcError back through AppError so the existing
-        // `Result<T, AppError>` contract + AppError::serialize (which emits the
-        // IpcError object) is preserved.
-        match ipc.code {
-            crate::ipc::error::ErrorCode::NotFound => {
-                AppError::NotFound(ipc.message)
-            }
-            _ => AppError::Code {
-                code: ipc.code,
-                message: ipc.message,
-                recoverable: ipc.recoverable,
-                details: ipc.details,
-            },
-        }
-    })
+    // Re-wrap the coordinator's classified IpcError back through AppError so
+    // the existing `Result<T, AppError>` contract + AppError::serialize
+    // (which emits the IpcError object) is preserved.
+    state.save.save(id).await.map_err(AppError::from)
 }
 
 /// Query the current [`SaveState`](crate::service::save_coordinator::SaveState)
