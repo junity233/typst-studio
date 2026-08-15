@@ -31,6 +31,11 @@
     "exportPng": "Export PNG",
     "exportSvg": "Export SVG"
   },
+  "diffView": {
+    "noDifferences": "No differences between the two versions.",
+    "unchangedLines_one": "⋯ {{count}} unchanged line ⋯",
+    "unchangedLines_other": "⋯ {{count}} unchanged lines ⋯"
+  },
   "conflict": {
     "ariaLabel": "Resolve file conflict",
     "title": "Resolve conflict: {{title}}",

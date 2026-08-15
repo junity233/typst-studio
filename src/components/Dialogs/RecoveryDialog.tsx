@@ -10,6 +10,7 @@ import type { RecoverableInfo, CompareRecovery } from "../../lib/types";
 import { useTabsStore } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { toIpcError } from "../../lib/ipc-error";
+import { DiffCompareView } from "./DiffCompareView";
 import i18n from "../../i18n";
 
 /**
@@ -22,8 +23,8 @@ import i18n from "../../i18n";
  *
  *   - **Recover**: create a dirty in-memory doc from the snapshot (does NOT
  *     write disk).
- *   - **Compare**: open a side-by-side read-only view of the snapshot vs the
- *     current disk content (minimal — no inline diff engine yet).
+ *   - **Compare**: open a side-by-side diff view of the snapshot vs the
+ *     current disk content (shared `DiffCompareView`).
  *   - **Discard**: delete the snapshot permanently.
  *
  * Default selection per doc kind (§5.1.3):
@@ -251,24 +252,22 @@ function RecoveryRow({ snap, autoFocus: autoFocusProp }: RecoveryRowProps) {
 }
 
 /**
- * Minimal side-by-side read-only compare (§5.1.3 "比较"). No inline diff engine
- * yet — just two `<pre>` panes so the user can eyeball the differences. A real
- * diff (word/line highlight) is future work; documented here so the gap is
- * explicit.
+ * Side-by-side diff of the snapshot vs the current disk content (§5.1.3
+ * "比较"), rendered by the shared `DiffCompareView` (line + word
+ * highlighting). A null disk (file deleted/moved) shows the left pane
+ * unhighlighted with a "missing" note instead of the right column.
  */
 function CompareView({ compare }: { compare: CompareRecovery }) {
   const { t } = useTranslation("dialog");
   return (
-    <div className="recovery-compare" role="region" aria-label={t("recovery.compareView.ariaLabel")}>
-      <div className="recovery-compare-pane">
-        <div className="recovery-compare-label">{t("recovery.compareView.recoveredSnapshot")}</div>
-        <pre>{compare.snapshot}</pre>
-      </div>
-      <div className="recovery-compare-pane">
-        <div className="recovery-compare-label">{t("recovery.compareView.currentDisk")}</div>
-        <pre>{compare.disk ?? t("recovery.compareView.fileMissingOrNotOnDisk")}</pre>
-      </div>
-    </div>
+    <DiffCompareView
+      ariaLabel={t("recovery.compareView.ariaLabel")}
+      leftLabel={t("recovery.compareView.recoveredSnapshot")}
+      rightLabel={t("recovery.compareView.currentDisk")}
+      leftText={compare.snapshot}
+      rightText={compare.disk ?? null}
+      rightMissingLabel={t("recovery.compareView.fileMissingOrNotOnDisk")}
+    />
   );
 }
 

@@ -13,6 +13,7 @@ import { useConflictDialogStore } from "../../store/conflictDialogStore";
 import { useDocumentsStore, type Document } from "../../store/documentsStore";
 import { useTabsStore } from "../../store/tabsStore";
 import { toIpcError, isCancelled } from "../../lib/ipc-error";
+import { DiffCompareView } from "./DiffCompareView";
 import i18n from "../../i18n";
 import type { ConflictState } from "../../lib/types";
 
@@ -24,9 +25,10 @@ import type { ConflictState } from "../../lib/types";
  * `ExternalConflict`; `saveTab` opened this dialog instead of alerting) or
  * clicked the StatusBar's "Conflict" entry. The actions per §5.4:
  *
- *   - **比较 (Compare)**: side-by-side read-only view of the editor buffer vs
- *     the disk content (only available when disk content exists, i.e. the
- *     "modified" variant). Minimal `<pre>` diff, like RecoveryDialog's compare.
+ *   - **比较 (Compare)**: side-by-side diff view of the editor buffer vs the
+ *     disk content (only available when disk content exists, i.e. the
+ *     "modified" variant) — changed lines highlighted, differing words marked
+ *     (shared `DiffCompareView`, like RecoveryDialog's compare).
  *   - **使用磁盘版本 (Use disk)**: replace the buffer with the disk content,
  *     bump revision, clear dirty + conflict. Only for "modified".
  *   - **覆盖磁盘 (Overwrite disk)**: atomic-save the current buffer, bypassing
@@ -294,9 +296,8 @@ export function conflictMessage(variant: ConflictState): string {
 }
 
 /**
- * Minimal side-by-side read-only compare (§5.4 比较). No inline diff engine —
- * two `<pre>` panes so the user can eyeball the differences, mirroring the
- * RecoveryDialog compare. A real word/line-highlighted diff is future work.
+ * Side-by-side diff of the editor buffer vs the disk content (§5.4 比较),
+ * rendered by the shared `DiffCompareView` (line + word highlighting).
  */
 function CompareView({
   buffer,
@@ -307,20 +308,13 @@ function CompareView({
 }) {
   const { t } = useTranslation("dialog");
   return (
-    <div
-      className="conflict-compare"
-      role="region"
-      aria-label={t("conflict.compareView.ariaLabel")}
-    >
-      <div className="conflict-compare-pane">
-        <div className="conflict-compare-label">{t("conflict.compareView.editorBuffer")}</div>
-        <pre>{buffer}</pre>
-      </div>
-      <div className="conflict-compare-pane">
-        <div className="conflict-compare-label">{t("conflict.compareView.disk")}</div>
-        <pre>{disk}</pre>
-      </div>
-    </div>
+    <DiffCompareView
+      ariaLabel={t("conflict.compareView.ariaLabel")}
+      leftLabel={t("conflict.compareView.editorBuffer")}
+      rightLabel={t("conflict.compareView.disk")}
+      leftText={buffer}
+      rightText={disk}
+    />
   );
 }
 

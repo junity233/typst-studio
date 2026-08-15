@@ -31,6 +31,11 @@
     "exportPng": "导出 PNG",
     "exportSvg": "导出 SVG"
   },
+  "diffView": {
+    "noDifferences": "两个版本没有差异。",
+    "unchangedLines_one": "⋯ {{count}} 行未更改 ⋯",
+    "unchangedLines_other": "⋯ {{count}} 行未更改 ⋯"
+  },
   "conflict": {
     "ariaLabel": "解决文件冲突",
     "title": "解决冲突：{{title}}",
