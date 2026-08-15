@@ -48,6 +48,12 @@ pub struct DirEntry {
 /// `.typ` sources); only by these well-known heavy/hidden dirs.
 pub(crate) const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules"];
 
+/// `IGNORED_DIRS` as a HashSet, for walkers that prune per-entry inside a
+/// `filter_entry` loop (search, bib discovery). Build once per walk.
+pub(crate) fn ignored_dirs() -> std::collections::HashSet<&'static str> {
+    IGNORED_DIRS.iter().copied().collect()
+}
+
 /// List the immediate children of `dir` (relative to `root`), excluding the
 /// always-ignored directories. Returns an empty vec for a file or missing path.
 ///

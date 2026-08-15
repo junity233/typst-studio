@@ -285,17 +285,10 @@ pub fn build_exclude_globset(exclude: Option<&[String]>) -> Option<globset::Glob
 
 /// True if a directory at workspace-relative `rel` should be pruned. A dir
 /// matches when the globset hits its own path OR a synthetic child path, so
-/// patterns like `build`, `build/**`, and `build/*` all prune the subtree.
+/// patterns like `build`, `build/**`, and `build/*` all prune the subtree
+/// (shared logic: [`crate::fs::search::path_excluded`]).
 fn dir_excluded(exclude: &globset::GlobSet, rel: &str) -> bool {
-    if exclude.is_match(rel) {
-        return true;
-    }
-    // Synthetic child catches `build/**` / `build/*` without relying on the
-    // exact zero-match semantics of `**`.
-    let mut child = String::with_capacity(rel.len() + 8);
-    child.push_str(rel);
-    child.push_str("/dummy");
-    exclude.is_match(&child)
+    crate::fs::search::path_excluded(Some(exclude), rel, true)
 }
 
 /// Recursive `.typ` collector. `base` is the root used to compute the relative

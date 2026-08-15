@@ -19,19 +19,12 @@ use crate::domain::search::{ReplaceRequest, SearchHit, SearchQuery, TargetRef};
 use anyhow::Result;
 use globset::GlobSet;
 use regex::Regex;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-
-/// The shared IGNORED_DIRS set (built once per walk). Used by [`dir_filter`] so
-/// every walk (search / replace) prunes the same built-in dirs.
-fn ignored_dirs() -> HashSet<&'static str> {
-    crate::fs::tree::IGNORED_DIRS.iter().copied().collect()
-}
 
 /// True if `rel` (a workspace-relative, forward-slash path) is excluded by the
 /// project's `exclude` globs. For a directory, also tests a synthetic child
 /// path so patterns like `build/**` prune the whole subtree.
-fn path_excluded(exclude: Option<&GlobSet>, rel: &str, is_dir: bool) -> bool {
+pub(crate) fn path_excluded(exclude: Option<&GlobSet>, rel: &str, is_dir: bool) -> bool {
     let Some(gs) = exclude else { return false };
     if gs.is_match(rel) {
         return true;
@@ -49,7 +42,7 @@ fn path_excluded(exclude: Option<&GlobSet>, rel: &str, is_dir: bool) -> bool {
 /// Build the `filter_entry` predicate shared by every walk: prune built-in
 /// ignored dirs and dirs matching the project `exclude` globs.
 fn dir_filter<'a>(root: &'a Path, exclude: Option<&'a GlobSet>) -> impl Fn(&walkdir::DirEntry) -> bool + 'a {
-    let ignored = ignored_dirs();
+    let ignored = crate::fs::tree::ignored_dirs();
     move |e| {
         if !e.file_type().is_dir() {
             return true;

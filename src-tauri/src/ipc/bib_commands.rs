@@ -167,10 +167,7 @@ fn discover_sync(root: &Path) -> Result<Vec<BibFileInfo>> {
         return Ok(Vec::new());
     }
 
-    let ignored: HashSet<&'static str> = crate::fs::tree::IGNORED_DIRS
-        .iter()
-        .copied()
-        .collect();
+    let ignored: HashSet<&'static str> = crate::fs::tree::ignored_dirs();
 
     const MAX_DEPTH: usize = 5;
     const MAX_FILES: usize = 100;
