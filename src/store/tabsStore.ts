@@ -100,7 +100,7 @@ export interface TabsState {
     id: string,
     revision: number,
     status: CompileStatus,
-    durationMs?: number,
+    durationMs?: number | null,
   ) => void;
   /** Replace/merge preview pages tagged with `revision`. Delegates to documentsStore. */
   setPages: (

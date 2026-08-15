@@ -231,7 +231,7 @@ export interface DocumentsState {
     id: string,
     revision: number,
     status: CompileStatus,
-    durationMs?: number,
+    durationMs?: number | null,
   ) => void;
   /**
    * Apply a compile's page update tagged with `revision`; stale revisions
