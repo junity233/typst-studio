@@ -281,209 +281,176 @@ export interface DocumentsState {
   getDocument: (id: string) => Document | undefined;
 }
 
-export const useDocumentsStore = create<DocumentsState>()((set, get) => ({
-  documents: {},
-
-  openDocument: (doc) =>
-    set((s) => ({
-      documents: { ...s.documents, [doc.id]: documentFromOpened(doc) },
-    })),
-
-  upsertDocument: (doc) =>
-    set((s) => ({ documents: { ...s.documents, [doc.id]: doc } })),
-
-  closeDocument: (id) =>
-    set((s) => {
-      if (!(id in s.documents)) return s;
-      const next = { ...s.documents };
-      delete next[id];
-      return { documents: next };
-    }),
-
-  updateContent: (id, content) =>
-    set((s) => {
-      const doc = s.documents[id];
-      if (!doc || content === doc.content) return s;
-      // Bump the optimistic revision. The backend's next compile event will
-      // carry this same revision (or higher); older events are then ignored.
-      //
-      // §8.4 / §5.4 FIX: do NOT reset `conflict` here. The previous version
-      // cleared conflict on every edit, which silently swallowed an
-      // unresolved external change ("用户继续输入不能自动清除 conflict"). Only
-      // explicit resolution actions (use-disk / overwrite / save-as / discard)
-      // clear the flag — see setConflict / markSaved / clearConflict. This
-      // means a conflicted doc the user keeps typing in STAYS conflicted (and
-      // the in-place save gate keeps blocking) until they resolve it.
-      return {
-        documents: {
-          ...s.documents,
-          [id]: {
-            ...doc,
-            content,
-            dirty: true,
-            revision: doc.revision + 1,
-            // The previous status belongs to the previous content revision.
-            // Reset it so preview reconciliation can distinguish "the current
-            // revision failed" from an error left over from an older buffer.
-            status: "idle",
-          },
-        },
-      };
-    }),
-
-  setStatus: (id, revision, status, durationMs) =>
+export const useDocumentsStore = create<DocumentsState>()((set, get) => {
+  /**
+   * Guarded doc patcher shared by the actions below: looks the doc up and,
+   * when it exists, applies `patch` to a shallow copy. `patch` returns `null`
+   * to signal "no change" (unknown id, stale revision, rejected by an action
+   * guard) so the store keeps the previous state object and zustand skips
+   * notifying subscribers — same contract the actions had when they each
+   * hand-rolled this block.
+   */
+  const patchDoc = (
+    id: string,
+    patch: (doc: Document) => Partial<Document> | null,
+  ) =>
     set((s) => {
       const doc = s.documents[id];
       if (!doc) return s;
-      // §7: discard stale-revision status. A strictly-older revision means a
-      // newer edit already superseded this compile — never overwrite the UI.
-      if (revision < doc.revision) return s;
-      return {
-        documents: {
-          ...s.documents,
-          [id]: { ...doc, status, durationMs: durationMs ?? doc.durationMs },
-        },
-      };
-    }),
+      const fields = patch(doc);
+      if (fields === null) return s;
+      return { documents: { ...s.documents, [id]: { ...doc, ...fields } } };
+    });
 
-  setPages: (id, revision, pageCount, full, changedPages, lineMap, outline) =>
-    set((s) => {
-      const doc = s.documents[id];
-      if (!doc) return s;
-      // §7: discard stale-revision preview. Without this guard, a slow compile
-      // of an older buffer could clobber a newer preview.
-      if (revision < doc.revision) return s;
+  return {
+    documents: {},
 
-      // Incremental merge: build the new svgPages array so that UNCHANGED
-      // slots keep their old string reference (identity-equal). This is what
-      // lets `SvgPage`'s `memo` skip re-render + blob rebuild for unchanged
-      // pages — the whole point of incremental rendering. On `full`, every
-      // page is supplied in `changedPages`, so this collapses to a fresh array.
-      //
-      // Defensive: if an incremental update arrives but the previous array's
-      // length doesn't match what the backend assumed (e.g. a missed event),
-      // fall back to a full rebuild from changedPages only — safer than
-      // blending mismatched states. The backend sends `full=true` precisely
-      // when page count changed, so this fallback is a belt-and-suspenders.
-      const prev = doc.svgPages;
-      let next: string[];
-      if (full || prev.length !== pageCount) {
-        // Full replace: start from an empty array sized to pageCount, then fill.
-        next = new Array(pageCount);
-        for (const cp of changedPages) {
-          if (cp.index < pageCount) next[cp.index] = cp.svg;
+    openDocument: (doc) =>
+      set((s) => ({
+        documents: { ...s.documents, [doc.id]: documentFromOpened(doc) },
+      })),
+
+    upsertDocument: (doc) =>
+      set((s) => ({ documents: { ...s.documents, [doc.id]: doc } })),
+
+    closeDocument: (id) =>
+      set((s) => {
+        if (!(id in s.documents)) return s;
+        const next = { ...s.documents };
+        delete next[id];
+        return { documents: next };
+      }),
+
+    updateContent: (id, content) =>
+      patchDoc(id, (doc) => {
+        if (content === doc.content) return null;
+        // Bump the optimistic revision. The backend's next compile event will
+        // carry this same revision (or higher); older events are then ignored.
+        //
+        // §8.4 / §5.4 FIX: do NOT reset `conflict` here. The previous version
+        // cleared conflict on every edit, which silently swallowed an
+        // unresolved external change ("用户继续输入不能自动清除 conflict"). Only
+        // explicit resolution actions (use-disk / overwrite / save-as / discard)
+        // clear the flag — see setConflict / markSaved / clearConflict. This
+        // means a conflicted doc the user keeps typing in STAYS conflicted (and
+        // the in-place save gate keeps blocking) until they resolve it.
+        return {
+          content,
+          dirty: true,
+          revision: doc.revision + 1,
+          // The previous status belongs to the previous content revision.
+          // Reset it so preview reconciliation can distinguish "the current
+          // revision failed" from an error left over from an older buffer.
+          status: "idle",
+        };
+      }),
+
+    setStatus: (id, revision, status, durationMs) =>
+      patchDoc(id, (doc) => {
+        // §7: discard stale-revision status. A strictly-older revision means a
+        // newer edit already superseded this compile — never overwrite the UI.
+        if (revision < doc.revision) return null;
+        return { status, durationMs: durationMs ?? doc.durationMs };
+      }),
+
+    setPages: (id, revision, pageCount, full, changedPages, lineMap, outline) =>
+      patchDoc(id, (doc) => {
+        // §7: discard stale-revision preview. Without this guard, a slow compile
+        // of an older buffer could clobber a newer preview.
+        if (revision < doc.revision) return null;
+
+        // Incremental merge: build the new svgPages array so that UNCHANGED
+        // slots keep their old string reference (identity-equal). This is what
+        // lets `SvgPage`'s `memo` skip re-render + blob rebuild for unchanged
+        // pages — the whole point of incremental rendering. On `full`, every
+        // page is supplied in `changedPages`, so this collapses to a fresh array.
+        //
+        // Defensive: if an incremental update arrives but the previous array's
+        // length doesn't match what the backend assumed (e.g. a missed event),
+        // fall back to a full rebuild from changedPages only — safer than
+        // blending mismatched states. The backend sends `full=true` precisely
+        // when page count changed, so this fallback is a belt-and-suspenders.
+        const prev = doc.svgPages;
+        let next: string[];
+        if (full || prev.length !== pageCount) {
+          // Full replace: start from an empty array sized to pageCount, then fill.
+          next = new Array(pageCount);
+          for (const cp of changedPages) {
+            if (cp.index < pageCount) next[cp.index] = cp.svg;
+          }
+        } else {
+          // Incremental: copy the previous array (preserving element refs), then
+          // overwrite only the changed indices.
+          next = prev.slice(0, pageCount);
+          for (const cp of changedPages) {
+            if (cp.index < pageCount) next[cp.index] = cp.svg;
+          }
         }
-      } else {
-        // Incremental: copy the previous array (preserving element refs), then
-        // overwrite only the changed indices.
-        next = prev.slice(0, pageCount);
-        for (const cp of changedPages) {
-          if (cp.index < pageCount) next[cp.index] = cp.svg;
-        }
-      }
 
-      return {
-        documents: {
-          ...s.documents,
-          [id]: {
-            ...doc,
-            svgPages: next,
-            lineMap,
-            outline,
-            // Record that the shown preview now reflects this revision. While
-            // `revision` (bumped on every keystroke) outruns this, the lineMap
-            // is stale and scroll-sync must suppress re-alignment.
-            compiledRevision: revision,
-          },
-        },
-      };
-    }),
+        return {
+          svgPages: next,
+          lineMap,
+          outline,
+          // Record that the shown preview now reflects this revision. While
+          // `revision` (bumped on every keystroke) outruns this, the lineMap
+          // is stale and scroll-sync must suppress re-alignment.
+          compiledRevision: revision,
+        };
+      }),
 
-  setConflict: (id, conflict, diskContent = null) =>
-    set((s) => {
-      const doc = s.documents[id];
-      if (!doc) return s;
-      return {
-        documents: {
-          ...s.documents,
-          [id]: {
-            ...doc,
-            conflict,
-            // Stash the disk content for the compare view; clear it when the
-            // conflict resolves to "none" so stale content doesn't linger.
-            conflictDiskContent: conflict === "none" ? null : diskContent,
-          },
-        },
-      };
-    }),
+    setConflict: (id, conflict, diskContent = null) =>
+      patchDoc(id, () => ({
+        conflict,
+        // Stash the disk content for the compare view; clear it when the
+        // conflict resolves to "none" so stale content doesn't linger.
+        conflictDiskContent: conflict === "none" ? null : diskContent,
+      })),
 
-  markSaved: (id, path, savedRevision) =>
-    set((s) => {
-      const doc = s.documents[id];
-      if (!doc) return s;
-      return {
-        documents: {
-          ...s.documents,
-          [id]: {
-            ...doc,
-            path,
-            title: path.split(/[\\/]/).pop() ?? doc.title,
-            // Revision-CAS: the backend saved the captured revision, not any
-            // edit that landed while its atomic write was in flight.
-            dirty:
-              savedRevision === undefined || doc.revision === savedRevision
-                ? false
-                : true,
-            // §17 origin coherence: the backend is authoritative, but the
-            // frontend mirror must stay coherent so the model registry can
-            // derive the new URI without a round-trip. On a Save As (path
-            // changed) an untitled doc becomes a looseFile rooted at the new
-            // file's parent directory (canonical absolute). A workspaceFile /
-            // looseFile changing location also re-roots to the new parent.
-            origin: nextOriginAfterSave(doc.origin, doc.path, path),
-            // A successful save resolves any external-change conflict (§8.4):
-            // the buffer is now in sync with disk. Also drop the stashed disk
-            // content — there's nothing left to compare.
-            conflict: "none",
-            conflictDiskContent: null,
-          },
-        },
-      };
-    }),
+    markSaved: (id, path, savedRevision) =>
+      patchDoc(id, (doc) => ({
+        path,
+        title: path.split(/[\\/]/).pop() ?? doc.title,
+        // Revision-CAS: the backend saved the captured revision, not any
+        // edit that landed while its atomic write was in flight.
+        dirty:
+          savedRevision === undefined || doc.revision === savedRevision
+            ? false
+            : true,
+        // §17 origin coherence: the backend is authoritative, but the
+        // frontend mirror must stay coherent so the model registry can
+        // derive the new URI without a round-trip. On a Save As (path
+        // changed) an untitled doc becomes a looseFile rooted at the new
+        // file's parent directory (canonical absolute). A workspaceFile /
+        // looseFile changing location also re-roots to the new parent.
+        origin: nextOriginAfterSave(doc.origin, doc.path, path),
+        // A successful save resolves any external-change conflict (§8.4):
+        // the buffer is now in sync with disk. Also drop the stashed disk
+        // content — there's nothing left to compare.
+        conflict: "none",
+        conflictDiskContent: null,
+      })),
 
-  reMarkDirty: (id) =>
-    set((s) => {
-      const doc = s.documents[id];
-      if (!doc) return s;
-      return { documents: { ...s.documents, [id]: { ...doc, dirty: true } } };
-    }),
+    reMarkDirty: (id) => patchDoc(id, () => ({ dirty: true })),
 
-  rebindDocPath: (id, newPath) =>
-    set((s) => {
-      const doc = s.documents[id];
-      if (!doc) return s;
-      // Untitled docs have no disk path to rebind; calling this on one would
-      // create an incoherent mirror (path set, origin still untitled). The
-      // backend never sends docs_rebound for untitled docs, but guard anyway.
-      if (doc.origin.kind === "untitled") return s;
-      return {
-        documents: {
-          ...s.documents,
-          [id]: {
-            ...doc,
-            path: newPath,
-            // §17 origin coherence: keep the inner path in sync with the new
-            // location, preserving the variant + (workspace_id | root). Not
-            // called for untitled docs (they have no path to rebind).
-            origin: rebindOriginPath(doc.origin, newPath),
-            // Title is the new path's basename (matches the backend's
-            // DocumentMeta derivation). Dirty/content/revision/conflict are all
-            // preserved — a rename moves the file, not the edits.
-            title: newPath.split(/[\\/]/).pop() ?? doc.title,
-          },
-        },
-      };
-    }),
+    rebindDocPath: (id, newPath) =>
+      patchDoc(id, (doc) => {
+        // Untitled docs have no disk path to rebind; calling this on one would
+        // create an incoherent mirror (path set, origin still untitled). The
+        // backend never sends docs_rebound for untitled docs, but guard anyway.
+        if (doc.origin.kind === "untitled") return null;
+        return {
+          path: newPath,
+          // §17 origin coherence: keep the inner path in sync with the new
+          // location, preserving the variant + (workspace_id | root). Not
+          // called for untitled docs (they have no path to rebind).
+          origin: rebindOriginPath(doc.origin, newPath),
+          // Title is the new path's basename (matches the backend's
+          // DocumentMeta derivation). Dirty/content/revision/conflict are all
+          // preserved — a rename moves the file, not the edits.
+          title: newPath.split(/[\\/]/).pop() ?? doc.title,
+        };
+      }),
 
-  getDocument: (id) => get().documents[id],
-}));
+    getDocument: (id) => get().documents[id],
+  };
+});
