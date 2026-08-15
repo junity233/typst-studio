@@ -16,8 +16,7 @@ stores; stores call commands through `src/lib/tauri.ts`.
   set), `rebindDocPath`.
 - `tabsStore.ts` — view state only (`tabs`/`hidden` LRU/`activeId`);
   `openTab`/`openPath`/`softClose`/`reactivate`/`hardClose`; module helpers
-  `useActiveDocument`, `removeDocFromStores` (coordinated teardown),
-  `initTabs`.
+  `useActiveDocument`, `removeDocFromStores` (coordinated teardown).
 
 **Workspace & files**: `workspaceStore.ts` (root, lazy `tree`, `expanded`;
 CRUD ops), `explorerSelectionStore.ts`, `fileClipboardStore.ts` (copy/cut;
@@ -27,8 +26,10 @@ lazy cut — the move happens on paste), `watcherHealthStore.ts` (polls
 **Backend mirrors**: `settingsStore.ts` (hydrate + `settings_changed`),
 `projectConfigStore.ts` (`project_config_changed`, schema version 2),
 `themeStore.ts` (`themes_changed`, monotonic apply-token guard),
-`lspStore.ts` (forward-only generation; refcounted subscription),
-`tinymistInstallStore.ts` (same refcounted pattern), `saveStateStore.ts`,
+`lspStore.ts` (forward-only generation gate in `applyPayload`) and
+`tinymistInstallStore.ts` — both ride `store/refCountedSubscription.ts`
+(the shared fetch-once + listen-once, refcounted factory),
+`saveStateStore.ts`,
 `diagnosticsStore.ts` (per-doc `compiler`/`tinymist` slots, cached deduped
 `combined`), `startupProblemsStore.ts`.
 
@@ -58,7 +59,9 @@ reached Ready once — first-connecter-wins backend rule),
 `useExternalFileRouting`, `useWindowRestore`, `useTheme`, `useLanguage`,
 `useWheelZoom` (clamped step zoom), `useDebounce`,
 `useEscapeToClose` (window-level close-on-Escape for modal portals;
-callbacks in refs so the listener attaches only while active).
+callbacks in refs so the listener attaches only while active),
+`useClampedPopupPosition` + `usePopupDismiss` (viewport clamp + 4-listener
+dismiss for floating portal popups — ContextMenu, TableGridPicker).
 
 ## Patterns
 

@@ -11,8 +11,10 @@ orchestration, and the paste-conversion pipeline.
 
 - `tauri.ts` — the ONLY place that calls `invoke`: ~80 typed wrappers
   (tabs, workspace, fs, export, packages, bibliography, session, recovery,
-  conflicts), plus a full in-browser fallback (`browserInvoke` + localStorage
-  settings + inlined themes) gated on `isTauri` so vitest/jsdom works.
+  conflicts, LSP status/restart, tinymist install, watcher health — the
+  stores never import `@tauri-apps/api/core` themselves), plus a full
+  in-browser fallback (`browserInvoke` + localStorage settings + inlined
+  themes) gated on `isTauri` so vitest/jsdom works.
   `on*` event wrappers are consts built by the internal `onEvent` /
   `onProjectedEvent` factories.
 - `types.ts` — ts-rs-generated wire types (`OpenedDocument`, `Session`,

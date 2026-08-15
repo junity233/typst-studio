@@ -21,9 +21,9 @@ feature panels live behind extension contributions.
 - `Shell/ActivityBar.tsx` — icon strip from `useViews()`; toggles
   `uiStore.toggleView`; workspace-gated views disabled without a workspace.
 - `Shell/EditorArea.tsx` — TabStrip + FormatToolbar + Monaco|Preview split
-  (hand-rolled sash, persisted width) + collapsible DiagnosticsPanel;
-  scroll-sync engine, project-preview mode, per-pane Ctrl+wheel zoom,
-  preview search.
+  + collapsible DiagnosticsPanel; both pane resizers share the module-level
+  `startSashDrag` tail; scroll-sync engine, project-preview mode, per-pane
+  Ctrl+wheel zoom, preview search.
 - `Sidebar/Sidebar.tsx` — keep-alive host: pre-mounts every eligible view,
   toggles with the `hidden` attribute; memoizes one `lazy()` wrapper per
   view id in a module-level `lazyViewCache` (a fresh `lazy()` per render

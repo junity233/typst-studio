@@ -10,13 +10,16 @@
   debounce window (`compiler.debounceMs`, default 300 ms). `WatcherGuard`
   drop stops it.
 - `tree.rs` — one-level lazy `read_dir`; skips `.git`, `target`,
-  `node_modules`.
+  `node_modules` (`IGNORED_DIRS`, also exposed as a HashSet via
+  `ignored_dirs()` for the search/bib walkers).
 - `resolver.rs` — `FileResolver`: FileId ↔ disk path, Project-root vs
   Package-root dispatch.
 - `search.rs` — line-based literal/regex workspace search + replace
   computation (pure; writes happen in the service). The shared
   `walk_candidates` prelude (dir/include/exclude/target filters + byte
-  guard) serves `search`, `replace_candidates`, and `replace_compute`. Replace byte offsets
+  guard) serves `search`, `replace_candidates`, and `replace_compute`; its
+  `path_excluded` (exclude-glob match + synthetic-child dir prune) is also
+  the engine behind `project_config_service::dir_excluded`. Replace byte offsets
   are computed in the original string's byte space because Unicode case
   folding changes byte lengths. Cross-line patterns unsupported; columns
   are char counts; astral-plane matches can mis-highlight.

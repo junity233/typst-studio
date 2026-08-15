@@ -61,8 +61,8 @@ zustand stores and call typed wrappers in `src/lib/tauri.ts` — never
 
 `Explorer.tsx` (lazy tree, toolbar + context menu, inline rename, F2/Delete/
 Ctrl+C/X/V/D bound only when the tree is focused), `explorerOps.ts`,
-`contextMenuStore.ts` + `ContextMenu.tsx` (portal + viewport clamp),
-`Packages/*` (Templates/Packages/Installed tabs, client-side filtering over
+`contextMenuStore.ts` + `ContextMenu.tsx` (portal + viewport clamp via the
+shared `useClampedPopupPosition`/`usePopupDismiss` hooks), `Packages/*` (Templates/Packages/Installed tabs, client-side filtering over
 the index snapshot), `Bibliography/*` (panel + edit modal), `Project/
 ProjectPanel.tsx` (`.typstpro` form; remounts on root change),
 `Symbols/SymbolsPanel.tsx` + `detectMathContext.ts` (math-vs-markup

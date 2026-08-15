@@ -81,7 +81,8 @@ override (ts-rs maps u64 → bigint, Tauri serializes it as a JSON number).
 - `save_coordinator.rs` — unified Save/SaveAs/SaveAll with per-doc
   `SaveState::{Idle, Saving{rev}, Saved{rev}, Failed{rev,..}}` emitted as
   `save_state_changed`; `dirty` stays true unless the atomic replace
-  succeeded; failures classified into IPC error codes.
+  succeeded; failures classified into IPC error codes; `save_core`/`save_as`
+  share the blocking write + result-reduction tail (`finish_write`).
 - `workspace_service.rs` — workspace open, tree, CRUD, watcher.
 - `lsp_service.rs` — wrapper around lsp::LspManager.
 - `session.rs`, `package_service.rs`, `project_config_service.rs` (watched
@@ -89,6 +90,10 @@ override (ts-rs maps u64 → bigint, Tauri serializes it as a JSON number).
   `trash.rs`, `watcher_health.rs` (polling fallback re-checking open docs'
   DiskVersions when the native watcher dies), `file_routing.rs`
   (single-instance `.typ` routing).
+- `test_support.rs` (`#[cfg(test)]`) — the shared `CapturingEmitter`
+  (+ `CapturedEvent` + accessors), `NoopEmitter`, and `wait_until` polling
+  primitive used by all service test suites; timeout POLICY (panic vs
+  silent return) stays at each call site.
 
 ## Compile scheduling
 
