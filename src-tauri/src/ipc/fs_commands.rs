@@ -842,6 +842,47 @@ pub async fn rename_entry(
     Ok(wire)
 }
 
+/// Which disk operation [`delete_entry_impl`] runs: system trash (default) or
+/// permanent removal (the explicit advanced action).
+#[derive(Clone, Copy)]
+enum DeleteMode {
+    Trash,
+    Permanent,
+}
+
+/// Shared body of `delete_entry` / `delete_entry_permanent`: the §5.5
+/// open-doc preflight, the disk op on the blocking pool (the Windows recycle
+/// API and `remove_dir_all` are unbounded blocking IO), then hard-closing the
+/// affected clean docs. The two commands differ ONLY in the disk op.
+async fn delete_entry_impl(
+    state: State<'_, AppState>,
+    rel: String,
+    mode: DeleteMode,
+) -> Result<DeleteResult> {
+    let ws = state.workspace.clone();
+    let target = ws.resolve_path(&rel)?;
+    // §5.5 open-doc check. The IPC layer has AppState (workspace + editor),
+    // so this is the right place — WorkspaceService is disk-only.
+    let affected = block_on_unsaved_or_conflicted(&state, &rel, &target)?;
+    // The double `?` unwraps the join error, then the service's own Result.
+    let outcome = tauri::async_runtime::spawn_blocking(move || match mode {
+        DeleteMode::Trash => ws.delete_entry(&rel),
+        DeleteMode::Permanent => ws.delete_entry_permanent(&rel),
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
+    let closed_doc_ids = hard_close_affected(&state, affected);
+    Ok(DeleteResult {
+        outcome: match outcome {
+            crate::service::trash::TrashOutcome::Trashed => DeleteOutcome::Trashed,
+            crate::service::trash::TrashOutcome::PermanentlyDeleted => {
+                DeleteOutcome::PermanentlyDeleted
+            }
+        },
+        closed_doc_ids,
+    })
+}
+
 /// Delete a workspace-relative file or directory via the system trash (§5.5).
 ///
 /// §5.5 dirty-delete protection: BEFORE trashing, scan the open-document
@@ -854,29 +895,7 @@ pub async fn rename_entry(
 /// linger as zombies feeding the conflict dialog.
 #[tauri::command]
 pub async fn delete_entry(state: State<'_, AppState>, rel: String) -> Result<DeleteResult> {
-    let ws = state.workspace.clone();
-    let target = ws.resolve_path(&rel)?;
-    // §5.5 open-doc check. The IPC layer has AppState (workspace + editor),
-    // so this is the right place — WorkspaceService is disk-only.
-    let affected = block_on_unsaved_or_conflicted(&state, &rel, &target)?;
-    // No unsaved/conflicted docs: proceed to trash. The trash op is BLOCKING
-    // platform IO (the Windows recycle API is notoriously slow) — run it on
-    // the blocking pool so it can't stall other commands on the same async
-    // executor thread (same pattern as `copy_entry`). The double `?` unwraps
-    // the join error, then the service's own Result.
-    let outcome = tauri::async_runtime::spawn_blocking(move || ws.delete_entry(&rel))
-        .await
-        .map_err(|e| AppError::Other(format!("join error: {e}")))??;
-    let closed_doc_ids = hard_close_affected(&state, affected);
-    Ok(DeleteResult {
-        outcome: match outcome {
-            crate::service::trash::TrashOutcome::Trashed => DeleteOutcome::Trashed,
-            crate::service::trash::TrashOutcome::PermanentlyDeleted => {
-                DeleteOutcome::PermanentlyDeleted
-            }
-        },
-        closed_doc_ids,
-    })
+    delete_entry_impl(state, rel, DeleteMode::Trash).await
 }
 
 /// Reject the operation with `DeleteBlocked` if any dirty or conflicted document
@@ -955,24 +974,7 @@ pub async fn delete_entry_permanent(
     state: State<'_, AppState>,
     rel: String,
 ) -> Result<DeleteResult> {
-    let ws = state.workspace.clone();
-    let target = ws.resolve_path(&rel)?;
-    let affected = block_on_unsaved_or_conflicted(&state, &rel, &target)?;
-    // `remove_dir_all` on a large tree is unbounded blocking IO — keep it off
-    // the async runtime (same pattern as `delete_entry` / `copy_entry`).
-    let outcome = tauri::async_runtime::spawn_blocking(move || ws.delete_entry_permanent(&rel))
-        .await
-        .map_err(|e| AppError::Other(format!("join error: {e}")))??;
-    let closed_doc_ids = hard_close_affected(&state, affected);
-    Ok(DeleteResult {
-        outcome: match outcome {
-            crate::service::trash::TrashOutcome::Trashed => DeleteOutcome::Trashed,
-            crate::service::trash::TrashOutcome::PermanentlyDeleted => {
-                DeleteOutcome::PermanentlyDeleted
-            }
-        },
-        closed_doc_ids,
-    })
+    delete_entry_impl(state, rel, DeleteMode::Permanent).await
 }
 
 /// Recursively copy a workspace-relative entry to another workspace-relative
