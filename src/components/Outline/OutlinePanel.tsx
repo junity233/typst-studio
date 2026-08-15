@@ -24,7 +24,7 @@ import { editorApiRef } from "../Editor/editorApiRef";
 import type { OutlineNode } from "../../lib/types";
 
 /** A tree node with its children resolved from the flat `parent` indices. */
-interface TreeNode {
+export interface TreeNode {
   node: OutlineNode;
   /** Original array index — used as the collapse-set key. */
   index: number;
@@ -37,7 +37,7 @@ interface TreeNode {
  * order: a single left-to-right pass assigns each node to its parent's
  * children array, which keeps the tree ordered exactly as the headings appear.
  */
-function buildTree(outline: OutlineNode[]): TreeNode[] {
+export function buildTree(outline: OutlineNode[]): TreeNode[] {
   const nodes: TreeNode[] = outline.map((node, index) => ({
     node,
     index,
@@ -65,7 +65,7 @@ function buildTree(outline: OutlineNode[]): TreeNode[] {
  * hides the whole tree's descendants while keeping every heading reachable
  * (the parent rows stay visible).
  */
-function collectInternalIndices(roots: TreeNode[]): number[] {
+export function collectInternalIndices(roots: TreeNode[]): number[] {
   const out: number[] = [];
   const walk = (nodes: TreeNode[]) => {
     for (const tn of nodes) {
@@ -84,7 +84,7 @@ function collectInternalIndices(roots: TreeNode[]): number[] {
  * still ≤ `visibleLine` — i.e. the heading currently in view. Returns null if
  * the visible line is before the first heading.
  */
-function activeHeadingIndex(outline: OutlineNode[], visibleLine: number): number | null {
+export function activeHeadingIndex(outline: OutlineNode[], visibleLine: number): number | null {
   let active: number | null = null;
   for (let i = 0; i < outline.length; i++) {
     if (outline[i].line <= visibleLine) active = i;

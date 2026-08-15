@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MarkdownLink } from "../common/ExternalLink";
+import { useDebounce } from "../../hooks/useDebounce";
 
 /**
  * Rendered-markdown preview pane for `DocumentKind === "markdown"` tabs.
@@ -24,12 +24,7 @@ export function MarkdownPreview({
   source: string;
   debounceMs?: number;
 }): React.JSX.Element {
-  const [debounced, setDebounced] = useState(source);
-
-  useEffect(() => {
-    const handle = setTimeout(() => setDebounced(source), debounceMs);
-    return () => clearTimeout(handle);
-  }, [source, debounceMs]);
+  const debounced = useDebounce(source, debounceMs);
 
   return (
     <div className="markdown-preview pane-scroll">

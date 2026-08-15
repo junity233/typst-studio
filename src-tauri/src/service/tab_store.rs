@@ -557,3 +557,258 @@ fn handle_version_change(
     };
     set_conflict(tab, id, emitter, conflict, disk_content);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::path::canonicalize_for_identity;
+
+    /// Unit tests for the document-identity classification rules (§4.2/§4.3):
+    /// `classify_new` (initial classification on open) and
+    /// `reclassified_origin` (migration on workspace open/close). These decide
+    /// which root `#include`/`#image()` resolve against and how open tabs
+    /// migrate when the workspace changes — data-safety-adjacent logic that
+    /// `document_service`'s tests never exercise (they all run workspace-less).
+    ///
+    /// Origins embed canonical paths, so every test passes the
+    /// `canonicalize_for_identity` form (what the open path actually stores)
+    /// rather than the raw tempdir path.
+    ///
+    /// Canonical form used by the open path, for exact origin comparisons.
+    fn canon(path: &Path) -> PathBuf {
+        canonicalize_for_identity(path).unwrap()
+    }
+
+    /// Open a tempdir as a workspace, seeded with one REAL file — `contains`
+    /// canonicalizes, and a non-existing path is never "inside". The TempDir
+    /// guard is returned and must stay alive until the assertions are done
+    /// (dropping it deletes the directory and breaks canonicalization).
+    fn ws_with_file(file_rel: &str) -> (tempfile::TempDir, WorkspaceService, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(file_rel);
+        std::fs::write(&file, "= x").unwrap();
+        let ws = WorkspaceService::new();
+        ws.open(
+            dir.path().to_path_buf(),
+            std::time::Duration::from_millis(50),
+            Arc::new(|_paths: &[PathBuf]| {}), // no-op OnChange
+            None,                             // compile_root
+        )
+        .unwrap();
+        (dir, ws, file)
+    }
+
+    #[test]
+    fn classify_new_without_workspace_is_loose_rooted_at_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("loose.typ");
+        std::fs::write(&file, "= x").unwrap();
+        let id = DocumentId::new();
+        let c = canon(&file);
+
+        // Both caller shapes of "no workspace": `None`, and a service that was
+        // never opened (no workspace id → the inner guard falls through).
+        let unopened = WorkspaceService::new();
+        for meta in [
+            classify_new(id, c.clone(), None),
+            classify_new(id, c.clone(), Some(&unopened)),
+        ] {
+            assert_eq!(
+                meta.origin,
+                DocumentOrigin::LooseFile {
+                    path: c.clone(),
+                    root: c.parent().unwrap().to_path_buf(),
+                }
+            );
+            assert_eq!(meta.id, id, "classify_new must keep the caller's id");
+            assert_eq!(meta.path, Some(c.clone()));
+        }
+    }
+
+    #[test]
+    fn classify_new_inside_open_workspace_is_workspace_file() {
+        let (_dir, ws, file) = ws_with_file("main.typ");
+        let c = canon(&file);
+        let meta = classify_new(DocumentId::new(), c.clone(), Some(&ws));
+        assert_eq!(
+            meta.origin,
+            DocumentOrigin::WorkspaceFile {
+                path: c,
+                workspace_id: ws.workspace_id().unwrap(),
+            }
+        );
+    }
+
+    #[test]
+    fn classify_new_outside_open_workspace_is_loose() {
+        let (_ws_dir, ws, _ws_file) = ws_with_file("main.typ");
+        // A second tempdir's file is definitionally outside the first root.
+        let outside = tempfile::tempdir().unwrap();
+        let file = outside.path().join("outside.typ");
+        std::fs::write(&file, "= x").unwrap();
+        let c = canon(&file);
+
+        let meta = classify_new(DocumentId::new(), c.clone(), Some(&ws));
+        assert_eq!(
+            meta.origin,
+            DocumentOrigin::LooseFile {
+                path: c.clone(),
+                root: c.parent().unwrap().to_path_buf(),
+            }
+        );
+    }
+
+    #[test]
+    fn reclassify_none_when_already_the_current_workspace_file() {
+        let (_dir, ws, file) = ws_with_file("main.typ");
+        let c = canon(&file);
+        let current = DocumentOrigin::WorkspaceFile {
+            path: c.clone(),
+            workspace_id: ws.workspace_id().unwrap(),
+        };
+        assert_eq!(reclassified_origin(&current, &c, &ws), None);
+    }
+
+    #[test]
+    fn reclassify_upgrades_a_stale_workspace_id_after_reopen() {
+        // §4.3 "同目录重开 workspace 换代": each `open` mints a fresh
+        // WorkspaceId, so a doc still carrying the PREVIOUS id must migrate to
+        // the new one even though the path never moved.
+        let (dir, ws, file) = ws_with_file("main.typ");
+        let c = canon(&file);
+        let stale_id = ws.workspace_id().unwrap();
+        // Reopen the SAME folder → a fresh id.
+        ws.open(
+            dir.path().to_path_buf(),
+            std::time::Duration::from_millis(50),
+            Arc::new(|_paths: &[PathBuf]| {}),
+            None,
+        )
+        .unwrap();
+        let fresh_id = ws.workspace_id().unwrap();
+        assert_ne!(stale_id, fresh_id);
+
+        let current = DocumentOrigin::WorkspaceFile {
+            path: c.clone(),
+            workspace_id: stale_id,
+        };
+        assert_eq!(
+            reclassified_origin(&current, &c, &ws),
+            Some(DocumentOrigin::WorkspaceFile {
+                path: c.clone(),
+                workspace_id: fresh_id,
+            })
+        );
+    }
+
+    #[test]
+    fn reclassify_upgrades_loose_to_workspace_when_it_lands_inside() {
+        // Workspace opened AFTER the file: an in-root LooseFile must migrate.
+        let (_dir, ws, file) = ws_with_file("main.typ");
+        let c = canon(&file);
+        let current = DocumentOrigin::LooseFile {
+            path: c.clone(),
+            root: c.parent().unwrap().to_path_buf(),
+        };
+        assert_eq!(
+            reclassified_origin(&current, &c, &ws),
+            Some(DocumentOrigin::WorkspaceFile {
+                path: c.clone(),
+                workspace_id: ws.workspace_id().unwrap(),
+            })
+        );
+    }
+
+    #[test]
+    fn reclassify_none_for_an_already_correct_loose_file_outside_the_ws() {
+        let (_ws_dir, ws, _ws_file) = ws_with_file("main.typ");
+        let outside = tempfile::tempdir().unwrap();
+        let file = outside.path().join("outside.typ");
+        std::fs::write(&file, "= x").unwrap();
+        let c = canon(&file);
+
+        let current = DocumentOrigin::LooseFile {
+            path: c.clone(),
+            root: c.parent().unwrap().to_path_buf(),
+        };
+        assert_eq!(reclassified_origin(&current, &c, &ws), None);
+    }
+
+    #[test]
+    fn reclassify_demotes_a_foreign_workspace_file_when_another_ws_is_open() {
+        // Workspace SWITCH: the doc belonged to workspace A, but workspace B (a
+        // different folder) is now open — the file is outside B, so an open
+        // workspace must still demote a foreign WorkspaceFile to loose.
+        let dir_a = tempfile::tempdir().unwrap();
+        let file = dir_a.path().join("main.typ");
+        std::fs::write(&file, "= x").unwrap();
+        let ws = WorkspaceService::new();
+        ws.open(
+            dir_a.path().to_path_buf(),
+            std::time::Duration::from_millis(50),
+            Arc::new(|_paths: &[PathBuf]| {}),
+            None,
+        )
+        .unwrap();
+        let c = canon(&file);
+        let current = DocumentOrigin::WorkspaceFile {
+            path: c.clone(),
+            workspace_id: ws.workspace_id().unwrap(),
+        };
+
+        // Switch the same service to a different folder as the workspace.
+        let dir_b = tempfile::tempdir().unwrap();
+        ws.open(
+            dir_b.path().to_path_buf(),
+            std::time::Duration::from_millis(50),
+            Arc::new(|_paths: &[PathBuf]| {}),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            reclassified_origin(&current, &c, &ws),
+            Some(DocumentOrigin::LooseFile {
+                path: c.clone(),
+                root: c.parent().unwrap().to_path_buf(),
+            })
+        );
+    }
+
+    #[test]
+    fn reclassify_demotes_workspace_file_to_loose_on_close() {
+        let (_dir, ws, file) = ws_with_file("main.typ");
+        let c = canon(&file);
+        let current = DocumentOrigin::WorkspaceFile {
+            path: c.clone(),
+            workspace_id: ws.workspace_id().unwrap(),
+        };
+        ws.close();
+        assert_eq!(
+            reclassified_origin(&current, &c, &ws),
+            Some(DocumentOrigin::LooseFile {
+                path: c.clone(),
+                root: c.parent().unwrap().to_path_buf(),
+            })
+        );
+    }
+
+    #[test]
+    fn reclassify_none_for_loose_and_untitled_when_no_workspace() {
+        // A never-opened service is the canonical "no workspace" state.
+        let ws = WorkspaceService::new();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("loose.typ");
+        std::fs::write(&file, "= x").unwrap();
+        let c = canon(&file);
+
+        let loose = DocumentOrigin::LooseFile {
+            path: c.clone(),
+            root: c.parent().unwrap().to_path_buf(),
+        };
+        assert_eq!(reclassified_origin(&loose, &c, &ws), None);
+        // Untitled docs are filtered out upstream; the function-side fallback
+        // must still be a no-op.
+        assert_eq!(reclassified_origin(&DocumentOrigin::Untitled, &c, &ws), None);
+    }
+}
