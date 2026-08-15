@@ -31,7 +31,7 @@ src-tauri/src/
   fs/ net/ lsp/ persistence/ settings/   supporting infrastructure
   git/            FROZEN — see above
 scripts/          fetch-grammar, fetch-monaco-assets, check_agent_repo.py
-docs/             user-facing docs (typstpro, themes)
+docs/             user-facing docs (typstpro, themes); docs/modules/ = developer docs per module
 .agents/notes/    Agent Notes (ADRs) — search before designing anything non-trivial
 .agent/           round-based agent session state — local-only, gitignored, never commit
 ```
@@ -50,6 +50,13 @@ docs/             user-facing docs (typstpro, themes)
 
 Pick the narrowest evidence for your diff. Never default to the full suite
 and never repeat a passing check — CI owns exhaustive coverage.
+
+## Documentation protocol
+
+Before developing: read the module doc(s) in `docs/modules/` that cover
+the files you will touch (start at `docs/modules/architecture.md`). After
+developing: update the affected module doc in the same PR — facts only,
+keep the doc true, not longer. Renames/moves update the doc's paths too.
 
 ## Conventions
 
