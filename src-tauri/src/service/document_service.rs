@@ -712,7 +712,7 @@ impl DocumentService {
     /// Full Save As rebind (§4.1 / §8.3): give a tab a new on-disk path while
     /// preserving its [`DocumentId`], buffer, and revision.
     ///
-    /// Unlike the Phase 1 [`assign_path`](Self::assign_path) (which only updated
+    /// Unlike the Phase 1 path-only assignment (which only updated
     /// metadata), this **rebuilds the [`EditorWorld`]** with a resolver anchored
     /// at the new parent directory, then restarts the compile worker so the new
     /// root's `#include` / `#image()` resolution takes effect. comemo's
@@ -783,8 +783,8 @@ impl DocumentService {
         // - Save As (`saved_revision: Some`): the tab is clean iff the buffer
         //   revision still matches the snapshot that was written — a racing
         //   newer edit stays dirty (the written bytes are stale for it).
-        // - Generic rebind (`saved_revision: None`, i.e. the rename 联动 and
-        //   the deprecated `assign_path`): the buffer did NOT hit disk, so
+        // - Generic rebind (`saved_revision: None`, i.e. the rename 联动):
+        //   the buffer did NOT hit disk, so
         //   the CURRENT dirty flag must carry over. Resetting it here would
         //   silently un-dirty a doc with unsaved edits — delete protection
         //   (`docs_under_path_with_hidden` / `hard_close_if_clean` reads
@@ -908,14 +908,6 @@ impl DocumentService {
         }
         let _ = self.store.workers.write().remove(&id);
         self.compile().create_worker(id, tab.clone());
-    }
-
-    /// Deprecated alias — delegates to [`rebind_path`](Self::rebind_path). Kept
-    /// temporarily for source compatibility during the migration; new callers
-    /// should call `rebind_path` directly.
-    #[deprecated(note = "use rebind_path — it rebuilds the world and recompiles")]
-    pub fn assign_path(&self, id: DocumentId, path: PathBuf) -> Result<()> {
-        self.rebind_path(id, path)
     }
 
     /// Collect every open document whose canonical path equals or sits under

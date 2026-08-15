@@ -213,13 +213,6 @@ impl EditorService {
         self.document.rebind_path(id, target_path)
     }
 
-    /// Deprecated alias — delegates to [`DocumentService::assign_path`].
-    #[deprecated(note = "use rebind_path — it rebuilds the world and recompiles")]
-    pub fn assign_path(&self, id: DocumentId, path: PathBuf) -> Result<()> {
-        #[allow(deprecated)]
-        self.document.assign_path(id, path)
-    }
-
     /// Delegates to [`DocumentService::reclassify_documents`].
     pub fn reclassify_documents(&self, ws: &WorkspaceService) {
         self.document.reclassify_documents(ws);
