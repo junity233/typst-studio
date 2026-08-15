@@ -77,11 +77,7 @@ pub async fn list_typ_files(state: State<'_, AppState>) -> Result<Vec<String>> {
         Some(r) => r,
         None => return Ok(Vec::new()),
     };
-    let exclude = state
-        .project_config
-        .get()
-        .and_then(|cfg| cfg.exclude)
-        .map(|v| build_exclude_set(&v));
+    let exclude = state.project_config.exclude_globset();
     let files = tauri::async_runtime::spawn_blocking(move || {
         crate::service::project_config_service::ProjectConfigService::list_typ_files(
             &root,
@@ -91,11 +87,4 @@ pub async fn list_typ_files(state: State<'_, AppState>) -> Result<Vec<String>> {
     .await
     .map_err(|e| AppError::Other(format!("join error: {e}")))?;
     Ok(files)
-}
-
-/// Build the exclude GlobSet once (cheap) so the spawned walk threads a single
-/// reference through.
-fn build_exclude_set(patterns: &[String]) -> globset::GlobSet {
-    crate::service::project_config_service::build_exclude_globset(Some(patterns))
-        .unwrap_or_else(globset::GlobSet::empty)
 }

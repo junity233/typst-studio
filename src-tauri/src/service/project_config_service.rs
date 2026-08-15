@@ -66,6 +66,16 @@ impl ProjectConfigService {
         self.config.read().clone()
     }
 
+    /// The exclude GlobSet compiled from the cached config's `exclude` list
+    /// (`None` when unset or empty). Shared prelude of every walker that
+    /// honors project excludes (`search_workspace`, `replace_in_files`,
+    /// `list_typ_files`).
+    pub fn exclude_globset(&self) -> Option<globset::GlobSet> {
+        build_exclude_globset(
+            self.config.read().as_ref().and_then(|c| c.exclude.as_deref()),
+        )
+    }
+
     /// Validate, persist, cache, and broadcast a full config. `schema_version`
     /// is stamped to current before writing. All path-typed fields are
     /// validated to stay within the workspace. Returns the saved config.

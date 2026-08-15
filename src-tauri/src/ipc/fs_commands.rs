@@ -517,12 +517,7 @@ pub async fn search_workspace(
     query: crate::domain::search::SearchQuery,
 ) -> Result<Vec<crate::domain::search::SearchHit>> {
     let ws = state.workspace.clone();
-    let exclude = state
-        .project_config
-        .get()
-        .and_then(|c| c.exclude);
-    let exclude_gs =
-        crate::service::project_config_service::build_exclude_globset(exclude.as_deref());
+    let exclude_gs = state.project_config.exclude_globset();
     let hits = tauri::async_runtime::spawn_blocking(move || ws.search(&query, exclude_gs.as_ref()))
         .await
         .map_err(|e| AppError::Other(format!("join error: {e}")))?
@@ -561,12 +556,7 @@ pub async fn replace_in_files(
     let root = ws.root().ok_or_else(|| {
         AppError::InvalidInput("no workspace open".into())
     })?.clone();
-    let exclude = state
-        .project_config
-        .get()
-        .and_then(|c| c.exclude);
-    let exclude_gs =
-        crate::service::project_config_service::build_exclude_globset(exclude.as_deref());
+    let exclude_gs = state.project_config.exclude_globset();
 
     // 1. Walk the workspace for candidate files (no text read yet) and build
     //    the matcher once. Both run on the blocking pool; the candidates walk
