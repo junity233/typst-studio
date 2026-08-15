@@ -33,6 +33,12 @@ import { useTauriListener } from "./useTauriListener";
 // own their keystrokes, Monaco's hidden textarea exempted). Extracted to
 // lib/editableTarget.ts for direct testability — see its JSDoc there.
 import { isEditableTarget } from "../lib/editableTarget";
+import {
+  PREVIEW_WIDTH_KEY,
+  PREVIEW_WIDTH_MIN,
+  SIDEBAR_WIDTH_KEY,
+  readStoredNumber,
+} from "../lib/layoutPrefs";
 // Import the workbench extension's lazy activator. Activating is deferred to
 // first dispatch() call (NOT module load) to avoid a circular init: this file
 // exports helpers that the workbench module imports back, so running activate()
@@ -330,35 +336,21 @@ export async function captureAndSaveWindowState(): Promise<void> {
  * the session layout omits it (the component default applies on restore).
  */
 function readPreviewWidth(): number | null {
-  try {
-    const raw = localStorage.getItem("ts-preview-width");
-    if (raw) {
-      const n = Number(raw);
-      if (Number.isFinite(n) && n >= 240) return n;
-    }
-  } catch {
-    // ignore
-  }
-  return null;
+  const n = readStoredNumber(PREVIEW_WIDTH_KEY);
+  return n !== null && n >= PREVIEW_WIDTH_MIN ? n : null;
 }
 
 /**
  * Read the persisted sidebar-pane width from localStorage (the Workbench
  * manages it there as `ts-sidebar-width`). Returns null when unset/invalid so
  * the session layout omits it (the component default applies on restore).
- * Mirrors {@link readPreviewWidth}.
+ * Mirrors {@link readPreviewWidth}. Capture deliberately accepts any
+ * non-negative width (floor 0, not the 180 restore floor) so a legitimately
+ * narrow sidebar survives the restart round-trip.
  */
 function readSidebarWidth(): number | null {
-  try {
-    const raw = localStorage.getItem("ts-sidebar-width");
-    if (raw) {
-      const n = Number(raw);
-      if (Number.isFinite(n) && n >= 0) return n;
-    }
-  } catch {
-    // ignore
-  }
-  return null;
+  const n = readStoredNumber(SIDEBAR_WIDTH_KEY);
+  return n !== null && n >= 0 ? n : null;
 }
 
 /**

@@ -10,6 +10,7 @@ import { useSettingsStore } from "../../store/settingsStore";
 import { getByPath } from "../../hooks/useSetting";
 import { loadSession } from "../../lib/session";
 import { effectiveLayout } from "../../lib/layoutState";
+import { SIDEBAR_WIDTH_KEY, readStoredNumber } from "../../lib/layoutPrefs";
 
 // Sidebar-pane width persistence. Mirrors the preview-pane width's two-tier
 // model (§7.2): localStorage `ts-sidebar-width` is the live store — read into
@@ -21,23 +22,13 @@ import { effectiveLayout } from "../../lib/layoutState";
 // hidden pane reports size 0, and restoring that would clamp to a 0-width
 // sidebar the toggle can't bring back. The clamp on read (a 180px restore
 // floor) additionally guards against a stale 0 persisted by an older build.
-const SIDEBAR_WIDTH_KEY = "ts-sidebar-width";
 const SIDEBAR_WIDTH_DEFAULT = 320;
 /** Restore floor — below this the sidebar is too narrow to be usable. */
 const SIDEBAR_WIDTH_MIN = 180;
 
 function loadSidebarWidth(): number {
-  try {
-    const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY);
-    if (raw) {
-      const n = Number(raw);
-      if (Number.isFinite(n) && n >= SIDEBAR_WIDTH_MIN) return n;
-      if (Number.isFinite(n)) return SIDEBAR_WIDTH_MIN;
-    }
-  } catch {
-    // ignore
-  }
-  return SIDEBAR_WIDTH_DEFAULT;
+  const n = readStoredNumber(SIDEBAR_WIDTH_KEY);
+  return n === null ? SIDEBAR_WIDTH_DEFAULT : Math.max(SIDEBAR_WIDTH_MIN, n);
 }
 
 /**

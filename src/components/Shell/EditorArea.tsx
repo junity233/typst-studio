@@ -29,28 +29,23 @@ import { isZoomWheel, nextZoomStep } from "../../hooks/useWheelZoom";
 import { useEditorStatsStore } from "../../store/editorStatsStore";
 import { countChars, countWords } from "../../lib/textStats";
 import { clampActiveIndex, findMatchingLines } from "../Preview/previewSearch";
+import {
+  DIAG_HEIGHT_KEY,
+  PREVIEW_WIDTH_KEY,
+  PREVIEW_WIDTH_MIN,
+  readStoredNumber,
+} from "../../lib/layoutPrefs";
 
-const PREVIEW_WIDTH_KEY = "ts-preview-width";
 const PREVIEW_WIDTH_DEFAULT = 480;
-const PREVIEW_WIDTH_MIN = 240;
 
 function loadPreviewWidth(): number {
-  try {
-    const raw = localStorage.getItem(PREVIEW_WIDTH_KEY);
-    if (raw) {
-      const n = Number(raw);
-      if (Number.isFinite(n) && n >= PREVIEW_WIDTH_MIN) return n;
-    }
-  } catch {
-    // ignore
-  }
-  return PREVIEW_WIDTH_DEFAULT;
+  const n = readStoredNumber(PREVIEW_WIDTH_KEY);
+  return n !== null && n >= PREVIEW_WIDTH_MIN ? n : PREVIEW_WIDTH_DEFAULT;
 }
 
 // Diagnostics-panel body height (the resizable region below the header). Like
 // the preview width, it persists to localStorage and is clamped on read so a
 // stale value can't shrink the panel to nothing or swallow the editor.
-const DIAG_HEIGHT_KEY = "ts-diags-height";
 const DIAG_HEIGHT_DEFAULT = 160; // matches the previous fixed max-height
 const DIAG_HEIGHT_MIN = 40;
 // Height of the diagnostics header (32px) + its top border (1px). The resize
@@ -60,16 +55,8 @@ const DIAG_HEIGHT_MIN = 40;
 const DIAG_HEADER_OFFSET = 33;
 
 function loadDiagHeight(): number {
-  try {
-    const raw = localStorage.getItem(DIAG_HEIGHT_KEY);
-    if (raw) {
-      const n = Number(raw);
-      if (Number.isFinite(n) && n >= DIAG_HEIGHT_MIN) return n;
-    }
-  } catch {
-    // ignore
-  }
-  return DIAG_HEIGHT_DEFAULT;
+  const n = readStoredNumber(DIAG_HEIGHT_KEY);
+  return n !== null && n >= DIAG_HEIGHT_MIN ? n : DIAG_HEIGHT_DEFAULT;
 }
 
 const ZOOM_CLEANUP_KEY = "_zoomCleanup" as keyof HTMLElement;
