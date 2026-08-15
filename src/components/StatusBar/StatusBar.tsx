@@ -30,7 +30,7 @@ import { useDebounce } from "../../hooks/useDebounce";
  */
 const STATUS_DEBOUNCE_MS = 300;
 
-function statusLabel(
+export function statusLabel(
   t: TFunction<"statusbar">,
   status: CompileStatus,
   durationMs: number | null,
@@ -58,7 +58,7 @@ function statusLabel(
  * CSS class for the compile-status section. Compiling/slow get the
  * compiling tint, error gets the error tint, everything else is unstyled.
  */
-function statusClass(status: CompileStatus): string {
+export function statusClass(status: CompileStatus): string {
   switch (status) {
     case "compiling":
     case "slow":
@@ -80,7 +80,7 @@ function statusClass(status: CompileStatus): string {
  * state (downloading/verifying/failed) so the user sees the auto-download
  * that is about to fix the unavailability.
  */
-function lspLabel(
+export function lspLabel(
   t: TFunction<"statusbar">,
   statusKind: LspStatusKind,
   available: boolean,
@@ -118,7 +118,10 @@ function lspLabel(
  * nudge it with a manual restart. `disabled`/`unavailable` hide the button
  * (a restart won't help: tinymist is missing or LSP is turned off).
  */
-function lspNeedsAction(statusKind: LspStatusKind, available: boolean): boolean {
+export function lspNeedsAction(
+  statusKind: LspStatusKind,
+  available: boolean,
+): boolean {
   if (!available && statusKind === "unavailable") return false;
   switch (statusKind) {
     case "disabled":
@@ -135,7 +138,7 @@ function lspNeedsAction(statusKind: LspStatusKind, available: boolean): boolean 
  * `null` when the install state adds nothing (not installed / installed /
  * unsupported → plain "not installed").
  */
-function unavailableInstallLabel(
+export function unavailableInstallLabel(
   t: TFunction<"statusbar">,
   install: TinymistInstallStatus | null,
 ): string | null {
@@ -163,7 +166,7 @@ function unavailableInstallLabel(
  * (retry). During downloading/verifying and on unsupported platforms there
  * is nothing to click.
  */
-function installActionable(
+export function installActionable(
   statusKind: LspStatusKind,
   available: boolean,
   install: TinymistInstallStatus | null,
