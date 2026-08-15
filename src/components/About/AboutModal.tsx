@@ -1,10 +1,10 @@
-import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { ExternalLink } from "lucide-react";
 import { useAboutModalStore } from "../../store/aboutModalStore";
 import { openExternalUrl } from "../../lib/openLink";
 import { APP_NAME, APP_VERSION } from "../../lib/appInfo";
+import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 
 /** Official Typst site — the one external link in the dialog (see README). */
 const TYPST_URL = "https://typst.app";
@@ -31,19 +31,8 @@ export function AboutModal() {
   const open = useAboutModalStore((s) => s.isOpen);
   const close = useAboutModalStore((s) => s.close);
 
-  // Esc closes. Listener is attached only while open. stopPropagation keeps the
-  // event from reaching any other handlers (e.g. an editor underneath).
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        close();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, close]);
+  // Esc closes. Listener is attached only while open (see useEscapeToClose).
+  useEscapeToClose(open, close);
 
   if (!open) return null;
 

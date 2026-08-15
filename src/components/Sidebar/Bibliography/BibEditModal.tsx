@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { useEscapeToClose } from "../../../hooks/useEscapeToClose";
 import { Plus, Trash2 } from "lucide-react";
 import type { BibEntryEditable } from "../../../lib/types";
 
@@ -71,21 +72,9 @@ export function BibEditModal({ mode, initial, onConfirm, onCancel }: BibEditModa
     keyRef.current?.focus();
   }, []);
 
-  // Esc = cancel. Window-level listener like AboutModal: clicking
-  // non-focusable chrome (title/padding) moves focus to <body>, where the
-  // overlay-level onKeyDown never fires — so Escape must not depend on focus
-  // being inside the portal. Attached on mount (the modal mounts fresh) and
-  // removed on unmount.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onCancel();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
+  // Esc = cancel. Window-level listener (see useEscapeToClose): attached on
+  // mount (the modal mounts fresh) and removed on unmount.
+  useEscapeToClose(true, onCancel);
 
   const keyValid = key.trim().length > 0;
 

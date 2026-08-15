@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import {
   useDialogStore,
   type ConfirmRequest,
@@ -62,22 +63,12 @@ function ConfirmDialogBody({
     // `request` identity: a new pending request must re-run this cycle.
   }, [request]);
 
-  // Esc = cancel. Window-level listener like AboutModal / ConflictDialog:
-  // clicking non-focusable chrome (title/padding) moves focus to <body>,
-  // where the overlay-level onKeyDown never fires — and this dialog guards
-  // destructive deletes, so Escape must work regardless of focus. Attached
-  // while the body is mounted (it renders only for a pending request) and
-  // removed on unmount/replace.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        resolve("cancel");
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [resolve]);
+  // Esc = cancel. Window-level listener (see useEscapeToClose): clicking
+  // non-focusable chrome (title/padding) moves focus to <body>, where the
+  // overlay-level onKeyDown never fires — and this dialog guards destructive
+  // deletes, so Escape must work regardless of focus. Attached while the body
+  // is mounted (it renders only for a pending request).
+  useEscapeToClose(true, () => resolve("cancel"));
 
   // Tab / Shift+Tab wrap within the dialog (focus trap). Escape is handled at
   // the window level (above).

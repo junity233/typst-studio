@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import {
   resolveConflictUseDisk,
   resolveConflictOverwrite,
@@ -75,21 +76,10 @@ export function ConflictDialog() {
     prevOpenForIdRef.current = openForId;
   }, [openForId]);
 
-  // Esc = "Later" (dismiss, keep the conflict). Window-level listener like
-  // AboutModal, attached only while the dialog is open (this component stays
-  // mounted across closes). Ignored while busy to mirror the disabled Later
-  // button.
-  useEffect(() => {
-    if (openForId === null) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        if (!busy) close();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [openForId, busy, close]);
+  // Esc = "Later" (dismiss, keep the conflict). Ignored while busy to mirror
+  // the disabled Later button. See useEscapeToClose for why the listener is
+  // window-level.
+  useEscapeToClose(openForId !== null, close, { ignoreWhile: () => busy });
 
   if (openForId === null || doc === null) return null;
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useRecoveryStore, recoverRequiresCompareFirst } from "../../store/recoveryStore";
 import {
@@ -10,6 +10,7 @@ import type { RecoverableInfo, CompareRecovery } from "../../lib/types";
 import { useTabsStore } from "../../store/tabsStore";
 import { useDocumentsStore } from "../../store/documentsStore";
 import { toIpcError } from "../../lib/ipc-error";
+import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 import { DiffCompareView } from "./DiffCompareView";
 import i18n from "../../i18n";
 
@@ -45,20 +46,9 @@ export function RecoveryDialog() {
   const close = useRecoveryStore((s) => s.close);
 
   // Esc force-closes the dialog — the store's documented dismiss path (the
-  // snapshots stay on disk for the next session, so this is no-op-safe).
-  // Window-level listener like AboutModal: the first row's Recover may be
-  // disabled (mustCompare), so an in-dialog focus isn't guaranteed.
-  useEffect(() => {
-    if (!dialogOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        close();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [dialogOpen, close]);
+  // snapshots stay on disk for the next session, so this is no-op-safe). See
+  // useEscapeToClose for why the listener is window-level.
+  useEscapeToClose(dialogOpen, close);
 
   if (!dialogOpen) return null;
 
