@@ -12,8 +12,12 @@
     "tauri": "tauri",
     "test": "vitest",
     "test:run": "vitest run",
+    "typecheck": "npm run fetch-grammar && tsc -b",
     "fetch-grammar": "node scripts/fetch-grammar.mjs",
-    "fetch-monaco-assets": "node scripts/fetch-monaco-assets.mjs"
+    "fetch-monaco-assets": "node scripts/fetch-monaco-assets.mjs",
+    "agent:notes": "python scripts/check_agent_repo.py notes --format-adopted 2026-08-15",
+    "agent:budget": "python scripts/check_agent_repo.py budget",
+    "prepare": "lefthook install"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
@@ -54,6 +58,7 @@
     "@types/yauzl": "^2.10.3",
     "@vitejs/plugin-react": "^4.6.0",
     "jsdom": "^25.0.1",
+    "lefthook": "^2.1.10",
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
     "vitest": "^2.1.9",

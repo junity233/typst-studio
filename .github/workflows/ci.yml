@@ -12,6 +12,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Agent 门禁：note 格式 + AGENTS.md 词数预算（与 pre-commit 同源，
+  # 纯 stdlib，无需 Node）。--format-adopted 固定为体系启用日。
+  agent-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Agent-note format gate
+        run: python3 scripts/check_agent_repo.py notes --format-adopted 2026-08-15
+      - name: AGENTS.md word-budget gate
+        run: python3 scripts/check_agent_repo.py budget
+
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -31,6 +42,9 @@ jobs:
         run: npx tsc -b
       - name: Unit tests
         run: npm run test:run
+      # 每个 PR 证明前端仍可打包（release.yml 只在 tag 时构建）。
+      - name: Build
+        run: npm run build
 
   rust:
     runs-on: ubuntu-latest

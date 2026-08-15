@@ -1,0 +1,15 @@
+# Local checkpoints only — CI (.github/workflows/ci.yml) owns the exhaustive
+# gate matrix. Never add full test suites here; pre-commit must stay < 10s.
+pre-commit:
+  jobs:
+    - name: agent-note-format
+      run: python scripts/check_agent_repo.py notes --format-adopted 2026-08-15
+    - name: doc-budgets
+      run: python scripts/check_agent_repo.py budget
+    - name: staged-whitespace
+      run: git diff --cached --check
+
+pre-push:
+  jobs:
+    - name: typecheck
+      run: npm run typecheck

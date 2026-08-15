@@ -60,5 +60,9 @@ vite.config.d.ts
 docs/superpowers/
 DESIGN.md
 
+# Round-based agent workflow state (.agent/round-N/ plans, summaries,
+# state.json) — session-scoped; durable decisions live in .agents/notes/.
+.agent/
+
 # ZCode agent working directory
 .zcode/
