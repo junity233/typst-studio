@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Maximize2, X } from "lucide-react";
 import { unifiedDiff, type UnifiedLine } from "../../lib/diff";
 import type { PendingApproval } from "../../store/assistantTools";
+import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 
 interface DiffCardProps {
   approval: PendingApproval & { verdict: "pending" | "applied" | "rejected" };
@@ -141,19 +142,9 @@ function DiffModal({
   onClose: () => void;
 }) {
   const { t } = useTranslation("assistant");
-  // Esc closes — window-level listener like AboutModal (a focused element
-  // inside the portal is not guaranteed to receive the key). Attached only
-  // while the modal is mounted (it's conditionally rendered).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // Esc closes — window-level listener (a focused element inside the portal is
+  // not guaranteed to receive the key); see useEscapeToClose.
+  useEscapeToClose(true, onClose);
   return createPortal(
     <div className="dialog-overlay assistant-diff-modal-overlay" onClick={onClose}>
       <div

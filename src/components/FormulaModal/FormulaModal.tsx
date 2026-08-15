@@ -12,6 +12,7 @@ import { useFormulaModalStore } from "../../store/formulaModalStore";
 import { editorApiRef } from "../Editor/editorApiRef";
 import { detectMathContext } from "../Sidebar/Symbols/detectMathContext";
 import { buildTypstMathInsert, type FormulaMode } from "./insertTypstMath";
+import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 
 /**
  * Insert Formula modal — a controlled-by-store dialog that lets the user type
@@ -101,21 +102,10 @@ export function FormulaModal() {
     }
   }, [latex, mode, open]);
 
-  // Esc closes. Window-level listener like AboutModal (clicking
-  // non-focusable chrome moves focus to <body>, where the overlay-level
-  // onKeyDown never fires), attached only while the modal is open — this
-  // component stays mounted across closes.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        close();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, close]);
+  // Esc closes (window-level, stops propagation — see useEscapeToClose);
+  // attached only while the modal is open — this component stays mounted
+  // across closes.
+  useEscapeToClose(open, close);
 
   const canInsert = useMemo(
     () => latex.trim() !== "" && !inserting,

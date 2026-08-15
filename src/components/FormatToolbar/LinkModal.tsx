@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { useEscapeToClose } from "../../hooks/useEscapeToClose";
 
 export interface LinkModalProps {
   /**
@@ -42,21 +43,9 @@ export function LinkModal({ initialLabel = "", onConfirm, onCancel }: LinkModalP
     urlRef.current?.focus();
   }, []);
 
-  // Esc = cancel. Window-level listener like AboutModal: clicking
-  // non-focusable chrome (title/padding) moves focus to <body>, where the
-  // overlay-level onKeyDown never fires — so Escape must not depend on focus
-  // being inside the portal. Attached on mount (the modal mounts fresh) and
-  // removed on unmount.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onCancel();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
+  // Esc = cancel (window-level, stops propagation — see useEscapeToClose).
+  // Attached on mount: the modal mounts fresh each time it opens.
+  useEscapeToClose(true, onCancel);
 
   const submit = () => {
     const trimmed = url.trim();
