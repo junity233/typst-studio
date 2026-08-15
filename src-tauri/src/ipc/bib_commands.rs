@@ -53,7 +53,7 @@ pub async fn bibliography_parse(path: String) -> Result<Vec<BibEntry>> {
     })
     .await
     .map_err(|e| AppError::Other(format!("bibliography_parse join: {e}")))?
-    .map_err(|e| AppError::Io(e))?;
+    .map_err(AppError::Io)?;
 
     let format = sniff_for_path(&path, &content);
     bib_entry::parse_bibliography(&content, format)
@@ -92,7 +92,7 @@ pub async fn bibliography_parse_full(path: String) -> Result<Vec<BibEntryEditabl
     let content = async_runtime::spawn_blocking(move || std::fs::read_to_string(&p))
         .await
         .map_err(|e| AppError::Other(format!("bibliography_parse_full join: {e}")))?
-        .map_err(|e| AppError::Io(e))?;
+        .map_err(AppError::Io)?;
 
     let format = sniff_for_path(&path, &content);
     bib_entry::parse_bibliography_editable(&content, format)

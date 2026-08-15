@@ -105,10 +105,10 @@ impl DocumentRegistry {
         // Drop the old canonical entry if it differs from the new one.
         if let Some(old_meta) = &old {
             if let Some(old_canon) = old_meta.origin.canonical_path() {
-                if Some(old_canon) != new_meta.origin.canonical_path() {
-                    if self.by_canonical.get(old_canon) == Some(&id) {
-                        self.by_canonical.remove(old_canon);
-                    }
+                if Some(old_canon) != new_meta.origin.canonical_path()
+                    && self.by_canonical.get(old_canon) == Some(&id)
+                {
+                    self.by_canonical.remove(old_canon);
                 }
             }
         }

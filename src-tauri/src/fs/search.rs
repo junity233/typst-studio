@@ -574,7 +574,7 @@ pub(crate) fn compute_file_replacement(
     // char offsets). If the target doesn't resolve to a real match, the
     // file produces no replacement.
     let target_match_line = target.and_then(|t| if t.line >= 1 { Some(t.line as usize) } else { None });
-    let target_match_col = target.and_then(|t| if t.column >= 1 { Some(t.column as u32) } else { None });
+    let target_match_col = target.and_then(|t| if t.column >= 1 { Some(t.column) } else { None });
 
     let mut rebuilt = String::with_capacity(text.len());
     let mut total_matches = 0usize;

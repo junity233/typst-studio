@@ -406,23 +406,19 @@ pub(crate) fn handle_external_change_locked(
             // was silently skipped; now it surfaces as PermissionChanged so the
             // user can fix permissions or Save As.
             set_conflict(&tab, id, emitter, ConflictState::PermissionChanged, None);
-            return;
         }
         VersionRead::Other(msg) => {
             // A genuinely transient error (not NotFound, not PermissionDenied).
             // Don't classify as anything — log and skip, as before.
             tracing::warn!("disk version read failed for {}: {msg}", live_path.display());
-            return;
         }
         VersionRead::NotFound => {
             // NotFound on both candidate paths → the file is genuinely gone.
             if !path_exists(path) && canon.as_deref().is_none_or(|c| !c.exists()) {
                 set_conflict(&tab, id, emitter, ConflictState::Missing, None);
-                return;
             }
             // One path was NotFound but the other still exists → transient
             // (e.g. canonicalization race). Skip without classifying.
-            return;
         }
         VersionRead::Ok(new_version) => {
             // Fall through to the content/identity comparison below.

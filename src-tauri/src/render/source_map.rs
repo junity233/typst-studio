@@ -82,6 +82,7 @@ impl LineAccum {
 ///      recording byte ranges for exactly the `SpanNumber`s we need. Span
 ///      numbers are monotonic (parent < children, siblings increase), so one
 ///      DFS resolves all spans of a source in O(node_count).
+///
 /// Then the geometry pass looks each span up in the precomputed map — O(1).
 pub fn build_source_map(doc: &PagedDocument, world: &EditorWorld) -> Vec<LineRect> {
     // --- Pass 1: collect the set of distinct spans we need to resolve. -------

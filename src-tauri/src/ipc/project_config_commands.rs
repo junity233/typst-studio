@@ -97,5 +97,5 @@ pub async fn list_typ_files(state: State<'_, AppState>) -> Result<Vec<String>> {
 /// reference through.
 fn build_exclude_set(patterns: &[String]) -> globset::GlobSet {
     crate::service::project_config_service::build_exclude_globset(Some(patterns))
-        .unwrap_or_else(|| globset::GlobSet::empty())
+        .unwrap_or_else(globset::GlobSet::empty)
 }

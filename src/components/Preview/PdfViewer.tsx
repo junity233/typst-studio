@@ -6,7 +6,9 @@ import * as pdfjsLib from "pdfjs-dist";
 // The `?url` suffix tells Vite to emit the worker as a separate asset and give
 // us its resolved URL at runtime. This is the pdfjs-recommended Vite setup.
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { readFileBytesCached } from "../../lib/viewerByteCache";
+import { readFileBytesCached, fsChangeAffectsPath } from "../../lib/viewerByteCache";
+import { onFsChanged } from "../../lib/tauri";
+import { useTauriListener } from "../../hooks/useTauriListener";
 import { toIpcError } from "../../lib/ipc-error";
 import i18n from "../../i18n";
 
@@ -32,6 +34,17 @@ export function PdfViewer({ path }: { path: string }): React.JSX.Element {
   const [loading, setLoading] = useState(true);
   const [pageCanvases, setPageCanvases] = useState<React.JSX.Element[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Bumped when the backend watcher reports this file (or a generic refresh)
+  // changed, so the currently-open PDF reloads with fresh bytes. The cache
+  // entry itself is dropped globally in App.tsx; bumping here just re-runs the
+  // load effect, whose readFileBytesCached then hits disk.
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useTauriListener(onFsChanged, ({ paths }) => {
+    if (paths.length === 0 || fsChangeAffectsPath(path, paths)) {
+      setReloadKey((k) => k + 1);
+    }
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -105,7 +118,7 @@ export function PdfViewer({ path }: { path: string }): React.JSX.Element {
         }
       }
     };
-  }, [path]);
+  }, [path, reloadKey]);
 
   if (error) {
     return (

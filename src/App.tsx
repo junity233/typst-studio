@@ -31,8 +31,10 @@ import {
   onSettingsWindow,
   onStartupProblems,
   onRecoveryAvailable,
+  onFsChanged,
   openSettings,
 } from "./lib/tauri";
+import { invalidateFsChanged } from "./lib/viewerByteCache";
 import { isWindows, isTauri } from "./lib/platform";
 import { useStartupProblemsStore } from "./store/startupProblemsStore";
 import { useRecoveryStore } from "./store/recoveryStore";
@@ -91,6 +93,15 @@ export default function App() {
   // recovery wins over session for docs that have both.
   useTauriListener(onRecoveryAvailable, (payload) => {
     useRecoveryStore.getState().offerRecovery(payload.snapshots);
+  });
+
+  // Keep the binary-viewer byte cache fresh: drop cached image/PDF bytes for
+  // paths the backend watcher reports as changed. App is permanently mounted,
+  // so the cache is invalidated even when no viewer is currently mounted (a
+  // later mount of the same tab then re-reads from disk). Mounted viewers
+  // additionally listen themselves to reload their content live.
+  useTauriListener(onFsChanged, ({ paths }) => {
+    invalidateFsChanged(paths);
   });
 
   return (

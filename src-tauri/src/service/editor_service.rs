@@ -59,6 +59,9 @@ pub trait Emitter: Send + Sync {
     /// or any unreconcilable state); false for an incremental update where
     /// unchanged pages stay on the frontend. `page_count` is the total; the
     /// frontend sizes its array to it and merges `changed_pages` by index.
+    // Public trait signature; repacking the params into a struct would ripple
+    // through every implementor (TauriEmitter, CapturingEmitter) and call site.
+    #[allow(clippy::too_many_arguments)]
     fn emit_compiled(
         &self,
         id: DocumentId,

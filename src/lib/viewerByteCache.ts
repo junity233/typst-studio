@@ -1,4 +1,5 @@
 import { readFileBytes } from "./tauri";
+import { workspacePathsEqual } from "./workspacePath";
 
 /**
  * Path-keyed cache of file bytes for the binary viewers (`ImageViewer`,
@@ -31,10 +32,14 @@ import { readFileBytes } from "./tauri";
  * the first key (least-recently-used).
  *
  * ## Invalidation
- * {@link invalidateViewerByteCache} exposes a hook to drop a single path or
- * clear the whole cache. Wiring it to file-change/watch events is out of scope
- * for this fix (binary tabs are read-only previews of on-disk files and are not
- * edited in-app), but the hook is here so it can be connected later.
+ * {@link invalidateViewerByteCache} drops a single path or clears the whole
+ * cache. Wired to the backend `fs_changed` watcher event via
+ * {@link invalidateFsChanged} (subscribed globally in `App.tsx`), so externally
+ * modified images/PDFs are re-read from disk instead of showing stale cached
+ * bytes. Known limitation: `fs_changed` only covers files inside the open
+ * workspace (the loose-file watcher deliberately does not emit it — see the
+ * comment on `src-tauri/src/service/tab_store.rs` in the backend), so binary
+ * tabs opened from outside the workspace are not covered here.
  */
 
 /** Maximum number of entries kept in the cache (LRU bound). */
@@ -76,4 +81,37 @@ export function invalidateViewerByteCache(path?: string): void {
     return;
   }
   cache.delete(path);
+}
+
+/**
+ * Invalidate cache entries affected by a `fs_changed` payload (absolute paths
+ * that changed on disk). An empty `paths` list is the backend's generic
+ * "something changed, refresh" signal and clears the whole cache. Otherwise
+ * each cached key is compared with every changed path via
+ * {@link workspacePathsEqual} — the event's paths and our cache keys may differ
+ * in separators/case on Windows, so an exact `cache.delete(path)` would miss.
+ */
+export function invalidateFsChanged(paths: readonly string[]): void {
+  if (paths.length === 0) {
+    cache.clear();
+    return;
+  }
+  for (const key of [...cache.keys()]) {
+    if (paths.some((changed) => workspacePathsEqual(key, changed))) {
+      cache.delete(key);
+    }
+  }
+}
+
+/**
+ * Whether a `fs_changed` payload affects the given viewer path: true for an
+ * exact/equivalent (Windows separator- and case-insensitive) match, or for an
+ * empty payload (generic refresh). Pure — used by viewer components to decide
+ * whether to reload the currently shown file.
+ */
+export function fsChangeAffectsPath(
+  viewerPath: string,
+  changed: readonly string[],
+): boolean {
+  return changed.some((p) => workspacePathsEqual(viewerPath, p));
 }

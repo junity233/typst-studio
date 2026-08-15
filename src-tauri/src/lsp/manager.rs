@@ -859,7 +859,10 @@ impl LspManager {
     /// or a `restart()` — which bumps the generation — supersedes it). Only
     /// `restart()` supersedes; two rapid reconnects at the same gen no longer
     /// both succeed (the second is dropped at the upgrade).
-    #[allow(clippy::too_many_arguments)]
+    // `result_large_err`: the WebSocket handshake validator's Err type is
+    // `ErrorResponse`, fixed by tokio-tungstenite's callback signature — it
+    // cannot be boxed without replacing the library's callback contract.
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)]
     async fn accept_loop(
         listener: TcpListener,
         mut shutdown_rx: watch::Receiver<bool>,

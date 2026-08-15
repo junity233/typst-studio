@@ -134,7 +134,7 @@ pub fn parse_bibliography(
     format: BibFormat,
 ) -> Result<Vec<BibEntry>, BibParseError> {
     let library = parse_library(content, format)?;
-    Ok(library.iter().map(entry_to_bib).collect::<Result<_, _>>()?)
+    library.iter().map(entry_to_bib).collect()
 }
 
 /// Parse `content` into a `hayagriva::Library` for the given [`BibFormat`].
@@ -423,11 +423,10 @@ fn cores_match(
                     .all(|(a, b)| norm(a) == norm(b)),
         )
     };
-    match (titles_agree, authors_agree) {
-        (Some(true), None | Some(true)) => true,
-        (None, Some(true)) => true,
-        _ => false,
-    }
+    matches!(
+        (titles_agree, authors_agree),
+        (Some(true), None | Some(true)) | (None, Some(true))
+    )
 }
 
 /// Core fields of an ORIGINAL parsed `biblatex::Entry` for rename matching.
@@ -722,7 +721,7 @@ fn yaml_key_literal(key: &str) -> String {
         && key
             .chars()
             .next()
-            .map_or(false, |c| c.is_ascii_alphabetic() || c == '_')
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && key
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':' | '+'))

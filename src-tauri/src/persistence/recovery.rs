@@ -195,6 +195,10 @@ struct Pending {
 }
 
 /// Messages sent to the debounce worker thread.
+// `large_enum_variant`: `Update` carries a full DocumentMeta + text snapshot.
+// The enum travels only on the low-throughput debounce channel, so the size
+// difference is irrelevant; boxing would complicate every construction/match.
+#[allow(clippy::large_enum_variant)]
 enum Msg {
     /// (Re)start the debounce timer for `id` with the latest buffer. Coalesces
     /// bursts: only the most recent `Update` per id is kept.

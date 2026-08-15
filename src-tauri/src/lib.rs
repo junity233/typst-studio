@@ -55,7 +55,7 @@ pub fn run() {
     builder
         // Native application menu (File/Edit/View/Export/Help). Built once and
         // applied app-wide (macOS menubar; Win/Linux per-window).
-        .menu(|app| crate::ipc::menu::build_menu(app))
+        .menu(crate::ipc::menu::build_menu)
         .on_menu_event(|app, event| {
             crate::ipc::menu::dispatch_menu_event(app, event.id());
         })

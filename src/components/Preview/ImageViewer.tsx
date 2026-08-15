@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, ZoomIn, ZoomOut } from "lucide-react";
-import { readFileBytesCached } from "../../lib/viewerByteCache";
+import { readFileBytesCached, fsChangeAffectsPath } from "../../lib/viewerByteCache";
+import { onFsChanged } from "../../lib/tauri";
+import { useTauriListener } from "../../hooks/useTauriListener";
 import { toIpcError } from "../../lib/ipc-error";
 import i18n from "../../i18n";
 
@@ -25,6 +27,17 @@ export function ImageViewer({ path }: { path: string }): React.JSX.Element {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
+  // Bumped when the backend watcher reports this file (or a generic refresh)
+  // changed, so the currently-open image reloads with fresh bytes. The cache
+  // entry itself is dropped globally in App.tsx; bumping here just re-runs the
+  // load effect, whose readFileBytesCached then hits disk.
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useTauriListener(onFsChanged, ({ paths }) => {
+    if (paths.length === 0 || fsChangeAffectsPath(path, paths)) {
+      setReloadKey((k) => k + 1);
+    }
+  });
 
   // (Re)load the image whenever the path changes. Each load mints a fresh
   // object URL and revokes the previous one to avoid leaking blob memory when
@@ -64,7 +77,7 @@ export function ImageViewer({ path }: { path: string }): React.JSX.Element {
       revoked = true;
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [path]);
+  }, [path, reloadKey]);
 
   if (error) {
     return (
