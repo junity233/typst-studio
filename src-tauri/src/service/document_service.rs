@@ -284,40 +284,16 @@ impl DocumentService {
     /// world if the resolver can't anchor the path.
     ///
     /// Deduplicates by canonical path like
-    /// [`open_from_content`](Self::open_from_content).
+    /// [`open_from_content`](Self::open_from_content) — historically a
+    /// byte-identical twin of that method; now a pure delegation so the dedup
+    /// / registration / worker / watcher pipeline exists exactly once.
     pub fn open_from_disk(
         &self,
         path: PathBuf,
         content: String,
         workspace: Option<&WorkspaceService>,
     ) -> Result<DocumentMeta> {
-        let canon = canonicalize_for_identity(&path)?;
-        if let Some(existing) = find_existing(&self.store, &canon) {
-            // §B1 dedup invariant: see `open_from_content` — a soft-closed
-            // (hidden) doc must be made visible on reopen.
-            self.set_visibility(existing.id, false);
-            // Replay the cached compile as a full payload (see
-            // `open_from_content`'s dedup branch): after a webview reload the
-            // frontend holds no pages, and an incremental-only compile would
-            // leave holes in its page array. Mirrors `reactivate`; no-op when
-            // nothing is cached.
-            self.replay_cached_compiled(existing.id);
-            return Ok(self.tab_meta(existing.id).unwrap_or(existing));
-        }
-        let meta = classify_new(DocumentId::new(), canon.clone(), workspace);
-        let id = meta.id;
-        self.store.registry.write().register(meta.clone())?;
-        let tab = self.tab_from_meta(&meta, &content, workspace);
-        self.store.tabs.write().insert(id, tab.clone());
-        self.compile().create_worker(id, tab);
-        // Seed the on-disk version (§8.4) and ensure a watcher covers this
-        // file's directory (the workspace watcher for in-workspace files, a
-        // parent-dir watcher for out-of-workspace loose files).
-        self.set_disk_version_from_path(id, meta.origin.canonical_path());
-        self.ensure_dir_watched(id, &meta.origin, workspace);
-        // Publish the initial buffer into the shared VFS (§5 end).
-        self.sync_vfs_for(id);
-        Ok(meta)
+        self.open_from_content(path, content, workspace)
     }
 
     /// Open a **non-Typst** tab backed by a real file on disk — an image or
@@ -375,6 +351,19 @@ impl DocumentService {
         // NOTE: deliberately NO compile().create_worker() and NO sync_vfs_for()
         // — non-Typst documents do not compile and are not VFS-published.
         Ok(meta)
+    }
+
+    /// Clone the [`Arc<TabState>`] handle for an open tab, or fail with the
+    /// canonical `NotFound` message if it isn't open. Shared prologue of every
+    /// method that needs the tab handle outside the tabs lock; centralizing it
+    /// keeps the NotFound contract (message + code) from drifting per-site.
+    fn tab_cloned(&self, id: DocumentId) -> Result<Arc<TabState>> {
+        self.store
+            .tabs
+            .read()
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))
     }
 
     /// Build the initial [`TabState`] for a freshly-classified `meta`, picking
@@ -861,12 +850,7 @@ impl DocumentService {
     /// Snapshot revision and text under the same state -> world lock order used
     /// by edits and compiles.
     pub fn snapshot_for_save(&self, id: DocumentId) -> Result<(u64, String)> {
-        let tab = {
-            let tabs = self.store.tabs.read();
-            tabs.get(&id)
-                .cloned()
-                .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
-        };
+        let tab = self.tab_cloned(id)?;
         let rt = tab.state.lock();
         Ok((rt.meta.revision, tab.world.text()))
     }
@@ -1635,13 +1619,7 @@ impl DocumentService {
     ///
     /// Errors with [`AppError::NotFound`] if `id` is not open.
     pub fn reactivate(&self, id: DocumentId) -> Result<DocumentMeta> {
-        let tab = self
-            .store
-            .tabs
-            .read()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?;
+        let tab = self.tab_cloned(id)?;
         // Flip the flag in both stores (registry + runtime meta) via the shared
         // helper, then snapshot the meta + cached last_doc for the replay.
         self.set_visibility(id, false);
@@ -1775,12 +1753,7 @@ impl DocumentService {
         new_content: String,
         observed_revision: u64,
     ) -> Result<CasReplaceOutcome> {
-        let tab = {
-            let tabs = self.store.tabs.read();
-            tabs.get(&id)
-                .cloned()
-                .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
-        };
+        let tab = self.tab_cloned(id)?;
 
         let meta_snapshot = {
             let mut rt = tab.state.lock();
@@ -1841,12 +1814,7 @@ impl DocumentService {
         content: String,
         requested_revision: Option<u64>,
     ) -> Result<u64> {
-        let tab = {
-            let tabs = self.store.tabs.read();
-            tabs.get(&id)
-                .cloned()
-                .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
-        };
+        let tab = self.tab_cloned(id)?;
 
         let mut should_recompile = false;
         let mut replace_same_revision = false;
@@ -1988,12 +1956,7 @@ impl DocumentService {
     /// command layer does the actual disk write (async). Errors if the tab is
     /// untitled (no path) or missing.
     pub fn prepare_save(&self, id: DocumentId) -> Result<(PathBuf, String)> {
-        let tab = {
-            let tabs = self.store.tabs.read();
-            tabs.get(&id)
-                .cloned()
-                .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
-        };
+        let tab = self.tab_cloned(id)?;
         let path = tab
             .state
             .lock()
@@ -2020,12 +1983,7 @@ impl DocumentService {
         id: DocumentId,
         frontend_revision: Option<u64>,
     ) -> Result<(String, u64)> {
-        let tab = {
-            let tabs = self.store.tabs.read();
-            tabs.get(&id)
-                .cloned()
-                .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
-        };
+        let tab = self.tab_cloned(id)?;
         let path = tab
             .state
             .lock()
