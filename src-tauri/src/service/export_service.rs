@@ -124,45 +124,6 @@ impl ExportService {
         }
     }
 
-    /// Render each page to a PNG byte buffer. Returns `(name, bytes)` pairs
-    /// where name is `{base_name}-{n}.png`. `pixel_per_pt` overrides the
-    /// renderer's raster resolution (the `export.pngPixelPerPt` setting).
-    fn render_png_bytes(
-        &self,
-        id: DocumentId,
-        revision: u64,
-        base_name: &str,
-        revision_wait: Duration,
-        pixel_per_pt: f64,
-    ) -> Result<Vec<(String, Vec<u8>)>> {
-        let doc = self.doc_for_revision(id, revision, revision_wait)?;
-        let renderer = PngRenderer::new(pixel_per_pt);
-        let pages = renderer.render(&doc).map_err(AppError::from)?;
-        Ok(pages
-            .into_iter()
-            .enumerate()
-            .map(|(i, png)| (format!("{base_name}-{}.png", i + 1), png))
-            .collect())
-    }
-
-    /// Render each page to an SVG string. Returns `(name, bytes)` pairs where
-    /// name is `{base_name}-{n}.svg`.
-    fn render_svg_bytes(
-        &self,
-        id: DocumentId,
-        revision: u64,
-        base_name: &str,
-        revision_wait: Duration,
-    ) -> Result<Vec<(String, Vec<u8>)>> {
-        let doc = self.doc_for_revision(id, revision, revision_wait)?;
-        let pages = self.svg_renderer.render(&doc).map_err(AppError::from)?;
-        Ok(pages
-            .into_iter()
-            .enumerate()
-            .map(|(i, svg)| (format!("{base_name}-{}.svg", i + 1), svg.into_bytes()))
-            .collect())
-    }
-
     /// Render to PDF bytes for `revision` (§9) with explicit `PdfOptions`
     /// (page ranges / PDF standard / tagging — the `export.pdf*` settings).
     /// Public entry point for the command layer (which writes to disk
@@ -182,8 +143,9 @@ impl ExportService {
     }
 
     /// Render to PNG bytes for `revision` (§9). Returns `(filename, bytes)` per
-    /// page. `revision_wait` bounds the compile wait; `pixel_per_pt` sets the
-    /// raster resolution.
+    /// page where the filename is `{base_name}-{n}.png`. `revision_wait`
+    /// bounds the compile wait; `pixel_per_pt` sets the raster resolution
+    /// (the `export.pngPixelPerPt` setting).
     pub fn render_pngs(
         &self,
         id: DocumentId,
@@ -192,11 +154,18 @@ impl ExportService {
         revision_wait: Duration,
         pixel_per_pt: f64,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        self.render_png_bytes(id, revision, base_name, revision_wait, pixel_per_pt)
+        let doc = self.doc_for_revision(id, revision, revision_wait)?;
+        let renderer = PngRenderer::new(pixel_per_pt);
+        let pages = renderer.render(&doc).map_err(AppError::from)?;
+        Ok(pages
+            .into_iter()
+            .enumerate()
+            .map(|(i, png)| (format!("{base_name}-{}.png", i + 1), png))
+            .collect())
     }
 
     /// Render to SVG bytes for `revision` (§9). Returns `(filename, bytes)` per
-    /// page.
+    /// page where the filename is `{base_name}-{n}.svg`.
     pub fn render_svgs(
         &self,
         id: DocumentId,
@@ -204,7 +173,13 @@ impl ExportService {
         base_name: &str,
         revision_wait: Duration,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        self.render_svg_bytes(id, revision, base_name, revision_wait)
+        let doc = self.doc_for_revision(id, revision, revision_wait)?;
+        let pages = self.svg_renderer.render(&doc).map_err(AppError::from)?;
+        Ok(pages
+            .into_iter()
+            .enumerate()
+            .map(|(i, svg)| (format!("{base_name}-{}.svg", i + 1), svg.into_bytes()))
+            .collect())
     }
 }
 
