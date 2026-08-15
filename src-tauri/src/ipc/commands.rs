@@ -440,18 +440,37 @@ fn sanitize_file_stem(name: &str) -> String {
     }
 }
 
-/// Export each page of the tab's compiled document for `revision` to a PNG. A
-/// save dialog picks the output location; pages are named `{stem}-{n}.png` in
-/// that folder. Render + write run on a blocking thread. See
-/// [`export_pdf`] for the `revision` semantics (§9).
-#[tauri::command]
-pub async fn export_png(
+/// The two image export formats: selects the dialog filter and the renderer,
+/// plus the PNG-only `export.pngPixelPerPt` setting.
+#[derive(Clone, Copy)]
+enum ImageFormat {
+    Png,
+    Svg,
+}
+
+impl ImageFormat {
+    fn dialog_filter(self) -> (&'static str, &'static [&'static str]) {
+        match self {
+            ImageFormat::Png => ("PNG", &["png"]),
+            ImageFormat::Svg => ("SVG", &["svg"]),
+        }
+    }
+}
+
+/// Shared body of `export_png` / `export_svg`: resolve the output location
+/// (caller-supplied path validated against the workspace, else a save dialog),
+/// render every page of the tab's compiled document for `revision`, and write
+/// the pages as `{stem}-{n}.{ext}` into the chosen folder. Render + write run
+/// on a blocking thread. See [`export_pdf`] for the `revision` semantics (§9).
+async fn export_image_pages(
     app: AppHandle,
     state: State<'_, AppState>,
     id: DocumentId,
     revision: u64,
     output_path: Option<String>,
+    format: ImageFormat,
 ) -> Result<Vec<String>> {
+    let (filter_name, extensions) = format.dialog_filter();
     let picked_path = match output_path {
         Some(p) => ensure_export_within_workspace(&state, &PathBuf::from(p))?,
         None => {
@@ -460,7 +479,7 @@ pub async fn export_png(
                 app_for_dialog
                     .dialog()
                     .file()
-                    .add_filter("PNG", &["png"])
+                    .add_filter(filter_name, extensions)
                     .blocking_save_file()
             })
             .await
@@ -484,11 +503,25 @@ pub async fn export_png(
     let revision_wait = std::time::Duration::from_millis(
         state.settings.get_or_default::<u64>("export.revisionWaitMs"),
     );
-    let pixel_per_pt = state.settings.get_or_default::<f64>("export.pngPixelPerPt");
+    let pixel_per_pt = match format {
+        ImageFormat::Png => state.settings.get_or_default::<f64>("export.pngPixelPerPt"),
+        ImageFormat::Svg => 0.0,
+    };
     let base_name_clone = base_name.clone();
     // Render (CPU-bound) + write (blocking IO) together on a blocking thread.
     let paths = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>> {
-        let pages = export.render_pngs(id, revision, &base_name_clone, revision_wait, pixel_per_pt)?;
+        let pages = match format {
+            ImageFormat::Png => export.render_pngs(
+                id,
+                revision,
+                &base_name_clone,
+                revision_wait,
+                pixel_per_pt,
+            )?,
+            ImageFormat::Svg => {
+                export.render_svgs(id, revision, &base_name_clone, revision_wait)?
+            }
+        };
         std::fs::create_dir_all(&save_dir)?;
         let mut written = Vec::with_capacity(pages.len());
         for (name, bytes) in pages {
@@ -506,10 +539,20 @@ pub async fn export_png(
     Ok(paths)
 }
 
+/// Export each page of the tab's compiled document for `revision` to a PNG.
+#[tauri::command]
+pub async fn export_png(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: DocumentId,
+    revision: u64,
+    output_path: Option<String>,
+) -> Result<Vec<String>> {
+    export_image_pages(app, state, id, revision, output_path, ImageFormat::Png).await
+}
+
 /// Export each page of the tab's compiled document for `revision` to an SVG
-/// file. A save dialog picks the output location; pages are named
-/// `{stem}-{n}.svg` in that folder. Render + write run on a blocking thread.
-/// See [`export_pdf`] for the `revision` semantics (§9).
+/// file.
 #[tauri::command]
 pub async fn export_svg(
     app: AppHandle,
@@ -518,57 +561,7 @@ pub async fn export_svg(
     revision: u64,
     output_path: Option<String>,
 ) -> Result<Vec<String>> {
-    let picked_path = match output_path {
-        Some(p) => ensure_export_within_workspace(&state, &PathBuf::from(p))?,
-        None => {
-            let app_for_dialog = app.clone();
-            let picked = tauri::async_runtime::spawn_blocking(move || {
-                app_for_dialog
-                    .dialog()
-                    .file()
-                    .add_filter("SVG", &["svg"])
-                    .blocking_save_file()
-            })
-            .await
-            .map_err(|e| AppError::Other(format!("join error: {e}")))?;
-            let Some(picked) = picked else {
-                return Err(AppError::Other("export cancelled".into()));
-            };
-            path_buf_from(picked)?
-        }
-    };
-    let save_dir = picked_path
-        .parent()
-        .ok_or_else(|| AppError::InvalidInput("chosen path has no parent directory".into()))?
-        .to_path_buf();
-    let base_name = picked_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("document")
-        .to_string();
-    let export = state.export.clone();
-    let revision_wait = std::time::Duration::from_millis(
-        state.settings.get_or_default::<u64>("export.revisionWaitMs"),
-    );
-    let base_name_clone = base_name.clone();
-    // Render (CPU-bound) + write (blocking IO) together on a blocking thread.
-    let paths = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>> {
-        let pages = export.render_svgs(id, revision, &base_name_clone, revision_wait)?;
-        std::fs::create_dir_all(&save_dir)?;
-        let mut written = Vec::with_capacity(pages.len());
-        for (name, bytes) in pages {
-            let full = save_dir.join(&name);
-            // Atomic write (same as export_pdf): auto-export-on-save paths
-            // make routine exports common, and an app quit mid-batch must
-            // never leave a truncated page image at a displayed path.
-            crate::persistence::atomic::write_bytes(&full, &bytes)?;
-            written.push(full.to_string_lossy().to_string());
-        }
-        Ok(written)
-    })
-    .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))??;
-    Ok(paths)
+    export_image_pages(app, state, id, revision, output_path, ImageFormat::Svg).await
 }
 
 /// Fetch the current diagnostics for a tab (used on initial load).

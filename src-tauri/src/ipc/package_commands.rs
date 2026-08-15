@@ -236,7 +236,7 @@ fn map_op_err(e: PackageOpError) -> AppError {
 }
 
 fn map_index_err(e: IndexFetchError) -> AppError {
-    AppError::ipc(ErrorCode::IndexFetchFailed, &e.to_string(), true, None)
+    AppError::ipc(ErrorCode::IndexFetchFailed, e.to_string(), true, None)
 }
 
 
