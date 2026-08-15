@@ -100,6 +100,33 @@ function uid(): string {
   return crypto.randomUUID();
 }
 
+/**
+ * Flush the accumulated streaming text/thinking into the transcript as one
+ * (possibly partial) assistant message — a no-op append when both are empty —
+ * and clear the accumulators. Shared by the turn-finalize, stop, and
+ * message_end paths so their flush semantics cannot drift.
+ */
+function flushStreaming(s: AssistantState): Partial<AssistantState> {
+  const text = s.streamingText;
+  const think = s.streamingThinking;
+  return {
+    messages:
+      text || think
+        ? [
+            ...s.messages,
+            {
+              id: uid(),
+              role: "assistant" as const,
+              text: text || undefined,
+              thinking: think || undefined,
+            },
+          ]
+        : s.messages,
+    streamingText: "",
+    streamingThinking: "",
+  };
+}
+
 function currentWorkspaceContext() {
   const ws = useWorkspaceStore.getState();
   const { activeId } = useTabsStore.getState();
@@ -315,28 +342,11 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       }));
     } finally {
       // Finalize: flush any accumulated streaming text + thinking into messages.
-      set((s) => {
-        const text2 = s.streamingText;
-        const think = s.streamingThinking;
-        const msgs = text2 || think
-          ? [
-              ...s.messages,
-              {
-                id: uid(),
-                role: "assistant" as const,
-                text: text2 || undefined,
-                thinking: think || undefined,
-              },
-            ]
-          : s.messages;
-        return {
-          messages: msgs,
-          status:
-            s.status === "error" || s.status === "stopped" ? s.status : "idle",
-          streamingText: "",
-          streamingThinking: "",
-        };
-      });
+      set((s) => ({
+        ...flushStreaming(s),
+        status:
+          s.status === "error" || s.status === "stopped" ? s.status : "idle",
+      }));
       approvalGate = null;
     }
   },
@@ -345,21 +355,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     persistentAgent?.abort();
     approvalGate?.resolve("rejected");
     set((s) => ({
+      ...flushStreaming(s),
       status: "stopped",
-      // Flush streaming text as a partial assistant message.
-      messages: s.streamingText || s.streamingThinking
-        ? [
-            ...s.messages,
-            {
-              id: uid(),
-              role: "assistant" as const,
-              text: s.streamingText || undefined,
-              thinking: s.streamingThinking || undefined,
-            },
-          ]
-        : s.messages,
-      streamingText: "",
-      streamingThinking: "",
       pendingApproval: null,
     }));
   },
@@ -656,23 +653,7 @@ function handleAgentEvent(
     case "message_end": {
       // The assistant message finished. Flush accumulated streaming text +
       // thinking into the transcript so it persists between turns.
-      const text = get().streamingText;
-      const think = get().streamingThinking;
-      set((s) => ({
-        streamingText: "",
-        streamingThinking: "",
-        messages: text || think
-          ? [
-              ...s.messages,
-              {
-                id: uid(),
-                role: "assistant" as const,
-                text: text || undefined,
-                thinking: think || undefined,
-              },
-            ]
-          : s.messages,
-      }));
+      set((s) => flushStreaming(s));
       break;
     }
     case "agent_end":
