@@ -1,8 +1,7 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
-import { onLspStatus } from "../lib/tauri";
+import { getLspStatus, onLspStatus } from "../lib/tauri";
 import { appLanguageClient } from "../components/Editor/appLanguageClient";
 import type {
   LspStatusPayload,
@@ -165,7 +164,7 @@ function acquireSubscription(): Promise<UnlistenFn> {
     // it goes through `applyPayload` (which also seeds the generation).
     try {
       const initial = await Promise.race<LspStatusPayload>([
-        invoke<LspStatusPayload>("get_lsp_status"),
+        getLspStatus(),
         new Promise<LspStatusPayload>((_, reject) =>
           setTimeout(
             () => reject(new Error("get_lsp_status timed out")),

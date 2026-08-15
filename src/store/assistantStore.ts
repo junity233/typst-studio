@@ -532,13 +532,12 @@ async function applyApproval(p: PendingApproval): Promise<string> {
       // `create_entry` makes an EMPTY file (it takes no content) and expects a
       // workspace-RELATIVE path. After creating, open it as a tab and push the
       // content through the same store + backend pair an editor edit uses.
-      const { invoke } = await import("@tauri-apps/api/core");
+      const { createEntry, openFileByPath, updateText } = await import("../lib/tauri");
       const root = useWorkspaceStore.getState().rootPath;
       const rel = root && p.path.startsWith(root)
         ? p.path.slice(root.length).replace(/^[/\\]+/, "")
         : p.path;
-      await invoke("create_entry", { rel, kind: "file" });
-      const { openFileByPath, updateText } = await import("../lib/tauri");
+      await createEntry(rel, "file");
       const opened = await openFileByPath(p.path);
       // openFileByPath must ALWAYS be paired with openPath (lib/openFile.ts,
       // useExternalFileRouting.ts) — without it the file is registered +

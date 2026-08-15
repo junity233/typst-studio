@@ -7,14 +7,13 @@ import {
   downloadPercent,
   useTinymistInstall,
 } from "../../store/tinymistInstallStore";
-import { installTinymist } from "../../lib/tauri";
+import { installTinymist, restartLsp } from "../../lib/tauri";
 import { useStartupProblemsStore } from "../../store/startupProblemsStore";
 import { useSaveStateStore } from "../../store/saveStateStore";
 import { useConflictDialogStore } from "../../store/conflictDialogStore";
 import { useWatcherHealthStore } from "../../store/watcherHealthStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useEditorStatsStore } from "../../store/editorStatsStore";
-import { invoke } from "@tauri-apps/api/core";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
@@ -251,9 +250,9 @@ export function StatusBar() {
     lspStatus.statusKind,
     lspStatus.available,
   );
-  const restartLsp = () => {
+  const onRestartLsp = () => {
     // Fire-and-forget; the lsp_status event updates the UI.
-    invoke("restart_lsp").catch(() => {
+    restartLsp().catch(() => {
       /* a failed restart is non-fatal; the next status event catches up */
     });
   };
@@ -371,7 +370,7 @@ export function StatusBar() {
             type="button"
             className="statusbar-lsp-restart"
             title={t("lsp.restartButtonTitle")}
-            onClick={restartLsp}
+            onClick={onRestartLsp}
           >
             {t("lsp.restartButton")}
           </button>

@@ -1,8 +1,7 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
-import { onTinymistInstall } from "../lib/tauri";
+import { getTinymistInstall, onTinymistInstall } from "../lib/tauri";
 import type { TinymistInstallStatus } from "../lib/types";
 
 /**
@@ -61,7 +60,7 @@ function acquireSubscription(): Promise<UnlistenFn> {
   acquirePromise = (async () => {
     try {
       const initial = await Promise.race<TinymistInstallStatus>([
-        invoke<TinymistInstallStatus>("get_tinymist_install"),
+        getTinymistInstall(),
         new Promise<TinymistInstallStatus>((_, reject) =>
           setTimeout(
             () => reject(new Error("get_tinymist_install timed out")),

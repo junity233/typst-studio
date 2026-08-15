@@ -1,6 +1,5 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { invoke } from "@tauri-apps/api/core";
 
 import { useDocumentsStore } from "./documentsStore";
 import { useTabsStore } from "./tabsStore";
@@ -11,8 +10,7 @@ import {
 } from "./diagnosticsStore";
 import { editorApiRef } from "../components/Editor/editorApiRef";
 import { aiLog } from "../lib/aiLog";
-import { hardCloseTab, openFileByPath, searchWorkspace } from "../lib/tauri";
-import type { DirEntry } from "../lib/types";
+import { hardCloseTab, openFileByPath, readDir, searchWorkspace } from "../lib/tauri";
 import {
   resolveWorkspacePath,
   countOccurrences,
@@ -170,7 +168,7 @@ function listDirTool(_ctx: ToolContext): AgentTool {
         ? resolveWorkspacePath(root, path, activeDocPath())
         : (root ?? activeDocPath() ?? "");
       if (!target) return textResult("No workspace and no active file.");
-      const entries = await invoke<DirEntry[]>("read_dir", { rel: target });
+      const entries = await readDir(target);
       const lines = entries.map((e) =>
         e.kind === "dir" ? `${e.name}/` : e.name,
       );

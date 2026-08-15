@@ -57,6 +57,7 @@ import type {
   ThemeInfo,
   TinymistInstallStatus,
   TypstFileEntry,
+  WatcherHealthPayload,
   WindowBounds,
   WireTextEdit,
   WorkspaceMeta,
@@ -605,6 +606,11 @@ export async function readDir(rel?: string): Promise<DirEntry[]> {
   return invoke<DirEntry[]>("read_dir", { rel: rel ?? "" });
 }
 
+/** Whether the workspace watcher failed to start (polling fallback active). */
+export async function getWatcherHealth(): Promise<WatcherHealthPayload> {
+  return invoke<WatcherHealthPayload>("get_watcher_health");
+}
+
 /**
  * Cross-file search across the workspace (§Search view). Returns one hit per
  * matched line, capped per-file and in total by the query. Empty list on no
@@ -876,6 +882,16 @@ export const onStatus = onEvent<StatusPayload>("status");
 
 /** Subscribe to LSP status events (connect/disconnect transitions). */
 export const onLspStatus = onEvent<LspStatusPayload>("lsp_status");
+
+/** Snapshot of the LSP connection status (the `onLspStatus` stream's seed). */
+export async function getLspStatus(): Promise<LspStatusPayload> {
+  return invoke<LspStatusPayload>("get_lsp_status");
+}
+
+/** Restart the tinymist LSP (Manual reason); updates arrive via `onLspStatus`. */
+export async function restartLsp(): Promise<void> {
+  await invoke("restart_lsp");
+}
 
 /**
  * Subscribe to managed-tinymist-install events. Emitted on every download

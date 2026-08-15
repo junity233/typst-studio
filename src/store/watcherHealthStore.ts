@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
+import { getWatcherHealth } from "../lib/tauri";
 
 /**
  * Watcher-health state (§6.3 "watcher 创建失败时...状态栏明确提示外部修改检测
@@ -27,9 +27,7 @@ export const useWatcherHealthStore = create<WatcherHealthState>((set) => ({
   watcherFailed: false,
   refresh: async () => {
     try {
-      const payload = await invoke<{ watcherFailed: boolean }>(
-        "get_watcher_health",
-      );
+      const payload = await getWatcherHealth();
       set({ watcherFailed: payload.watcherFailed });
     } catch {
       // IPC unavailable (e.g. early in startup) — leave the default.
