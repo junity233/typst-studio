@@ -56,33 +56,30 @@ export function usePasteConvert(
         const rawImages = collectClipboardImages(e.clipboardData);
         if (rawImages.length === 0) return; // no HTML, no image → native paste
         e.preventDefault();
-        const startModelUri = editor.getModel()?.uri.toString();
-        const srcs = await Promise.all(
-          rawImages.map((file, index) =>
-            resolveRawImage(file, ctx, tab, index).catch((err) => {
-              console.warn("[paste] raw image failed:", err);
-              return null;
-            }),
-          ),
-        );
-        const finalText = srcs
-          .filter((s): s is string => s !== null)
-          .map((s) => `#image("${escapeTypstStr(s)}")`)
-          .join("\n");
-        if (finalText.length === 0) return; // every image failed
-        // Re-validate focus + model identity before applying. Image writes can
-        // take time, during which the user may switch tabs (model changed) or
-        // click away from the editor. Bail silently rather than inject into the
-        // wrong document or at a stale cursor (same rationale as rich-text path).
-        const liveEditor = getEditor();
-        if (!liveEditor || !liveEditor.hasTextFocus()) return;
-        const liveUri = liveEditor.getModel()?.uri.toString();
-        if (liveUri !== startModelUri) return;
-        const sel = liveEditor.getSelection();
-        if (!sel) return;
-        liveEditor.executeEdits("paste-raw-image", [{ range: sel, text: finalText }]);
-        return;
-      }
+      const startModelUri = editor.getModel()?.uri.toString();
+      const srcs = await Promise.all(
+        rawImages.map((file, index) =>
+          resolveRawImage(file, ctx, tab, index).catch((err) => {
+            console.warn("[paste] raw image failed:", err);
+            return null;
+          }),
+        ),
+      );
+      const finalText = srcs
+        .filter((s): s is string => s !== null)
+        .map((s) => `#image("${escapeTypstStr(s)}")`)
+        .join("\n");
+      if (finalText.length === 0) return; // every image failed
+      // Re-validate focus + model identity before applying (see
+      // livePasteTarget): the user may have switched tabs or clicked away
+      // while the images were being written.
+      const target = livePasteTarget(getEditor, startModelUri);
+      if (!target) return;
+      target.editor.executeEdits("paste-raw-image", [
+        { range: target.sel, text: finalText },
+      ]);
+      return;
+    }
 
       const plain = e.clipboardData?.getData("text/plain") ?? "";
       if (plain.trim().length > 0 && !looksRich(html, plain)) return;
@@ -119,19 +116,17 @@ export function usePasteConvert(
         const src = finalSrcByIndex[Number(i)] ?? "";
         return `#image("${escapeTypstStr(src)}")`;
       });
-      // Re-validate focus + model identity before applying. The seconds-long
-      // image-fetch await above means the user may have switched tabs (model
-      // changed) or clicked away from the editor (lost focus). Applying the
-      // edit blindly in those cases would either inject into the wrong
-      // document or insert at a stale cursor. Bail silently — the user has
-      // clearly moved on, and the converted text is dropped (best-effort).
-      const liveEditor = getEditor();
-      if (!liveEditor || !liveEditor.hasTextFocus()) return;
-      const liveUri = liveEditor.getModel()?.uri.toString();
-      if (liveUri !== startModelUri) return;
-      const sel = liveEditor.getSelection();
-      if (!sel) return;
-      liveEditor.executeEdits("paste-convert", [{ range: sel, text: finalText }]);
+      // Re-validate focus + model identity before applying (see
+      // livePasteTarget): the seconds-long image-fetch await above means the
+      // user may have switched tabs or clicked away; applying blindly would
+      // inject into the wrong document or at a stale cursor. Bail silently —
+      // the user has clearly moved on, and the converted text is dropped
+      // (best-effort).
+      const target = livePasteTarget(getEditor, startModelUri);
+      if (!target) return;
+      target.editor.executeEdits("paste-convert", [
+        { range: target.sel, text: finalText },
+      ]);
       if (result.warnings.length > 0) {
         console.warn(`[paste] ${result.warnings.length} warnings:`, result.warnings);
       }
@@ -144,6 +139,54 @@ export function usePasteConvert(
 function looksRich(html: string, plain: string): boolean {
   const stripped = html.replace(/<[^>]+>/g, "").trim();
   return stripped !== plain.trim();
+}
+
+/**
+ * Re-validate focus + model identity before applying a paste edit. Image
+ * writes/fetches can take seconds, during which the user may switch tabs
+ * (model changed) or click away from the editor (lost focus). Applying the
+ * edit blindly in those cases would inject into the wrong document or insert
+ * at a stale cursor. Returns the live editor + selection to apply at, or null
+ * to bail silently (the user has clearly moved on).
+ */
+function livePasteTarget(
+  getEditor: GetEditor,
+  startModelUri: string | undefined,
+): { editor: Monaco.editor.IStandaloneCodeEditor; sel: Monaco.Selection } | null {
+  const liveEditor = getEditor();
+  if (!liveEditor || !liveEditor.hasTextFocus()) return null;
+  const liveUri = liveEditor.getModel()?.uri.toString();
+  if (liveUri !== startModelUri) return null;
+  const sel = liveEditor.getSelection();
+  if (!sel) return null;
+  return { editor: liveEditor, sel };
+}
+
+/**
+ * Expand the configured image-path template for one pasted image and make it
+ * absolute — the shared body of the rich-text and raw-image paste paths.
+ * `ensureAbsolute`'s fallback (a `pasted-images/` dir under the app config dir
+ * for an unsaved tab with no workspace) is what the backend's
+ * `fetch_url_to_file` containment check admits; both the on-disk path and the
+ * returned `#image()` src use this absolute value so they always agree.
+ */
+async function expandImageTarget(
+  ctx: { workspace?: string; imageTemplate: string },
+  tab: Tab,
+  image: { hash: string; ext: string; index: number },
+): Promise<string> {
+  const fileDir = await resolveImageDir(ctx, tab);
+  const rel = expandTemplate(ctx.imageTemplate, {
+    workspace: ctx.workspace,
+    fileDir,
+    fileName: tab.path ? tab.path.split(/[\\/]/).pop()?.replace(/\.typ$/, "") : undefined,
+    filePath: tab.path ?? undefined,
+    hash: image.hash,
+    ext: image.ext,
+    timestamp: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
+    index: image.index,
+  });
+  return await ensureAbsolute(rel, ctx.workspace);
 }
 
 async function resolveImage(
@@ -164,23 +207,7 @@ async function resolveImage(
     return img.src;
   }
   const hash = await sha1Hex(hashInput + ":" + img.index);
-  const fileDir = await resolveImageDir(ctx, tab);
-  const rel = expandTemplate(ctx.imageTemplate, {
-    workspace: ctx.workspace,
-    fileDir,
-    fileName: tab.path ? tab.path.split(/[\\/]/).pop()?.replace(/\.typ$/, "") : undefined,
-    filePath: tab.path ?? undefined,
-    hash,
-    ext,
-    timestamp: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
-    index: img.index,
-  });
-  // Make the expanded path absolute before writing: for an unsaved tab with
-  // no workspace, `${fileDir}` stays literal, so `ensureAbsolute` falls back
-  // to a `pasted-images/` dir under the app config dir (which the backend's
-  // fetch_url_to_file containment check admits). Both the on-disk path and
-  // the returned `#image()` src use this absolute value so they always agree.
-  const abs = await ensureAbsolute(rel, ctx.workspace);
+  const abs = await expandImageTarget(ctx, tab, { hash, ext, index: img.index });
   if (isRemote) {
     await fetchUrlToFile(img.src, abs);
   } else if (bytes) {
@@ -237,18 +264,7 @@ async function resolveRawImage(
   // `^data:image/<sub>;`) maps the MIME type to an extension without a
   // separate MIME→ext table. `image/jpeg` → jpg, `image/svg+xml` → svg, etc.
   const ext = inferExt(`data:${file.type};`);
-  const fileDir = await resolveImageDir(ctx, tab);
-  const rel = expandTemplate(ctx.imageTemplate, {
-    workspace: ctx.workspace,
-    fileDir,
-    fileName: tab.path ? tab.path.split(/[\\/]/).pop()?.replace(/\.typ$/, "") : undefined,
-    filePath: tab.path ?? undefined,
-    hash,
-    ext,
-    timestamp: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
-    index,
-  });
-  const abs = await ensureAbsolute(rel, ctx.workspace);
+  const abs = await expandImageTarget(ctx, tab, { hash, ext, index });
   await writeImage(abs, bytes);
   return await imageSrcForInsert(abs, tab, ctx);
 }
