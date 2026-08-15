@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sideBySideDiff, wordDiff, hasChanges } from "../diff";
+import { sideBySideDiff, wordDiff, hasChanges, unifiedDiff } from "../diff";
 
 /**
  * Pure-diff acceptance tests for the conflict/recovery compare views
@@ -41,9 +41,9 @@ describe("sideBySideDiff — change detection", () => {
     expect(rowTexts(rows)).toEqual(["a", "b", "c"]);
   });
 
-  it("handles identical empty strings", () => {
+  it("handles identical empty strings (zero lines — no phantom empty row)", () => {
     const rows = sideBySideDiff("", "");
-    expect(rows).toEqual([{ kind: "equal", text: "" }]);
+    expect(rows).toEqual([]);
     expect(hasChanges(rows)).toBe(false);
   });
 
@@ -72,9 +72,10 @@ describe("sideBySideDiff — change detection", () => {
     expect(rows[1]).toEqual({ kind: "del", text: "b" });
   });
 
-  it("empty vs content pairs the (empty) line rather than del+add rows", () => {
+  it("empty vs content is a pure addition (no phantom empty deletion)", () => {
     const rows = sideBySideDiff("", "new line");
-    expect(changeKinds(rows)).toEqual(["pair"]);
+    expect(changeKinds(rows)).toEqual(["add"]);
+    expect(rows[0]).toEqual({ kind: "add", text: "new line" });
   });
 
   it("a trailing-newline difference is a real (if small) change", () => {
@@ -192,6 +193,65 @@ describe("sideBySideDiff — large-input fallback", () => {
     changed[2500] = "line-2500-EDITED";
     const rows = sideBySideDiff(left, changed.join("\n"));
     expect(changeKinds(rows)).toEqual(["pair"]);
+  });
+});
+
+describe("unifiedDiff (single-column, used by the assistant DiffCard)", () => {
+  it("all context for identical texts, with aligned line numbers", () => {
+    const lines = unifiedDiff("a\nb\nc", "a\nb\nc");
+    expect(lines).toEqual([
+      { kind: "ctx", text: "a", beforeLine: 1, afterLine: 1 },
+      { kind: "ctx", text: "b", beforeLine: 2, afterLine: 2 },
+      { kind: "ctx", text: "c", beforeLine: 3, afterLine: 3 },
+    ]);
+  });
+
+  it("two separated changes keep the untouched middle line as context", () => {
+    // The motivating fix: the old first/last-differing-line heuristic marked
+    // EVERYTHING between the two edits del+add — "keep" below would appear
+    // as both a deletion and an addition.
+    const before = "l1\nx1\nkeep\nx2\nl5".split("\n");
+    const after = "l1\nX1\nkeep\nX2\nl5".split("\n");
+    const lines = unifiedDiff(before.join("\n"), after.join("\n"));
+    const keep = lines.find((l) => l.text === "keep");
+    expect(keep).toEqual({
+      kind: "ctx",
+      text: "keep",
+      beforeLine: 3,
+      afterLine: 3,
+    });
+    // Exactly one del and one add per edited line.
+    const dels = lines.filter((l) => l.kind === "del").map((l) => l.text);
+    const adds = lines.filter((l) => l.kind === "add").map((l) => l.text);
+    expect(dels).toEqual(["x1", "x2"]);
+    expect(adds).toEqual(["X1", "X2"]);
+  });
+
+  it("pure addition: added lines have beforeLine -1 and shifted afterLine", () => {
+    const lines = unifiedDiff("a\nc", "a\nb\nc");
+    expect(lines).toEqual([
+      { kind: "ctx", text: "a", beforeLine: 1, afterLine: 1 },
+      { kind: "add", text: "b", beforeLine: -1, afterLine: 2 },
+      { kind: "ctx", text: "c", beforeLine: 2, afterLine: 3 },
+    ]);
+  });
+
+  it("pure deletion: deleted lines have afterLine -1", () => {
+    const lines = unifiedDiff("a\nb\nc", "a\nc");
+    expect(lines).toEqual([
+      { kind: "ctx", text: "a", beforeLine: 1, afterLine: 1 },
+      { kind: "del", text: "b", beforeLine: 2, afterLine: -1 },
+      { kind: "ctx", text: "c", beforeLine: 3, afterLine: 2 },
+    ]);
+  });
+
+  it("empty before yields a single addition; empty after a single deletion", () => {
+    expect(unifiedDiff("", "hello")).toEqual([
+      { kind: "add", text: "hello", beforeLine: -1, afterLine: 1 },
+    ]);
+    expect(unifiedDiff("hello", "")).toEqual([
+      { kind: "del", text: "hello", beforeLine: 1, afterLine: -1 },
+    ]);
   });
 });
 

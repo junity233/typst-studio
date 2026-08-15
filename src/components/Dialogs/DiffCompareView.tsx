@@ -52,16 +52,17 @@ export function DiffCompareView({
   rightMissingLabel,
 }: DiffCompareViewProps) {
   const { t } = useTranslation("dialog");
-  const rows = useMemo(
-    () =>
-      rightText === null
-        ? // Nothing to compare against: show the left lines as plain context.
-          normalizeEol(leftText)
-            .split("\n")
-            .map((text): DiffRow => ({ kind: "equal", text }))
-        : sideBySideDiff(normalizeEol(leftText), normalizeEol(rightText)),
-    [leftText, rightText],
-  );
+  const rows = useMemo(() => {
+    const left = normalizeEol(leftText);
+    if (rightText === null) {
+      // Nothing to compare against: show the left lines as plain context,
+      // with the same empty-string-as-zero-lines semantics as lib/diff.
+      return (left === "" ? [] : left.split("\n")).map(
+        (text): DiffRow => ({ kind: "equal", text }),
+      );
+    }
+    return sideBySideDiff(left, normalizeEol(rightText));
+  }, [leftText, rightText]);
 
   return (
     <div className="diffcmp">

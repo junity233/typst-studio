@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Maximize2, X } from "lucide-react";
+import { unifiedDiff, type UnifiedLine } from "../../lib/diff";
 import type { PendingApproval } from "../../store/assistantTools";
 
 interface DiffCardProps {
@@ -10,62 +11,16 @@ interface DiffCardProps {
   onReject: () => void;
 }
 
-interface DiffLine {
-  kind: "ctx" | "del" | "add";
-  text: string;
-  /** 1-based line number in the original (before) file. -1 for pure additions. */
-  beforeLine: number;
-  /** 1-based line number in the after file. -1 for pure deletions. */
-  afterLine: number;
-}
+/** Alias kept so the component + modal signatures read "diff line". */
+type DiffLine = UnifiedLine;
 
 /**
- * Line-level diff. Finds the first/last differing line between before/after,
- * marks the middle as del/add, and tags line numbers for the expanded view.
- */
-function computeDiff(before: string, after: string): DiffLine[] {
-  const a = before.split("\n");
-  const b = after.split("\n");
-  let prefix = 0;
-  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) {
-    prefix++;
-  }
-  let suffix = 0;
-  while (
-    suffix < a.length - prefix &&
-    suffix < b.length - prefix &&
-    a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
-  ) {
-    suffix++;
-  }
-
-  const out: DiffLine[] = [];
-  // Context before
-  for (let i = 0; i < prefix; i++) {
-    out.push({ kind: "ctx", text: a[i], beforeLine: i + 1, afterLine: i + 1 });
-  }
-  // Deleted lines
-  for (let i = prefix; i < a.length - suffix; i++) {
-    out.push({ kind: "del", text: a[i], beforeLine: i + 1, afterLine: -1 });
-  }
-  // Added lines
-  for (let i = prefix; i < b.length - suffix; i++) {
-    out.push({ kind: "add", text: b[i], beforeLine: -1, afterLine: i + 1 });
-  }
-  // Context after
-  for (let i = a.length - suffix; i < a.length; i++) {
-    out.push({ kind: "ctx", text: a[i], beforeLine: i + 1, afterLine: i + 1 });
-  }
-  return out;
-}
-
-/**
- * Cap a diff's context to `ctx` lines around each change. `computeDiff`
+ * Cap a diff's context to `ctx` lines around each change. The unified diff
  * returns the WHOLE file as context (unlimited), which would render huge
  * documents unreadably in the modal. Dropped runs are visible via the
  * line-number gutters (the numbers jump).
  */
-function contextWindow(diff: DiffLine[], ctx: number): DiffLine[] {
+export function contextWindow(diff: DiffLine[], ctx: number): DiffLine[] {
   const keep = new Array<boolean>(diff.length).fill(false);
   for (let i = 0; i < diff.length; i++) {
     if (diff[i].kind === "ctx") continue;
@@ -93,7 +48,7 @@ export function DiffCard({ approval, onApply, onReject }: DiffCardProps) {
         // literal text applyStrReplace inserts. A function's return value is
         // used literally (and keeps first-match semantics).
         before.replace(approval.old_string ?? "", () => approval.new_string ?? "");
-  const diff = computeDiff(before, after);
+  const diff = unifiedDiff(before, after);
   // Inline card shows ONLY the changed lines (no context).
   const changedLines = diff.filter((l) => l.kind !== "ctx");
   const path = approval.path.split(/[\\/]/).pop() ?? approval.path;
@@ -236,6 +191,18 @@ function DiffModal({
                 <span className="assistant-diff-line__text">{line.text}</span>
               </div>
             ))}
+            {/* A no-op edit windows to zero rows — mirror the inline card's
+              empty state instead of rendering a blank modal body. */}
+            {diff.length === 0 && (
+              <div className="assistant-diff-line assistant-diff-line--ctx">
+                <span className="assistant-diff-line__num"> </span>
+                <span className="assistant-diff-line__num"> </span>
+                <span className="assistant-diff-line__sign"> </span>
+                <span className="assistant-diff-line__text assistant-diff-line--empty">
+                  {t("noChanges")}
+                </span>
+              </div>
+            )}
           </pre>
         </div>
         {verdict === "pending" && (

@@ -192,6 +192,16 @@ function coarseOps(
 }
 
 /**
+ * Split into lines, treating the empty string as ZERO lines (git semantics)
+ * — `"".split("\n")` would yield one phantom empty line, so diffing an empty
+ * file against content would show a spurious empty deletion. A trailing
+ * newline ("a\n" → ["a", ""]) stays meaningful.
+ */
+function splitLines(text: string): string[] {
+  return text === "" ? [] : text.split("\n");
+}
+
+/**
  * Line-level diff of `a` vs `b`, precise via LCS (prefix/suffix trimmed
  * first), coarse above the cell cap. Returns the edit script as runs.
  */
@@ -335,8 +345,8 @@ export function sideBySideDiff(
   const context = options.context ?? 3;
   const minGap = options.minGap ?? 4;
 
-  const a = left.split("\n");
-  const b = right.split("\n");
+  const a = splitLines(left);
+  const b = splitLines(right);
   const ops = lineOps(a, b);
 
   // First pass: op runs → rows (no collapsing yet). Adjacent del+add runs are
@@ -431,4 +441,58 @@ export function sideBySideDiff(
 /** Whether a diff contains any del/add/pair row (i.e. the texts differ). */
 export function hasChanges(rows: readonly DiffRow[]): boolean {
   return rows.some((r) => r.kind !== "equal" && r.kind !== "gap");
+}
+
+// ---------------------------------------------------------------------------
+// Unified (single-column) diff
+// ---------------------------------------------------------------------------
+
+/** One line of a unified diff (git-style single-column view). */
+export interface UnifiedLine {
+  kind: "ctx" | "del" | "add";
+  text: string;
+  /** 1-based line number in the original; -1 for pure additions. */
+  beforeLine: number;
+  /** 1-based line number in the revised; -1 for pure deletions. */
+  afterLine: number;
+}
+
+/**
+ * Unified diff of `before` vs `after` — the whole file as ctx/del/add lines,
+ * no context collapsing (callers trim with their own window). Within each
+ * change block del lines precede add lines (normalizeChangeBlocks ordering),
+ * the convention git-style diffs render.
+ */
+export function unifiedDiff(before: string, after: string): UnifiedLine[] {
+  const a = splitLines(before);
+  const b = splitLines(after);
+  const ops = lineOps(a, b);
+  const out: UnifiedLine[] = [];
+  let ai = 0;
+  let bi = 0;
+  for (const { op, count } of ops) {
+    if (op === "equal") {
+      for (let k = 0; k < count; k++) {
+        out.push({
+          kind: "ctx",
+          text: a[ai],
+          beforeLine: ai + 1,
+          afterLine: bi + 1,
+        });
+        ai++;
+        bi++;
+      }
+    } else if (op === "del") {
+      for (let k = 0; k < count; k++) {
+        out.push({ kind: "del", text: a[ai], beforeLine: ai + 1, afterLine: -1 });
+        ai++;
+      }
+    } else {
+      for (let k = 0; k < count; k++) {
+        out.push({ kind: "add", text: b[bi], beforeLine: -1, afterLine: bi + 1 });
+        bi++;
+      }
+    }
+  }
+  return out;
 }
