@@ -11,11 +11,10 @@ const mocks = vi.hoisted(() => ({
   packageDirIsEmpty: vi.fn(),
   packageImportSnippet: vi.fn(),
   packageInitTemplate: vi.fn(),
-  openWorkspaceByPath: vi.fn(),
   openFile: vi.fn(),
   confirm: vi.fn(),
   dialogConfirm: vi.fn(),
-  hydrate: vi.fn(),
+  wsOpenByPath: vi.fn(),
   setActiveView: vi.fn(),
   setSelected: vi.fn(),
   install: vi.fn(),
@@ -62,18 +61,17 @@ vi.mock("../../../../store/packagesStore", () => ({
 }));
 
 vi.mock("../../../../store/workspaceStore", () => ({
-  useWorkspaceStore: (selector: (state: unknown) => unknown) =>
-    selector({
-      hydrate: mocks.hydrate,
-    }),
+  useWorkspaceStore: {
+    getState: () => ({ openWorkspaceByPath: mocks.wsOpenByPath }),
+  },
 }));
 
-// The template flow confirms overwrites via the styled ConfirmDialog (the
-// dialogStore), not native window.confirm (dead in the macOS WKWebView).
 vi.mock("../../../../store/dialogStore", () => ({
   useDialogStore: {
     getState: () => ({ confirm: mocks.dialogConfirm }),
   },
+  confirmAction: async (req: unknown) =>
+    (await mocks.dialogConfirm(req)) === "confirm",
 }));
 
 vi.mock("../../../../store/uiStore", () => ({
@@ -92,7 +90,6 @@ vi.mock("../../../../lib/tauri", () => ({
   packageDirIsEmpty: mocks.packageDirIsEmpty,
   packageImportSnippet: mocks.packageImportSnippet,
   packageInitTemplate: mocks.packageInitTemplate,
-  openWorkspaceByPath: mocks.openWorkspaceByPath,
 }));
 
 vi.mock("../Thumbnail", () => ({
@@ -128,11 +125,7 @@ beforeEach(async () => {
   mocks.packageDirIsEmpty.mockResolvedValue(true);
   mocks.packageImportSnippet.mockReturnValue('#import "@preview/thesis:1.0.0": *');
   mocks.packageInitTemplate.mockResolvedValue("paper/main.typ");
-  mocks.openWorkspaceByPath.mockResolvedValue({
-    root: "D:\\tmp\\from-template",
-    name: "from-template",
-  });
-  mocks.hydrate.mockResolvedValue(undefined);
+  mocks.wsOpenByPath.mockResolvedValue(true);
   mocks.openFile.mockResolvedValue("doc-1");
   vi.stubGlobal("confirm", mocks.confirm);
   mocks.confirm.mockReturnValue(true);
@@ -179,8 +172,7 @@ describe("PackageDetail template flow", () => {
       "D:\\tmp\\from-template",
       false,
     );
-    expect(mocks.openWorkspaceByPath).toHaveBeenCalledWith("D:\\tmp\\from-template");
-    expect(mocks.hydrate).toHaveBeenCalledTimes(1);
+    expect(mocks.wsOpenByPath).toHaveBeenCalledWith("D:\\tmp\\from-template");
     expect(mocks.join).toHaveBeenCalledWith(
       "D:\\tmp\\from-template",
       "paper/main.typ",

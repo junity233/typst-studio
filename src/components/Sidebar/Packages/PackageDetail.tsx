@@ -11,7 +11,6 @@ import {
   packageDirIsEmpty,
   packageImportSnippet,
   packageInitTemplate,
-  openWorkspaceByPath,
 } from "../../../lib/tauri";
 import { toIpcError, alertIpcError, extractDetailPaths } from "../../../lib/ipc-error";
 import { confirmAction } from "../../../store/dialogStore";
@@ -36,7 +35,6 @@ export function PackageDetail() {
   const install = usePackagesStore((s) => s.install);
   const installed = usePackagesStore((s) => s.installed);
   const installing = usePackagesStore((s) => s.installing);
-  const hydrate = useWorkspaceStore((s) => s.hydrate);
   const setActiveView = useUiStore((s) => s.setActiveView);
   const [compilerVersion, setCompilerVersion] = useState<string | null>(null);
   // The import snippet is Typst syntax (#import "@preview/…"), so insertion is
@@ -91,11 +89,9 @@ export function PackageDetail() {
    *  chosen destination, with a given overwrite flag. Throws on any error. */
   const runInit = async (destStr: string, overwrite: boolean) => {
     const entrypoint = await packageInitTemplate(entry.name, entry.version, destStr, overwrite);
-    // Open the freshly-populated folder as the workspace. The workspace store
-    // has no `openWorkspaceByPath` method, so drive the backend directly and
-    // then re-hydrate the store (getWorkspace now returns the new meta).
-    await openWorkspaceByPath(destStr);
-    await hydrate();
+    // Open the freshly-populated folder as the workspace via the store action
+    // (also records it in Open Recent and re-hydrates the project config).
+    await useWorkspaceStore.getState().openWorkspaceByPath(destStr);
     // Auto-open the template entrypoint (e.g. main.typ) so the user lands on
     // a compilable document. Use the platform path joiner so the separator is
     // correct on Windows (backslash).

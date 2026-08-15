@@ -64,6 +64,20 @@ export interface WorkspaceState {
   hydrate: () => Promise<void>;
   /** Open a folder via a native dialog and load its root listing. */
   openWorkspace: () => Promise<void>;
+  /**
+   * Open a specific folder as the workspace (no dialog) and adopt it: swap the
+   * store state, refresh the tree, record the folder in the recent list, and
+   * re-hydrate the project config. Returns `false` when the backend reports no
+   * meta (open failed). The canonical entry point for programmatic opens
+   * (open-recent menu, package template init).
+   */
+  openWorkspaceByPath: (path: string) => Promise<boolean>;
+  /**
+   * Shared tail of `openWorkspace` / `openWorkspaceByPath`: swap state to the
+   * opened meta, refresh the root, record the recent entry, re-hydrate the
+   * project config. Only call after the backend confirmed the open.
+   */
+  adoptOpenedWorkspace: (meta: { root: string; name: string }) => Promise<void>;
   /** Close the workspace, clearing the tree. */
   closeWorkspace: () => Promise<void>;
 
@@ -152,21 +166,32 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     try {
       const meta = await openWorkspaceBE();
       if (meta === null) return; // user cancelled
-      set({
-        rootPath: meta.root,
-        name: meta.name,
-        tree: {},
-        expanded: new Set<string>(),
-      });
-      await get().refresh("");
-      // Persist the chosen workspace so it reopens on next launch.
-      recordWorkspace(meta.root);
-      // Re-hydrate the project config for the new root.
-      void useProjectConfigStore.getState().hydrate();
+      await get().adoptOpenedWorkspace(meta);
     } catch (e) {
       console.error("[workspace.openWorkspace] failed:", e);
       throw e;
     }
+  },
+
+  openWorkspaceByPath: async (path) => {
+    const meta = await openWorkspaceByPathBE(path);
+    if (!meta) return false;
+    await get().adoptOpenedWorkspace(meta);
+    return true;
+  },
+
+  adoptOpenedWorkspace: async (meta) => {
+    set({
+      rootPath: meta.root,
+      name: meta.name,
+      tree: {},
+      expanded: new Set<string>(),
+    });
+    await get().refresh("");
+    // Persist the chosen workspace so it reopens on next launch.
+    recordWorkspace(meta.root);
+    // Re-hydrate the project config for the new root.
+    void useProjectConfigStore.getState().hydrate();
   },
 
   closeWorkspace: async () => {

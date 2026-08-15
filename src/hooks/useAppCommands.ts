@@ -9,7 +9,6 @@ import {
 } from "../lib/tauri";
 import { useTabsStore, readAllDocuments } from "../store/tabsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
-import { useProjectConfigStore } from "../store/projectConfigStore";
 import { workspacePathsEqual } from "../lib/workspacePath";
 import { useUiStore } from "../store/uiStore";
 import { useDialogStore } from "../store/dialogStore";
@@ -186,8 +185,7 @@ export async function handleOpenFile(): Promise<void> {
  */
 async function handleOpenRecent(menuId: string): Promise<void> {
   const suffix = menuId.slice("open-recent:".length);
-  const { loadSession, recordWorkspace } = await import("../lib/session");
-  const { openWorkspaceByPath } = await import("../lib/tauri");
+  const { loadSession } = await import("../lib/session");
   const session = await loadSession();
   let path: string | undefined;
   if (/^\d+$/.test(suffix)) {
@@ -208,24 +206,7 @@ async function handleOpenRecent(menuId: string): Promise<void> {
   }
   if (!path) return;
   try {
-    const meta = await openWorkspaceByPath(path);
-    if (meta) {
-      useWorkspaceStore.setState({
-        rootPath: meta.root,
-        name: meta.name,
-        tree: {},
-        expanded: new Set(),
-      });
-      await useWorkspaceStore.getState().refresh("");
-      // Persist so session.lastWorkspace + the recent list track this open
-      // (matches workspaceStore.openWorkspace); otherwise the next launch
-      // would reopen the previous workspace.
-      recordWorkspace(meta.root);
-      // Re-hydrate the project-config store for the new root (also mirrors
-      // workspaceStore.openWorkspace), or the Project panel keeps the previous
-      // workspace's configPath/typFiles.
-      void useProjectConfigStore.getState().hydrate();
-    }
+    await useWorkspaceStore.getState().openWorkspaceByPath(path);
   } catch (e) {
     console.warn(`[menu:open-recent] could not open "${path}":`, e);
   }
