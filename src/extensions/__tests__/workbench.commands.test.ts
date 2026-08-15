@@ -61,16 +61,18 @@ describe("workbench commands registered", () => {
   // The active-tab commands share one enablement predicate (hasActiveTab) that
   // reads live state — pins the wiring, not just the registration.
   it("active-tab commands' enablement tracks the live tab state", () => {
+    // The shared predicate reads live store state and ignores its api arg.
+    const api = undefined as never;
     const gated = ["save", "save-as", "close-tab", "export", "export-pdf", "export-png", "export-svg"];
     const prev = useTabsStore.getState().activeId;
     try {
       useTabsStore.setState({ activeId: null });
       for (const id of gated) {
-        expect(commandRegistry.get(id)?.enablement?.(), `command ${id}`).toBe(false);
+        expect(commandRegistry.get(id)?.enablement?.(api), `command ${id}`).toBe(false);
       }
       useTabsStore.setState({ activeId: "test-doc" });
       for (const id of gated) {
-        expect(commandRegistry.get(id)?.enablement?.(), `command ${id}`).toBe(true);
+        expect(commandRegistry.get(id)?.enablement?.(api), `command ${id}`).toBe(true);
       }
     } finally {
       useTabsStore.setState({ activeId: prev });
