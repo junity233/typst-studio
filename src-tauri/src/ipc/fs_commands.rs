@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter as _, State};
-use tauri_plugin_dialog::DialogExt;
 
 use crate::domain::document::{DocumentId, DocumentKind};
 use crate::error::{AppError, Result};
@@ -407,18 +406,10 @@ pub async fn open_workspace(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Option<WorkspaceMeta>> {
-    let app_for_dialog = app.clone();
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        app_for_dialog.dialog().file().blocking_pick_folder()
-    })
-    .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
-    let Some(picked) = picked else {
+    let picked = super::dialog::pick_folder(&app).await?;
+    let Some(root) = picked else {
         return Ok(None);
     };
-    let root = picked
-        .into_path()
-        .map_err(|e| AppError::InvalidInput(format!("invalid folder path: {e}")))?;
 
     let meta = open_path_as_workspace(&app, &state, root)?;
     Ok(Some(meta))
@@ -1181,27 +1172,15 @@ pub async fn save_as(
     // into Typst behavior on re-parse). Only the typst kind keeps the
     // historical filter; markdown gets its extensions; text and the binary
     // preview kinds get no filter (any extension).
-    let kind = meta.as_ref().map(|m| m.kind);
-
-    let app_for_dialog = app.clone();
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        let mut builder = app_for_dialog.dialog().file();
-        match kind {
-            Some(DocumentKind::Markdown) => {
-                builder = builder.add_filter("Markdown", &["md", "markdown"]);
-            }
-            Some(DocumentKind::Text) | Some(DocumentKind::Image) | Some(DocumentKind::Pdf) => {}
-            // The typst kind (and a missing tab — the save itself will fail
-            // with NotFound) keeps the historical Typst filter.
-            None | Some(DocumentKind::Typst) => {
-                builder = builder.add_filter("Typst", &["typ"]);
-            }
-        }
-        builder.set_file_name(&default_name).blocking_save_file()
-    })
-    .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
-    let Some(picked) = picked else {
+    let filters: &[super::dialog::DialogFilter] = match meta.as_ref().map(|m| m.kind) {
+        Some(DocumentKind::Markdown) => &[("Markdown", &["md", "markdown"])],
+        Some(DocumentKind::Text) | Some(DocumentKind::Image) | Some(DocumentKind::Pdf) => &[],
+        // The typst kind (and a missing tab — the save itself will fail
+        // with NotFound) keeps the historical Typst filter.
+        None | Some(DocumentKind::Typst) => &[("Typst", &["typ"])],
+    };
+    let picked = super::dialog::save_file(&app, filters, Some(&default_name)).await?;
+    let Some(path) = picked else {
         // §5.3: a cancelled dialog is surfaced as the Cancelled code (not a
         // generic Other). The frontend no-ops on this.
         return Err(AppError::ipc(
@@ -1211,9 +1190,6 @@ pub async fn save_as(
             None,
         ));
     };
-    let path = picked
-        .into_path()
-        .map_err(|e| AppError::InvalidInput(format!("invalid file path: {e}")))?;
     // Delegate the atomic write + rebind to the SaveCoordinator (§5.2 / §11.2:
     // rebind only after the replace succeeds).
     state

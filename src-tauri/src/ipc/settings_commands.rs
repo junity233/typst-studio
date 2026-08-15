@@ -148,25 +148,14 @@ pub async fn list_fonts() -> Result<Vec<String>> {
 /// doesn't stall the webview (mirrors `pick_image_file` / `open_workspace`).
 #[tauri::command]
 pub async fn pick_path(app: AppHandle, kind: String) -> Result<Option<String>> {
-    use crate::ipc::commands::path_buf_from;
-    use tauri_plugin_dialog::DialogExt;
-    let app_for_dialog = app.clone();
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        let dialog = app_for_dialog.dialog().file();
-        if kind == "folder" {
-            dialog.blocking_pick_folder()
-        } else {
-            dialog.blocking_pick_file()
-        }
-    })
-    .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
+    let picked = if kind == "folder" {
+        crate::ipc::dialog::pick_folder(&app).await?
+    } else {
+        crate::ipc::dialog::pick_file(&app, &[]).await?
+    };
     match picked {
         None => Ok(None),
-        Some(file_path) => {
-            let path = path_buf_from(file_path)?;
-            Ok(Some(path.to_string_lossy().into_owned()))
-        }
+        Some(path) => Ok(Some(path.to_string_lossy().into_owned())),
     }
 }
 

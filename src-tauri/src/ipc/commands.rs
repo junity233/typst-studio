@@ -14,7 +14,6 @@
 use std::path::PathBuf;
 
 use tauri::{AppHandle, State};
-use tauri_plugin_dialog::DialogExt;
 
 use crate::domain::diagnostics::Diagnostic;
 use crate::domain::document::{DocumentId, DocumentMeta};
@@ -80,29 +79,25 @@ pub async fn open_file(
     // Filters are grouped by category so the user can open any document the app
     // supports: Typst sources (default), other editable text, images, and PDFs.
     // Typst is listed first so it stays the OS-default filter on each launch.
-    let app_for_dialog = app.clone();
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        app_for_dialog
-            .dialog()
-            .file()
-            .add_filter("Typst", &["typ", "typst"])
-            .add_filter(
+    let picked = super::dialog::pick_file(
+        &app,
+        &[
+            ("Typst", &["typ", "typst"]),
+            (
                 "Documents",
                 &[
                     "md", "markdown", "txt", "json", "csv", "log", "ts", "js", "py", "html", "css",
                     "yaml", "yml", "toml", "xml",
                 ],
-            )
-            .add_filter("Images", &["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"])
-            .add_filter("PDF", &["pdf"])
-            .blocking_pick_file()
-    })
-    .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
-    let Some(picked) = picked else {
+            ),
+            ("Images", &["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"]),
+            ("PDF", &["pdf"]),
+        ],
+    )
+    .await?;
+    let Some(path) = picked else {
         return Ok(None);
     };
-    let path = path_buf_from(picked)?;
     // Delegate to the shared classified open path (same code the file-tree and
     // single-instance router use), so the dialog and the tree classify files
     // identically and a file opened either way behaves the same.
@@ -117,23 +112,14 @@ pub async fn open_file(
 /// leaving content IO to the caller.
 #[tauri::command]
 pub async fn pick_image_file(app: AppHandle) -> Result<Option<String>> {
-    let app_for_dialog = app.clone();
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        app_for_dialog
-            .dialog()
-            .file()
-            .add_filter(
-                "Images",
-                &["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"],
-            )
-            .blocking_pick_file()
-    })
-    .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
-    let Some(picked) = picked else {
+    let picked = super::dialog::pick_file(
+        &app,
+        &[("Images", &["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"])],
+    )
+    .await?;
+    let Some(path) = picked else {
         return Ok(None);
     };
-    let path = path_buf_from(picked)?;
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
@@ -247,20 +233,11 @@ pub async fn export_pdf(
     let path = match output_path {
         Some(p) => ensure_export_within_workspace(&state, &PathBuf::from(p))?,
         None => {
-            let app_for_dialog = app.clone();
-            let picked = tauri::async_runtime::spawn_blocking(move || {
-                app_for_dialog
-                    .dialog()
-                    .file()
-                    .add_filter("PDF", &["pdf"])
-                    .blocking_save_file()
-            })
-            .await
-            .map_err(|e| AppError::Other(format!("join error: {e}")))?;
+            let picked = super::dialog::save_file(&app, &[("PDF", &["pdf"])], None).await?;
             let Some(picked) = picked else {
                 return Err(AppError::Other("export cancelled".into()));
             };
-            path_buf_from(picked)?
+            picked
         }
     };
     let path_str = path.to_string_lossy().to_string();
@@ -346,19 +323,10 @@ pub async fn export_batch_pdf(
     state: State<'_, AppState>,
     items: Vec<BatchExportItem>,
 ) -> Result<Vec<BatchExportOutcome>> {
-    let app_for_dialog = app.clone();
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        app_for_dialog
-            .dialog()
-            .file()
-            .blocking_pick_folder()
-    })
-    .await
-    .map_err(|e| AppError::Other(format!("join error: {e}")))?;
-    let Some(picked) = picked else {
+    let picked = super::dialog::pick_folder(&app).await?;
+    let Some(dir) = picked else {
         return Err(AppError::Other("export cancelled".into()));
     };
-    let dir = path_buf_from(picked)?;
     let export = state.export.clone();
     let revision_wait = std::time::Duration::from_millis(
         state.settings.get_or_default::<u64>("export.revisionWaitMs"),
@@ -474,20 +442,12 @@ async fn export_image_pages(
     let picked_path = match output_path {
         Some(p) => ensure_export_within_workspace(&state, &PathBuf::from(p))?,
         None => {
-            let app_for_dialog = app.clone();
-            let picked = tauri::async_runtime::spawn_blocking(move || {
-                app_for_dialog
-                    .dialog()
-                    .file()
-                    .add_filter(filter_name, extensions)
-                    .blocking_save_file()
-            })
-            .await
-            .map_err(|e| AppError::Other(format!("join error: {e}")))?;
+            let picked =
+                super::dialog::save_file(&app, &[(filter_name, extensions)], None).await?;
             let Some(picked) = picked else {
                 return Err(AppError::Other("export cancelled".into()));
             };
-            path_buf_from(picked)?
+            picked
         }
     };
     let save_dir = picked_path

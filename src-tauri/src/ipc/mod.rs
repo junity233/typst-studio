@@ -3,6 +3,7 @@
 //! Commands intentionally only do parameter conversion and delegate to services.
 
 pub mod commands;
+pub mod dialog;
 pub mod ai_commands;
 pub mod bib_commands;
 pub mod conflict_commands;
