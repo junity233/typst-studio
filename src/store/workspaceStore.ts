@@ -114,11 +114,6 @@ function parentRel(rel: string): string {
   return idx < 0 ? "" : rel.slice(0, idx);
 }
 
-/** Whether a relative path points inside the open workspace root. */
-function inWorkspace(rootPath: string | null, absPath: string): boolean {
-  return rootPath !== null && (absPath === rootPath || absPath.startsWith(rootPath + "/"));
-}
-
 export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   rootPath: null,
   name: null,
@@ -266,6 +261,3 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     await get().refresh(parentRel(to));
   },
 }));
-
-/** Re-exported for callers that just need the helper. */
-export { inWorkspace };
