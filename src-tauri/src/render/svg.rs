@@ -43,89 +43,13 @@ impl RenderPipeline for SvgRenderer {
 
 #[cfg(test)]
 mod tests {
-    //! Strategy: **Option A** (runtime test). We build a tiny throwaway
-    //! [`typst::World`] implementation backed by `typst-kit`'s embedded fonts,
-    //! compile a one-word source, and feed the resulting `PagedDocument` to the
-    //! renderer. This exercises the real `typst_svg::svg` path end-to-end.
-    //!
-    //! The `MiniWorld` helper is duplicated in `pdf.rs` and `png.rs` so each
-    //! renderer is validated independently — a shared helper would need a new
-    //! module file, which is outside this layer's scope.
+    //! Strategy: **Option A** (runtime test). We compile a one-word source via
+    //! the shared [`crate::render::test_world::MiniWorld`] and feed the
+    //! resulting `PagedDocument` to the renderer. This exercises the real
+    //! `typst_svg::svg` path end-to-end.
 
     use super::*;
-    use std::path::PathBuf;
-
-    use typst::LibraryExt;
-    use typst::diag::{FileError, FileResult};
-    use typst::foundations::{Bytes, Datetime, Duration};
-    use typst_layout::PagedDocument;
-    use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
-    use typst::text::{Font, FontBook};
-    use typst::{Library, World};
-    use typst_kit::fonts::FontStore;
-    use typst::utils::LazyHash;
-
-    /// Minimal `World` for tests: one in-memory source + embedded fonts.
-    struct MiniWorld {
-        library: LazyHash<Library>,
-        fonts: FontStore,
-        main: FileId,
-        source: Source,
-    }
-
-    impl MiniWorld {
-        fn new(text: &str) -> Self {
-            let path = RootedPath::new(
-                VirtualRoot::Project,
-                VirtualPath::new("main.typ").expect("valid path"),
-            );
-            let main = FileId::new(path);
-            let mut fonts = FontStore::new();
-            fonts.extend(typst_kit::fonts::embedded());
-            Self {
-                library: LazyHash::new(Library::default()),
-                fonts,
-                main,
-                source: Source::new(main, text.to_string()),
-            }
-        }
-
-        fn compile(&self) -> Result<PagedDocument, String> {
-            typst::compile::<PagedDocument>(self)
-                .output
-                .map_err(|errs| format!("{errs:?}"))
-        }
-    }
-
-    impl World for MiniWorld {
-        fn library(&self) -> &LazyHash<Library> {
-            &self.library
-        }
-        fn book(&self) -> &LazyHash<FontBook> {
-            self.fonts.book()
-        }
-        fn main(&self) -> FileId {
-            self.main
-        }
-        fn source(&self, id: FileId) -> FileResult<Source> {
-            if id == self.main {
-                Ok(self.source.clone())
-            } else {
-                Err(FileError::NotFound(PathBuf::from(
-                    id.vpath().get_with_slash().to_owned(),
-                )))
-            }
-        }
-        fn file(&self, id: FileId) -> FileResult<Bytes> {
-            Ok(Bytes::from_string(self.source(id)?.text().to_string()))
-        }
-        fn font(&self, index: usize) -> Option<Font> {
-            self.fonts.font(index)
-        }
-        fn today(&self, _: Option<Duration>) -> Option<Datetime> {
-            None
-        }
-    }
+    use crate::render::test_world::MiniWorld;
 
     #[test]
     fn svg_renderer_produces_one_svg_per_page() {

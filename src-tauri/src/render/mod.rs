@@ -9,3 +9,6 @@ pub mod pipeline;
 pub mod png;
 pub mod source_map;
 pub mod svg;
+
+#[cfg(test)]
+pub(crate) mod test_world;
