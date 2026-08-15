@@ -262,10 +262,7 @@ async function handleCloseRequested(): Promise<void> {
   const docs = readAllDocuments();
   const dirty = docs.filter((t) => t.dirty);
   if (dirty.length === 0) {
-    await captureAndSaveSession();
-    await captureAndSaveWindowState();
-    await markCleanShutdown();
-    await getCurrentWindow().destroy();
+    await shutdownWindow();
     return;
   }
   const choice = await useDialogStore.getState().confirm({
@@ -284,17 +281,26 @@ async function handleCloseRequested(): Promise<void> {
     // explicit "Don't Save" isn't re-offered next launch. The per-tab close
     // path (closeTabWithConfirm) does this per doc; the app-wide path must too.
     await Promise.all(dirty.map((t) => discardRecovery(t.id).catch(() => {})));
-    await captureAndSaveSession(new Set(dirty.map((t) => t.id)));
-    await captureAndSaveWindowState();
-    await markCleanShutdown();
-    await getCurrentWindow().destroy();
+    await shutdownWindow(new Set(dirty.map((t) => t.id)));
     return;
   }
   // choice === "confirm" → Save All, then close only if every save succeeded.
   for (const t of dirty) {
     if (!(await saveTab(t.id))) return;
   }
-  await captureAndSaveSession();
+  await shutdownWindow();
+}
+
+/**
+ * The app-exit tail shared by every close path: persist the session (optionally
+ * excluding docs the user just chose not to save), the window/layout state, and
+ * the clean-shutdown marker, then destroy the window. `destroy()` (not
+ * `close()`) so CloseRequested isn't re-emitted into a loop. One helper so no
+ * branch can silently miss a step (e.g. forgetting the marker would offer
+ * stale crash recovery on next launch).
+ */
+async function shutdownWindow(excludeDocIds?: Set<string>): Promise<void> {
+  await captureAndSaveSession(excludeDocIds);
   await captureAndSaveWindowState();
   await markCleanShutdown();
   await getCurrentWindow().destroy();
