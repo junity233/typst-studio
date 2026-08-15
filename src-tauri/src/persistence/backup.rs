@@ -251,7 +251,7 @@ fn quarantine_corrupt(path: &Path) -> Option<PathBuf> {
     // existing quarantine path and fail). Falls back to a counter suffix if
     // the high-resolution timestamp somehow still collides.
     let ts = unix_timestamp();
-    let mut dest = corrupt_path(path, ts);
+    let dest = corrupt_path(path, ts);
     match std::fs::rename(path, &dest) {
         Ok(()) => {
             tracing::warn!(?path, ?dest, "backup: corrupt main quarantined");
@@ -259,12 +259,8 @@ fn quarantine_corrupt(path: &Path) -> Option<PathBuf> {
         }
         Err(e) => {
             // Retry once with a counter suffix (handles same-timestamp collision).
-            dest = corrupt_path(path, ts);
-            if let Some(s) = dest.file_stem().and_then(|s| s.to_str()) {
-                let _ = s; // stem already embedded; append a disambiguator below
-            }
-            dest = {
-                let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+            let dest = {
+                let parent = path.parent().unwrap_or_else(|| Path::new("."));
                 let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("data");
                 let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("json");
                 parent.join(format!("{stem}.corrupt-{ts}-2.{ext}"))

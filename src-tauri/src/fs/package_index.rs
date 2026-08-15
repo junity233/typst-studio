@@ -157,7 +157,11 @@ impl PackageIndex {
         if let Some(parent) = self.cache_path.parent() {
             std::fs::create_dir_all(parent).map_err(IndexFetchError::Io)?;
         }
-        std::fs::write(&self.cache_path, &bytes).map_err(IndexFetchError::Io)?;
+        // Atomic write (the persistence-layer invariant: no torn overwrite-in-
+        // place) — a crash mid-write must not leave a truncated index cache
+        // that then fails to parse and silently reads as "absent".
+        crate::persistence::atomic::write_bytes(&self.cache_path, &bytes)
+            .map_err(|e| IndexFetchError::Io(std::io::Error::other(e.to_string())))?;
         let mut cat = Catalog::from_index_bytes(&bytes).map_err(IndexFetchError::Parse)?;
         cat.fetched_at = Some(
             std::time::SystemTime::now()

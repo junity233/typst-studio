@@ -538,7 +538,9 @@ impl TinymistInstaller {
                 return Err(e);
             }
         };
-        std::fs::write(&paths.version_file, &version)?;
+        // Atomic write: a torn version marker would report "unknown" on the
+        // next launch even though the binary itself verified.
+        crate::persistence::atomic::write_bytes(&paths.version_file, version.as_bytes())?;
         // Verified: the parked previous binary is no longer needed.
         let _ = std::fs::remove_file(&paths.old_binary);
 
