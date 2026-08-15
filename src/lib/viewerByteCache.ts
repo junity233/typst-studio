@@ -105,8 +105,10 @@ export function invalidateFsChanged(paths: readonly string[]): void {
 
 /**
  * Whether a `fs_changed` payload affects the given viewer path: true for an
- * exact/equivalent (Windows separator- and case-insensitive) match, or for an
- * empty payload (generic refresh). Pure — used by viewer components to decide
+ * exact/equivalent (Windows separator- and case-insensitive) match. An empty
+ * payload is the backend's generic "something changed" signal and is handled
+ * by the callers (they reload on it before consulting this function), so this
+ * returns false for an empty list. Pure — used by viewer components to decide
  * whether to reload the currently shown file.
  */
 export function fsChangeAffectsPath(

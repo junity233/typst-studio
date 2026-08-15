@@ -10,6 +10,7 @@ import {
   selectDiagnosticsForDoc,
 } from "./diagnosticsStore";
 import { editorApiRef } from "../components/Editor/editorApiRef";
+import { aiLog } from "../lib/aiLog";
 import { hardCloseTab, openFileByPath, searchWorkspace } from "../lib/tauri";
 import type { DirEntry } from "../lib/types";
 import {
@@ -142,14 +143,14 @@ function readFileTool(_ctx: ToolContext): AgentTool {
     parameters: Type.Object({ path: Type.String() }),
     async execute(_id, rawParams) {
       const { path } = paramsAs<{ path: string }>(rawParams);
-      console.log("[ai][tool] read_file start:", JSON.stringify(path));
+      aiLog("[tool] read_file start:", path);
       const abs = resolveWorkspacePath(
         useWorkspaceStore.getState().rootPath,
         path,
         activeDocPath(),
       );
       const content = await readForContent(abs);
-      console.log("[ai][tool] read_file done, len=", content.length);
+      aiLog("[tool] read_file done, len=", content.length);
       return textResult(content);
     },
   };
@@ -213,11 +214,11 @@ function getActiveFileTool(_ctx: ToolContext): AgentTool {
       "Return the path, content, current cursor line, and current selection of the active editor tab.",
     parameters: Type.Object({}),
     async execute() {
-      console.log("[ai][tool] get_active_file start");
+      aiLog("[tool] get_active_file start");
       const path = activeDocPath();
       const content = activeDocContent();
       if (!path || content === null) {
-        console.log("[ai][tool] get_active_file: no active file");
+        aiLog("[tool] get_active_file: no active file");
         return textResult("No active file.");
       }
       const api = editorApiRef.current;
@@ -241,7 +242,7 @@ function getDiagnosticsTool(_ctx: ToolContext): AgentTool {
       "Return current Typst compile diagnostics (errors and warnings) for the active document.",
     parameters: Type.Object({}),
     async execute() {
-      console.log("[ai][tool] get_diagnostics start");
+      aiLog("[tool] get_diagnostics start");
       const { activeId } = useTabsStore.getState();
       if (!activeId) return textResult("No active file.");
       const doc = useDiagnosticsStore.getState().byDoc[activeId];
@@ -299,9 +300,9 @@ function editTool(ctx: ToolContext): AgentTool {
         old_string: string;
         new_string: string;
       }>(rawParams);
-      console.log(
-        "[ai][tool] edit start path=",
-        JSON.stringify(path),
+      aiLog(
+        "[tool] edit start path=",
+        path,
         "old_string len=",
         old_string.length,
         "new_string len=",
@@ -316,7 +317,7 @@ function editTool(ctx: ToolContext): AgentTool {
           })());
       const before = await readForContent(absPath);
       const occurrences = countOccurrences(before, old_string);
-      console.log("[ai][tool] edit occurrences=", occurrences, "in", absPath);
+      aiLog("[tool] edit occurrences=", occurrences, "in", absPath);
       if (occurrences === 0) {
         throw new ToolError(
           "old_string not found — copy it verbatim from read_file output.",
@@ -327,7 +328,7 @@ function editTool(ctx: ToolContext): AgentTool {
           `old_string matches ${occurrences} places; include more surrounding context.`,
         );
       }
-      console.log("[ai][tool] edit requesting approval (will block until user decides)...");
+      aiLog("[tool] edit requesting approval (will block until user decides)...");
       const result = await ctx.requestApproval({
         kind: "edit",
         path: absPath,
@@ -335,7 +336,7 @@ function editTool(ctx: ToolContext): AgentTool {
         new_string,
         before,
       });
-      console.log("[ai][tool] edit approval resolved, result:", JSON.stringify(result));
+      aiLog("[tool] edit approval resolved, result:", result);
       return textResult(result);
     },
   };
