@@ -33,7 +33,7 @@ import {
   openThemesDir,
   pickPath,
 } from "../../lib/tauri";
-import { toIpcError } from "../../lib/ipc-error";
+import { alertIpcError } from "../../lib/ipc-error";
 import { useDialogStore } from "../../store/dialogStore";
 import i18n from "../../i18n";
 import {
@@ -150,12 +150,7 @@ function TinymistInstallRow({ last }: { last: boolean }) {
     try {
       await installTinymist();
     } catch (e) {
-      window.alert(
-        i18n.t("actionFailed", {
-          ns: "errors",
-          message: toIpcError(e).message,
-        }),
-      );
+      alertIpcError("actionFailed", e);
     } finally {
       setBusy(false);
     }
@@ -271,12 +266,7 @@ function OpenThemesFolderRow() {
     try {
       await openThemesDir();
     } catch (e) {
-      window.alert(
-        i18n.t("actionFailed", {
-          ns: "errors",
-          message: toIpcError(e).message,
-        }),
-      );
+      alertIpcError("actionFailed", e);
     } finally {
       setBusy(false);
     }
@@ -414,14 +404,7 @@ function ActionControl({ def }: { def: SettingDef }) {
       }
     } catch (e) {
       console.warn(`[settings] action ${def.action} failed:`, e);
-      // IPC rejections arrive as the structured IpcError object (Batch 4 wire
-      // format), not an Error instance — use toIpcError to avoid [object Object].
-      window.alert(
-        i18n.t("actionFailed", {
-          ns: "errors",
-          message: toIpcError(e).message,
-        }),
-      );
+      alertIpcError("actionFailed", e);
     } finally {
       setBusy(false);
     }
@@ -599,12 +582,7 @@ function PathsControl({ def }: { def: SettingDef }) {
         setValue([...list, chosen]);
       }
     } catch (e) {
-      window.alert(
-        i18n.t("actionFailed", {
-          ns: "errors",
-          message: toIpcError(e).message,
-        }),
-      );
+      alertIpcError("actionFailed", e);
     } finally {
       setBrowsing(false);
     }

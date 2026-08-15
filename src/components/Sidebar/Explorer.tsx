@@ -25,7 +25,7 @@ import { useFileClipboardStore, readClipboard } from "../../store/fileClipboardS
 import { useExplorerSelectionStore } from "../../store/explorerSelectionStore";
 import { useDialogStore } from "../../store/dialogStore";
 import { openFileByPath, revealInFinder, updateText } from "../../lib/tauri";
-import { toIpcError } from "../../lib/ipc-error";
+import { toIpcError, alertIpcError, extractDetailPaths } from "../../lib/ipc-error";
 import i18n from "../../i18n";
 import { isMac } from "../../lib/platform";
 import { useContextMenuStore, type MenuItem } from "./contextMenuStore";
@@ -90,7 +90,7 @@ async function doDeleteWithConfirm(
   } catch (e) {
     const err = toIpcError(e);
     if (err.code === "delete_blocked") {
-      const affected = extractAffectedDocs(err.details);
+      const affected = extractDetailPaths(err.details, "affectedDocs");
       const names = affected.length > 0 ? affected.join("\n") : "";
       window.alert(
         names
@@ -108,7 +108,7 @@ async function doDeleteWithConfirm(
       );
       return;
     }
-    window.alert(i18n.t(errKey, { ns: "errors", message: err.message }));
+    alertIpcError(errKey, e);
   }
 }
 
@@ -143,20 +143,6 @@ function handleDeletePermanentWithConfirm(
 }
 
 /**
- * Pull the affected-doc paths out of a `delete_blocked` error's `details`
- * (§5.5). The backend carries `{ affectedDocs: [{ id, path }, ...] }`; we only
- * need the paths for the user-facing message.
- */
-function extractAffectedDocs(details: unknown): string[] {
-  if (typeof details !== "object" || details === null) return [];
-  const affected = (details as { affectedDocs?: unknown }).affectedDocs;
-  if (!Array.isArray(affected)) return [];
-  return affected
-    .map((d) => (typeof d === "object" && d !== null ? (d as { path?: unknown }).path : null))
-    .filter((p): p is string => typeof p === "string");
-}
-
-/**
  * Paste the clipboard entry into `destDir`. Copy mode → duplicate (source kept);
  * cut mode → move (source removed). Name collisions resolve to "X copy". On a
  * cut-paste, the clipboard is cleared after the move. Surfaces errors via
@@ -185,7 +171,7 @@ async function handlePaste(destDir: string) {
       existing.add(target);
     } catch (e) {
       const key = mode === "copy" ? "copyFailed" : "pasteFailed";
-      window.alert(i18n.t(key, { ns: "errors", message: toIpcError(e).message }));
+      alertIpcError(key, e);
     }
   }
   // Cut moves the source — the clipboard is now stale (points at the old path).
@@ -203,7 +189,7 @@ async function handleDuplicate(entry: DirEntry) {
   try {
     await ws.copyEntry(entry.relative, target);
   } catch (e) {
-    window.alert(i18n.t("duplicateFailed", { ns: "errors", message: toIpcError(e).message }));
+    alertIpcError("duplicateFailed", e);
   }
 }
 
@@ -422,12 +408,7 @@ export function Explorer(_props: { viewId?: string }) {
                     await createEntry(entryName, pendingNew.kind);
                     setPendingNew(null);
                   } catch (e) {
-                    window.alert(
-                      i18n.t("actionFailed", {
-                        ns: "errors",
-                        message: toIpcError(e).message,
-                      }),
-                    );
+                    alertIpcError("actionFailed", e);
                   }
                 }}
               />
@@ -578,13 +559,7 @@ function TreeRow({
         relative: entry.relative,
         abs: `${rootPath}/${entry.relative}`,
       });
-      window.alert(
-        i18n.t("couldNotOpenFile", {
-          ns: "errors",
-          name: entry.name,
-          message: toIpcError(e).message,
-        }),
-      );
+      alertIpcError("couldNotOpenFile", e, { name: entry.name });
     } finally {
       setLoading(false);
     }
@@ -682,12 +657,7 @@ function TreeRow({
                     await createEntry(rel, pendingNew.kind);
                     setPendingNew(null);
                   } catch (e) {
-                    window.alert(
-                      i18n.t("actionFailed", {
-                        ns: "errors",
-                        message: toIpcError(e).message,
-                      }),
-                    );
+                    alertIpcError("actionFailed", e);
                   }
                 }}
               />
@@ -842,9 +812,7 @@ function buildRowMenu(
       icon: <SquareArrowOutUpRight size={ICON_SIZE} />,
       onSelect: () =>
         void revealInFinder(entry.relative).catch((e) => {
-          window.alert(
-            i18n.t("revealFailed", { ns: "errors", message: toIpcError(e).message }),
-          );
+          alertIpcError("revealFailed", e);
         }),
     },
     { type: "separator" },

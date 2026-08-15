@@ -18,7 +18,7 @@ import { flushAndSaveAs } from "../lib/saveDocument";
 import { captureAndSaveSession } from "../lib/session";
 import { captureWindowBounds } from "../lib/windowState";
 import { captureLayout } from "../lib/layoutState";
-import { toIpcError } from "../lib/ipc-error";
+import { toIpcError, alertIpcError } from "../lib/ipc-error";
 import i18n from "../i18n";
 import { commandRegistry } from "../extensions/registry";
 import { createHostApi } from "../extensions/api";
@@ -162,9 +162,7 @@ export async function dispatch(menuId: string): Promise<void> {
     console.warn(`[menu:${menuId}] failed:`, ipc.code, ipc.message);
     const cmd = commandRegistry.get(menuId);
     const label = cmd?.title ?? labelFor(menuId) ?? menuId;
-    window.alert(
-      i18n.t("commandFailed", { ns: "errors", label, message: ipc.message }),
-    );
+    alertIpcError("commandFailed", ipc, { label });
   }
 }
 

@@ -1,10 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   toIpcError,
   isIpcError,
   isCancelled,
   formatSaveErrorMessage,
   SAVE_AS_RECOVERY_CODES,
+  alertIpcError,
+  extractDetailPaths,
 } from "../ipc-error";
 import type { IpcError } from "../ipc-error";
 
@@ -165,5 +167,69 @@ describe("SAVE_AS_RECOVERY_CODES", () => {
 
   it("does not include disk_full (retry, not Save As)", () => {
     expect(SAVE_AS_RECOVERY_CODES.has("disk_full")).toBe(false);
+  });
+});
+
+describe("alertIpcError", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("alerts the errors-namespace message with the narrowed IPC message", () => {
+    const alert = vi.fn();
+    vi.stubGlobal("alert", alert);
+    alertIpcError("couldNotOpen", { code: "io_transient", message: "disk went away" });
+    expect(alert).toHaveBeenCalledOnce();
+    const text = alert.mock.calls[0][0] as string;
+    expect(text).toContain("disk went away");
+  });
+
+  it("passes extra interpolation params (name/label) through", () => {
+    const alert = vi.fn();
+    vi.stubGlobal("alert", alert);
+    alertIpcError(
+      "couldNotOpenFile",
+      { code: "io_transient", message: "boom" },
+      { name: "main.typ" },
+    );
+    const text = alert.mock.calls[0][0] as string;
+    expect(text).toContain("main.typ");
+    expect(text).toContain("boom");
+  });
+
+  it("narrows non-IpcError rejections instead of alerting [object Object]", () => {
+    const alert = vi.fn();
+    vi.stubGlobal("alert", alert);
+    alertIpcError("actionFailed", new Error("legacy"));
+    const text = alert.mock.calls[0][0] as string;
+    expect(text).toContain("legacy");
+    expect(text).not.toContain("[object Object]");
+  });
+});
+
+describe("extractDetailPaths", () => {
+  it("pulls the path strings out of a details array", () => {
+    const details = {
+      affectedDocs: [
+        { id: "a", path: "/w/a.typ" },
+        { id: "b", path: "/w/b.typ" },
+      ],
+    };
+    expect(extractDetailPaths(details, "affectedDocs")).toEqual([
+      "/w/a.typ",
+      "/w/b.typ",
+    ]);
+  });
+
+  it("drops entries without a string path", () => {
+    const details = { openDocs: [{ id: "a" }, { path: 42 }, "junk", null] };
+    expect(extractDetailPaths(details, "openDocs")).toEqual([]);
+  });
+
+  it("returns [] for missing key / non-array / non-object details", () => {
+    expect(extractDetailPaths({ openDocs: "nope" }, "openDocs")).toEqual([]);
+    expect(extractDetailPaths(null, "openDocs")).toEqual([]);
+    expect(extractDetailPaths(undefined, "openDocs")).toEqual([]);
+    expect(extractDetailPaths({}, "affectedDocs")).toEqual([]);
   });
 });

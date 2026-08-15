@@ -79,6 +79,40 @@ export function isCancelled(e: unknown): boolean {
 }
 
 /**
+ * The shared catch-block shape used everywhere an IPC rejection is surfaced to
+ * the user: alert an `errors`-namespace message interpolated with the narrowed
+ * error message, plus per-call extras (`name`, `label`, …). Cancellation is
+ * deliberately NOT handled here — callers with a cancel-silent policy keep
+ * their `isCancelled` check before calling.
+ */
+export function alertIpcError(
+  key: string,
+  e: unknown,
+  extra: Record<string, unknown> = {},
+): void {
+  window.alert(
+    i18n.t(key, { ns: "errors", ...extra, message: toIpcError(e).message }),
+  );
+}
+
+/**
+ * Pull the `path` strings out of `{ [key]: [{ path }, ...] }` inside an
+ * IpcError's `details` — the wire shape the backend uses for
+ * `delete_blocked.affectedDocs` and `template_init_failed.openDocs`. Any other
+ * shape yields [].
+ */
+export function extractDetailPaths(details: unknown, key: string): string[] {
+  if (typeof details !== "object" || details === null) return [];
+  const list = (details as Record<string, unknown>)[key];
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((d) =>
+      typeof d === "object" && d !== null ? (d as { path?: unknown }).path : null,
+    )
+    .filter((p): p is string => typeof p === "string");
+}
+
+/**
  * The set of error codes that mean "the user can't overwrite this file as-is" —
  * the UI should offer Save As. Used by the save-failure branch.
  */

@@ -13,7 +13,7 @@ import {
   packageInitTemplate,
   openWorkspaceByPath,
 } from "../../../lib/tauri";
-import { toIpcError } from "../../../lib/ipc-error";
+import { toIpcError, alertIpcError, extractDetailPaths } from "../../../lib/ipc-error";
 import { useDialogStore } from "../../../store/dialogStore";
 import { editorApiRef } from "../../Editor/editorApiRef";
 import i18n from "../../../i18n";
@@ -138,7 +138,7 @@ export function PackageDetail() {
     } catch (e) {
       const ipc = toIpcError(e);
       if (ipc.code === "template_init_failed") {
-        const openDocs = extractOpenDocs(ipc.details);
+        const openDocs = extractDetailPaths(ipc.details, "openDocs");
         if (openDocs.length > 0) {
           alert(
             i18n.t("templateInitBlockedByOpenDocs", {
@@ -153,21 +153,11 @@ export function PackageDetail() {
           try {
             await runInit(destStr, true);
           } catch (e2) {
-            alert(
-              i18n.t("templateInitFailed", {
-                ns: "errors",
-                message: toIpcError(e2).message,
-              }),
-            );
+            alertIpcError("templateInitFailed", e2);
           }
         }
       } else {
-        alert(
-          i18n.t("templateInitFailed", {
-            ns: "errors",
-            message: ipc.message,
-          }),
-        );
+        alertIpcError("templateInitFailed", ipc);
       }
     }
   };
@@ -245,8 +235,7 @@ export function PackageDetail() {
         })()}
         <button
           className="pkg-btn-secondary"
-          disabled={!canInsertImport}
-          onClick={() => {
+          disabled={!canInsertImport}          onClick={() => {
             editorApiRef.current?.insertAtTop(importText);
           }}
           title={canInsertImport ? importText : t("insertImportDisabled")}
@@ -256,17 +245,4 @@ export function PackageDetail() {
       </div>
     </div>
   );
-}
-
-function extractOpenDocs(details: unknown): string[] {
-  if (typeof details !== "object" || details === null) return [];
-  const openDocs = (details as { openDocs?: unknown }).openDocs;
-  if (!Array.isArray(openDocs)) return [];
-  return openDocs
-    .map((doc) =>
-      typeof doc === "object" && doc !== null
-        ? (doc as { path?: unknown }).path
-        : null,
-    )
-    .filter((path): path is string => typeof path === "string");
 }

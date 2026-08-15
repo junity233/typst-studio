@@ -4,8 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { SettingDef } from "../../lib/settings-types";
 import { useSetting } from "../../hooks/useSetting";
 import { pickPath } from "../../lib/tauri";
-import { toIpcError } from "../../lib/ipc-error";
-import i18n from "../../i18n";
+import { alertIpcError } from "../../lib/ipc-error";
 import { SETTING_ID } from "./SettingsApp";
 
 /**
@@ -34,14 +33,7 @@ export function PathControl({ def }: { def: SettingDef }) {
       const chosen = await pickPath(kind);
       if (chosen !== null) setValue(chosen);
     } catch (e) {
-      // IPC rejections arrive as the structured IpcError object — use toIpcError
-      // to avoid [object Object] in the alert.
-      window.alert(
-        i18n.t("actionFailed", {
-          ns: "errors",
-          message: toIpcError(e).message,
-        }),
-      );
+      alertIpcError("actionFailed", e);
     } finally {
       setBusy(false);
     }

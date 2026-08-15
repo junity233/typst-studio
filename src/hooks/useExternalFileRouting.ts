@@ -1,7 +1,6 @@
 import { onFocusView, onOpenExternalFile, openFileByPath } from "../lib/tauri";
 import { useTabsStore, readAllDocuments } from "../store/tabsStore";
-import { toIpcError } from "../lib/ipc-error";
-import i18n from "../i18n";
+import { isCancelled, alertIpcError } from "../lib/ipc-error";
 import { useTauriListener } from "./useTauriListener";
 
 /**
@@ -41,9 +40,8 @@ export function useExternalFileRouting(): void {
       // every other open path (openFile.ts, Explorer) alerts on failure, and
       // a silent "double-click did nothing" is the worst UX here. A Cancelled
       // IPC code stays silent (matches openFile.ts).
-      const ipc = toIpcError(e);
-      if (ipc.code === "cancelled") return;
-      window.alert(i18n.t("couldNotOpen", { ns: "errors", message: ipc.message }));
+      if (isCancelled(e)) return;
+      alertIpcError("couldNotOpen", e);
     }
   });
 }

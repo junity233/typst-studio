@@ -1,8 +1,7 @@
 import { useTabsStore, readAllDocuments } from "../store/tabsStore";
 import { openFileByPath, updateText } from "./tauri";
-import { toIpcError } from "./ipc-error";
+import { isCancelled, alertIpcError } from "./ipc-error";
 import { workspacePathsEqual } from "./workspacePath";
-import i18n from "../i18n";
 
 /**
  * Open a workspace file: activate its tab if already open, else open a new one.
@@ -41,9 +40,8 @@ export async function openFile(absPath: string): Promise<string | null> {
     useTabsStore.getState().openPath(doc);
     return doc.id;
   } catch (e) {
-    const ipc = toIpcError(e);
-    if (ipc.code === "cancelled") return null;
-    window.alert(i18n.t("couldNotOpen", { ns: "errors", message: ipc.message }));
+    if (isCancelled(e)) return null;
+    alertIpcError("couldNotOpen", e);
     return null;
   }
 }
