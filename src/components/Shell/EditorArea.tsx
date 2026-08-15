@@ -104,6 +104,33 @@ function detachZoomListener(el: HTMLElement | null): void {
 }
 
 /**
+ * The shared sash-drag tail for the preview-width and diagnostics-height
+ * resizers (the two must behave identically): window-level pointer events so
+ * the drag survives the cursor leaving the sash, a body-wide
+ * user-select/cursor override restored on pointerup, then `onEnd` (drag-state
+ * cleanup + the caller's localStorage persist).
+ */
+function startSashDrag(
+  e: React.PointerEvent<HTMLDivElement>,
+  cursor: string,
+  onMove: (ev: PointerEvent) => void,
+  onEnd: () => void,
+): void {
+  e.preventDefault();
+  const up = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", up);
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+    onEnd();
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", up);
+  document.body.style.userSelect = "none";
+  document.body.style.cursor = cursor;
+}
+
+/**
  * The editor area: tab strip on top, then a horizontal split of (editor|preview)
  * with a collapsible diagnostics panel at the bottom. This is the right-hand
  * pane of the Workbench; it knows nothing about the sidebar/workspace.
@@ -982,84 +1009,68 @@ export function EditorArea() {
     return () => window.clearTimeout(timer);
   }, [statsDocId, statsContent]);
 
-  // Drag the sash: preview width = container right edge - pointer X. Uses
-  // window-level pointer events so the drag survives the cursor leaving the
-  // sash. Width persists to localStorage on pointerup.
+  // Drag the sash: preview width = container right edge - pointer X. Width
+  // persists to localStorage on pointerup.
   const startResize = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
     const container = containerRef.current;
     if (!container) return;
     const rect = container.getBoundingClientRect();
-    const onMove = (ev: PointerEvent) => {
+    startSashDrag(e, "col-resize", (ev) => {
       const w = rect.right - ev.clientX;
       const clamped = Math.max(
         PREVIEW_WIDTH_MIN,
         Math.min(w, rect.width - PREVIEW_WIDTH_MIN),
       );
       setPreviewWidth(clamped);
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      document.body.style.userSelect = "";
-      document.body.style.cursor = "";
+    }, () => {
       try {
         localStorage.setItem(PREVIEW_WIDTH_KEY, String(previewWidthRef.current));
       } catch {
         // ignore
       }
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    document.body.style.userSelect = "none";
-    document.body.style.cursor = "col-resize";
-  }, []);;
+    });
+  }, []);
 
   // Drag the diagnostics sash: body height = editor-area bottom - pointer Y.
-  // Mirrors the preview sash above (window-level pointer events, clamp to a
-  // min, persist on pointerup) so the two resizers behave identically. The
-  // clamp's upper bound is read live from the container each move so the panel
-  // can never outgrow the available space (window resize, collapsed preview).
+  // Uses the same sash-drag tail as the preview resizer so the two behave
+  // identically. The clamp's upper bound is read live from the container each
+  // move so the panel can never outgrow the available space (window resize,
+  // collapsed preview).
   const diagContainerRef = useRef<HTMLDivElement | null>(null);
   const startDiagResize = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      e.preventDefault();
       const container = diagContainerRef.current;
       if (!container) return;
       setDiagsDragging(true);
-      const onMove = (ev: PointerEvent) => {
-        const rect = container.getBoundingClientRect();
-        // Available height = editor-area height minus the non-resizable chrome
-        // above the body (header, sash). Clamp so the panel never crowds out
-        // the editor entirely (leave at least ~120px for it).
-        const above = DIAG_HEADER_OFFSET;
-        const maxBody = Math.max(DIAG_HEIGHT_MIN, rect.height - above - 120);
-        const h = rect.bottom - ev.clientY - above;
-        const clamped = Math.max(
-          DIAG_HEIGHT_MIN,
-          Math.min(h, maxBody),
-        );
-        setDiagsHeight(clamped);
-      };
-      const onUp = () => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-        document.body.style.userSelect = "";
-        document.body.style.cursor = "";
-        setDiagsDragging(false);
-        try {
-          localStorage.setItem(
-            DIAG_HEIGHT_KEY,
-            String(diagsHeightRef.current),
+      startSashDrag(
+        e,
+        "row-resize",
+        (ev) => {
+          const rect = container.getBoundingClientRect();
+          // Available height = editor-area height minus the non-resizable chrome
+          // above the body (header, sash). Clamp so the panel never crowds out
+          // the editor entirely (leave at least ~120px for it).
+          const above = DIAG_HEADER_OFFSET;
+          const maxBody = Math.max(DIAG_HEIGHT_MIN, rect.height - above - 120);
+          const h = rect.bottom - ev.clientY - above;
+          const clamped = Math.max(
+            DIAG_HEIGHT_MIN,
+            Math.min(h, maxBody),
           );
-        } catch {
-          // ignore
-        }
-      };
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-      document.body.style.userSelect = "none";
-      document.body.style.cursor = "row-resize";
+          setDiagsHeight(clamped);
+        },
+        () => {
+          setDiagsDragging(false);
+          try {
+            localStorage.setItem(
+              DIAG_HEIGHT_KEY,
+              String(diagsHeightRef.current),
+            );
+          } catch {
+            // ignore
+          }
+        },
+      );
     },
     [],
   );
