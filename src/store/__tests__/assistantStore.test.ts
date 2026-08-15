@@ -48,6 +48,7 @@ vi.mock("./assistantTools", () => ({ buildTools: vi.fn(() => []) }));
 vi.mock("./assistantPrompt", () => ({ buildSystemPrompt: vi.fn(() => "SYS") }));
 vi.mock("./documentsStore", () => ({
   useDocumentsStore: { getState: () => ({ documents: {}, updateContent: vi.fn() }) },
+  findOpenDocByPath: () => undefined,
 }));
 vi.mock("./tabsStore", () => ({
   useTabsStore: { getState: () => ({ activeId: null }) },

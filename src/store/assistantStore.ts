@@ -6,12 +6,11 @@ import { readSetting } from "../hooks/useSetting";
 import { resolveLanguage } from "../i18n";
 import { useWorkspaceStore } from "./workspaceStore";
 import { useTabsStore } from "./tabsStore";
-import { useDocumentsStore } from "./documentsStore";
+import { findOpenDocByPath, useDocumentsStore } from "./documentsStore";
 import { useDiagnosticsStore, selectDiagnosticsForDoc } from "./diagnosticsStore";
 import { editorApiRef } from "../components/Editor/editorApiRef";
 import { buildSystemPrompt } from "./assistantPrompt";
 import { buildTools, type PendingApproval } from "./assistantTools";
-import { pathsEqual } from "../lib/assistantPath";
 import { buildModel, makeStreamFn } from "../components/Assistant/aiStream";
 
 /**
@@ -484,11 +483,9 @@ async function applyApproval(p: PendingApproval): Promise<string> {
       // through the ACTIVE editor regardless of p.path would corrupt whatever
       // tab happens to be active. The documents map covers visible tabs AND
       // soft-closed (hidden) docs.
-      const target = p.path
-        ? Object.values(useDocumentsStore.getState().documents).find(
-            (d) => d.path !== null && pathsEqual(d.path, p.path),
-          )
-        : undefined;
+      // workspacePathsEqual (not assistantPath.pathsEqual): doc paths are
+      // canonical and case matters on POSIX.
+      const target = p.path ? findOpenDocByPath(p.path) : undefined;
 
       // Active-doc fast path: p.path is absent (defaults to the active file)
       // or names it. The target model is attached to the editor, so

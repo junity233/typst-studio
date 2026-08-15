@@ -128,8 +128,3 @@ export function countOccurrences(haystack: string, needle: string): number {
   }
   return count;
 }
-
-/** Case-insensitive, separator-normalized path equality. */
-export function pathsEqual(a: string, b: string): boolean {
-  return norm(a).toLowerCase() === norm(b).toLowerCase();
-}

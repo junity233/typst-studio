@@ -8,8 +8,7 @@ import {
 import type { BatchExportOutcome, TypstFileEntry } from "../lib/types";
 import { toIpcError } from "../lib/ipc-error";
 import { flushDocumentSnapshot } from "../lib/saveDocument";
-import { workspacePathsEqual } from "../lib/workspacePath";
-import { useDocumentsStore } from "./documentsStore";
+import { findOpenDocByPath } from "./documentsStore";
 import { useTabsStore } from "./tabsStore";
 
 /**
@@ -122,13 +121,10 @@ export const useBatchExportStore = create<BatchExportState>()((set, get) => ({
     // Backend-only tabs we opened for this run and must close afterwards.
     const closeAfterwards: string[] = [];
     try {
-      const documents = useDocumentsStore.getState().documents;
       const tabs = useTabsStore.getState();
       const knownIds = new Set([...tabs.tabs, ...tabs.hidden]);
       for (const { abs, name } of picked) {
-        const openDoc = Object.values(documents).find(
-          (d) => d.path !== null && workspacePathsEqual(d.path, abs),
-        );
+        const openDoc = findOpenDocByPath(abs);
         if (openDoc !== undefined) {
           const snapshot = await flushDocumentSnapshot(openDoc.id);
           items.push({ id: openDoc.id, revision: snapshot.revision, name });

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { workspacePathsEqual } from "../lib/workspacePath";
 import type { CompileStatus } from "../lib/ui-types";
 import type {
   ChangedPage,
@@ -454,3 +455,16 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => {
     getDocument: (id) => get().documents[id],
   };
 });
+
+/**
+ * The open document whose canonical path matches `absPath` (visible tab,
+ * soft-closed/hidden doc, or a backend-only tab entry), or `undefined`. The
+ * canonical "is this file already open?" lookup — separator/case handling is
+ * `workspacePathsEqual`. Callers that only consider real tabs (reactivation
+ * flows) use `readAllDocuments()` in `tabsStore` instead.
+ */
+export function findOpenDocByPath(absPath: string): Document | undefined {
+  return Object.values(useDocumentsStore.getState().documents).find((d) =>
+    workspacePathsEqual(d.path, absPath),
+  );
+}

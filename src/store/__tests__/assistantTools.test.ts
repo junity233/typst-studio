@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { workspacePathsEqual } from "../../lib/workspacePath";
 
 /**
  * Mock the stores + IPC wrappers the tools read from. Each mock exposes a
@@ -21,6 +22,11 @@ const diagsState: { byDoc: Record<string, unknown> } = { byDoc: {} };
 
 vi.mock("../documentsStore", () => ({
   useDocumentsStore: { getState: () => docsState },
+  // Mirror the real helper over the mocked state (same comparator).
+  findOpenDocByPath: (absPath: string) =>
+    Object.values(docsState.documents).find((d) =>
+      workspacePathsEqual((d as { path: string | null }).path, absPath),
+    ),
 }));
 vi.mock("../tabsStore", () => ({
   useTabsStore: { getState: () => tabsState },

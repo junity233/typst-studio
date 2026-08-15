@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   resolveWorkspacePath,
   countOccurrences,
-  pathsEqual,
 } from "../assistantPath";
 
 describe("resolveWorkspacePath", () => {
@@ -146,17 +145,5 @@ describe("countOccurrences", () => {
   });
   it("returns 0 for an empty needle", () => {
     expect(countOccurrences("abc", "")).toBe(0);
-  });
-});
-
-describe("pathsEqual", () => {
-  it("treats slash and backslash as equal", () => {
-    expect(pathsEqual("/ws/a.typ", "/ws\\a.typ")).toBe(true);
-  });
-  it("is case-insensitive (Windows paths)", () => {
-    expect(pathsEqual("C:/WS/A.typ", "c:/ws/a.typ")).toBe(true);
-  });
-  it("distinguishes different paths", () => {
-    expect(pathsEqual("/ws/a.typ", "/ws/b.typ")).toBe(false);
   });
 });

@@ -1,7 +1,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 
-import { useDocumentsStore } from "./documentsStore";
+import { findOpenDocByPath, useDocumentsStore } from "./documentsStore";
 import { useTabsStore } from "./tabsStore";
 import { useWorkspaceStore } from "./workspaceStore";
 import {
@@ -14,7 +14,6 @@ import { hardCloseTab, openFileByPath, readDir, searchWorkspace } from "../lib/t
 import {
   resolveWorkspacePath,
   countOccurrences,
-  pathsEqual,
 } from "../lib/assistantPath";
 
 /** Thrown by tool handlers to surface a recoverable error to the agent. */
@@ -100,10 +99,8 @@ function activeDocContent(): string | null {
  * a soft-closed/hidden doc — both must keep their state).
  */
 async function readForContent(absPath: string): Promise<string> {
-  const { documents } = useDocumentsStore.getState();
-  for (const d of Object.values(documents)) {
-    if (d.path && pathsEqual(d.path, absPath)) return d.content;
-  }
+  const open = findOpenDocByPath(absPath);
+  if (open) return open.content;
   const opened = await openFileByPath(absPath);
   // Defensive known-id check (batchExportStore precedent): only close the tab
   // WE opened, never one the frontend already tracks.
@@ -118,9 +115,7 @@ async function readForContent(absPath: string): Promise<string> {
 
 /** Does any open tab already live at this absolute path? */
 function pathHasOpenTab(absPath: string): boolean {
-  return Object.values(useDocumentsStore.getState().documents).some(
-    (d) => d.path && pathsEqual(d.path, absPath),
-  );
+  return findOpenDocByPath(absPath) !== undefined;
 }
 
 function textResult(text: string) {

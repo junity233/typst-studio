@@ -1,9 +1,9 @@
 import { exportPdf, exportPng, exportSvg } from "./tauri";
 import { flushDocumentSnapshot } from "./saveDocument";
-import { joinWorkspacePath, workspacePathsEqual } from "./workspacePath";
+import { joinWorkspacePath } from "./workspacePath";
 import { expandTemplate } from "./pathMacros";
 import { useTabsStore } from "../store/tabsStore";
-import { useDocumentsStore } from "../store/documentsStore";
+import { findOpenDocByPath } from "../store/documentsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { useProjectConfigStore } from "../store/projectConfigStore";
 
@@ -35,10 +35,7 @@ export function resolveExportTargetId(): string | null {
   const main = useProjectConfigStore.getState().config?.main ?? null;
   if (main !== null && rootPath !== null) {
     const mainAbs = joinWorkspacePath(rootPath, main);
-    const docs = useDocumentsStore.getState().documents;
-    const mainDoc = Object.values(docs).find(
-      (d) => d.path !== null && workspacePathsEqual(d.path, mainAbs),
-    );
+    const mainDoc = findOpenDocByPath(mainAbs);
     if (mainDoc) return mainDoc.id;
   }
   return useTabsStore.getState().activeId;

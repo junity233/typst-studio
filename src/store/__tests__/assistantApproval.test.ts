@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { workspacePathsEqual } from "../../lib/workspacePath";
 
 /**
  * Targeted tests for the approval gate fixes (P1 false-success, P2 identity).
@@ -117,7 +118,14 @@ const tabsState: {
     if (!tabsState.tabs.includes(doc.id)) tabsState.tabs.push(doc.id);
   },
 };
-vi.mock("../documentsStore", () => ({ useDocumentsStore: { getState: () => docState } }));
+vi.mock("../documentsStore", () => ({
+  useDocumentsStore: { getState: () => docState },
+  // Mirror the real helper over the mocked state (same comparator).
+  findOpenDocByPath: (absPath: string) =>
+    Object.values(docState.documents).find((d) =>
+      workspacePathsEqual((d as { path: string | null }).path, absPath),
+    ),
+}));
 vi.mock("../tabsStore", () => ({ useTabsStore: { getState: () => tabsState } }));
 vi.mock("../workspaceStore", () => ({ useWorkspaceStore: { getState: () => ({ rootPath: "/ws", name: "ws" }) } }));
 vi.mock("../diagnosticsStore", () => ({
