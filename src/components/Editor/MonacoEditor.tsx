@@ -993,9 +993,14 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
         const editor = getEditor();
         if (!editor) return;
         // Only scroll when the line has scrolled out of view, and align it to
-        // the top (not center) so repeated small scrolls produce a smooth,
+        // the TOP (not center) so repeated small scrolls produce a smooth,
         // linear follow instead of the re-center jitter from `InCenter`.
-        editor.revealLineInCenterIfOutsideViewport(line, SCROLL_IMMEDIATE);
+        const visible = editor
+          .getVisibleRanges()
+          .some((r) => line >= r.startLineNumber && line <= r.endLineNumber);
+        if (!visible) {
+          editor.revealLine(line, SCROLL_IMMEDIATE);
+        }
       },
       getTopVisibleLine: () => {
         const editor = getEditor();

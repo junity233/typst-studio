@@ -37,6 +37,20 @@ describe("search workspace invalidation", () => {
     });
   });
 
+  it("surfaces an IpcError object's message (not '[object Object]')", async () => {
+    // Backend rejections arrive as serialized IpcError objects, not Errors.
+    mocks.searchWorkspace.mockRejectedValueOnce({
+      code: "internal",
+      message: "index unavailable",
+      recoverable: true,
+    });
+
+    await useSearchStore.getState().run();
+
+    expect(useSearchStore.getState().error).toBe("index unavailable");
+    expect(useSearchStore.getState().searching).toBe(false);
+  });
+
   it("discards an old-workspace result while retaining the query", async () => {
     const oldRequest = deferred<SearchHit[]>();
     mocks.searchWorkspace.mockReturnValueOnce(oldRequest.promise);

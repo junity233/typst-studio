@@ -153,4 +153,27 @@ describe("applyStrReplace", () => {
     expect(sel.positionLineNumber).toBe(2);
     expect(sel.positionColumn).toBe("  # comment".length + 1);
   });
+
+  // Regression: an old_string ending in "\n" must replace the newline too.
+  // offsetsToRange previously mapped the end offset (just past the "\n") to
+  // column lineLen+2 on the SAME line — one past getLineMaxColumn. Both Monaco
+  // and this fake clamp the out-of-range column, so the trailing "\n" escaped
+  // the replaced range ("hello\n" → "\nworld" instead of "world").
+  it("replaces the trailing newline when old_string ends with a newline", () => {
+    const ed = new FakeEditor("hello\nworld");
+    expect(applyStrReplace(ed, "hello\n", "hi ")).toBe(true);
+    expect(ed.value()).toBe("hi world");
+  });
+
+  it("deletes the whole first line including its newline", () => {
+    const ed = new FakeEditor("hello\nworld");
+    expect(applyStrReplace(ed, "hello\n", "")).toBe(true);
+    expect(ed.value()).toBe("world");
+  });
+
+  it("replaces through the final newline at end of buffer", () => {
+    const ed = new FakeEditor("a\nb\n");
+    expect(applyStrReplace(ed, "b\n", "c")).toBe(true);
+    expect(ed.value()).toBe("a\nc");
+  });
 });

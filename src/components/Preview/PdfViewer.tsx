@@ -19,7 +19,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
  * In-app PDF viewer for `DocumentKind === "pdf"` tabs. Preview-only.
  *
  * The PDF bytes are fetched via the backend `read_file_bytes` command (not the
- * `@tauri-apps/plugin-fs` plugin, which is scope-limited to `$HOME/**`).
+ * `@tauri-apps/plugin-fs` plugin, which is granted only app-specific-dir
+ * access via `fs:default` and cannot read arbitrary workspace paths).
  * pdf.js renders each page to a `<canvas>` at a device-pixel ratio that matches
  * the display, so text stays crisp on HiDPI screens. Pages render sequentially
  * as the user scrolls into them (a simple "render all, but lazily" approach is
@@ -38,11 +39,10 @@ export function PdfViewer({ path }: { path: string }): React.JSX.Element {
     setLoading(true);
     setPageCanvases([]);
     // Declared in the effect's outer closure (not inside the async IIFE) so the
-    // cleanup function can reach it and clean up the document on unmount. Kept
-    // `null` until `getDocument` resolves; the cleanup's `doc?.cleanup()` is a
-    // no-op while it is, which is the correct behavior when unmount happens
-    // before the load completes (nothing to release yet).
-    let doc: pdfjsLib.PDFDocumentProxy | null = null;
+    // cleanup function can reach it and tear the load down on unmount/path
+    // change. Assigned synchronously when the load STARTS, so a cleanup that
+    // runs mid-load can destroy it (aborting the parse and its worker).
+    let task: pdfjsLib.PDFDocumentLoadingTask | null = null;
 
     (async () => {
       try {
@@ -56,9 +56,17 @@ export function PdfViewer({ path }: { path: string }): React.JSX.Element {
         // underlying buffer (defensive — readFileBytes already returns a fresh
         // Uint8Array, but the explicit copy documents intent).
         const data = new Uint8Array(bytes);
-        const loadedDoc = await pdfjsLib.getDocument({ data }).promise;
-        doc = loadedDoc;
-        if (cancelled) return;
+        const loadingTask = pdfjsLib.getDocument({ data });
+        task = loadingTask;
+        const doc = await loadingTask.promise;
+        // Check cancelled BEFORE adopting the document. If the effect was torn
+        // down while the load was in flight, the cleanup already destroyed the
+        // task — but pdf.js may still have handed us the document, and nobody
+        // else will release it. destroy() is idempotent, so call it again.
+        if (cancelled) {
+          void loadingTask.destroy().catch(() => {});
+          return;
+        }
         const pages: React.JSX.Element[] = [];
         for (let i = 1; i <= doc.numPages; i++) {
           if (cancelled) return;
@@ -82,15 +90,20 @@ export function PdfViewer({ path }: { path: string }): React.JSX.Element {
 
     return () => {
       cancelled = true;
-      // Clean up the pdf.js document so parsed page objects / cached fonts are
-      // released. Without this, switching away from a PDF tab leaks them: the
-      // cleanup only set `cancelled = true` before, leaving the loaded doc
-      // alive. `cleanup()` is safe to call even mid-render (it drops the page
-      // proxies the worker is holding) and is a no-op if `doc` is still null
-      // (load hadn't completed / failed). The Web Worker itself is shared and
-      // reused across loads, so `cleanup()` (not `PDFLoadingTask.destroy()`) is
-      // the right teardown for an already-loaded `PDFDocumentProxy`.
-      void doc?.cleanup();
+      // pdf.js requires destroy() — NOT cleanup() — to abort in-flight
+      // requests and terminate the worker a load owns. cleanup() only drops
+      // parsed page/font caches, so relying on it alone leaked one Web Worker
+      // per viewed PDF. destroy() covers both the in-flight load (the awaited
+      // promise above then rejects into the cancelled swallow) and the
+      // already-loaded document. It can throw or reject when called twice /
+      // on an already-terminated worker, so guard both.
+      if (task !== null) {
+        try {
+          void task.destroy().catch(() => {});
+        } catch {
+          // Already destroyed — nothing to do.
+        }
+      }
     };
   }, [path]);
 

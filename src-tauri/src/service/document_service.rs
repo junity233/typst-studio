@@ -94,6 +94,33 @@ struct WorkspaceTabSnapshot {
     canon: PathBuf,
 }
 
+/// Outcome of a compare-and-swap text replacement
+/// ([`DocumentService::replace_text_cas`](Self::replace_text_cas)).
+///
+/// Serialized for the IPC layer: an `Applied` tells the caller its computed
+/// content landed at `revision`; a `Conflated` tells it the buffer moved
+/// underneath it and hands back the fresh state to recompute against.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CasReplaceOutcome {
+    /// The buffer held exactly the expected text at the observed revision;
+    /// the new content was applied and the buffer is now at `revision`
+    /// (observed revision + 1).
+    Applied {
+        /// The post-apply buffer revision.
+        revision: u64,
+    },
+    /// The buffer's text and/or revision moved since the caller observed it;
+    /// NOTHING was written. Carries the FRESH current text + revision so the
+    /// caller can recompute its edit against them and retry.
+    Conflated {
+        /// The buffer's current text (never the caller's stale copy).
+        text: String,
+        /// The buffer's current revision.
+        revision: u64,
+    },
+}
+
 /// The document-identity half of the editor (§6.1).
 ///
 /// Owns (via the shared [`TabStore`]) the document map, registry, loose-file
@@ -224,6 +251,12 @@ impl DocumentService {
             // Flip the flag to visible here (idempotent for an already-visible
             // doc) so the returned meta is consistent.
             self.set_visibility(existing.id, false);
+            // Replay the cached compile as a full payload: after a webview
+            // reload the frontend's preview state is fresh, and the next
+            // incremental compile (full=false, backend cache matches the page
+            // count) would leave undefined holes in its page array. Mirrors
+            // `reactivate`; no-op when nothing is cached.
+            self.replay_cached_compiled(existing.id);
             return Ok(self.tab_meta(existing.id).unwrap_or(existing));
         }
         let meta = classify_new(DocumentId::new(), canon.clone(), workspace);
@@ -263,6 +296,12 @@ impl DocumentService {
             // §B1 dedup invariant: see `open_from_content` — a soft-closed
             // (hidden) doc must be made visible on reopen.
             self.set_visibility(existing.id, false);
+            // Replay the cached compile as a full payload (see
+            // `open_from_content`'s dedup branch): after a webview reload the
+            // frontend holds no pages, and an incremental-only compile would
+            // leave holes in its page array. Mirrors `reactivate`; no-op when
+            // nothing is cached.
+            self.replay_cached_compiled(existing.id);
             return Ok(self.tab_meta(existing.id).unwrap_or(existing));
         }
         let meta = classify_new(DocumentId::new(), canon.clone(), workspace);
@@ -472,14 +511,23 @@ impl DocumentService {
             // nothing — there's nothing to drop in that case.
             return;
         };
-        self.store.vfs.remove(&canon);
+        self.drop_vfs_for_canon(&canon);
+    }
+
+    /// The VFS/dependency teardown for a KNOWN canonical path — shared by
+    /// [`drop_vfs_for`](Self::drop_vfs_for) (tab still in the map) and
+    /// [`hard_close_if_clean`](Self::hard_close_if_clean) (tab already
+    /// removed under the close's write lock, canon captured beforehand —
+    /// `drop_vfs_for` can no longer resolve it there).
+    fn drop_vfs_for_canon(&self, canon: &Path) {
+        self.store.vfs.remove(canon);
         // Drop this document's outgoing dependency edges too: a closed tab no
         // longer includes anything. (Ingoing edges — others depending on this
         // file — are kept; the file still exists on disk.)
-        self.store.deps.remove_outgoing(&canon);
+        self.store.deps.remove_outgoing(canon);
         // Cascade a recompile so documents that #include this file fall back to
         // the disk copy now that its live buffer left the VFS overlay.
-        self.recompile_dependents_of(&canon);
+        self.recompile_dependents_of(canon);
     }
 
     /// Snapshot `(canonical_path, current_text, revision)` for a tab, or `None`
@@ -725,26 +773,49 @@ impl DocumentService {
 
         // Snapshot the current buffer + revision + old canonical path before
         // mutating anything, so a registry conflict leaves the tab fully intact.
-        let (text, revision, old_canon) = {
+        let (text, revision, old_canon, current_meta) = {
             let tabs = self.store.tabs.read();
             let tab = tabs
                 .get(&id)
                 .cloned()
                 .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?;
             let rt = tab.state.lock();
+            let meta = rt.meta.clone();
             (
                 tab.world.text(),
-                rt.meta.revision,
-                rt.meta.origin.canonical_path().map(|p| p.to_path_buf()),
+                meta.revision,
+                meta.origin.canonical_path().map(|p| p.to_path_buf()),
+                meta,
             )
         };
 
-        // New metadata: loose file at the target, revision carried over. Save
-        // As keeps a racing newer edit dirty; generic rebinds retain the prior
-        // clean behavior.
+        // New metadata: loose file at the target, revision carried over.
+        // `dirty`:
+        // - Save As (`saved_revision: Some`): the tab is clean iff the buffer
+        //   revision still matches the snapshot that was written — a racing
+        //   newer edit stays dirty (the written bytes are stale for it).
+        // - Generic rebind (`saved_revision: None`, i.e. the rename 联动 and
+        //   the deprecated `assign_path`): the buffer did NOT hit disk, so
+        //   the CURRENT dirty flag must carry over. Resetting it here would
+        //   silently un-dirty a doc with unsaved edits — delete protection
+        //   (`docs_under_path_with_hidden` / `hard_close_if_clean` reads
+        //   `meta.dirty`) would then destroy the unsaved buffer without the
+        //   §5.5 DeleteBlocked prompt, and recovery snapshotting
+        //   (`snapshot_dirty_documents` filters on `meta.dirty`) would skip
+        //   it. `kind`, `conflict`, and `hidden` are preserved from the
+        //   CURRENT meta for the same reason: a directory rename rebinds
+        //   every open doc under the prefix, including non-Typst tabs
+        //   (image / pdf / markdown, opened via `open_non_typst_from_disk`,
+        //   which deliberately skip the compile pipeline) and soft-closed
+        //   (hidden) ones — resetting those flags here would flip a non-Typst
+        //   tab back to Typst (spawning a compile worker for a non-Typst
+        //   buffer), drop an active conflict, and un-hide a soft-closed tab.
         let new_meta = DocumentMeta {
-            dirty: saved_revision.is_some_and(|saved| saved != revision),
+            dirty: saved_revision.map_or(current_meta.dirty, |saved| saved != revision),
             revision,
+            kind: current_meta.kind,
+            conflict: current_meta.conflict,
+            hidden: current_meta.hidden,
             ..DocumentMeta::with_loose_path(id, canon.clone(), root.clone())
         };
 
@@ -825,6 +896,10 @@ impl DocumentService {
     /// on a Save As or a resolution-scope change); the new worker compiles
     /// against the rebuilt world.
     ///
+    /// Non-Typst documents skip the worker rotation: they never have a compile
+    /// worker (see [`open_non_typst_from_disk`](Self::open_non_typst_from_disk)),
+    /// and spawning one would try to compile an image / pdf / markdown buffer.
+    ///
     /// Callers MUST have already updated the registry (if the canonical path
     /// changed) and built `new_tab` preserving the buffer + revision.
     fn swap_world(&self, id: DocumentId, new_tab: Arc<TabState>) {
@@ -834,8 +909,21 @@ impl DocumentService {
         // worker (its recompile signal is dropped). Acceptable since both
         // callers (Save As, reclassify) are user-initiated and the buffer is
         // already captured in the new world.
+        self.rotate_worker_if_typst(id, &new_tab);
+    }
+
+    /// Worker-rotation tail shared by [`swap_world`](Self::swap_world) and
+    /// [`cas_swap_world`](Self::cas_swap_world): drop the old worker and spawn
+    /// a fresh one that signals an immediate recompile — but ONLY for Typst
+    /// documents. Non-Typst tabs (image / pdf / markdown) deliberately skip
+    /// the compile pipeline, so a world rebuild for them must not spawn a
+    /// compile worker.
+    fn rotate_worker_if_typst(&self, id: DocumentId, tab: &Arc<TabState>) {
+        if !tab.state.lock().meta.kind.is_typst() {
+            return;
+        }
         let _ = self.store.workers.write().remove(&id);
-        self.compile().create_worker(id, new_tab);
+        self.compile().create_worker(id, tab.clone());
     }
 
     /// Deprecated alias — delegates to [`rebind_path`](Self::rebind_path). Kept
@@ -1275,9 +1363,9 @@ impl DocumentService {
             tabs.insert(id, new_tab.clone());
         }
         // Same worker-rotation tail as `swap_world` (old worker dropped, fresh
-        // one signals an immediate recompile against the rebuilt world).
-        let _ = self.store.workers.write().remove(&id);
-        self.compile().create_worker(id, new_tab);
+        // one signals an immediate recompile against the rebuilt world;
+        // non-Typst tabs skip it).
+        self.rotate_worker_if_typst(id, &new_tab);
         true
     }
 
@@ -1413,37 +1501,48 @@ impl DocumentService {
 
     /// Conditionally hard-close `id`: destroy it like
     /// [`hard_close`](Self::hard_close), but ONLY if it is still clean (not
-    /// dirty, no active conflict) under its state lock. Returns whether the
-    /// doc was closed.
+    /// dirty, no active conflict). Returns whether the doc was closed.
     ///
     /// This is the delete flow's close: the command preflights dirty docs
     /// (§5.5 block), but the trash op between preflight and close can be slow
     /// (the Windows recycle API especially), and a keystroke landing in that
     /// window marks the doc dirty AFTER the preflight blessed the delete.
     /// Destroying it then would silently discard the user's edit — so the
-    /// dirty flag is re-checked here, under the same state lock `apply_text`
-    /// uses, immediately before the close. A raced-dirty doc is NOT closed:
-    /// its buffer survives and it is marked
+    /// dirty flag is re-checked here, immediately before the close, ATOMICALLY
+    /// with the removal: the tabs WRITE lock is held across both the re-check
+    /// and the `remove`, and `apply_text` takes the tabs READ lock before its
+    /// buffer swap, so an edit either fully precedes the check (doc is dirty,
+    /// close refused) or fully follows the removal (tab already gone — the
+    /// edit's `NotFound` path, nothing destroyed). A raced-dirty doc is NOT
+    /// closed: its buffer survives and it is marked
     /// [`ConflictState::Missing`](crate::domain::document::ConflictState::Missing)
     /// — exactly the state the watcher's `handle_external_change` would set
     /// for the now-deleted backing file — with the conflict event emitted so
     /// the frontend surfaces the recoverable "file gone" state instead of a
     /// vanishing tab.
     pub fn hard_close_if_clean(&self, id: DocumentId) -> bool {
-        let tab = {
-            let tabs = self.store.tabs.read();
-            match tabs.get(&id) {
-                Some(t) => t.clone(),
-                // Already closed (raced a concurrent close / LRU eviction):
-                // nothing to do, and nothing was closed by us.
-                None => return false,
-            }
+        // Phase 1 — checked remove under the tabs write lock.
+        let mut tabs = self.store.tabs.write();
+        let Some(tab) = tabs.get(&id).cloned() else {
+            // Already closed (raced a concurrent close / LRU eviction):
+            // nothing to do, and nothing was closed by us.
+            return false;
         };
-        let raced_dirty = {
+        let (raced, canon) = {
             let rt = tab.state.lock();
-            rt.meta.dirty || rt.meta.conflict.is_active()
+            (
+                rt.meta.dirty || rt.meta.conflict.is_active(),
+                // Capture the canonical path while the tab is still reachable:
+                // after the removal below, `drop_vfs_for` can no longer
+                // resolve it.
+                rt.meta.origin.canonical_path().map(|p| p.to_path_buf()),
+            )
         };
-        if raced_dirty {
+        if raced {
+            // Refused. Release the write guard before emitting (set_conflict
+            // locks the tab state; the doc survives either way, so this
+            // advisory marking need not be under the close's guard).
+            drop(tabs);
             set_conflict(
                 &tab,
                 id,
@@ -1457,7 +1556,19 @@ impl DocumentService {
             );
             return false;
         }
-        self.hard_close(id).is_ok()
+        // Still clean under the write lock → remove NOW, making the
+        // check + remove one atomic step.
+        tabs.remove(&id);
+        drop(tabs);
+
+        // Phase 2 — teardown tail, mirroring `hard_close`'s ordering.
+        let _ = self.store.workers.write().remove(&id);
+        if let Some(canon) = canon {
+            self.drop_vfs_for_canon(&canon);
+        }
+        // Release the canonical-path slot so the file can be reopened.
+        self.store.registry.write().unregister(id);
+        true
     }
 
     /// Soft-close a tab: hide it from the tab strip but keep the worker,
@@ -1534,48 +1645,71 @@ impl DocumentService {
         // Flip the flag in both stores (registry + runtime meta) via the shared
         // helper, then snapshot the meta + cached last_doc for the replay.
         self.set_visibility(id, false);
-        let (meta, last_doc, revision) = {
+        let meta = {
             let rt = tab.state.lock();
-            // Tag the replay with the revision `last_doc` actually corresponds
-            // to, NOT the current `meta.revision`: if the user edited while
-            // hidden (or the watcher auto-reloaded a clean hidden doc) the
-            // current revision may be ahead of the cached compile result.
-            // Stamping the honest revision lets the frontend's stale-revision
-            // guard discard a replay that's older than a newer in-flight
-            // compile, and accept it only when it reflects the current buffer.
-            let honest_rev = rt.last_compiled_revision.unwrap_or(rt.meta.revision);
-            (rt.meta.clone(), rt.last_doc.clone(), honest_rev)
+            rt.meta.clone()
         };
-        if let Some(doc) = last_doc {
-            // Replay is always a FULL payload: the tab was hidden so the
-            // frontend holds no pages for it — send every page. SVG rendering
-            // is infallible; on the (impossible) error path degrade to an empty
-            // page list instead of panicking the replay.
-            let renderer = SvgRenderer::new();
-            let changed_pages: Vec<crate::ipc::events::ChangedPage> = doc
-                .pages()
-                .iter()
-                .enumerate()
-                .map(|(i, _)| crate::ipc::events::ChangedPage {
-                    index: i as u32,
-                    svg: renderer.render_single(&doc, i).unwrap_or_default(),
-                })
-                .collect();
-            let page_count = changed_pages.len();
-            let line_map = build_source_map(&doc, &tab.world);
-            let outline = build_outline(&doc, &tab.world);
-            self.store.emitter.emit_compiled(
-                id,
-                revision,
-                page_count,
-                /* full */ true,
-                changed_pages,
-                line_map,
-                outline,
-                /* duration_ms */ 0,
-            );
-        }
+        self.replay_cached_compiled(id);
         Ok(meta)
+    }
+
+    /// Replay a tab's cached compile result (`TabRuntime::last_doc`) as a
+    /// `compiled` event — rendered straight from the cached `PagedDocument`
+    /// with NO recompilation (the `duration_ms: 0` is the signal the frontend
+    /// can use to treat this as "instant"). The payload is always FULL: the
+    /// receiving frontend holds no pages for the doc (a soft-closed tab
+    /// reactivated, or a webview reload followed by a dedup-reopen), so an
+    /// incremental compile result (`full=false`) would leave undefined holes
+    /// in its page array.
+    ///
+    /// The replay is stamped with the revision `last_doc` actually corresponds
+    /// to (`last_compiled_revision`), NOT the current `meta.revision`: if the
+    /// buffer advanced past the cached compile, the honest stamp lets the
+    /// frontend's stale-revision guard discard the replay. No-op when nothing
+    /// is cached (`last_doc == None`, e.g. never compiled successfully) — the
+    /// next natural compile event fills the preview.
+    ///
+    /// Shared by [`reactivate`](Self::reactivate) and the open-dedup branches
+    /// of [`open_from_disk`](Self::open_from_disk) /
+    /// [`open_from_content`](Self::open_from_content).
+    fn replay_cached_compiled(&self, id: DocumentId) {
+        let Some(tab) = self.store.tabs.read().get(&id).cloned() else {
+            return;
+        };
+        // Stamp the replay with the revision `last_doc` actually corresponds
+        // to, NOT the current `meta.revision`: if the buffer advanced past
+        // the cached compile, the honest stamp lets the frontend's
+        // stale-revision guard discard the replay (see `reactivate`).
+        let (last_doc, revision) = {
+            let rt = tab.state.lock();
+            (rt.last_doc.clone(), rt.last_compiled_revision.unwrap_or(rt.meta.revision))
+        };
+        let Some(doc) = last_doc else { return };
+        // SVG rendering is infallible; on the (impossible) error path degrade
+        // to an empty page instead of panicking the replay.
+        let renderer = SvgRenderer::new();
+        let changed_pages: Vec<crate::ipc::events::ChangedPage> = doc
+            .pages()
+            .iter()
+            .enumerate()
+            .map(|(i, _)| crate::ipc::events::ChangedPage {
+                index: i as u32,
+                svg: renderer.render_single(&doc, i).unwrap_or_default(),
+            })
+            .collect();
+        let page_count = changed_pages.len();
+        let line_map = build_source_map(&doc, &tab.world);
+        let outline = build_outline(&doc, &tab.world);
+        self.store.emitter.emit_compiled(
+            id,
+            revision,
+            page_count,
+            /* full */ true,
+            changed_pages,
+            line_map,
+            outline,
+            /* duration_ms */ 0,
+        );
     }
 
     /// Update text for an internal caller, allocating the next revision.
@@ -1600,6 +1734,99 @@ impl DocumentService {
         revision: u64,
     ) -> Result<u64> {
         self.apply_text(id, content, Some(revision))
+    }
+
+    /// Compare-and-swap text replacement: apply `new_content` ONLY when the
+    /// buffer still holds exactly `expected_text` at `observed_revision` —
+    /// the state the caller observed when it computed the new content.
+    ///
+    /// This closes the single-intervening-write window between "read the
+    /// buffer" and "write the transformed buffer" (search-replace, AI
+    /// rewrite, format-on-save, …): a plain
+    /// [`update_text_at_revision`](Self::update_text_at_revision) at the same
+    /// revision would adopt the computed content even if an unrelated edit —
+    /// or a same-revision clean disk reload — landed in between, silently
+    /// destroying it.
+    ///
+    /// ## Semantics
+    ///
+    /// - **CAS hit** (text AND revision both match): identical side effects to
+    ///   `update_text_at_revision`'s applied path — dirty mark, revision bump
+    ///   to `observed_revision + 1`, VFS publish + dependent recompile
+    ///   cascade, worker compile signal, debounced recovery snapshot.
+    ///   Returns [`CasReplaceOutcome::Applied`].
+    /// - **CAS miss** (text and/or revision differ): nothing is written — a
+    ///   buffer whose text or revision moved is never overwritten. Returns
+    ///   [`CasReplaceOutcome::Conflated`] with the FRESH current text +
+    ///   revision so the caller can recompute and retry.
+    ///
+    /// ## Locking
+    ///
+    /// Same discipline as [`apply_text`](Self::apply_text): a brief tabs read
+    /// lock clones the tab, then the tab's state lock covers BOTH the CAS
+    /// check and the world's text replacement, so text + revision move as one
+    /// atomic snapshot for compiles. An `apply_text` or `hard_close_if_clean`
+    /// racing this call therefore either fully precedes the check (CAS miss /
+    /// NotFound) or fully follows the swap.
+    pub fn replace_text_cas(
+        &self,
+        id: DocumentId,
+        expected_text: &str,
+        new_content: String,
+        observed_revision: u64,
+    ) -> Result<CasReplaceOutcome> {
+        let tab = {
+            let tabs = self.store.tabs.read();
+            tabs.get(&id)
+                .cloned()
+                .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?
+        };
+
+        let meta_snapshot = {
+            let mut rt = tab.state.lock();
+            let current_revision = rt.meta.revision;
+            let current_text = tab.world.text();
+            // CAS check: only write when the buffer is exactly the state the
+            // caller observed. Report the fresh state otherwise — never the
+            // caller's stale copy.
+            if current_revision != observed_revision || current_text != expected_text {
+                return Ok(CasReplaceOutcome::Conflated {
+                    text: current_text,
+                    revision: current_revision,
+                });
+            }
+            let target_revision = observed_revision.saturating_add(1);
+            // Keep text + revision one atomic logical snapshot for compile —
+            // the same swap `apply_text`'s applied path performs.
+            tab.world.set_text(new_content.clone());
+            rt.meta.revision = target_revision;
+            rt.meta.dirty = true;
+            rt.meta.clone()
+        };
+
+        // Side effects identical to `apply_text`'s applied path: publish the
+        // live buffer into the shared VFS + cascade to dependents (§5 end),
+        // signal the compile worker, schedule the debounced recovery snapshot.
+        let applied_revision = meta_snapshot.revision;
+        if let Some(canon) = meta_snapshot.origin.canonical_path().map(|p| p.to_path_buf()) {
+            self.store
+                .vfs
+                .upsert(canon.clone(), new_content.clone(), applied_revision);
+            self.recompile_dependents_of(&canon);
+        }
+        if let Some(worker) = self.store.workers.read().get(&id) {
+            worker.recompile();
+        }
+        if let Some(recovery) = self.recovery() {
+            let disk_version = meta_snapshot
+                .origin
+                .canonical_path()
+                .and_then(|p| DiskVersion::from_path(p).ok());
+            recovery.schedule_snapshot(meta_snapshot, new_content, disk_version);
+        }
+        Ok(CasReplaceOutcome::Applied {
+            revision: applied_revision,
+        })
     }
 
     /// Shared mutation path for internal edits and frontend-versioned edits.
@@ -1958,10 +2185,14 @@ mod tests {
     use crate::service::tab_store::TabStore;
     use parking_lot::Mutex;
 
-    /// Minimal capturing emitter — only records whether a `compiled` event for
-    /// `id` has been seen (enough for these service-level tests).
+    /// Minimal capturing emitter — records whether a `compiled` event for
+    /// `id` has been seen, plus each event's `full` flag (enough for these
+    /// service-level tests).
     struct SpyEmitter {
         compiled_ids: Mutex<Vec<DocumentId>>,
+        /// `(id, full)` per emit_compiled — used by the dedup-reopen replay
+        /// assertion.
+        compiled_full: Mutex<Vec<(DocumentId, bool)>>,
     }
     impl Emitter for SpyEmitter {
         fn emit_compiled(
@@ -1969,13 +2200,14 @@ mod tests {
             id: DocumentId,
             _revision: u64,
             _page_count: usize,
-            _full: bool,
+            full: bool,
             _changed_pages: Vec<crate::ipc::events::ChangedPage>,
             _line_map: Vec<LineRect>,
             _outline: Vec<crate::domain::outline::OutlineNode>,
             _duration_ms: u64,
         ) {
             self.compiled_ids.lock().push(id);
+            self.compiled_full.lock().push((id, full));
         }
         fn emit_diagnostics(&self, _id: DocumentId, _revision: u64, _d: Vec<Diagnostic>) {}
         fn emit_status(
@@ -2003,6 +2235,7 @@ mod tests {
     fn make_services() -> (Arc<DocumentService>, Arc<CompileService>) {
         let emitter: Arc<dyn Emitter> = Arc::new(SpyEmitter {
             compiled_ids: Mutex::new(Vec::new()),
+            compiled_full: Mutex::new(Vec::new()),
         });
         let store = TabStore::new(emitter);
         let document = Arc::new(DocumentService::new(store.clone()));
@@ -2018,6 +2251,7 @@ mod tests {
     fn make_services_with_spy() -> (Arc<DocumentService>, Arc<CompileService>, Arc<SpyEmitter>) {
         let emitter = Arc::new(SpyEmitter {
             compiled_ids: Mutex::new(Vec::new()),
+            compiled_full: Mutex::new(Vec::new()),
         });
         let store = TabStore::new(emitter.clone());
         let document = Arc::new(DocumentService::new(store.clone()));
@@ -2154,6 +2388,126 @@ mod tests {
         assert_eq!(document.tab_revision(meta.id), Some(7));
         assert_eq!(document.tab_text(meta.id).as_deref(), Some("conflict"));
         assert!(document.tab_meta(meta.id).unwrap().dirty);
+    }
+
+    // --- replace_text_cas -----------------------------------------------------
+
+    #[test]
+    fn replace_text_cas_applies_cleanly_and_bumps_revision() {
+        let (document, _compile) = make_services();
+        let meta = document.new_tab(Some("v0".into()));
+        assert_eq!(document.tab_revision(meta.id), Some(0));
+
+        let outcome = document
+            .replace_text_cas(meta.id, "v0", "computed v1".into(), 0)
+            .unwrap();
+        match outcome {
+            CasReplaceOutcome::Applied { revision } => assert_eq!(revision, 1),
+            other => panic!("expected Applied, got {other:?}"),
+        }
+        assert_eq!(document.tab_text(meta.id).as_deref(), Some("computed v1"));
+        assert_eq!(document.tab_revision(meta.id), Some(1));
+        assert!(document.tab_meta(meta.id).unwrap().dirty, "CAS apply marks dirty");
+    }
+
+    #[test]
+    fn replace_text_cas_rejects_on_text_drift() {
+        let (document, _compile) = make_services();
+        let meta = document.new_tab(Some("v0".into()));
+        // A same-revision replacement (apply_text's disk-reload-collision
+        // path) moved the TEXT without moving the revision.
+        document
+            .update_text_at_revision(meta.id, "drifted".into(), 0)
+            .unwrap();
+
+        // The caller still believes "v0" @ 0 — text drift alone must reject.
+        let outcome = document
+            .replace_text_cas(meta.id, "v0", "computed".into(), 0)
+            .unwrap();
+        match outcome {
+            CasReplaceOutcome::Conflated { text, revision } => {
+                assert_eq!(text, "drifted", "Conflated carries the FRESH text");
+                assert_eq!(revision, 0);
+            }
+            other => panic!("expected Conflated, got {other:?}"),
+        }
+        assert_eq!(
+            document.tab_text(meta.id).as_deref(),
+            Some("drifted"),
+            "a CAS miss must never overwrite the buffer"
+        );
+    }
+
+    #[test]
+    fn replace_text_cas_rejects_on_revision_drift() {
+        let (document, _compile) = make_services();
+        let meta = document.new_tab(Some("v0".into()));
+        // An edit advances revision 0 → 1.
+        document
+            .update_text_at_revision(meta.id, "v0-edited".into(), 1)
+            .unwrap();
+
+        // Stale observation on BOTH axes → reject…
+        let outcome = document
+            .replace_text_cas(meta.id, "v0", "computed".into(), 0)
+            .unwrap();
+        assert!(
+            matches!(&outcome, CasReplaceOutcome::Conflated { text, revision }
+                if text == "v0-edited" && *revision == 1),
+            "expected Conflated with fresh state, got {outcome:?}"
+        );
+
+        // …and revision drift ALONE (text matches) must reject too — writing
+        // at a stale revision would clobber whatever moved it.
+        let outcome = document
+            .replace_text_cas(meta.id, "v0-edited", "computed".into(), 0)
+            .unwrap();
+        assert!(
+            matches!(&outcome, CasReplaceOutcome::Conflated { revision: 1, .. }),
+            "revision drift alone must reject, got {outcome:?}"
+        );
+        assert_eq!(
+            document.tab_text(meta.id).as_deref(),
+            Some("v0-edited"),
+            "buffer must be untouched on revision drift"
+        );
+    }
+
+    /// The applied path must be side-effect-equivalent to
+    /// `update_text_at_revision`: same revision bump, same dirty mark, same
+    /// VFS publish (text + revision under the canonical path).
+    #[test]
+    fn replace_text_cas_side_effects_match_update_text_at_revision() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir()
+            .join(format!("ts-cas-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path_a = dir.join("a.typ");
+        let path_b = dir.join("b.typ");
+        std::fs::write(&path_a, "v0").unwrap();
+        std::fs::write(&path_b, "v0").unwrap();
+
+        let a = document.open_from_content(path_a.clone(), "v0".into(), None).unwrap();
+        let b = document.open_from_content(path_b.clone(), "v0".into(), None).unwrap();
+
+        // Identical edit through the two paths: an explicit next-revision
+        // update vs a CAS on the observed (text, revision).
+        document.update_text_at_revision(a.id, "v1".into(), 1).unwrap();
+        match document.replace_text_cas(b.id, "v0", "v1".into(), 0).unwrap() {
+            CasReplaceOutcome::Applied { revision } => assert_eq!(revision, 1),
+            other => panic!("expected Applied, got {other:?}"),
+        }
+
+        for (id, path) in [(a.id, &path_a), (b.id, &path_b)] {
+            assert_eq!(document.tab_revision(id), Some(1), "same revision bump");
+            assert!(document.tab_meta(id).unwrap().dirty, "same dirty mark");
+            assert_eq!(document.tab_text(id).as_deref(), Some("v1"));
+            let entry = document.store.vfs.get(path).expect("VFS entry published");
+            assert_eq!(entry.text, "v1", "same VFS text for {path:?}");
+            assert_eq!(entry.revision, 1, "same VFS revision for {path:?}");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2674,6 +3028,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Regression: renaming a file/dir with a DIRTY open doc must preserve the
+    /// dirty flag across the rebind. The rebuilt meta used to recompute
+    /// `dirty = false` for generic rebinds (`saved_revision == None`), so
+    /// delete protection (`docs_under_path_with_hidden` → DeleteBlocked) and
+    /// recovery snapshotting (`snapshot_dirty_documents` filters on
+    /// `meta.dirty`) would both silently stop seeing the unsaved buffer.
+    #[test]
+    fn rebind_for_rename_preserves_dirty_buffer() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir().join(format!("ts-rename-dirty-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = canonicalize_for_identity(&dir).unwrap();
+        let from = dir.join("old.typ");
+        let to = dir.join("new.typ");
+        std::fs::write(&from, "content").unwrap();
+
+        let meta = document.open_from_content(from.clone(), "content".into(), None).unwrap();
+        // Unsaved edit → dirty.
+        document.update_text(meta.id, "unsaved edit".into()).unwrap();
+        assert!(document.tab_meta(meta.id).unwrap().dirty);
+
+        std::fs::rename(&from, &to).unwrap();
+        let rebound = document.rebind_for_rename(&from, &to);
+        assert_eq!(rebound.len(), 1);
+
+        // The dirty flag AND the unsaved buffer survive the rebind.
+        let after = document.tab_meta(meta.id).unwrap();
+        assert!(after.dirty, "a rename must not clear the dirty flag");
+        assert_eq!(document.tab_text(meta.id).as_deref(), Some("unsaved edit"));
+        // Consequently delete protection under the NEW path still sees it.
+        let affected = document.docs_under_path_with_hidden(&dir);
+        assert!(
+            affected.iter().any(|d| d.id == meta.id && d.dirty),
+            "the renamed dirty doc must still block deletes at its new path, got {affected:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// §6.4 / §11.4 "文件操作失败时 registry、UI 和磁盘保持一致": a rename whose
     /// target is ALREADY an open doc leaves everything unchanged. `rebind_path`
     /// rejects the conflicting target (AlreadyOpen); the offending doc is left
@@ -2754,6 +3147,66 @@ mod tests {
             "VFS must drop the old canonical path entry after rename"
         );
         let _ = meta; // keep the doc alive
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A directory rename rebinds every open doc under the prefix — including
+    /// NON-Typst tabs (image / pdf / markdown, opened via
+    /// `open_non_typst_from_disk` without a compile worker) and soft-closed
+    /// (hidden) / conflicted ones. The rebind must preserve `kind`,
+    /// `conflict`, and `hidden` from the CURRENT meta, and must NOT spawn a
+    /// compile worker for a non-Typst buffer.
+    #[test]
+    fn rebind_for_rename_preserves_non_typst_kind_conflict_and_hidden() {
+        let (document, _compile) = make_services();
+        let dir = std::env::temp_dir().join(format!("ts-rename-img-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = canonicalize_for_identity(&dir).unwrap();
+        let src = dir.join("assets");
+        let dst = dir.join("assets2");
+        std::fs::create_dir_all(&src).unwrap();
+        let img = src.join("pic.png");
+        std::fs::write(&img, b"\x89PNG not really").unwrap();
+
+        let meta = document
+            .open_non_typst_from_disk(
+                img.clone(),
+                crate::domain::document::DocumentKind::Image,
+                String::new(),
+                None,
+            )
+            .unwrap();
+        assert!(
+            !document.store().workers.read().contains_key(&meta.id),
+            "non-Typst open never spawns a compile worker"
+        );
+        // Soft-close (hidden) + an active conflict — both must survive the
+        // rebind instead of being reset by the fresh `with_loose_path` meta.
+        document.soft_close(meta.id).unwrap();
+        force_conflict(&document, meta.id, ConflictState::Modified { disk_version: None });
+
+        std::fs::rename(&src, &dst).unwrap();
+        let rebound = document.rebind_for_rename(&src, &dst);
+        assert_eq!(rebound.len(), 1, "the image tab must be rebound, got {rebound:?}");
+
+        let after = document.tab_meta(meta.id).expect("rebound doc must survive");
+        assert!(
+            matches!(after.kind, crate::domain::document::DocumentKind::Image),
+            "kind must stay Image across the rebind, got {:?}",
+            after.kind
+        );
+        assert!(after.hidden, "a soft-closed (hidden) tab must stay hidden");
+        assert!(
+            after.conflict.is_active(),
+            "an active conflict must survive the rebind, got {:?}",
+            after.conflict
+        );
+        assert_eq!(after.origin.canonical_path(), Some(dst.join("pic.png").as_path()));
+        assert!(
+            !document.store().workers.read().contains_key(&meta.id),
+            "the rebind must not spawn a compile worker for a non-Typst doc"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2869,6 +3322,45 @@ mod tests {
         // way reactivate must succeed and return visible meta.
         let returned = document.reactivate(meta.id).unwrap();
         assert!(!returned.hidden);
+    }
+
+    /// Regression: reopening an already-open doc (the dedup branch) must
+    /// replay the cached compile as a FULL `compiled` event, exactly like
+    /// `reactivate`. Without it, a webview reload followed by a reopen left
+    /// the frontend's page array empty, and the next incremental compile
+    /// (full=false, backend cache matches the page count) never filled the
+    /// holes — blank preview pages until a page-count change.
+    #[test]
+    fn reopen_dedup_replays_cached_compile_as_full_event() {
+        let (document, compile, emitter) = make_services_with_spy();
+        let dir = std::env::temp_dir()
+            .join(format!("ts-dedup-replay-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.typ");
+        let content = "#set page(width: 10cm)\n\nHello";
+        std::fs::write(&path, content).unwrap();
+
+        let meta = document
+            .open_from_disk(path.clone(), content.to_string(), None)
+            .unwrap();
+        wait_for_compiled(&compile, meta.id);
+        // Isolate the dedup reopen: drop the initial compile's events.
+        emitter.compiled_full.lock().clear();
+
+        // Reopen the same path — dedup returns the SAME doc (no new tab)…
+        let again = document
+            .open_from_disk(path.clone(), content.to_string(), None)
+            .unwrap();
+        assert_eq!(again.id, meta.id, "reopen must dedup to the existing doc");
+
+        // …and replays the cached compile as a full payload.
+        let fulls = emitter.compiled_full.lock().clone();
+        assert!(
+            fulls.iter().any(|(id, full)| *id == meta.id && *full),
+            "dedup reopen must emit a full compiled replay, got {fulls:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `hard_close` is the old destroy-everything behavior: the tab, worker,

@@ -300,12 +300,12 @@ export function SearchPanel(_props: { viewId?: string }) {
                       className="search-hit-row"
                       title={`${file}:${h.line}`}
                       onClick={() =>
-                        handleHitClick(rootPath, h.relative, h.line, h.column)
+                        handleHitClick(rootPath, h.relative, h.line, h.column, h.lineText)
                       }
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
-                          handleHitClick(rootPath, h.relative, h.line, h.column);
+                          handleHitClick(rootPath, h.relative, h.line, h.column, h.lineText);
                         }
                       }}
                     >
@@ -348,13 +348,35 @@ function splitPath(relative: string): { dir: string; name: string } {
   return { dir: relative.slice(0, idx), name: relative.slice(idx + 1) };
 }
 
+/**
+ * Convert a 0-based Unicode SCALAR-value offset into a 0-based UTF-16 code-unit
+ * index. The backend reports match positions as scalar counts (Rust
+ * `chars().count()` — see src-tauri/src/fs/search.rs), while JS `String.slice`
+ * and Monaco columns count UTF-16 code units. The two disagree whenever an
+ * astral-plane char (emoji, etc.) sits before the offset: it is 1 scalar but
+ * 2 UTF-16 units. Walks the line code-point by code-point, accumulating the
+ * UTF-16 length until the scalar count is reached; clamps at the line end.
+ */
+function scalarOffsetToUtf16(line: string, scalarOffset: number): number {
+  let u16 = 0;
+  let scalars = 0;
+  while (scalars < scalarOffset && u16 < line.length) {
+    u16 += line.codePointAt(u16)! > 0xffff ? 2 : 1;
+    scalars++;
+  }
+  return u16;
+}
+
 /** Render the line text with the matched range wrapped in `<mark>`. */
 function renderHitText(line: string, start: number, end: number) {
+  // start/end are scalar-value offsets — convert before slicing.
+  const start16 = scalarOffsetToUtf16(line, start);
+  const end16 = scalarOffsetToUtf16(line, end);
   return (
     <>
-      {line.slice(0, start)}
-      <mark>{line.slice(start, end)}</mark>
-      {line.slice(end)}
+      {line.slice(0, start16)}
+      <mark>{line.slice(start16, end16)}</mark>
+      {line.slice(end16)}
     </>
   );
 }
@@ -374,18 +396,29 @@ async function handleHitClick(
   relative: string,
   line: number,
   column: number,
+  lineText: string,
 ): Promise<void> {
   if (!rootPath) return;
   const abs = joinWorkspacePath(rootPath, relative);
+  // Capture the PRE-open active tab. `openFile` ALWAYS leaves its target
+  // active (activate/reactivate/openPath set activeId), so comparing AFTER the
+  // call would always see the target as active and reveal against the OLD
+  // (still-attached) model. Comparing the captured id against the returned
+  // docId tells us whether a model swap will follow: only a doc that was
+  // ALREADY the active tab needs the immediate reveal.
+  const prevActiveId = useTabsStore.getState().activeId;
   const docId = await openFile(abs);
   if (docId === null) return;
+  // `column` is 1-based in SCALAR values (backend chars().count()); Monaco
+  // columns are UTF-16 code units. Convert so the caret lands exactly on the
+  // match even when astral-plane chars precede it on the line.
+  const column16 = scalarOffsetToUtf16(lineText, Math.max(0, column - 1)) + 1;
   // Stash first (covers the common case: a different file → a model swap will
-  // follow → the effect flushes this). Then, if the doc is ALREADY active, no
-  // swap will follow, so reveal now and clear the stash.
-  editorApiRef.pendingReveal = { docId, line, column };
-  const activeId = useTabsStore.getState().activeId;
-  if (activeId === docId && editorApiRef.current) {
+  // follow → the effect flushes this). Then, if the doc was ALREADY active
+  // before openFile, no swap will follow, so reveal now and clear the stash.
+  editorApiRef.pendingReveal = { docId, line, column: column16 };
+  if (prevActiveId === docId && editorApiRef.current) {
     editorApiRef.pendingReveal = null;
-    editorApiRef.current.revealLine(line, column);
+    editorApiRef.current.revealLine(line, column16);
   }
 }

@@ -695,7 +695,8 @@ export async function openFileByPath(path: string): Promise<OpenedDocument> {
  *
  * The backend uses `std::fs::read` directly (scope-unlimited, like
  * `openFileByPath`), because the frontend `@tauri-apps/plugin-fs` `readFile` is
- * capability-scoped to `$HOME/**` and cannot read arbitrary workspace paths.
+ * granted only app-specific-dir access via `fs:default` and cannot read
+ * arbitrary workspace paths.
  * The returned `number[]` (Tauri serializes `Vec<u8>` as a JSON number array)
  * is wrapped into a `Uint8Array` by the caller.
  */
@@ -1387,8 +1388,8 @@ export async function fetchUrlToFile(url: string, dest: string): Promise<number>
  * Write binary bytes to an absolute path via the backend (containment-checked:
  * must be under the workspace root or app config dir). Used by the paste-image
  * flow to materialize clipboard bytes — routing through Rust instead of
- * `@tauri-apps/plugin-fs` bypasses the plugin's `$HOME` scope, so pasted images
- * land correctly for workspaces opened outside the home directory.
+ * `@tauri-apps/plugin-fs`, which is granted only app-specific-dir access
+ * (`fs:default`) and could not write to the workspace root.
  *
  * Bytes are base64-encoded because the default IPC serializes command args as
  * JSON; a multi-MB `number[]` per image would be wasteful and slow.

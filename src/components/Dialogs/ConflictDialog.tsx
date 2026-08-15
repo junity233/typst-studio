@@ -73,6 +73,22 @@ export function ConflictDialog() {
     prevOpenForIdRef.current = openForId;
   }, [openForId]);
 
+  // Esc = "Later" (dismiss, keep the conflict). Window-level listener like
+  // AboutModal, attached only while the dialog is open (this component stays
+  // mounted across closes). Ignored while busy to mirror the disabled Later
+  // button.
+  useEffect(() => {
+    if (openForId === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        if (!busy) close();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openForId, busy, close]);
+
   if (openForId === null || doc === null) return null;
 
   const variant = doc.conflict;

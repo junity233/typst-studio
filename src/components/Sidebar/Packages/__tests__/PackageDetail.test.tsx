@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   openWorkspaceByPath: vi.fn(),
   openFile: vi.fn(),
   confirm: vi.fn(),
+  dialogConfirm: vi.fn(),
   hydrate: vi.fn(),
   setActiveView: vi.fn(),
   setSelected: vi.fn(),
@@ -65,6 +66,14 @@ vi.mock("../../../../store/workspaceStore", () => ({
     selector({
       hydrate: mocks.hydrate,
     }),
+}));
+
+// The template flow confirms overwrites via the styled ConfirmDialog (the
+// dialogStore), not native window.confirm (dead in the macOS WKWebView).
+vi.mock("../../../../store/dialogStore", () => ({
+  useDialogStore: {
+    getState: () => ({ confirm: mocks.dialogConfirm }),
+  },
 }));
 
 vi.mock("../../../../store/uiStore", () => ({
@@ -127,6 +136,7 @@ beforeEach(async () => {
   mocks.openFile.mockResolvedValue("doc-1");
   vi.stubGlobal("confirm", mocks.confirm);
   mocks.confirm.mockReturnValue(true);
+  mocks.dialogConfirm.mockResolvedValue("confirm");
 
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -162,7 +172,7 @@ describe("PackageDetail template flow", () => {
     await clickUseTemplate();
 
     expect(mocks.packageDirIsEmpty).toHaveBeenCalledWith("D:\\tmp\\from-template");
-    expect(mocks.confirm).not.toHaveBeenCalled();
+    expect(mocks.dialogConfirm).not.toHaveBeenCalled();
     expect(mocks.packageInitTemplate).toHaveBeenCalledWith(
       "thesis",
       "1.0.0",
@@ -186,7 +196,9 @@ describe("PackageDetail template flow", () => {
 
     await clickUseTemplate();
 
-    expect(mocks.confirm).toHaveBeenCalledWith("confirmOverwrite");
+    expect(mocks.dialogConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "confirmOverwrite", danger: true }),
+    );
     expect(mocks.packageInitTemplate).toHaveBeenCalledWith(
       "thesis",
       "1.0.0",
@@ -196,5 +208,15 @@ describe("PackageDetail template flow", () => {
     expect(mocks.openFile).toHaveBeenCalledWith(
       "D:\\tmp\\from-template\\paper\\main.typ",
     );
+  });
+
+  it("declining the overwrite confirm aborts without initializing", async () => {
+    mocks.packageDirIsEmpty.mockResolvedValue(false);
+    mocks.dialogConfirm.mockResolvedValue("cancel");
+
+    await clickUseTemplate();
+
+    expect(mocks.dialogConfirm).toHaveBeenCalled();
+    expect(mocks.packageInitTemplate).not.toHaveBeenCalled();
   });
 });

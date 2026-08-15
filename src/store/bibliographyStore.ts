@@ -18,6 +18,14 @@ import { toIpcError } from "../lib/ipc-error";
 let discoverGen = 0;
 
 /**
+ * Monotonic generation counter guarding `loadFile` against out-of-order async
+ * parses: a slow parse of file A completing after the user switched to file B
+ * (or after a discovery reset) must not attach A's entries while B is the
+ * active file. Mirrors the `discoverGen` pattern above.
+ */
+let loadGen = 0;
+
+/**
  * Bibliography panel store (Task 4). Holds the discovered bib files in the
  * workspace, the entries of the currently-selected file, the search query, and
  * loading/error state. Mirrors the shape of `packagesStore`.
@@ -86,6 +94,9 @@ export const useBibliographyStore = create<BibliographyState>((set, get) => ({
     // also cleared — a re-discovery (e.g. after the user fixes the file on
     // disk) deserves a clean retry.
     const gen = ++discoverGen;
+    // A new discovery also invalidates any in-flight loadFile: its completion
+    // would otherwise re-attach the old workspace's entries over the reset.
+    ++loadGen;
     set({
       loading: true,
       error: null,
@@ -107,6 +118,7 @@ export const useBibliographyStore = create<BibliographyState>((set, get) => ({
   },
 
   loadFile: async (path) => {
+    const gen = ++loadGen;
     set({
       loading: true,
       error: null,
@@ -122,8 +134,13 @@ export const useBibliographyStore = create<BibliographyState>((set, get) => ({
         bibliographyParseBE(path),
         bibliographyParseFullBE(path),
       ]);
+      // Staleness guard: a newer loadFile (or a discovery reset) superseded
+      // this parse — drop it so file A's entries can't attach while file B
+      // (or nothing) is active.
+      if (gen !== loadGen) return;
       set({ entries, fullEntries, loading: false });
     } catch (e) {
+      if (gen !== loadGen) return;
       // Record the failure so the panel's auto-select skips this path on the
       // next pick (otherwise: load → error → activeFilePath=null → auto-select
       // → load the SAME broken file → infinite loop). Clear activeFilePath so
@@ -144,6 +161,10 @@ export const useBibliographyStore = create<BibliographyState>((set, get) => ({
   saveEntries: async (entries) => {
     const path = get().activeFilePath;
     if (path === null) return;
+    // Same staleness guard as loadFile: a file switch (or discovery reset)
+    // while the save + re-parse is in flight bumps loadGen, and this
+    // completion must not clobber the new file's entries (or the reset).
+    const gen = ++loadGen;
     set({ loading: true, error: null });
     try {
       await bibliographySaveEntriesBE(path, entries);
@@ -153,8 +174,10 @@ export const useBibliographyStore = create<BibliographyState>((set, get) => ({
         bibliographyParseBE(path),
         bibliographyParseFullBE(path),
       ]);
+      if (gen !== loadGen) return;
       set({ entries: listEntries, fullEntries, loading: false });
     } catch (e) {
+      if (gen !== loadGen) return;
       // On error leave fullEntries/entries unchanged so a failed save doesn't
       // corrupt the in-memory list — the user can retry or discard.
       set({ loading: false, error: toIpcError(e).message });
@@ -191,7 +214,10 @@ export const useBibliographyStore = create<BibliographyState>((set, get) => ({
     await get().saveEntries(next);
   },
 
-  clear: () =>
+  clear: () => {
+    // Drop any in-flight loadFile completion, which would repopulate the
+    // just-cleared state (same staleness class as the discoverGen guard).
+    ++loadGen;
     set({
       discoveredFiles: [],
       activeFilePath: null,
@@ -201,5 +227,6 @@ export const useBibliographyStore = create<BibliographyState>((set, get) => ({
       loading: false,
       error: null,
       failedPaths: [],
-    }),
+    });
+  },
 }));

@@ -158,7 +158,13 @@ impl WorkspaceService {
         *self.resolver.write() = Some(resolver);
         *self.id.write() = Some(WorkspaceId::new());
 
-        // (Re)start the watcher. Dropping the old guard stops it.
+        // (Re)start the watcher. Dropping the old guard stops it — and it must
+        // be dropped BEFORE attempting the new one: on a failed `watch` the
+        // Err branch leaves the slot empty, and a surviving old watcher would
+        // keep firing events for paths outside the NEW workspace while
+        // `watcher_healthy` still reported true, hiding that the new root is
+        // unwatched (§6.3).
+        *self.watcher.write() = None;
         match watcher::watch(&canonical, debounce, on_fs_change) {
             Ok(guard) => *self.watcher.write() = Some(guard),
             // A watcher failure is non-fatal — the workspace still works, just

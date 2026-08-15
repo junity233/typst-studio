@@ -12,13 +12,14 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter as _, State};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::domain::document::DocumentId;
+use crate::domain::document::{DocumentId, DocumentKind};
 use crate::error::{AppError, Result};
 use crate::fs::tree::EntryKind;
 use crate::fs::watcher;
 use crate::ipc::events::{FsChangedPayload, OpenedDocument};
 use crate::ipc::state::AppState;
 use crate::lsp::manager::LspRestartReason;
+use crate::service::document_service::CasReplaceOutcome;
 use crate::service::workspace_service::WorkspaceMeta;
 
 /// Upper bound on a source file we are willing to load into an editor tab via
@@ -561,14 +562,18 @@ pub async fn search_workspace(
 /// same file tree as [`search_workspace`] to find candidate files, then routes
 /// each affected file to the right sink:
 /// - **Open document (visible OR soft-closed)** → spliced from its LIVE buffer
-///   text (`tab_text`), then `update_text` bumps the revision and marks dirty.
-///   Splicing from the buffer — not the disk — is what preserves the user's
-///   unsaved edits: an open doc with a dirty buffer may differ from its on-disk
-///   content, and a disk-based replacement would silently clobber those edits.
-///   The new content + revision are returned so the frontend can mirror them
-///   into Monaco via a "controlled replace" (see SearchPanel handshake) — the
-///   frontend MUST NOT re-sync via its own `updateText`, or the revision
-///   desyncs and the user's next keystroke is dropped.
+///   text (`tab_text`), then applied via a compare-and-swap on the buffer's
+///   text AND revision (`replace_text_cas`) so any write landing between the
+///   read and the write forces a recompute-and-retry instead of being silently
+///   overwritten; the write marks dirty, publishes to the VFS, and signals the
+///   compile worker. Splicing from the buffer — not the disk — is what
+///   preserves the user's unsaved edits: an open doc with a dirty buffer may
+///   differ from its on-disk content, and a disk-based replacement would
+///   silently clobber those edits. The new content + revision are returned so
+///   the frontend can mirror them into Monaco via a "controlled replace" (see
+///   SearchPanel handshake) — the frontend MUST NOT re-sync via its own
+///   `updateText`, or the revision desyncs and the user's next keystroke is
+///   dropped.
 /// - **Not open** → spliced from disk text and written back to disk (atomic
 ///   write). No dirty buffer can disagree, because there is no buffer.
 ///
@@ -626,6 +631,10 @@ pub async fn replace_in_files(
     //    disk reads for closed files are deferred to the blocking batch below
     //    alongside their writes so we cross the async/blocking boundary once.
     let mut open_results: Vec<crate::domain::search::OpenDocReplacement> = Vec::new();
+    // Open docs whose replacement could NOT be applied because the buffer kept
+    // changing under us (revision races) — surfaced in `failed` so the
+    // response reports exactly what was applied.
+    let mut open_failures: Vec<crate::domain::search::ReplaceFailure> = Vec::new();
     let mut closed: Vec<crate::fs::search::ReplaceCandidate> = Vec::new();
     for cand in candidates {
         // Canonicalize the walked path the same way docs_at_paths_with_hidden
@@ -636,34 +645,73 @@ pub async fn replace_in_files(
             // Open: splice from the LIVE buffer text. tab_text returns the
             // in-memory buffer (possibly dirty, possibly diverged from disk);
             // replacing on top of THAT is what keeps unsaved edits intact. A
-            // None here means the tab vanished mid-batch (closed concurrently)
-            // — skip it rather than fall back to disk, which would race the
-            // just-closed buffer's save.
-            let buf_text = match state.editor.document().tab_text(id) {
-                Some(t) => t,
-                None => continue,
-            };
-            let Some(fr) = crate::fs::search::compute_file_replacement(
-                &buf_text, &req, &matcher, &cand.relative, cand.abs_path.clone(),
-            ) else {
-                continue;
-            };
-            // update_text auto-bumps the revision, marks dirty, publishes to
-            // VFS, and signals the compile worker — exactly what we want for a
-            // buffer edit. Read the fresh revision back so the frontend syncs
-            // Monaco to it.
-            state.editor.document().update_text(id, fr.new_content.clone())?;
-            let new_revision = state
-                .editor
-                .document()
-                .tab_revision(id)
-                .ok_or_else(|| AppError::Other(format!("doc {id} vanished after update_text")))?;
-            open_results.push(crate::domain::search::OpenDocReplacement {
-                id,
-                new_content: fr.new_content,
-                new_revision,
-                path: canon.to_string_lossy().into_owned(),
-            });
+            // None revision/text means the tab vanished mid-batch (closed
+            // concurrently) — skip it rather than fall back to disk, which
+            // would race the just-closed buffer's save.
+            //
+            // The read→write is a COMPARE-AND-SWAP on the buffer's text AND
+            // revision (`replace_text_cas`): the splice is computed from an
+            // observed text+revision snapshot and applied only when the buffer
+            // still holds exactly that state under the tab lock. ANY write
+            // landing between the read and the CAS — a keystroke that bumped
+            // the revision, or even a same-revision text swap — makes the
+            // check miss; the intervening edit is never overwritten. On a miss
+            // nothing is written and the CAS hands back the fresh text +
+            // revision, so the loop recomputes the splice from the fresh
+            // buffer and retries, bounded. On a hit the applied revision is
+            // observed+1: the Monaco controlled-replace mirror rejects
+            // `revision <= lastSynced`, so the returned revision must be
+            // strictly newer than the one we read. A doc that keeps racing is
+            // reported in `failed` instead of being force-overwritten.
+            const MAX_REVISION_RETRIES: usize = 3;
+            let mut replacement: Option<crate::domain::search::OpenDocReplacement> = None;
+            let mut raced_out = false;
+            for attempt in 0..MAX_REVISION_RETRIES {
+                let doc = state.editor.document();
+                let Some(revision) = doc.tab_revision(id) else { break };
+                let Some(buf_text) = doc.tab_text(id) else { break };
+                let Some(fr) = crate::fs::search::compute_file_replacement(
+                    &buf_text, &req, &matcher, &cand.relative, cand.abs_path.clone(),
+                ) else {
+                    break;
+                };
+                match doc.replace_text_cas(id, &buf_text, fr.new_content.clone(), revision) {
+                    Ok(CasReplaceOutcome::Applied { revision: applied_revision }) => {
+                        // CAS success: publish the content + revision the
+                        // buffer actually holds (the handshake contract).
+                        replacement = Some(crate::domain::search::OpenDocReplacement {
+                            id,
+                            new_content: fr.new_content,
+                            new_revision: applied_revision,
+                            path: canon.to_string_lossy().into_owned(),
+                        });
+                        break;
+                    }
+                    Ok(CasReplaceOutcome::Conflated { revision: current_revision, .. }) => {
+                        // Buffer moved under us — our splice was computed from
+                        // a stale snapshot. Retry from the fresh buffer.
+                        tracing::warn!(
+                            doc = %id,
+                            attempt,
+                            current_revision,
+                            "replace_in_files: open-doc buffer moved; retrying from fresh text"
+                        );
+                        raced_out = attempt + 1 == MAX_REVISION_RETRIES;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            match replacement {
+                Some(r) => open_results.push(r),
+                None if raced_out => open_failures.push(crate::domain::search::ReplaceFailure {
+                    relative: cand.relative.clone(),
+                    reason: format!(
+                        "buffer kept changing while replacing; no replacement \
+                         applied after {MAX_REVISION_RETRIES} attempts"
+                    ),
+                }),
+                None => {}
+            }
         } else {
             // Closed: defer to the blocking batch below, which reads disk text,
             // splices, and writes atomically in one blocking hop.
@@ -680,9 +728,9 @@ pub async fn replace_in_files(
     //    same protocol Saves use — so a crash mid-batch can never truncate a
     //    workspace file.
     let closed_written: u32;
-    let failed: Vec<crate::domain::search::ReplaceFailure> = if closed.is_empty() {
+    let mut failed: Vec<crate::domain::search::ReplaceFailure> = open_failures;
+    if closed.is_empty() {
         closed_written = 0;
-        Vec::new()
     } else {
         let req = req.clone();
         let matcher = matcher.clone();
@@ -720,7 +768,7 @@ pub async fn replace_in_files(
         .await
         .map_err(|e| AppError::Other(format!("join error: {e}")))?;
         closed_written = written.0;
-        written.1
+        failed.extend(written.1);
     };
 
     Ok(crate::domain::search::ReplaceOutcome {
@@ -1116,23 +1164,38 @@ pub async fn save_as(
 ) -> Result<String> {
     let editor = state.editor.clone();
     // Default the save dialog to the tab's current name (or "Untitled").
-    let default_name = editor
-        .tab_meta(id)
+    let meta = editor.tab_meta(id);
+    let default_name = meta
+        .as_ref()
         .and_then(|m| {
             m.path
                 .as_ref()
                 .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         })
         .unwrap_or_else(|| "Untitled.typ".to_string());
+    // The dialog filter follows the tab's KIND: save_as serves Markdown and
+    // plain-text tabs too (open_non_typst_from_disk), and a hard-coded Typst
+    // filter would push those saves into `.typ` filenames (flipping the tab
+    // into Typst behavior on re-parse). Only the typst kind keeps the
+    // historical filter; markdown gets its extensions; text and the binary
+    // preview kinds get no filter (any extension).
+    let kind = meta.as_ref().map(|m| m.kind);
 
     let app_for_dialog = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
-        app_for_dialog
-            .dialog()
-            .file()
-            .add_filter("Typst", &["typ"])
-            .set_file_name(&default_name)
-            .blocking_save_file()
+        let mut builder = app_for_dialog.dialog().file();
+        match kind {
+            Some(DocumentKind::Markdown) => {
+                builder = builder.add_filter("Markdown", &["md", "markdown"]);
+            }
+            Some(DocumentKind::Text) | Some(DocumentKind::Image) | Some(DocumentKind::Pdf) => {}
+            // The typst kind (and a missing tab — the save itself will fail
+            // with NotFound) keeps the historical Typst filter.
+            None | Some(DocumentKind::Typst) => {
+                builder = builder.add_filter("Typst", &["typ"]);
+            }
+        }
+        builder.set_file_name(&default_name).blocking_save_file()
     })
     .await
     .map_err(|e| AppError::Other(format!("join error: {e}")))?;

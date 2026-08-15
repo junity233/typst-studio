@@ -4,6 +4,8 @@ import { useDocumentsStore } from "../store/documentsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
 import { useRecoveryStore } from "../store/recoveryStore";
 import { loadSession, restoreOpenDocuments } from "../lib/session";
+import type { RestoredDoc } from "../lib/session";
+import { workspacePathsEqual } from "../lib/workspacePath";
 import { openFileByPath, setDirty, onRecoveryAvailable } from "../lib/tauri";
 import type { RecoveryAvailablePayload } from "../lib/types";
 
@@ -127,14 +129,11 @@ export function useStartupSession(): void {
         if (restored.length === 0) return;
 
         // Re-activate the active view, if it still resolves to a restored doc.
-        // For untitled docs the id is reminted on restore, so an active id only
-        // matches a disk-file record's restored id; otherwise fall back to the
-        // last restored doc (matches the openPath/openTab default).
-        const active = session.activeDocumentId;
-        const match = active
-          ? restored.find((r) => r.id === active)
-          : undefined;
-        const targetId = match ? match.id : restored[restored.length - 1].id;
+        const targetId = resolveRestoredActiveId(
+          restored,
+          session.activeDocumentId,
+          session.lastFile,
+        );
         useTabsStore.getState().activate(targetId);
 
         // Re-mark dirty the documents that were dirty at shutdown. For a disk
@@ -157,6 +156,45 @@ export function useStartupSession(): void {
       }
     })();
   }, []);
+}
+
+/**
+ * Pick which restored doc to re-activate: the one that was active at
+ * shutdown, falling back to the last restored doc.
+ *
+ * The persisted `activeId` is a document id from the PREVIOUS launch, but the
+ * backend mints a fresh UUID per open (`DocumentId::new`), so an id match
+ * never succeeds across a restart — matching by id alone always fell through
+ * to the last tab. Disk records carry a `path` instead, and the session's
+ * `lastFile` is the persisted path hint for the active document (recorded on
+ * open and on every save), so a restored disk record whose path matches it is
+ * the shutdown-active doc. An id that does match (defensively kept), an
+ * untitled active doc (no path identity), or a stale hint falls back to the
+ * last restored doc, matching the openPath/openTab activation default.
+ *
+ * Pure over its inputs so it is unit-testable without the Tauri runtime.
+ *
+ * @param restored       the docs that reopened this launch, in tab order.
+ * @param activeId       the persisted active document id (previous launch).
+ * @param activePathHint the persisted path hint (`session.lastFile`), or "".
+ * @returns the restored doc id to activate (never undefined — callers only
+ *   invoke this with a non-empty `restored`).
+ */
+export function resolveRestoredActiveId(
+  restored: ReadonlyArray<RestoredDoc>,
+  activeId: string | null,
+  activePathHint: string,
+): string {
+  const match = activeId
+    ? restored.find((r) => r.id === activeId) ??
+      restored.find(
+        (r) =>
+          r.record.kind === "disk" &&
+          activePathHint !== "" &&
+          workspacePathsEqual(activePathHint, r.record.path),
+      )
+    : undefined;
+  return match ? match.id : restored[restored.length - 1].id;
 }
 
 /**

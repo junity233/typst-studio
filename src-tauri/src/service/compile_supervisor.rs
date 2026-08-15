@@ -186,6 +186,9 @@ pub fn compile_concurrency_cap() -> usize {
 #[derive(Clone)]
 pub struct CompileSupervisor {
     semaphore: Arc<CountingSemaphore>,
+    /// The construction-time permit count. Used by [`wait_for_drain`] to
+    /// detect "nothing compiling" (free permits back at the total).
+    permits_total: usize,
     /// Set true on app shutdown. Workers consult this to stop accepting new
     /// compiles; an in-flight compile still runs to completion (Rust can't
     /// kill it), but no *new* compile starts and emits are suppressed.
@@ -201,8 +204,10 @@ impl CompileSupervisor {
     /// Construct with an explicit permit count. Used in tests to drive the
     /// concurrency assertion deterministically.
     pub fn with_cap(cap: usize) -> Self {
+        let cap = cap.max(1);
         Self {
-            semaphore: Arc::new(CountingSemaphore::new(cap.max(1))),
+            semaphore: Arc::new(CountingSemaphore::new(cap)),
+            permits_total: cap,
             shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -230,11 +235,32 @@ impl CompileSupervisor {
     }
 
     /// Signal all workers to drain + stop. Does NOT block (§6.2 says "有界等待"
-    /// — the bounded wait is the caller's job; the RunEvent::Exit handler in
-    /// `lib.rs` sleeps up to [`SHUTDOWN_DRAIN_TIMEOUT`] for cooperative exit).
-    /// Best-effort: a runaway compile is not force-killed.
+    /// — the bounded wait is the caller's job, via [`wait_for_drain`], invoked
+    /// from the RunEvent::ExitRequested handler in `lib.rs`). Best-effort: a
+    /// runaway compile is not force-killed.
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
+    }
+
+    /// §6.2 "有界等待 worker 结束": block until every concurrency permit is
+    /// free — i.e. no compile is in flight — or `timeout` elapses, whichever
+    /// comes first. Call AFTER [`shutdown`]: once the drain flag is set,
+    /// workers short-circuit instead of acquiring new permits, so the only
+    /// possible permit holder is a compile that was already running, and this
+    /// wait gives it a cooperative window to finish. Returns as soon as the
+    /// supervisor is idle so a quiescent app exits without delay; a runaway
+    /// compile is not force-killed (Rust can't safely kill a thread) — the
+    /// wait simply gives up at the deadline.
+    pub fn wait_for_drain(&self, timeout: Duration) {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            // `cap()` reads the CURRENT free-permit count; back at the
+            // construction total means nothing is compiling.
+            if self.cap() >= self.permits_total {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 }
 
@@ -338,5 +364,41 @@ mod tests {
     fn supervisor_cap_reflects_construction() {
         let sup = CompileSupervisor::with_cap(2);
         assert_eq!(sup.cap(), 2, "with_cap(2) → 2 free permits initially");
+    }
+
+    /// §6.2 "有界等待": `wait_for_drain` returns immediately when the
+    /// supervisor is idle (nothing compiling), blocks while a permit is held,
+    /// and gives up at its deadline instead of blocking forever.
+    #[test]
+    fn wait_for_drain_is_immediate_when_idle_and_bounded_when_busy() {
+        let sup = CompileSupervisor::with_cap(1);
+
+        // Idle → returns well within any generous timeout.
+        let t0 = std::time::Instant::now();
+        sup.wait_for_drain(Duration::from_secs(5));
+        assert!(
+            t0.elapsed() < Duration::from_secs(1),
+            "idle drain wait must return immediately, took {:?}",
+            t0.elapsed()
+        );
+
+        // A held permit = a compile in flight → the wait blocks until the
+        // (short) deadline, then gives up.
+        let _guard = sup.acquire();
+        let t1 = std::time::Instant::now();
+        sup.wait_for_drain(Duration::from_millis(120));
+        let busy_elapsed = t1.elapsed();
+        assert!(
+            busy_elapsed >= Duration::from_millis(100),
+            "busy drain must wait up to its deadline, returned after {busy_elapsed:?}"
+        );
+        assert!(
+            busy_elapsed < Duration::from_secs(2),
+            "drain must never block far beyond its deadline"
+        );
+
+        // Once the permit is released the supervisor is idle again.
+        drop(_guard);
+        sup.wait_for_drain(Duration::from_secs(5));
     }
 }

@@ -27,6 +27,15 @@ export type MathContext = "math" | "markup";
  *    is, by the same token, still "behind" the cursor for insertion purposes).
  *  - Multi-line math blocks (a `$` opens math on one line and closes it on a
  *    later line) are handled naturally because the scan spans whole lines.
+ *  - `$` characters inside raw blocks (fenced ``` blocks and inline `...`
+ *    spans) and comments (line comments and block comments) do NOT toggle the
+ *    context — a stray `$` in a code sample must not flip math parity for the
+ *    rest of the document. Block comments nest (Typst), so their depth is
+ *    tracked. Fenced raws and block comments may span lines; inline raw
+ *    (1-2 backticks) cannot, so an unterminated one is closed at the line
+ *    end instead of poisoning all following lines.
+ *  - A `//` that belongs to a URL scheme (`https://…`, which Typst auto-links)
+ *    does NOT start a line comment.
  *  - An empty document, or a cursor at (1, 1), yields `"markup"` (zero `$`
  *    seen → even).
  *
@@ -46,6 +55,12 @@ export function detectMathContext(
   const cursorColExclusive = Math.max(0, column - 1);
 
   let dollarCount = 0;
+  // Raw/comment state spans lines (fenced raw blocks and block comments can
+  // cover multiple lines), so it lives outside the line loop.
+  let blockCommentDepth = 0;
+  let inRawFence = false;
+  let inInlineRaw = false;
+
   for (let lineIndex = 0; lineIndex <= targetLineIndex; lineIndex++) {
     const text = lines[lineIndex];
     // On the cursor's line, only scan the characters that precede the cursor.
@@ -53,21 +68,104 @@ export function detectMathContext(
       lineIndex === targetLineIndex
         ? Math.min(cursorColExclusive, text.length)
         : text.length;
-    // Walk the run of characters; a `$` preceded by an unescaped backslash is
-    // an escaped dollar and must not toggle math. A backslash itself is escaped
-    // by a preceding backslash (`\\$` is a literal backslash then a real `$`),
-    // so we count the contiguous backslashes immediately before each `$`.
-    for (let i = 0; i < limit; i++) {
-      if (text.charCodeAt(i) !== 0x24 /* '$' */) continue;
-      let backslashes = 0;
-      for (let j = i - 1; j >= 0 && text.charCodeAt(j) === 0x5c /* '\\' */; j--) {
-        backslashes++;
+    let i = 0;
+    while (i < limit) {
+      const ch = text[i];
+      if (blockCommentDepth > 0) {
+        // Typst block comments nest: /* /* */ */ needs a depth counter.
+        if (ch === "/" && text[i + 1] === "*") {
+          blockCommentDepth++;
+          i += 2;
+        } else if (ch === "*" && text[i + 1] === "/") {
+          blockCommentDepth--;
+          i += 2;
+        } else {
+          i++;
+        }
+        continue;
       }
-      // An even run of backslashes means none of them escape the `$` (they pair
-      // up into literal backslashes); an odd run means the `$` is escaped.
-      if (backslashes % 2 === 0) dollarCount++;
+      if (inRawFence || inInlineRaw) {
+        // Only a backtick run can close a raw span; everything else is raw
+        // content (any `$` inside is inert).
+        if (ch === "`") {
+          let run = 1;
+          while (i + run < text.length && text[i + run] === "`") run++;
+          if (inRawFence ? run >= 3 : true) {
+            inRawFence = false;
+            inInlineRaw = false;
+          }
+          i += run;
+        } else {
+          i++;
+        }
+        continue;
+      }
+      if (ch === "/" && text[i + 1] === "/") {
+        // Typst auto-links bare URLs, and the `//` of a scheme (`https://…`)
+        // does NOT start a line comment — otherwise every `$` after the URL
+        // would be skipped and math parity would break for the rest of the
+        // document. If the token back to the previous whitespace/line start
+        // is a `scheme:`, treat the `//` as ordinary content and keep
+        // scanning (we do not try to find the URL's end).
+        if (isSchemeSlashSlash(text, i)) {
+          i += 2;
+          continue;
+        }
+        break; // line comment: rest of line
+      }
+      if (ch === "/" && text[i + 1] === "*") {
+        blockCommentDepth = 1;
+        i += 2;
+        continue;
+      }
+      if (ch === "`") {
+        // A run of 3+ backticks opens a fenced raw block; 1-2 opens an inline
+        // raw span.
+        let run = 1;
+        while (i + run < text.length && text[i + run] === "`") run++;
+        if (run >= 3) {
+          inRawFence = true;
+        } else {
+          inInlineRaw = true;
+        }
+        i += run;
+        continue;
+      }
+      if (ch === "$") {
+        // A `$` preceded by an unescaped backslash is an escaped dollar and
+        // must not toggle math. A backslash itself is escaped by a preceding
+        // backslash (`\\$` is a literal backslash then a real `$`), so count
+        // the contiguous backslashes immediately before the `$`.
+        let backslashes = 0;
+        for (let j = i - 1; j >= 0 && text.charCodeAt(j) === 0x5c /* '\\' */; j--) {
+          backslashes++;
+        }
+        // An even run of backslashes means none of them escape the `$` (they
+        // pair up into literal backslashes); an odd run means the `$` is
+        // escaped.
+        if (backslashes % 2 === 0) dollarCount++;
+      }
+      i++;
     }
+    // Typst raw spans of 1-2 backticks cannot contain line breaks, so an
+    // unterminated one must not leak its state into the next line (an
+    // unmatched `` ` `` earlier in the document would otherwise poison math
+    // detection for every following line). Fenced raws and block comments DO
+    // span lines, so only their state is carried across.
+    inInlineRaw = false;
   }
 
   return dollarCount % 2 === 1 ? "math" : "markup";
+}
+
+/**
+ * True when the `//` at `index` belongs to a URL scheme (e.g. the `//` in
+ * `https://example.com`): the token from the previous whitespace (or the line
+ * start) up to `index` matches `scheme:` — a letter followed by letters,
+ * digits, `+`, `.`, or `-`, ending with `:`.
+ */
+function isSchemeSlashSlash(text: string, index: number): boolean {
+  let start = index;
+  while (start > 0 && !/\s/.test(text[start - 1])) start--;
+  return /^[A-Za-z][A-Za-z0-9+.-]*:$/.test(text.slice(start, index));
 }

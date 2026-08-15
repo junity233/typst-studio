@@ -1,7 +1,6 @@
-import { readFile } from "@tauri-apps/plugin-fs";
 import type { FormatApi } from "./formatActions";
 import type { Tab } from "../../store/tabsStore";
-import { pickImageFile } from "../../lib/tauri";
+import { pickImageFile, readFileBytes } from "../../lib/tauri";
 import { inferExt } from "../../lib/htmlToTypst/images";
 import { escapeTypstStr } from "../../lib/htmlToTypst/escape";
 import { expandTemplate } from "../../lib/pathMacros";
@@ -45,7 +44,10 @@ export function useInsertImage(
       if (tab === null) return;
       const picked = await pickImageFile();
       if (picked === null) return; // user cancelled
-      const bytes = await readFile(picked);
+      // Read via the backend `read_file_bytes` IPC: the fs plugin's `readFile`
+      // needs `fs:allow-read-file`, which no capability grants (plugin scopes
+      // can't cover dialog-picked paths outside $HOME anyway).
+      const bytes = await readFileBytes(picked);
       const ext = inferExt(picked);
       const fileDir = await resolveImageDir(
         { workspace: ctx.workspace ?? undefined, filePath: tab.path ?? undefined },

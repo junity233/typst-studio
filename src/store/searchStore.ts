@@ -8,6 +8,7 @@ import type {
   TargetRef,
 } from "../lib/types";
 import { replaceInFiles, searchWorkspace } from "../lib/tauri";
+import { toIpcError } from "../lib/ipc-error";
 import { readSetting } from "../hooks/useSetting";
 import { useDocumentsStore } from "./documentsStore";
 
@@ -109,10 +110,12 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       set({ results: hits, searching: false });
     } catch (e) {
       if (seq !== runSeq) return;
+      // Backend rejections are serialized IpcError objects — toIpcError
+      // extracts the message (a plain String(e) would be "[object Object]").
       set({
         results: [],
         searching: false,
-        error: e instanceof Error ? e.message : String(e),
+        error: toIpcError(e).message,
       });
     }
   },
@@ -165,8 +168,9 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       await get().run();
     } catch (e) {
       if (seq !== runSeq) return;
+      // Serialized IpcError objects — narrow via toIpcError for the message.
       set({
-        error: e instanceof Error ? e.message : String(e),
+        error: toIpcError(e).message,
       });
     } finally {
       // `replacing` is a UI "in progress" flag, not a result-guard — clear it
@@ -208,8 +212,9 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       await get().run();
     } catch (e) {
       if (seq !== runSeq) return;
+      // Serialized IpcError objects — narrow via toIpcError for the message.
       set({
-        error: e instanceof Error ? e.message : String(e),
+        error: toIpcError(e).message,
       });
     } finally {
       set({ replacing: false });

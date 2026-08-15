@@ -110,6 +110,17 @@ pub fn search(
         if path_excluded(exclude, &rel, false) {
             continue;
         }
+        // Skip files too large to buffer wholesale — same ceiling as the
+        // replace path (see REPLACE_MAX_FILE_BYTES). The per-file/total hit
+        // caps only bound the RESULT list, not the read; without this a
+        // multi-GB log/data file in the workspace would be fully buffered.
+        // This also avoids full-size reads of huge binary files before UTF-8
+        // validation fails.
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() > REPLACE_MAX_FILE_BYTES {
+                continue;
+            }
+        }
         // Skip non-UTF-8 / unreadable files (best-effort: the Search view is
         // informational, never blocking).
         let text = match std::fs::read_to_string(path) {
@@ -184,7 +195,9 @@ pub(crate) enum Matcher {
 }
 
 impl Matcher {
-    /// Return all (start, end) byte ranges of matches in `haystack`.
+    /// Return all (start, end) byte ranges of matches in `haystack`. All
+    /// offsets are in `haystack`'s own byte space (never a re-encoded copy),
+    /// so every returned range is a char boundary and safe to slice with.
     fn find<'a>(&'a self, haystack: &'a str) -> Vec<std::ops::Range<usize>> {
         match self {
             Matcher::Regex(r) => r.find_iter(haystack).map(|m| m.range()).collect(),
@@ -194,33 +207,133 @@ impl Matcher {
                 case_sensitive,
                 whole_word,
             } => {
-                let (h, n): (std::borrow::Cow<'a, str>, &str) = if *case_sensitive {
-                    (std::borrow::Cow::Borrowed(haystack), needle_orig.as_str())
+                if *case_sensitive {
+                    // Search the original needle in the original haystack —
+                    // byte offsets line up by construction.
+                    scan_literal(haystack, needle_orig, haystack, *whole_word)
+                } else if haystack.is_ascii() {
+                    // ASCII fast path: ASCII text lowercases byte-for-byte
+                    // (one byte in, one byte out), so offsets computed on the
+                    // lowercased copy are valid in the original.
+                    let lowered = haystack.to_ascii_lowercase();
+                    scan_literal(&lowered, needle_lower, haystack, *whole_word)
                 } else {
-                    (std::borrow::Cow::Owned(haystack.to_lowercase()), needle_lower.as_str())
-                };
-                let mut out = Vec::new();
-                let mut start = 0;
-                while let Some(idx) = h[start..].find(n) {
-                    let abs_start = start + idx;
-                    let abs_end = abs_start + n.len();
-                    // Map back to original haystack indices (case-insensitive
-                    // lowercasing preserves byte positions for ASCII; for non-
-                    // ASCII this is best-effort).
-                    if *whole_word && !is_word_boundary(haystack, abs_start, abs_end) {
-                        start = abs_end;
-                        continue;
-                    }
-                    out.push(abs_start..abs_end);
-                    start = abs_end;
-                    if n.is_empty() {
-                        break;
-                    }
+                    // Unicode path: non-ASCII lowercasing changes byte
+                    // lengths for common characters (İ U+0130 → i + U+0307,
+                    // +1 byte; K U+212A → k, −2 bytes; ẞ U+1E9E → ß, −1
+                    // byte), so offsets computed on a lowercased COPY may
+                    // not even be char boundaries in the original. Match the
+                    // lowercased char stream in place instead, accumulating
+                    // byte offsets in the original string.
+                    find_ci_unicode(haystack, needle_lower, *whole_word)
                 }
-                out
             }
         }
     }
+}
+
+/// Literal substring scan of `h` for `n`, reporting offsets valid in
+/// `original` (pass `h == original`, or an ASCII-lowercased copy of it).
+/// Advances monotonically past each accepted/rejected match; an empty needle
+/// yields one zero-width match at 0 (mirroring `str::find("")`) and never
+/// loops.
+fn scan_literal(
+    h: &str,
+    n: &str,
+    original: &str,
+    whole_word: bool,
+) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    while let Some(idx) = h[start..].find(n) {
+        let abs_start = start + idx;
+        let abs_end = abs_start + n.len();
+        if whole_word && !is_word_boundary(original, abs_start, abs_end) {
+            // An empty needle has no "past" to advance to; stop rather than
+            // spin forever on a rejected boundary.
+            if n.is_empty() {
+                break;
+            }
+            start = abs_end;
+            continue;
+        }
+        out.push(abs_start..abs_end);
+        if n.is_empty() {
+            break;
+        }
+        start = abs_end;
+    }
+    out
+}
+
+/// Case-insensitive literal scan for non-ASCII haystacks. Byte offsets are
+/// computed against the ORIGINAL haystack (never a re-encoded copy), so every
+/// returned range is a char boundary by construction. Each haystack char is
+/// consumed atomically: its multi-char lowercase expansion may be left
+/// partially unmatched only at the END of the needle, in which case the match
+/// still spans the whole char (e.g. "İ" matches "i").
+fn find_ci_unicode(
+    haystack: &str,
+    needle_lower: &str,
+    whole_word: bool,
+) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    if needle_lower.is_empty() {
+        // Mirrors `str::find("")`: one zero-width match at 0.
+        if !whole_word || is_word_boundary(haystack, 0, 0) {
+            out.push(0..0);
+        }
+        return out;
+    }
+    let mut cursor = 0;
+    while cursor < haystack.len() {
+        let Some((rel, _)) = haystack[cursor..].char_indices().next() else {
+            break;
+        };
+        let start = cursor + rel;
+        match match_ci_at(haystack, start, needle_lower) {
+            Some(end) => {
+                if !whole_word || is_word_boundary(haystack, start, end) {
+                    out.push(start..end);
+                }
+                // A non-empty needle always consumes ≥1 char, so this moves
+                // the scan forward past the match.
+                cursor = end;
+            }
+            None => {
+                let step = haystack[start..].chars().next().map_or(1, |c| c.len_utf8());
+                cursor = start + step;
+            }
+        }
+    }
+    out
+}
+
+/// Try to match the lowercased needle starting at the char boundary `start` in
+/// `haystack`. Returns the match's END byte offset in `haystack`'s byte space,
+/// or `None` if the lowercased char streams diverge or the haystack runs out
+/// before the needle is satisfied.
+fn match_ci_at(haystack: &str, start: usize, needle_lower: &str) -> Option<usize> {
+    let mut end = start;
+    let mut wants = needle_lower.chars();
+    for c in haystack[start..].chars() {
+        let mut contributed = false; // did this char's lowercase feed the match?
+        for w in c.to_lowercase() {
+            match wants.next() {
+                Some(want) if want == w => contributed = true,
+                Some(_) => return None, // lowercased streams diverge
+                None => {
+                    // Needle satisfied. If this char already contributed part
+                    // of its lowercase expansion, the match covers the whole
+                    // (atomic) char; otherwise it ended at the previous char.
+                    return Some(if contributed { end + c.len_utf8() } else { end });
+                }
+            }
+        }
+        end += c.len_utf8();
+    }
+    // Haystack exhausted: a match only if the needle is fully consumed.
+    wants.as_str().is_empty().then_some(end)
 }
 
 /// Build the matcher for a query, validating the regex if requested.
@@ -1259,5 +1372,109 @@ mod tests {
         let cands = replace_candidates(dir.path(), &req, None);
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].relative, "b.typ");
+    }
+
+    // ── non-ASCII case-insensitive offsets ─────────────────────────────
+    // Rust's Unicode lowercasing changes byte lengths for common characters
+    // (İ U+0130 → i + U+0307, +1 byte; K U+212A → k, −2 bytes; ẞ U+1E9E → ß,
+    // −1 byte). The old matcher computed offsets on a lowercased COPY and
+    // used them to slice the ORIGINAL string — a panic (not a char boundary /
+    // out of bounds) inside spawn_blocking. These tests pin that all offsets
+    // come from the original string's byte space.
+
+    fn ci_query(pattern: &str) -> SearchQuery {
+        SearchQuery {
+            pattern: pattern.into(),
+            is_regex: false,
+            case_sensitive: false,
+            whole_word: false,
+            include_glob: None,
+            max_per_file: 100,
+            max_total: 100,
+        }
+    }
+
+    /// Matcher-level: byte ranges must be valid in the ORIGINAL haystack.
+    #[test]
+    fn ci_matcher_offsets_survive_unicode_lowercase_expansion() {
+        // "İ" (U+0130, 2 bytes) lowercases to "i" + U+0307 (3 bytes): "İa"
+        // lowercases to a 4-byte string, so the old code looked for "a" at
+        // byte 3..4 — past the end of the 3-byte original.
+        let m = build_matcher(&ci_query("a")).unwrap();
+        assert_eq!(m.find("İa"), vec![2..3], "'a' lives at bytes 2..3 of 'İa'");
+
+        // Kelvin sign "K" (U+212A, 3 bytes) lowercases to "k" (1 byte).
+        let m = build_matcher(&ci_query("k")).unwrap();
+        assert_eq!(m.find("\u{212A}x"), vec![0..3]);
+
+        // "ẞ" (U+1E9E, 3 bytes) lowercases to "ß" (2 bytes).
+        let m = build_matcher(&ci_query("ß")).unwrap();
+        assert_eq!(m.find("ẞx"), vec![0..3]);
+
+        // "İ" itself matches needle "i": the multi-char expansion is consumed
+        // atomically, so the match spans the whole char.
+        let m = build_matcher(&ci_query("i")).unwrap();
+        assert_eq!(m.find("aİb"), vec![1..3]);
+
+        // ASCII haystacks keep the fast path and match normally.
+        let m = build_matcher(&ci_query("world")).unwrap();
+        assert_eq!(m.find("Hello WORLD"), vec![6..11]);
+
+        // No match stays no match (no panic, no phantom ranges).
+        let m = build_matcher(&ci_query("zz")).unwrap();
+        assert!(m.find("İa b\u{212A}c ẞd").is_empty());
+    }
+
+    /// End-to-end search(): the tricky line must not panic, and the reported
+    /// char offsets must point at the matched characters.
+    #[test]
+    fn search_non_ascii_case_insensitive_reports_original_offsets() {
+        let dir = tempfile::tempdir().unwrap();
+        // Chars: İ(0) a(1) ' '(2) b(3) K(4) c(5) ' '(6) ẞ(7) d(8)
+        let line = "İa b\u{212A}c ẞd";
+        std::fs::write(dir.path().join("a.txt"), format!("{line}\n")).unwrap();
+
+        let hits = search(dir.path(), &ci_query("a"), None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].match_start, hits[0].match_end), (1, 2));
+        assert_eq!(hits[0].column, 2);
+
+        let hits = search(dir.path(), &ci_query("b"), None).unwrap();
+        assert_eq!((hits[0].match_start, hits[0].match_end), (3, 4));
+
+        // Kelvin sign matches an ASCII "k" needle (shorter lowercase).
+        let hits = search(dir.path(), &ci_query("k"), None).unwrap();
+        assert_eq!((hits[0].match_start, hits[0].match_end), (4, 5));
+
+        // "ẞ" matches needle "ß" (shorter lowercase).
+        let hits = search(dir.path(), &ci_query("ß"), None).unwrap();
+        assert_eq!((hits[0].match_start, hits[0].match_end), (7, 8));
+        assert_eq!(hits[0].line_text, line);
+    }
+
+    /// End-to-end replace(): splices must cut the ORIGINAL string at the
+    /// matched char boundaries (the old code panicked in splice_replacements).
+    #[test]
+    fn replace_non_ascii_case_insensitive_splices_original_offsets() {
+        // İ + 1: needle "a" past a lengthening char.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "İa\n").unwrap();
+        let out = replace_compute(dir.path(), &replace_req(ci_query("a"), "X"), None).unwrap();
+        assert_eq!(out[0].new_content, "İX\n");
+        assert_eq!(out[0].match_count, 1);
+
+        // Kelvin sign matches ASCII "k" needle (a shortening lowercase).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("b.txt"), "k\u{212A}\n").unwrap();
+        let out = replace_compute(dir.path(), &replace_req(ci_query("k"), "X"), None).unwrap();
+        assert_eq!(out[0].new_content, "XX\n");
+        assert_eq!(out[0].match_count, 2);
+
+        // ẞ matches "ß" needle (another shortening lowercase).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("c.txt"), "ß ẞ\n").unwrap();
+        let out = replace_compute(dir.path(), &replace_req(ci_query("ß"), "ss"), None).unwrap();
+        assert_eq!(out[0].new_content, "ss ss\n");
+        assert_eq!(out[0].match_count, 2);
     }
 }

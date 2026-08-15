@@ -128,7 +128,7 @@ impl FileIdentity {
     fn from_metadata(path: &Path, _m: &std::fs::Metadata) -> Option<Self> {
         use std::os::windows::fs::OpenOptionsExt;
         use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
         use windows_sys::Win32::Storage::FileSystem::{
             GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
         };
@@ -140,15 +140,18 @@ impl FileIdentity {
             .custom_flags(0x02000000)
             .open(path)
             .ok()?;
+        // `file` OWNS the handle; we only borrow it for the query below. Do NOT
+        // call CloseHandle explicitly while `file` is alive — the `File`'s drop
+        // closes the same handle value, and Windows recycles handle values
+        // aggressively, so the second close could silently kill an unrelated
+        // file/socket handle another thread opened in between.
         let handle = file.as_raw_handle() as isize;
         if handle == INVALID_HANDLE_VALUE as isize {
             return None;
         }
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
         let ok = unsafe { GetFileInformationByHandle(handle as *mut _, &mut info) };
-        // `file` drops here and closes the handle; explicit CloseHandle is redundant
-        // but cheap and matches the FFI contract documentation.
-        unsafe { CloseHandle(handle as *mut _) };
+        // The handle closes when `file` drops at the end of this scope.
         if ok == 0 {
             return None;
         }

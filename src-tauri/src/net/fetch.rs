@@ -43,32 +43,41 @@ impl HttpClient {
         // public construction, so we surface timeouts via a dedicated
         // `NetError::Timeout` variant instead of the `Request(..)` path the
         // original sketch used.
-        let mut resp = tokio::time::timeout(opts.timeout, self.client.get(url).send())
+        //
+        // The deadline below wraps send AND the body-streaming loop:
+        // `FetchOptions::timeout` is documented as a total wall-clock budget
+        // (connect + read), so a server that stalls after its headers aborts
+        // here instead of hanging the fetch forever. `fetch_to_file` shares
+        // this via the `fetch_bytes` call.
+        let fut = async {
+            let mut resp = self.client.get(url).send().await?;
+            if !resp.status().is_success() {
+                return Err(NetError::Status(resp.status()));
+            }
+            if let Some(len) = resp.content_length() {
+                if len > opts.max_bytes {
+                    return Err(NetError::TooLarge { size: len, cap: opts.max_bytes });
+                }
+            }
+            // Stream the body incrementally so a server that omits
+            // `Content-Length` cannot force us to buffer gigabytes before the
+            // post-check trips. `Response::chunk()` is available without the
+            // `stream` feature (that feature only gates `bytes_stream()`).
+            let mut buf = Vec::new();
+            while let Some(chunk) = resp.chunk().await? {
+                if (buf.len() + chunk.len()) as u64 > opts.max_bytes {
+                    return Err(NetError::TooLarge {
+                        size: (buf.len() + chunk.len()) as u64,
+                        cap: opts.max_bytes,
+                    });
+                }
+                buf.extend_from_slice(&chunk);
+            }
+            Ok(buf)
+        };
+        tokio::time::timeout(opts.timeout, fut)
             .await
-            .map_err(|_| NetError::Timeout(opts.timeout))??;
-        if !resp.status().is_success() {
-            return Err(NetError::Status(resp.status()));
-        }
-        if let Some(len) = resp.content_length() {
-            if len > opts.max_bytes {
-                return Err(NetError::TooLarge { size: len, cap: opts.max_bytes });
-            }
-        }
-        // Stream the body incrementally so a server that omits
-        // `Content-Length` cannot force us to buffer gigabytes before the
-        // post-check trips. `Response::chunk()` is available without the
-        // `stream` feature (that feature only gates `bytes_stream()`).
-        let mut buf = Vec::new();
-        while let Some(chunk) = resp.chunk().await? {
-            if (buf.len() + chunk.len()) as u64 > opts.max_bytes {
-                return Err(NetError::TooLarge {
-                    size: (buf.len() + chunk.len()) as u64,
-                    cap: opts.max_bytes,
-                });
-            }
-            buf.extend_from_slice(&chunk);
-        }
-        Ok(buf)
+            .map_err(|_| NetError::Timeout(opts.timeout))?
     }
 }
 
@@ -142,5 +151,47 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, NetError::TooLarge { .. }));
+    }
+
+    /// A server that sends valid headers and then never sends the body must
+    /// hit the TOTAL deadline (send + body streaming), not hang forever —
+    /// `FetchOptions::timeout` is documented as connect + read wall clock.
+    /// Uses a raw std TcpListener (no mockito support for stalling mid-body).
+    #[tokio::test]
+    async fn stalled_body_hits_total_deadline() {
+        use std::io::{Read as _, Write as _};
+        use std::time::Duration;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                // Drain the request line/headers (best-effort), then answer
+                // with a Content-Length we never fulfill.
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf);
+                let head = b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n";
+                let _ = sock.write_all(head);
+                // Hold the socket open without sending the body until the
+                // client's deadline has long passed.
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        });
+
+        let client = HttpClient::new();
+        let opts = FetchOptions {
+            timeout: Duration::from_millis(500),
+            ..FetchOptions::default()
+        };
+        let err = client
+            .fetch_bytes(&format!("http://{addr}/stall"), &opts)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, NetError::Timeout(_)),
+            "a stalled body must trip the total deadline, got: {err:?}"
+        );
+        // Don't wait out the server thread's sleep.
+        drop(server);
     }
 }

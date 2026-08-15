@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  * Format Toolbar Task 6 — insert-image hook tests.
  *
  * `useInsertImage` is a thin orchestrator: it stitches together
- * pickImageFile → readFile → inferExt → resolveImageDir → expandTemplate →
+ * pickImageFile → readFileBytes → inferExt → resolveImageDir → expandTemplate →
  * ensureAbsolute → writeImage → replaceSelection. The path math itself lives
  * in those primitives (each tested independently), so here we only pin the
  * orchestration: the right calls happen in order, cancel is a clean no-op,
@@ -17,15 +17,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 const pickImageFile = vi.fn();
-const readFile = vi.fn();
+const readFileBytes = vi.fn();
 const inferExt = vi.fn();
 const resolveImageDir = vi.fn();
 const expandTemplate = vi.fn();
 const ensureAbsolute = vi.fn();
 const writeImage = vi.fn();
 
-vi.mock("../../../lib/tauri", () => ({ pickImageFile }));
-vi.mock("@tauri-apps/plugin-fs", () => ({ readFile }));
+vi.mock("../../../lib/tauri", () => ({ pickImageFile, readFileBytes }));
 vi.mock("../../../lib/htmlToTypst/images", () => ({ inferExt }));
 // escapeTypstStr is the REAL implementation — its behavior is pinned by its
 // own unit tests; here we want to assert the inserted string is escaped, so
@@ -82,7 +81,7 @@ describe("useInsertImage", () => {
   it("no-ops when the picker is cancelled (returns null)", async () => {
     pickImageFile.mockResolvedValue(null);
     const api = await runFlow();
-    expect(readFile).not.toHaveBeenCalled();
+    expect(readFileBytes).not.toHaveBeenCalled();
     expect(writeImage).not.toHaveBeenCalled();
     expect(api.replace).not.toHaveBeenCalled();
   });
@@ -96,7 +95,7 @@ describe("useInsertImage", () => {
 
   it("happy path: writes the file and inserts #image(\"…\") with the absolute path", async () => {
     pickImageFile.mockResolvedValue("/photos/cat.png");
-    readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+    readFileBytes.mockResolvedValue(new Uint8Array([1, 2, 3]));
     inferExt.mockReturnValue("png");
     resolveImageDir.mockResolvedValue("/docs");
     expandTemplate.mockReturnValue("/docs/assets/cat.png");
@@ -117,7 +116,7 @@ describe("useInsertImage", () => {
 
   it("derives fileName from the picked path basename", async () => {
     pickImageFile.mockResolvedValue("C:\\photos\\dog.jpeg");
-    readFile.mockResolvedValue(new Uint8Array([]));
+    readFileBytes.mockResolvedValue(new Uint8Array([]));
     inferExt.mockReturnValue("jpg");
     resolveImageDir.mockResolvedValue("/docs");
     expandTemplate.mockReturnValue("expanded");
@@ -137,7 +136,7 @@ describe("useInsertImage", () => {
 
   it("passes the template through when the setting is set", async () => {
     pickImageFile.mockResolvedValue("/x/a.png");
-    readFile.mockResolvedValue(new Uint8Array([]));
+    readFileBytes.mockResolvedValue(new Uint8Array([]));
     inferExt.mockReturnValue("png");
     resolveImageDir.mockResolvedValue("/x");
     expandTemplate.mockReturnValue("r");
@@ -154,7 +153,7 @@ describe("useInsertImage", () => {
 
   it("escapes backslashes and quotes in the inserted path", async () => {
     pickImageFile.mockResolvedValue("/x/a.png");
-    readFile.mockResolvedValue(new Uint8Array([]));
+    readFileBytes.mockResolvedValue(new Uint8Array([]));
     inferExt.mockReturnValue("png");
     resolveImageDir.mockResolvedValue(undefined);
     // A path containing both a backslash and a double-quote character.
@@ -173,7 +172,7 @@ describe("useInsertImage", () => {
 
   it("runs the primitives in the documented order", async () => {
     pickImageFile.mockResolvedValue("/x/a.png");
-    readFile.mockResolvedValue(new Uint8Array([]));
+    readFileBytes.mockResolvedValue(new Uint8Array([]));
     inferExt.mockReturnValue("png");
     resolveImageDir.mockResolvedValue("/x");
     expandTemplate.mockReturnValue("r");
@@ -186,7 +185,7 @@ describe("useInsertImage", () => {
     // writeImage → replaceSelection. We assert relative order via call index.
     const order = [
       pickImageFile,
-      readFile,
+      readFileBytes,
       inferExt,
       resolveImageDir,
       expandTemplate,
@@ -206,7 +205,7 @@ describe("useInsertImage", () => {
     // bubble as an unhandled rejection. The catch logs clearly and aborts
     // before the editor insert.
     pickImageFile.mockResolvedValue("/x/a.png");
-    readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+    readFileBytes.mockResolvedValue(new Uint8Array([1, 2, 3]));
     inferExt.mockReturnValue("png");
     resolveImageDir.mockResolvedValue("/x");
     expandTemplate.mockReturnValue("/x/assets/a.png");

@@ -34,8 +34,12 @@ pub(crate) const TEMP_PREFIX: &str = ".typst-tmp-";
 ///    validation (see below).
 /// 6. Best-effort `sync_all` of the parent directory (Unix only; errors
 ///    ignored) so the rename itself is durable.
-/// 7. On **any** failure in steps 1–6 the temp file is deleted (best-effort)
-///    and the error is returned. The original file is never touched.
+/// 7. On failure in steps 1–4 the temp file is deleted (best-effort) and the
+///    error is returned; the original file is untouched. Step 5's Windows
+///    fallback is the one exception: if it fails **after** having removed the
+///    target, the temp file is the last surviving copy of the new content and
+///    is deliberately left in place (see [`atomic_replace`]) — deleting it
+///    would destroy the data outright.
 ///
 /// # Windows note
 /// `std::fs::rename` on Windows is backed by `MoveFileExW` with
@@ -63,10 +67,29 @@ pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
         return Err(e);
     }
 
-    // Step 5: atomic replace.
-    if let Err(e) = atomic_replace(&temp, path) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(e);
+    // Step 5: atomic replace. On failure the temp file is cleaned up ONLY
+    // when the target still exists intact — in the last-copy case (Windows
+    // fallback removed the target, then its retry rename failed) the temp
+    // holds the only surviving copy of the content and must be preserved.
+    match atomic_replace(&temp, path) {
+        ReplaceOutcome::Replaced => {}
+        ReplaceOutcome::FailedTargetIntact(e) => {
+            let _ = std::fs::remove_file(&temp);
+            return Err(e);
+        }
+        ReplaceOutcome::FailedTempIsLastCopy(e) => {
+            // Do NOT delete the temp file: the target was already removed by
+            // the fallback, so the temp is the last copy of the (fsynced)
+            // new content. Log both paths so the data can be recovered by
+            // hand; `cleanup_stale_temps` only reaps it after 24h.
+            tracing::error!(
+                temp = ?temp,
+                target = ?path,
+                error = %e,
+                "atomic replace failed after the target was removed; keeping the temp file as the last copy of the data"
+            );
+            return Err(e);
+        }
     }
 
     // Step 6: best-effort dir sync (durability of the rename entry itself).
@@ -178,13 +201,31 @@ fn copy_permissions_if_exists(target: &Path, temp: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Step 5 outcome: whether the temp file is safe to delete after a failed
+/// replace, or is the last surviving copy of the content.
+enum ReplaceOutcome {
+    /// `target` now holds the temp file's content (the temp path no longer
+    /// exists).
+    Replaced,
+    /// The replace failed with the carried error, but `target` is intact (or
+    /// never existed) — the temp file is a disposable duplicate.
+    FailedTargetIntact(crate::error::AppError),
+    /// The replace failed with the carried error **after** the original
+    /// `target` was removed (Windows fallback). The temp file is now the last
+    /// copy of the new content and must NOT be deleted.
+    FailedTempIsLastCopy(crate::error::AppError),
+}
+
 /// Step 5: platform-specific atomic replace of `target` with `temp`.
-fn atomic_replace(temp: &Path, target: &Path) -> Result<()> {
+fn atomic_replace(temp: &Path, target: &Path) -> ReplaceOutcome {
     #[cfg(unix)]
     {
-        // On Unix `rename(2)` atomically replaces an existing destination.
-        std::fs::rename(temp, target)?;
-        Ok(())
+        // On Unix `rename(2)` atomically replaces an existing destination; a
+        // failure leaves both files exactly as they were.
+        match std::fs::rename(temp, target) {
+            Ok(()) => ReplaceOutcome::Replaced,
+            Err(e) => ReplaceOutcome::FailedTargetIntact(e.into()),
+        }
     }
     #[cfg(windows)]
     {
@@ -193,28 +234,47 @@ fn atomic_replace(temp: &Path, target: &Path) -> Result<()> {
         // on the rare error (e.g. target opened with exclusive access) fall
         // back to remove-then-rename. NOTE: the fallback has a tiny window
         // where `target` is absent — acceptable for non-critical configs but
-        // needs CI validation before relying on it for user documents.
+        // needs CI validation before relying on it for user documents. If the
+        // fallback rename fails too, the removed target is gone for good, so
+        // the temp file must be preserved as the last copy of the content.
         match std::fs::rename(temp, target) {
-            Ok(()) => Ok(()),
+            Ok(()) => ReplaceOutcome::Replaced,
             Err(rename_err) => {
-                if target.exists() {
-                    if let Err(remove_err) = std::fs::remove_file(target) {
-                        tracing::warn!(?target, error = %remove_err, "windows atomic replace: remove fallback failed");
-                        // The temp file still exists; surface the original error.
-                        return Err(rename_err.into());
+                let removed_target = if target.exists() {
+                    match std::fs::remove_file(target) {
+                        Ok(()) => true,
+                        Err(remove_err) => {
+                            tracing::warn!(?target, error = %remove_err, "windows atomic replace: remove fallback failed");
+                            // The target is intact and the temp file still
+                            // exists; surface the original error.
+                            return ReplaceOutcome::FailedTargetIntact(rename_err.into());
+                        }
+                    }
+                } else {
+                    false
+                };
+                match std::fs::rename(temp, target) {
+                    Ok(()) => ReplaceOutcome::Replaced,
+                    Err(e) => {
+                        tracing::warn!(?target, error = %e, "windows atomic replace: fallback rename failed");
+                        if removed_target {
+                            ReplaceOutcome::FailedTempIsLastCopy(e.into())
+                        } else {
+                            // The target never existed (new file); nothing
+                            // was lost — the temp is disposable.
+                            ReplaceOutcome::FailedTargetIntact(e.into())
+                        }
                     }
                 }
-                std::fs::rename(temp, target).map_err(|e| {
-                    tracing::warn!(?target, error = %e, "windows atomic replace: fallback rename failed");
-                    e.into()
-                })
             }
         }
     }
     #[cfg(not(any(unix, windows)))]
     {
-        std::fs::rename(temp, target)?;
-        Ok(())
+        match std::fs::rename(temp, target) {
+            Ok(()) => ReplaceOutcome::Replaced,
+            Err(e) => ReplaceOutcome::FailedTargetIntact(e.into()),
+        }
     }
 }
 

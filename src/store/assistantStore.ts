@@ -11,6 +11,7 @@ import { useDiagnosticsStore, selectDiagnosticsForDoc } from "./diagnosticsStore
 import { editorApiRef } from "../components/Editor/editorApiRef";
 import { buildSystemPrompt } from "./assistantPrompt";
 import { buildTools, type PendingApproval } from "./assistantTools";
+import { pathsEqual } from "../lib/assistantPath";
 import { buildModel, makeStreamFn } from "../components/Assistant/aiStream";
 
 /**
@@ -43,8 +44,13 @@ export interface AssistantMessage {
   toolCallId?: string;
   toolResult?: string;
   toolStatus?: "running" | "ok" | "error";
-  /** Present on edit/write_file tool messages — drives the DiffCard UI. */
-  approval?: PendingApproval & { verdict: "pending" | "applied" | "rejected" };
+  /** Present on edit/write_file tool messages — drives the DiffCard UI.
+   *  `id` uniquely identifies THIS approval (several edits can target the same
+   *  path), so verdict updates touch exactly one card. */
+  approval?: PendingApproval & {
+    id: string;
+    verdict: "pending" | "applied" | "rejected";
+  };
 }
 
 interface AssistantState {
@@ -81,6 +87,14 @@ let approvalGate: {
   approval: PendingApproval;
   resolve: (verdict: "approved" | "rejected") => Promise<void>;
 } | null = null;
+/**
+ * The toolCallId of the edit/write_file tool currently executing. Tools run
+ * sequentially, so `tool_execution_start` (edit/write_file) → the tool's
+ * `requestApproval` → `tool_execution_end` is a strict nesting; the id lets the
+ * approval message correlate with its tool_execution_end so its running
+ * spinner settles.
+ */
+let currentApprovalCallId: string | null = null;
 
 function uid(): string {
   return crypto.randomUUID();
@@ -177,6 +191,10 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     const requestApproval = (p: PendingApproval): Promise<string> =>
       new Promise<string>((resolve) => {
         aiLog("[approval] requestApproval invoked, awaiting user:", p.kind, p.path);
+        // A unique id for THIS approval — the verdict/status updates below must
+        // touch exactly this card, never an earlier DiffCard for the same path.
+        const approvalId = uid();
+        const callId = currentApprovalCallId ?? undefined;
 
         // Auto-approve: skip the gate entirely, apply immediately.
         if (get().autoApprove) {
@@ -188,7 +206,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
                 id: uid(),
                 role: "tool",
                 toolName: p.kind,
-                approval: { ...p, verdict: "applied" },
+                toolCallId: callId,
+                approval: { ...p, id: approvalId, verdict: "applied" },
                 toolStatus: "running",
               },
             ],
@@ -196,7 +215,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           void applyApproval(p).then((result) => {
             set((s) => ({
               messages: s.messages.map((m) =>
-                m.approval && m.approval.path === p.path
+                m.approval && m.approval.id === approvalId
                   ? { ...m, toolStatus: "ok" }
                   : m,
               ),
@@ -215,7 +234,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
               id: uid(),
               role: "tool",
               toolName: p.kind,
-              approval: { ...p, verdict: "pending" },
+              toolCallId: callId,
+              approval: { ...p, id: approvalId, verdict: "pending" },
               toolStatus: "running",
             },
           ],
@@ -226,14 +246,14 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             aiLog("[approval] gate resolved with:", verdict);
             const cardVerdict: "applied" | "rejected" =
               verdict === "approved" ? "applied" : "rejected";
-            // Update the card's verdict. Match by path (the unique key on the
-            // approval payload) — NOT by object identity: the message stores a
-            // COPY of p (with verdict), so `=== p` would never be true.
+            // Update ONLY this approval's card — matched by its unique id (a
+            // later edit to the same file must not rewrite earlier cards'
+            // verdicts).
             set((s) => ({
               status: "streaming",
               pendingApproval: null,
               messages: s.messages.map((m) =>
-                m.approval && m.approval.path === p.path
+                m.approval && m.approval.id === approvalId
                   ? { ...m, approval: { ...m.approval, verdict: cardVerdict } }
                   : m,
               ),
@@ -373,50 +393,148 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
 // --- helpers --------------------------------------------------------------
 
 /**
- * Apply an approved edit/write to the editor + store. For `edit` we go through
- * `editorApiRef.strReplace` (single undo step); the store follows via Monaco's
- * onChange → updateContent debounce. For `write_file`, we create the file via
- * the existing IPC and let the workspace watcher pick it up.
+ * Apply an approved str-replace to a document that is NOT the active editor
+ * target — an inactive tab, a soft-closed (hidden) doc, or a file opened
+ * specially for this edit. The target's Monaco model isn't attached to the
+ * editor (so `editorApiRef.strReplace` would hit the WRONG buffer), and the
+ * editor's onChange only fires for the attached model. The edit is therefore
+ * applied manually:
+ *
+ *  1. compute the new buffer from the doc's CURRENT content — the live Monaco
+ *     model when one exists (keeping any unsaved edits intact), else the
+ *     store's copy — with the same unique-first-occurrence semantics
+ *     `editorApiRef.strReplace` enforces;
+ *  2. push it into the store (`updateContent` bumps the revision + marks the
+ *     doc dirty, exactly like the editor's onChange path);
+ *  3. refresh the doc's Monaco model via the registry's controlled replace —
+ *     the model-sync effect only seeds content when a model is FIRST opened,
+ *     so a background model would otherwise keep the stale buffer forever;
+ *  4. forward to the backend with the bumped revision (the same `updateText`
+ *     the editor's debounced push uses).
+ *
+ * Returns false when old_string is missing or ambiguous in the current buffer
+ * so the agent can re-read and retry.
  */
+async function applyEditToDocument(
+  docId: string,
+  oldString: string,
+  newString: string,
+): Promise<boolean> {
+  const { monacoModelRegistry } = await import(
+    "../components/Editor/monacoModelRegistry"
+  );
+  const entry = monacoModelRegistry.getModel(docId);
+  const doc = useDocumentsStore.getState().documents[docId];
+  // The live model is the source of truth when it exists; otherwise fall back
+  // to the store's copy (no editor mounted / model not opened yet).
+  const source = entry !== undefined ? entry.model.getValue() : doc?.content;
+  if (source === undefined) return false;
+  const first = source.indexOf(oldString);
+  if (first === -1) return false;
+  if (source.indexOf(oldString, first + 1) !== -1) return false; // ambiguous
+  // Literal splice (indexOf + slice): unlike String.replace with a string
+  // replacement, no $-substitution patterns ($&, $', $$ …) are interpreted in
+  // newString — the same literal semantics the DiffCard preview uses.
+  const next =
+    source.slice(0, first) + newString + source.slice(first + oldString.length);
+
+  // Store first: updateContent bumps the revision + marks dirty, mirroring the
+  // editor's onChange path. Read the revision back AFTER the bump (same as
+  // MonacoEditor.handleTextChanged).
+  useDocumentsStore.getState().updateContent(docId, next);
+  const revision = useDocumentsStore.getState().documents[docId]?.revision;
+  if (revision === undefined) return false; // doc vanished mid-apply
+
+  if (entry !== undefined) {
+    monacoModelRegistry.applyExternalContent(docId, next, revision);
+  }
+  const { updateText } = await import("../lib/tauri");
+  // Fire-and-forget like the editor's debounced push: the local edit + store
+  // update already succeeded, so a backend hiccup must not read as "edit
+  // failed" (the agent would retry and double-apply).
+  void updateText(docId, next, revision).catch((e) =>
+    aiLog("[approval] edit updateText forward failed:", e),
+  );
+  return true;
+}
+
 /**
  * Apply an approved edit/write. Returns a result string fed back to the LLM as
  * the tool result — a real success/failure message, never a blind "applied".
  *
- * For `edit`, goes through `editorApiRef.strReplace` (single undo step). If
- * the editor reports the replacement didn't land (old_string not found / not
- * unique — e.g. the buffer changed while waiting for approval), the agent is
- * told so it can re-read and retry.
+ * For `edit`, the target is the document at `p.path` (visible tab, soft-closed
+ * doc, or a file opened on demand) — NOT whatever tab happens to be active
+ * when the user clicks Apply. When the target IS the active doc, the edit goes
+ * through `editorApiRef.strReplace` (single undo step). If the replacement
+ * didn't land (old_string not found / not unique — e.g. the buffer changed
+ * while waiting for approval), the agent is told so it can re-read and retry.
  *
- * For `write_file`, creates the file via IPC then opens it as a tab and pushes
- * content. Errors propagate as the tool result.
+ * For `write_file`, creates the file via IPC, opens it as a tab, and pushes
+ * the content through the store + backend. Errors propagate as the tool result.
  */
 async function applyApproval(p: PendingApproval): Promise<string> {
   try {
     if (p.kind === "edit") {
-      const api = editorApiRef.current;
-      if (api) {
-        const ok = api.strReplace(p.old_string ?? "", p.new_string ?? "");
-        if (!ok) {
-          return "Edit could not be applied — old_string was not found or was not unique in the current buffer (it may have changed while waiting for approval). Re-read the file and retry.";
-        }
-        return "Edit applied.";
-      }
-      // No editor: update the active doc's content directly as a fallback.
+      const oldString = p.old_string ?? "";
+      const newString = p.new_string ?? "";
+      const notApplied =
+        "Edit could not be applied — old_string was not found or was not unique in the target buffer (it may have changed while waiting for approval). Re-read the file and retry.";
       const { activeId } = useTabsStore.getState();
-      if (activeId) {
-        const doc = useDocumentsStore.getState().documents[activeId];
-        if (doc) {
-          const next = doc.content.replace(p.old_string ?? "", p.new_string ?? "");
-          useDocumentsStore.getState().updateContent(activeId, next);
-          return "Edit applied.";
-        }
+
+      // Resolve the edit target from p.path. The approval may name a file that
+      // is NOT the active tab (the agent can edit any workspace file, and the
+      // user may have switched tabs while the approval was pending) — applying
+      // through the ACTIVE editor regardless of p.path would corrupt whatever
+      // tab happens to be active. The documents map covers visible tabs AND
+      // soft-closed (hidden) docs.
+      const target = p.path
+        ? Object.values(useDocumentsStore.getState().documents).find(
+            (d) => d.path !== null && pathsEqual(d.path, p.path),
+          )
+        : undefined;
+
+      // Active-doc fast path: p.path is absent (defaults to the active file)
+      // or names it. The target model is attached to the editor, so
+      // editorApiRef.strReplace applies the edit as one undo step and the
+      // change flows through the editor's normal onChange → updateContent →
+      // updateText sync. When p.path IS set but resolves to no open doc, this
+      // must stay false — routing through the active editor would apply the
+      // edit to whatever tab happens to be active (the exact corruption this
+      // path guards against); the unresolved file is opened below instead.
+      const isActiveTarget =
+        target !== undefined
+          ? target.id === activeId
+          : !p.path && activeId !== null;
+      if (isActiveTarget && editorApiRef.current) {
+        const api = editorApiRef.current;
+        return api.strReplace(oldString, newString) ? "Edit applied." : notApplied;
       }
-      return "Edit could not be applied — no active editor or document.";
+
+      // A present p.path FULLY determines the target — never fall back to the
+      // active tab when it resolves to no open doc (that would edit the wrong
+      // buffer). Only a missing p.path defaults to the active tab.
+      let targetId = target?.id ?? (!p.path ? activeId : null);
+      if (targetId === null && p.path) {
+        // p.path names a file not open on the frontend (no tab, not hidden):
+        // open it as a tab first — openFileByPath MUST be paired with openPath
+        // so the tab actually appears (mirrors lib/openFile.ts) — then edit
+        // that doc.
+        const { openFileByPath } = await import("../lib/tauri");
+        const opened = await openFileByPath(p.path);
+        useTabsStore.getState().openPath(opened);
+        targetId = opened.id;
+      }
+      if (targetId === null) {
+        return "Edit could not be applied — no active editor or document.";
+      }
+      return (await applyEditToDocument(targetId, oldString, newString))
+        ? "Edit applied."
+        : notApplied;
     }
     if (p.kind === "write_file") {
       // `create_entry` makes an EMPTY file (it takes no content) and expects a
       // workspace-RELATIVE path. After creating, open it as a tab and push the
-      // content via updateText so it lands on disk + in the editor.
+      // content through the same store + backend pair an editor edit uses.
       const { invoke } = await import("@tauri-apps/api/core");
       const root = useWorkspaceStore.getState().rootPath;
       const rel = root && p.path.startsWith(root)
@@ -425,8 +543,22 @@ async function applyApproval(p: PendingApproval): Promise<string> {
       await invoke("create_entry", { rel, kind: "file" });
       const { openFileByPath, updateText } = await import("../lib/tauri");
       const opened = await openFileByPath(p.path);
-      if (p.after) {
-        await updateText(opened.id, p.after, opened.revision);
+      // openFileByPath must ALWAYS be paired with openPath (lib/openFile.ts,
+      // useExternalFileRouting.ts) — without it the file is registered +
+      // compiled backend-side but no tab appears in the UI.
+      useTabsStore.getState().openPath(opened);
+      if (p.after !== undefined) {
+        // The content must land in the STORE too, not just the backend (the
+        // Monaco model is created from doc.content): updateContent sets it,
+        // bumps the revision, and marks the doc dirty (the file on disk is
+        // still empty until the user saves). Then forward to the backend with
+        // the bumped revision — the same pair the editor's edit path uses.
+        useDocumentsStore.getState().updateContent(opened.id, p.after);
+        const revision =
+          useDocumentsStore.getState().documents[opened.id]?.revision;
+        if (revision !== undefined) {
+          await updateText(opened.id, p.after, revision);
+        }
       }
       return "File created.";
     }
@@ -476,6 +608,11 @@ function handleAgentEvent(
     }
     case "tool_execution_start": {
       aiLog("[event] tool_execution_start args:", (event as { args?: unknown }).args);
+      // Remember the callId of the approval-gated tools so requestApproval can
+      // stamp it onto the approval message (see currentApprovalCallId).
+      if (event.toolName === "edit" || event.toolName === "write_file") {
+        currentApprovalCallId = event.toolCallId;
+      }
       set((s) => ({
         messages: [
           ...s.messages,
@@ -497,13 +634,19 @@ function handleAgentEvent(
         "result=",
         event.result,
       );
+      if (currentApprovalCallId === event.toolCallId) {
+        currentApprovalCallId = null;
+      }
       set((s) => ({
         messages: s.messages.map((m) =>
-          m.toolCallId === event.toolCallId && !m.approval
+          // Includes the approval message (it carries the same toolCallId): its
+          // running spinner must settle alongside the plain tool card. Its
+          // verdict is owned by the approval gate, not this event.
+          m.toolCallId === event.toolCallId
             ? {
                 ...m,
                 toolStatus: event.isError ? "error" : "ok",
-                toolResult: summarizeResult(event.result),
+                ...(m.approval ? {} : { toolResult: summarizeResult(event.result) }),
               }
             : m,
         ),

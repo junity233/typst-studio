@@ -10,7 +10,7 @@ import {
   selectDiagnosticsForDoc,
 } from "./diagnosticsStore";
 import { editorApiRef } from "../components/Editor/editorApiRef";
-import { openFileByPath, searchWorkspace } from "../lib/tauri";
+import { hardCloseTab, openFileByPath, searchWorkspace } from "../lib/tauri";
 import type { DirEntry } from "../lib/types";
 import {
   resolveWorkspacePath,
@@ -88,14 +88,33 @@ function activeDocContent(): string | null {
   return useDocumentsStore.getState().documents[activeId]?.content ?? null;
 }
 
-/** Read a file's content; open-tab-first, IPC fallback for closed files. */
+/**
+ * Read a file's content; open-tab-first, IPC fallback for closed files.
+ *
+ * The fallback opens a BACKEND-only tab (`openFileByPath` without entering the
+ * frontend tab strip), which registers the doc and spawns a compile worker.
+ * Because the doc never enters the frontend tabs/hidden lists, nothing would
+ * ever close it — an agent reading N files would strand N live workers for the
+ * app's lifetime. We therefore hard-close the tab after reading (mirroring
+ * `batchExportStore.run`'s closeAfterwards + hardCloseTab pattern), unless the
+ * backend deduped us onto an id the frontend already tracks (a visible tab or
+ * a soft-closed/hidden doc — both must keep their state).
+ */
 async function readForContent(absPath: string): Promise<string> {
   const { documents } = useDocumentsStore.getState();
   for (const d of Object.values(documents)) {
     if (d.path && pathsEqual(d.path, absPath)) return d.content;
   }
   const opened = await openFileByPath(absPath);
-  return opened.content;
+  // Defensive known-id check (batchExportStore precedent): only close the tab
+  // WE opened, never one the frontend already tracks.
+  const { tabs, hidden } = useTabsStore.getState();
+  if (tabs.includes(opened.id) || hidden.includes(opened.id)) {
+    return opened.content;
+  }
+  const content = opened.content;
+  void hardCloseTab(opened.id).catch(() => {});
+  return content;
 }
 
 /** Does any open tab already live at this absolute path? */

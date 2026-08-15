@@ -132,7 +132,15 @@ export function AssistantPanel(_: { viewId: string }) {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
+                // isComposing / keyCode 229: an IME (e.g. Chinese pinyin) is
+                // committing the composition on this Enter — don't send the
+                // half-committed text as a message.
+                if (
+                  e.key === "Enter" &&
+                  !e.shiftKey &&
+                  !e.nativeEvent.isComposing &&
+                  e.keyCode !== 229
+                ) {
                   e.preventDefault();
                   onSend();
                 }

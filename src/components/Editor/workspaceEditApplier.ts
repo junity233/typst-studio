@@ -32,7 +32,7 @@ import type {
  * production wiring + the spec §12.2 scope/limitations discussion.
  */
 
-/** A Monaco edit operation (1-indexed line/column, as `model.applyEdits` expects). */
+/** A Monaco edit operation (1-indexed line/column, as `model.pushEditOperations` expects). */
 export interface MonacoEditOp {
   range: {
     startLineNumber: number;
@@ -46,15 +46,24 @@ export interface MonacoEditOp {
 /**
  * The minimal model surface [`applyModelEdits`](Self.applyModelEdits) needs.
  * Extracted as a named interface so the registry parameter type stays readable
- * and a unit test can supply a fake. `applyEdits` returns `void` to match real
- * Monaco's `ITextModel.applyEdits` (which discards the return for non-undo-stop
- * edits); we don't need the result. Only `entry.uri` (the canonical string) is
- * read — the model's own `uri` property is intentionally NOT in this interface
- * (real Monaco's is a `Uri` object, not a string, and we don't need it).
+ * and a unit test can supply a fake. `pushEditOperations` — NOT the public
+ * `applyEdits` — is the seam: `applyEdits` mutates the model with NO undo
+ * entry, so LSP-driven edits (F2 rename, code actions) would be impossible to
+ * Ctrl+Z. `pushEditOperations` records the edits on the undo stack; the null
+ * `beforeCursorState` / `() => null` cursor-state computer is the standard
+ * idiom for programmatic (non-cursor-tracking) edits. The return value
+ * (post-edit selections) is discarded. Only `entry.uri` (the canonical string)
+ * is read — the model's own `uri` property is intentionally NOT in this
+ * interface (real Monaco's is a `Uri` object, not a string, and we don't need
+ * it).
  */
 export interface EditableModelEntry {
   model: {
-    applyEdits: (ops: MonacoEditOp[]) => void;
+    pushEditOperations: (
+      beforeCursorState: null,
+      ops: MonacoEditOp[],
+      cursorStateComputer: () => null,
+    ) => unknown;
   };
   uri: string;
 }
@@ -70,10 +79,12 @@ export interface ModelEditRegistry {
  * the URIs it could NOT apply (no open model at that URI) — the caller treats
  * those as a failure.
  *
- * Each model's edits go through ONE `model.applyEdits` call (a single atomic
- * operation = one undo step). The resulting content-change then flows through
- * the editor's normal onChange path (dirty + revision + backend forward) — we
- * do NOT bypass the dirty/revision flow (§12.2 "进入正常 dirty/revision 流程").
+ * Each model's edits go through ONE `model.pushEditOperations` call (a single
+ * atomic operation = one undo step — unlike the raw `applyEdits`, which mutates
+ * with no undo entry, leaving the edits unrevertable via Ctrl+Z). The resulting
+ * content-change then flows through the editor's normal onChange path (dirty +
+ * revision + backend forward) — we do NOT bypass the dirty/revision flow (§12.2
+ * "进入正常 dirty/revision 流程").
  *
  * LSP ranges are 0-indexed; Monaco is 1-indexed for both lines and columns, so
  * each TextEdit is converted here.
@@ -103,7 +114,7 @@ export function applyModelEdits(
       },
       text: e.newText,
     }));
-    entry.model.applyEdits(ops);
+    entry.model.pushEditOperations(null, ops, () => null);
   }
   return failed;
 }

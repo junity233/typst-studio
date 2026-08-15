@@ -8,7 +8,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const docsState: { documents: Record<string, { id: string; content: string; path: string }> } = {
   documents: {},
 };
-const tabsState: { activeId: string | null } = { activeId: null };
+const tabsState: {
+  activeId: string | null;
+  tabs: string[];
+  hidden: string[];
+} = { activeId: null, tabs: [], hidden: [] };
 const wsState: { rootPath: string | null; name: string | null } = {
   rootPath: "/ws",
   name: "ws",
@@ -33,6 +37,9 @@ vi.mock("../../lib/tauri", () => ({
   openFileByPath: vi.fn(),
   searchWorkspace: vi.fn(),
   updateText: vi.fn(),
+  // readForContent chains `.catch()` on the result — the mock must return a
+  // Promise like the real IPC wrapper does.
+  hardCloseTab: vi.fn(() => Promise.resolve()),
 }));
 vi.mock("../../components/Editor/editorApiRef", () => ({
   editorApiRef: {
@@ -44,7 +51,7 @@ vi.mock("../../components/Editor/editorApiRef", () => ({
   },
 }));
 
-const { openFileByPath, searchWorkspace } = await import("../../lib/tauri");
+const { openFileByPath, searchWorkspace, hardCloseTab } = await import("../../lib/tauri");
 // Re-import after mocks.
 const { buildTools: buildToolsReal } = await import("../assistantTools");
 import type { ToolContext } from "../assistantTools";
@@ -58,6 +65,8 @@ function makeCtx(): ToolContext {
 function resetState() {
   docsState.documents = {};
   tabsState.activeId = null;
+  tabsState.tabs = [];
+  tabsState.hidden = [];
   wsState.rootPath = "/ws";
   wsState.name = "ws";
   diagsState.byDoc = {};
@@ -91,6 +100,53 @@ describe("assistantTools", () => {
     const result = await rf.execute("call-1", { path: "b.typ" }, undefined);
     expect(result.content[0]).toMatchObject({ text: "from disk" });
     expect(openFileByPath).toHaveBeenCalledWith("/ws/b.typ");
+  });
+
+  it("read_file hard-closes the backend-only tab it opened for an unknown file", async () => {
+    // The id the backend handed back is unknown to the frontend (no tab, not
+    // hidden) → the worker must be released, mirroring batchExportStore's
+    // closeAfterwards + hardCloseTab pattern.
+    (openFileByPath as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "x",
+      content: "from disk",
+      path: "/ws/b.typ",
+    });
+    const tools = buildToolsReal(makeCtx());
+    const rf = tools.find((t) => t.name === "read_file")!;
+    const result = await rf.execute("call-1", { path: "b.typ" }, undefined);
+    expect(result.content[0]).toMatchObject({ text: "from disk" });
+    expect(hardCloseTab).toHaveBeenCalledWith("x");
+  });
+
+  it("read_file keeps the doc when the backend deduped onto a known tab id", async () => {
+    // Defensive race: the path wasn't in documents at check time, but the
+    // backend returned an id the frontend already tracks (a visible tab or a
+    // hidden doc) — its state must survive, so NO hard close.
+    tabsState.tabs = ["known"];
+    (openFileByPath as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "known",
+      content: "tab content",
+      path: "/ws/b.typ",
+    });
+    const tools = buildToolsReal(makeCtx());
+    const rf = tools.find((t) => t.name === "read_file")!;
+    const result = await rf.execute("call-1", { path: "b.typ" }, undefined);
+    expect(result.content[0]).toMatchObject({ text: "tab content" });
+    expect(hardCloseTab).not.toHaveBeenCalled();
+  });
+
+  it("read_file keeps the doc when the backend deduped onto a hidden id", async () => {
+    tabsState.hidden = ["hid"];
+    (openFileByPath as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "hid",
+      content: "hidden content",
+      path: "/ws/b.typ",
+    });
+    const tools = buildToolsReal(makeCtx());
+    const rf = tools.find((t) => t.name === "read_file")!;
+    const result = await rf.execute("call-1", { path: "b.typ" }, undefined);
+    expect(result.content[0]).toMatchObject({ text: "hidden content" });
+    expect(hardCloseTab).not.toHaveBeenCalled();
   });
 
   it("read_file rejects paths outside the workspace", async () => {

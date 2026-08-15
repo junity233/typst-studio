@@ -17,6 +17,7 @@ pub struct CompileOutcome {
     /// `true` when compilation produced output with no errors.
     pub success: bool,
     /// Wall-clock compile duration in milliseconds.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub duration_ms: u64,
     /// Errors encountered (empty on success).
     pub errors: Vec<Diagnostic>,

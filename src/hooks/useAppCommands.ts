@@ -9,10 +9,12 @@ import {
 } from "../lib/tauri";
 import { useTabsStore, readAllDocuments } from "../store/tabsStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
+import { useProjectConfigStore } from "../store/projectConfigStore";
+import { workspacePathsEqual } from "../lib/workspacePath";
 import { useUiStore } from "../store/uiStore";
 import { useDialogStore } from "../store/dialogStore";
 import { saveTab } from "../lib/commands";
-import { flushAndSaveAs, flushAndSaveInPlace } from "../lib/saveDocument";
+import { flushAndSaveAs } from "../lib/saveDocument";
 import { captureAndSaveSession } from "../lib/session";
 import { captureWindowBounds } from "../lib/windowState";
 import { captureLayout } from "../lib/layoutState";
@@ -157,8 +159,9 @@ export async function dispatch(menuId: string): Promise<void> {
   // load to avoid a circular init with the workbench extension.
   ensureWorkbenchActivated();
   try {
-    // "Open Recent > <workspace>" submenu (§7.2): id is `open-recent:<i>`.
-    // Dynamic id — kept as a special case, not a registered command.
+    // "Open Recent > <workspace>" submenu (§7.2): id is
+    // `open-recent:<path-or-index>`. Dynamic id — kept as a special case, not
+    // a registered command.
     if (menuId.startsWith("open-recent:")) {
       await handleOpenRecent(menuId);
       return;
@@ -197,18 +200,37 @@ export async function handleOpenFile(): Promise<void> {
 
 /**
  * Handle an "Open Recent > <workspace>" menu pick (§7.2 "最近工作区"). The id
- * is `open-recent:<i>`; resolve `<i>` against the session's recent list and
- * open that workspace by path. Best-effort: a stale/missing entry is logged
- * (the menu is static for the session, so a removed folder can still be listed).
+ * suffix is EITHER an absolute path (URI-encoded — TitleBar dispatches
+ * `open-recent:<encodeURIComponent(path)>`) or the legacy integer index into
+ * the session's recent list. The path form is preferred: a TitleBar-side
+ * index refers to a stale module-load snapshot of the list, so after any
+ * workspace open mid-session the indices diverge and an index pick can open
+ * the WRONG workspace; the fresh list is re-loaded here and matched by path.
+ * Best-effort: a stale/missing entry silently no-ops (the menu is static for
+ * the session, so a removed folder can still be listed).
  */
 async function handleOpenRecent(menuId: string): Promise<void> {
-  const idxStr = menuId.slice("open-recent:".length);
-  const idx = Number(idxStr);
-  if (!Number.isInteger(idx) || idx < 0) return;
-  const { loadSession } = await import("../lib/session");
+  const suffix = menuId.slice("open-recent:".length);
+  const { loadSession, recordWorkspace } = await import("../lib/session");
   const { openWorkspaceByPath } = await import("../lib/tauri");
   const session = await loadSession();
-  const path = session.recentWorkspaces[idx];
+  let path: string | undefined;
+  if (/^\d+$/.test(suffix)) {
+    // Legacy payload: an index into the FRESH recent list.
+    path = session.recentWorkspaces[Number(suffix)];
+  } else {
+    // Path payload: decode and match by path equality (separator- and,
+    // on Windows, case-insensitive via `workspacePathsEqual`).
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(suffix);
+    } catch {
+      return; // malformed encoding — ignore
+    }
+    path = session.recentWorkspaces.find((p) =>
+      workspacePathsEqual(p, decoded),
+    );
+  }
   if (!path) return;
   try {
     const meta = await openWorkspaceByPath(path);
@@ -220,6 +242,14 @@ async function handleOpenRecent(menuId: string): Promise<void> {
         expanded: new Set(),
       });
       await useWorkspaceStore.getState().refresh("");
+      // Persist so session.lastWorkspace + the recent list track this open
+      // (matches workspaceStore.openWorkspace); otherwise the next launch
+      // would reopen the previous workspace.
+      recordWorkspace(meta.root);
+      // Re-hydrate the project-config store for the new root (also mirrors
+      // workspaceStore.openWorkspace), or the Project panel keeps the previous
+      // workspace's configPath/typFiles.
+      void useProjectConfigStore.getState().hydrate();
     }
   } catch (e) {
     console.warn(`[menu:open-recent] could not open "${path}":`, e);
@@ -385,12 +415,13 @@ export async function handleSave(
   activeTab: { path: string | null } | null,
 ): Promise<void> {
   if (activeId === null || activeTab === null) return;
-  if (activeTab.path === null) {
-    await handleSaveAs(activeId);
-    return;
-  }
-  const saved = await flushAndSaveInPlace(activeId);
-  useTabsStore.getState().markSaved(activeId, saved.path, saved.revision);
+  // Route through `saveTab` (lib/commands) instead of flushing directly, so
+  // Ctrl+S / the menu Save command get the full save contract: untitled →
+  // Save As, cancelled silent, and — critically — the §5.4 conflict gate: an
+  // `external_conflict` rejection opens the ConflictDialog (a resolution
+  // path), where a raw alert here would leave the user stuck. saveTab also
+  // no-ops on a vanished doc and handles the SAVE_AS_RECOVERY_CODES fallback.
+  await saveTab(activeId);
 }
 
 /** Save As: write to a new file and rebind the tab to it. */

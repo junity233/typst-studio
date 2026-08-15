@@ -204,8 +204,8 @@ describe("dedupDiagnostics — collapse compiler/tinymist duplicates", () => {
     // Two sources may phrase the same error with different codes; collapsing on
     // code would be wrong (the position+message is the identity).
     const out = dedupDiagnostics([
-      diag("m", { code: 1n }),
-      diag("m", { code: 2n }),
+      diag("m", { code: 1 }),
+      diag("m", { code: 2 }),
     ]);
     expect(out).toHaveLength(1);
   });
@@ -213,7 +213,7 @@ describe("dedupDiagnostics — collapse compiler/tinymist duplicates", () => {
   it("is stable: keeps the FIRST occurrence (compiler wins over tinymist)", () => {
     // getCombined orders compiler before tinymist, so a compiler diagnostic is
     // preserved over its tinymist duplicate.
-    const compiler = diag("dup", { code: 100n });
+    const compiler = diag("dup", { code: 100 });
     const tinymist = diag("dup", { code: null });
     const out = dedupDiagnostics([compiler, tinymist]);
     expect(out).toHaveLength(1);

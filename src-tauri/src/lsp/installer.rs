@@ -8,7 +8,8 @@
 //! ~/.typststudio/tinymist[.exe]     the binary
 //! ~/.typststudio/tinymist.version   the installed version, plain text
 //! ~/.typststudio/tinymist.download  in-flight download (cleaned up)
-//! ~/.typststudio/tinymist.old       previous binary during a Windows swap
+//! ~/.typststudio/tinymist.old       previous binary during a swap (cleaned up)
+//! ~/.typststudio/tinymist.extracted freshly extracted binary (cleaned up)
 //! ```
 //!
 //! ## Why the triple-target archives (not the bare binaries)
@@ -152,7 +153,14 @@ pub fn parse_sha_sums(text: &str, asset: &str) -> Option<[u8; 32]> {
         if line.len() < 66 {
             continue;
         }
-        let (hex, rest) = line.split_at(64);
+        // Boundary-safe split: the body passed through `from_utf8_lossy`, so
+        // corrupted bytes become multi-byte U+FFFD and byte 64 can land
+        // mid-char — `split_at` would panic there (inside a spawned task,
+        // silently wedging the installer). `str::get` returns `None` instead
+        // and the malformed line is skipped like any other.
+        let (Some(hex), Some(rest)) = (line.get(..64), line.get(64..)) else {
+            continue;
+        };
         if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
             continue;
         }
@@ -185,8 +193,9 @@ pub struct InstallPaths {
     pub binary: PathBuf,
     pub version_file: PathBuf,
     pub download_tmp: PathBuf,
-    /// Where the previous binary is parked during a Windows swap (the running
-    /// exe cannot be deleted, but it CAN be renamed away).
+    /// Where the previous binary is parked during a swap (the running exe
+    /// can be renamed away even while in use; on Unix a plain rename would
+    /// destroy it before the smoke test clears the new one).
     pub old_binary: PathBuf,
 }
 
@@ -465,6 +474,10 @@ impl TinymistInstaller {
         // Fresh attempt: drop leftovers from a previous run.
         let _ = std::fs::remove_file(&paths.download_tmp);
         let _ = std::fs::remove_file(&paths.old_binary);
+        // A run killed between extraction and placement can strand a
+        // full-size `*.extracted` blob; reap those too so the home dir
+        // doesn't accumulate one per crash.
+        remove_stale_extracts(&paths.dir);
 
         // 1+2. Download the archive and verify its checksum, retrying the
         // pair together: a dropped connection OR a checksum mismatch (a
@@ -504,13 +517,30 @@ impl TinymistInstaller {
             .map_err(|e| anyhow::anyhow!("extract {} failed: {e}", asset))?;
         let _ = std::fs::remove_file(&paths.download_tmp);
 
-        // 4. Move into place (Windows: swap around a possibly-running exe).
-        self.place_binary(&paths, &extracted)?;
+        // 4. Move into place (the previous binary is parked as `.old` around
+        // the swap on every platform). A failure must not strand the
+        // multi-MB `.extracted` blob in the home dir — nothing else reaps
+        // it, so repeated failures would accumulate unbounded.
+        if let Err(e) = place_binary(&paths, &extracted) {
+            let _ = std::fs::remove_file(&extracted);
+            return Err(e);
+        }
         let _ = std::fs::remove_file(&extracted);
 
-        // 5. Smoke test before committing the version marker.
-        let version = self.smoke_test(&paths.binary).await?;
+        // 5. Smoke test before committing the version marker. On failure the
+        // new binary is unverified — smoke_test removes it, and the previous
+        // binary parked by the swap (if any) is restored so the managed slot
+        // isn't left empty (no-op where no `.old` exists).
+        let version = match self.smoke_test(&paths.binary).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = std::fs::rename(&paths.old_binary, &paths.binary);
+                return Err(e);
+            }
+        };
         std::fs::write(&paths.version_file, &version)?;
+        // Verified: the parked previous binary is no longer needed.
+        let _ = std::fs::remove_file(&paths.old_binary);
 
         self.state.lock().state = Some(TinymistInstallState::Installed);
         tracing::info!("tinymist {version} installed at {}", paths.binary.display());
@@ -637,34 +667,6 @@ impl TinymistInstaller {
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// Move the freshly extracted binary to its final path. On Windows the
-    /// destination may be the currently-running exe, which can be RENAMED but
-    /// not replaced — so park the old file as `.old` (best-effort delete; a
-    /// still-running old binary leaves the `.old` behind for the next
-    /// install's cleanup). On Unix a plain rename atomically overwrites
-    /// (after the exec bit is set — rename preserves the mode).
-    fn place_binary(&self, paths: &InstallPaths, extracted: &Path) -> anyhow::Result<()> {
-        #[cfg(windows)]
-        {
-            if paths.binary.exists() {
-                std::fs::rename(&paths.binary, &paths.old_binary)?;
-            }
-            if let Err(e) = std::fs::rename(extracted, &paths.binary) {
-                // Put the old binary back so a failed swap doesn't leave the
-                // install dir empty.
-                let _ = std::fs::rename(&paths.old_binary, &paths.binary);
-                anyhow::bail!("placing tinymist failed: {e}");
-            }
-            let _ = std::fs::remove_file(&paths.old_binary);
-        }
-        #[cfg(unix)]
-        {
-            make_executable(extracted)?;
-            std::fs::rename(extracted, &paths.binary)?;
-        }
-        Ok(())
-    }
-
     /// Run `<binary> --version` and return the reported version string
     /// (e.g. `tinymist 0.15.2 (abcdef01)` — the full first line). A binary
     /// that cannot run (bad architecture, corrupted) fails here and is
@@ -674,11 +676,29 @@ impl TinymistInstaller {
         cmd.arg("--version")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
+            .stderr(std::process::Stdio::null())
+            // If the timeout below drops the output future mid-run, the
+            // child is killed instead of leaking a never-verified process.
+            .kill_on_drop(true);
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
-        let output = tokio::time::timeout(SMOKE_TEST_TIMEOUT, cmd.output()).await??;
+        // Every failure mode must leave no unverified binary in the managed
+        // slot — not just the bad-status one.
+        let output = match tokio::time::timeout(SMOKE_TEST_TIMEOUT, cmd.output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                // Spawn/IO failure — the binary never verified.
+                let _ = std::fs::remove_file(binary);
+                anyhow::bail!("could not run the downloaded tinymist for its --version check: {e}");
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(binary);
+                anyhow::bail!(
+                    "downloaded tinymist failed its --version check: no answer within {SMOKE_TEST_TIMEOUT:?}"
+                );
+            }
+        };
         let stdout = String::from_utf8_lossy(&output.stdout);
         let first = stdout.lines().next().unwrap_or("").trim();
         if !output.status.success() || !first.starts_with("tinymist") {
@@ -693,6 +713,34 @@ impl TinymistInstaller {
     }
 }
 
+/// Move the freshly extracted binary to its final path. The previous
+/// binary (if any) is parked as `.old` first — on Windows the destination
+/// may be the currently-running exe, which can be RENAMED but not
+/// replaced, and on Unix a plain `rename` would destroy the only copy of
+/// the previously working binary before the smoke test verifies the new
+/// one (`rename`-then-restore is atomic on both platforms). The parked
+/// `.old` is intentionally NOT deleted here: it is the only copy of the
+/// previously working binary until the smoke test verifies the new one
+/// (run_install removes it after verification and restores it on a failed
+/// smoke test; the next install attempt also cleans up any leftover).
+fn place_binary(paths: &InstallPaths, extracted: &Path) -> anyhow::Result<()> {
+    // The exec bit doesn't survive every extractor path (Unix); set it
+    // before the file lands in the managed slot.
+    #[cfg(unix)]
+    make_executable(extracted)?;
+
+    if paths.binary.exists() {
+        std::fs::rename(&paths.binary, &paths.old_binary)?;
+    }
+    if let Err(e) = std::fs::rename(extracted, &paths.binary) {
+        // Put the old binary back so a failed swap doesn't leave the
+        // install dir empty.
+        let _ = std::fs::rename(&paths.old_binary, &paths.binary);
+        anyhow::bail!("placing tinymist failed: {e}");
+    }
+    Ok(())
+}
+
 /// chmod +x (Unix). The release archives do not always carry the exec bit
 /// through every extractor path, so set it explicitly.
 #[cfg(unix)]
@@ -702,6 +750,20 @@ fn make_executable(path: &Path) -> anyhow::Result<()> {
     perms.set_mode(perms.mode() | 0o755);
     std::fs::set_permissions(path, perms)?;
     Ok(())
+}
+
+/// Remove leftover `*.extracted` blobs (each a full ~60-75 MB binary) from a
+/// run that died between extraction and placement. Best-effort: an
+/// unreadable directory or undeletable file is not an install failure.
+fn remove_stale_extracts(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().ends_with(".extracted") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Extract the `tinymist` binary from a downloaded release archive (zip on
@@ -856,6 +918,27 @@ mod tests {
         );
     }
 
+    /// A line whose byte 64 falls inside a multi-byte char (reachable: the
+    /// body goes through `String::from_utf8_lossy`, which turns invalid bytes
+    /// into 3-byte U+FFFD) must be skipped, not panic on the split.
+    #[test]
+    fn parse_sha_sums_skips_multibyte_char_straddling_the_split() {
+        // 63 hex bytes + 'é' (2 bytes spanning offsets 63..65) + padding:
+        // 69 bytes total (>= 66), and byte 64 is mid-char.
+        let bad = format!("{}éabcd", "a".repeat(63));
+        assert!(bad.len() >= 66);
+        assert_eq!(bad.chars().count(), 68);
+        let sums = format!(
+            "{bad}\n91edb0d21edca5841b896d702d8086622792d52b71a9b444d8befb0e937969ae *tinymist-x86_64-pc-windows-msvc.zip\n"
+        );
+        assert!(
+            parse_sha_sums(&sums, "tinymist-x86_64-pc-windows-msvc.zip").is_some(),
+            "the straddling line is skipped; the valid line after it still parses"
+        );
+        // And when ONLY the straddling line names the asset: no match, no panic.
+        assert!(parse_sha_sums(&bad, "abcd").is_none());
+    }
+
     #[test]
     fn hex_to_32_roundtrip() {
         // 8 chars + 56 chars = the required 64.
@@ -973,6 +1056,95 @@ mod tests {
         }
 
         assert!(extract_binary(&archive_path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A hand-built `InstallPaths` inside a throwaway temp dir.
+    fn test_paths(dir: &Path) -> InstallPaths {
+        InstallPaths {
+            dir: dir.to_path_buf(),
+            binary: dir.join(binary_name()),
+            version_file: dir.join("tinymist.version"),
+            download_tmp: dir.join("dl.download"),
+            old_binary: dir.join("dl.old"),
+        }
+    }
+
+    /// A successful swap parks the previous binary as `.old` (on every
+    /// platform — on Unix a plain rename would destroy it before the smoke
+    /// test clears the new binary, leaving the managed slot unrecoverable).
+    #[test]
+    fn place_binary_parks_previous_as_old() {
+        let dir = std::env::temp_dir().join(format!(
+            "typst-tinymist-place-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = test_paths(&dir);
+        std::fs::write(&paths.binary, b"previous").unwrap();
+        let extracted = dir.join("fresh.extracted");
+        std::fs::write(&extracted, b"fresh").unwrap();
+
+        place_binary(&paths, &extracted).expect("swap succeeds");
+        assert_eq!(std::fs::read(&paths.binary).unwrap(), b"fresh");
+        assert_eq!(
+            std::fs::read(&paths.old_binary).unwrap(),
+            b"previous",
+            "the previous binary must be parked, not destroyed"
+        );
+        assert!(!extracted.exists(), "moved, not copied");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed swap (the extracted file vanished) restores the previous
+    /// binary instead of leaving the managed slot empty.
+    #[test]
+    fn place_binary_restores_previous_when_swap_fails() {
+        let dir = std::env::temp_dir().join(format!(
+            "typst-tinymist-place-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = test_paths(&dir);
+        std::fs::write(&paths.binary, b"current").unwrap();
+
+        let err = place_binary(&paths, &dir.join("missing"));
+        assert!(err.is_err(), "swapping in a missing file must fail");
+        assert_eq!(
+            std::fs::read(&paths.binary).unwrap(),
+            b"current",
+            "the previous binary must be back in the managed slot"
+        );
+        assert!(
+            !paths.old_binary.exists(),
+            "the parked copy is consumed by the restore"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The fresh-attempt sweep reaps stranded `*.extracted` blobs and touches
+    /// nothing else in the install dir.
+    #[test]
+    fn remove_stale_extracts_only_touches_extract_blobs() {
+        let dir = std::env::temp_dir().join(format!(
+            "typst-tinymist-sweep-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("tinymist.extracted"), b"stale").unwrap();
+        std::fs::write(dir.join("other.extracted"), b"stale").unwrap();
+        std::fs::write(dir.join(binary_name()), b"live").unwrap();
+        std::fs::write(dir.join("tinymist.version"), b"0.15.2").unwrap();
+        std::fs::write(dir.join("tinymist.download"), b"partial").unwrap();
+
+        remove_stale_extracts(&dir);
+        assert!(!dir.join("tinymist.extracted").exists());
+        assert!(!dir.join("other.extracted").exists());
+        assert!(dir.join(binary_name()).is_file());
+        assert!(dir.join("tinymist.version").is_file());
+        assert!(dir.join("tinymist.download").is_file());
+        // A missing dir is a no-op, not a panic.
+        remove_stale_extracts(&dir.join("nope"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

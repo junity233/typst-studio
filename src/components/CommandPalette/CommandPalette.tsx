@@ -61,9 +61,21 @@ export function CommandPalette() {
   }, [activeIndex]);
 
   // Autofocus the input on open. Done in an effect (not `autoFocus`, which is
-  // unreliable across re-renders) so reopening after a close re-focuses.
+  // unreliable across re-renders) so reopening after a close re-focuses. Also
+  // records where focus came from and hands it back on close/unmount
+  // (Escape / Enter / backdrop) — mirrors ConfirmDialog's save/restore pattern,
+  // so e.g. the Monaco editor regains focus after a palette round-trip.
   useEffect(() => {
-    if (open) inputRef.current?.focus();
+    if (!open) return;
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    inputRef.current?.focus();
+    return () => {
+      // Skip if the opener left the DOM meanwhile (its view unmounted, etc.).
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
   }, [open]);
 
   /** Run a command then close the palette. */
@@ -89,6 +101,10 @@ export function CommandPalette() {
       return;
     }
     if (e.key === "Enter") {
+      // isComposing / keyCode 229: an IME (e.g. Chinese pinyin) is committing
+      // the composition on this Enter — don't run the highlighted command
+      // with the half-committed query.
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
       e.preventDefault();
       const cmd = filtered[activeIndex];
       if (cmd) runCommand(cmd);

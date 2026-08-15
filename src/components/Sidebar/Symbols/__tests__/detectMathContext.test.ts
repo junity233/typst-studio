@@ -83,4 +83,83 @@ describe("detectMathContext", () => {
     expect(detectMathContext(["x"], 5, 1)).toBe("markup");
     expect(detectMathContext(["x"], 0, 1)).toBe("markup");
   });
+
+  it("ignores `$` inside fenced raw blocks", () => {
+    // Line 1 opens a ``` fence; the lone `$` on line 2 is raw content.
+    const lines = ["```typ", "$ not math", "```", "tail $x$ more"];
+    // Cursor inside the fence → 0 counted `$` → markup.
+    expect(detectMathContext(lines, 2, 11)).toBe("markup");
+    // After the fence + the real math pair → 2 counted → markup (a scan that
+    // counted the raw `$` would see 3 → math).
+    expect(detectMathContext(lines, 4, 14)).toBe("markup");
+    // Inside the real math pair on line 4 → 1 counted → math.
+    expect(detectMathContext(lines, 4, 7)).toBe("math");
+  });
+
+  it("ignores `$` inside inline raw spans", () => {
+    // `pay $100` is a raw span; the later $y$ is real math.
+    const line = "see `pay $100` then $y$ end";
+    // After the real $y$ → 2 counted → markup (raw `$` counted: 3 → math).
+    expect(detectMathContext([line], 1, 24)).toBe("markup");
+    // Inside the raw span → 0 counted → markup (raw `$` counted: 1 → math).
+    expect(detectMathContext([line], 1, 6)).toBe("markup");
+    // Inside the real math → math.
+    expect(detectMathContext([line], 1, 22)).toBe("math");
+  });
+
+  it("does not carry an unterminated inline raw span across lines", () => {
+    // Typst raw spans of 1-2 backticks cannot contain line breaks, so the
+    // unmatched `` ` `` on line 1 ends at the line break: line 2 is ordinary
+    // markup and its lone `$` opens math. (A state-carrying scan would treat
+    // line 2 as raw content → markup.)
+    const lines = ["broken `raw with $5", "costs $x here"];
+    expect(detectMathContext(lines, 2, 8)).toBe("math");
+    // Before line 2's `$` → 0 counted → markup.
+    expect(detectMathContext(lines, 2, 6)).toBe("markup");
+    // Fenced raws DO span lines (regression guard for the same change).
+    const fenced = ["```", "$ in fence", "```", "$real$ tail"];
+    expect(detectMathContext(fenced, 4, 12)).toBe("markup");
+  });
+
+  it("does not treat a URL scheme's `//` as a line comment", () => {
+    // Typst auto-links bare URLs: the `//` of `https://` does not start a
+    // comment, so a `$` after the URL still counts. One `$` before + one
+    // after the URL → 2 → markup; a comment-breaking scan would count only
+    // the first (1 → math).
+    const line = "Pay $5 at https://shop.example then $y end";
+    expect(detectMathContext([line], 1, 39)).toBe("markup");
+    // Parity therefore stays correct for later lines too: `$z$` on line 2
+    // brings the running count to 4 → markup after it (buggy: 3 → math).
+    expect(detectMathContext([line, "$z$ tail"], 2, 7)).toBe("markup");
+    // Inside line 2's `$z$` → 3 counted → math.
+    expect(detectMathContext([line, "$z$ tail"], 2, 2)).toBe("math");
+    // A `//` with no preceding `scheme:` token is still a comment.
+    expect(detectMathContext(["a $b$ c // comment $"], 1, 20)).toBe("markup");
+  });
+
+  it("ignores `$` inside line comments", () => {
+    const lines = ["// costs $5", "text $x$ tail"];
+    // After the real pair on line 2 → 2 counted → markup (comment `$` counted:
+    // 3 → math).
+    expect(detectMathContext(lines, 2, 13)).toBe("markup");
+    // Real math, then a trailing comment with a stray `$`.
+    expect(detectMathContext(["a $b$ // trailing $"], 1, 19)).toBe("markup");
+  });
+
+  it("ignores `$` inside (nestable) block comments", () => {
+    const lines = [
+      "/* outer $",
+      "/* nested $",
+      "*/ still outer $",
+      "*/ done",
+      "$real$ tail",
+    ];
+    // Line 4 closes the outer comment; nothing counted yet → markup (a naive
+    // scan would count the 3 comment `$`s → math).
+    expect(detectMathContext(lines, 4, 8)).toBe("markup");
+    // Inside the real math pair on line 5 → 1 counted → math.
+    expect(detectMathContext(lines, 5, 3)).toBe("math");
+    // After the real pair → 2 counted → markup.
+    expect(detectMathContext(lines, 5, 12)).toBe("markup");
+  });
 });

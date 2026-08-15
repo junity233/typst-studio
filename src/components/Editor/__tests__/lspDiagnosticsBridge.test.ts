@@ -114,7 +114,7 @@ describe("re-exported store selectors (§17 single import path)", () => {
         {
           severity: "Error",
           message: "c",
-          code: 1n,
+          code: 1,
           range: {
             start_line: 1,
             start_column: 1,

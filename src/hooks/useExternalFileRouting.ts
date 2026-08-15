@@ -1,5 +1,5 @@
 import { onFocusView, onOpenExternalFile, openFileByPath } from "../lib/tauri";
-import { useTabsStore } from "../store/tabsStore";
+import { useTabsStore, readAllDocuments } from "../store/tabsStore";
 import { toIpcError } from "../lib/ipc-error";
 import i18n from "../i18n";
 import { useTauriListener } from "./useTauriListener";
@@ -11,7 +11,8 @@ import { useTauriListener } from "./useTauriListener";
  * while the app is already running), the backend's single-instance plugin
  * callback emits one of two events:
  *
- * - `focus_view`: the file is already open — activate its tab.
+ * - `focus_view`: the file is already open — activate its tab (re-activating
+ *   it if the doc was soft-closed/hidden).
  * - `open_external_file`: the file is not open — open a new tab via the existing
  *   `openFileByPath` flow, exactly as a file-tree click does.
  *
@@ -20,7 +21,15 @@ import { useTauriListener } from "./useTauriListener";
  */
 export function useExternalFileRouting(): void {
   useTauriListener(onFocusView, (payload) => {
-    useTabsStore.getState().activate(payload.id);
+    // The backend's document registry includes soft-closed (hidden) docs;
+    // `activate` only works for ids on the visible tab strip, so re-activate
+    // hidden docs instead (mirrors openFile.ts).
+    const doc = readAllDocuments().find((d) => d.id === payload.id);
+    if (doc?.hidden) {
+      void useTabsStore.getState().reactivate(payload.id);
+    } else {
+      useTabsStore.getState().activate(payload.id);
+    }
   });
 
   useTauriListener(onOpenExternalFile, async (payload) => {

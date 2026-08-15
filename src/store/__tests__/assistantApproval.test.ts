@@ -21,7 +21,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  * (simulating what pi-agent-core does internally).
  */
 
-let captured: { fire: (agent: FakeAgent, fireTool: () => Promise<void>) => void } | null = null;
+let captured: {
+  fire: (agent: FakeAgent, fireTool: () => Promise<void>) => void;
+  /** Extra edit-tool params (e.g. a `path`) for the fired tool call. */
+  editParams?: Record<string, unknown>;
+  /** Tool to fire instead of "edit" (e.g. "write_file"), with editParams as its params. */
+  toolName?: string;
+} | null = null;
 
 class FakeAgent {
   listener: ((event: any, signal: AbortSignal) => void) | null = null;
@@ -31,13 +37,16 @@ class FakeAgent {
   prompt = vi.fn(async (_text: string): Promise<void> => {
     // Execute any pending tool calls by finding the edit tool and running it.
     if (captured) {
+      const params = captured.editParams;
+      const toolName = captured.toolName ?? "edit";
       await captured.fire(this, async () => {
-        const editTool = this.tools.find((t: any) => t.name === "edit");
-        if (editTool) {
+        const tool = this.tools.find((t: any) => t.name === toolName);
+        if (tool) {
           try {
-            await editTool.execute("tc-edit", {
+            await tool.execute("tc-edit", {
               old_string: "= H",
               new_string: "= H <large>",
+              ...(params ?? {}),
             });
           } catch {
             // tool errors are expected in some tests
@@ -77,9 +86,39 @@ vi.mock("../../components/Editor/editorApiRef", () => ({
   },
 }));
 
-const docState = { documents: { d1: { id: "d1", content: "= H\nbody", path: "/ws/a.typ" } } };
+type DocFixture = { id: string; content: string; path: string; revision: number };
+const docState: {
+  documents: Record<string, DocFixture>;
+  updateContent: (id: string, content: string) => void;
+} = {
+  documents: {},
+  // Minimal mirror of documentsStore.updateContent: set content + bump the
+  // revision (applyEditToDocument reads the bumped revision back for updateText).
+  updateContent: (id, content) => {
+    const d = docState.documents[id];
+    if (!d || content === d.content) return;
+    d.content = content;
+    d.revision += 1;
+  },
+};
+const tabsState: {
+  activeId: string | null;
+  tabs: string[];
+  hidden: string[];
+  openPath: (doc: DocFixture) => void;
+} = {
+  activeId: "d1",
+  tabs: ["d1"],
+  hidden: [],
+  // Mirror of tabsStore.openPath's registration half (openDocument) so an
+  // edit-target file opened on demand is visible to applyEditToDocument.
+  openPath: (doc) => {
+    docState.documents[doc.id] = doc;
+    if (!tabsState.tabs.includes(doc.id)) tabsState.tabs.push(doc.id);
+  },
+};
 vi.mock("../documentsStore", () => ({ useDocumentsStore: { getState: () => docState } }));
-vi.mock("../tabsStore", () => ({ useTabsStore: { getState: () => ({ activeId: "d1" }) } }));
+vi.mock("../tabsStore", () => ({ useTabsStore: { getState: () => tabsState } }));
 vi.mock("../workspaceStore", () => ({ useWorkspaceStore: { getState: () => ({ rootPath: "/ws", name: "ws" }) } }));
 vi.mock("../diagnosticsStore", () => ({
   useDiagnosticsStore: { getState: () => ({ byDoc: {} }) },
@@ -87,17 +126,42 @@ vi.mock("../diagnosticsStore", () => ({
 }));
 vi.mock("../hooks/useSetting", () => ({ readSetting: (_p: string, f: unknown) => f }));
 vi.mock("../../i18n", () => ({ resolveLanguage: () => "en" as const }));
+// jsdom can't load the real registry (its Monaco package imports .css).
+// getModel → undefined makes applyEditToDocument fall back to the doc's store
+// content, which is exactly the no-live-model path we assert on.
+vi.mock("../../components/Editor/monacoModelRegistry", () => ({
+  monacoModelRegistry: {
+    getModel: vi.fn(() => undefined),
+    applyExternalContent: vi.fn(() => false),
+  },
+}));
 vi.mock("../../lib/tauri", () => ({
   openFileByPath: vi.fn(),
   searchWorkspace: vi.fn(),
   updateText: vi.fn(),
+  // readForContent chains `.catch()` on the result — the mock must return a
+  // Promise like the real IPC wrapper does.
+  hardCloseTab: vi.fn(() => Promise.resolve()),
 }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const { useAssistantStore } = await import("../assistantStore");
 const { editorApiRef } = await import("../../components/Editor/editorApiRef");
+const { openFileByPath, updateText } = await import("../../lib/tauri");
+const { invoke } = await import("@tauri-apps/api/core");
 
 beforeEach(() => {
   captured = null;
+  docState.documents = { d1: { id: "d1", content: "= H\nbody", path: "/ws/a.typ", revision: 0 } };
+  tabsState.activeId = "d1";
+  tabsState.tabs = ["d1"];
+  tabsState.hidden = [];
+  vi.mocked(openFileByPath).mockReset();
+  vi.mocked(updateText).mockReset();
+  vi.mocked(invoke).mockReset();
+  // mockClear (not mockReset) keeps the true-returning implementation while
+  // dropping call history, so "not called" assertions only see THIS test.
+  (editorApiRef.current!.strReplace as ReturnType<typeof vi.fn>).mockClear();
   (editorApiRef.current!.strReplace as ReturnType<typeof vi.fn>).mockReturnValue(true);
   useAssistantStore.getState().clearConversation();
 });
@@ -181,5 +245,103 @@ describe("approval gate (Strategy A)", () => {
     // (the agent mock consumes it), but strReplace being called with false return
     // proves the code path was exercised. The key contract: it was called and
     // its return was checked.
+  });
+
+  it("edit targeting a NON-active open doc applies to that doc, never the active editor", async () => {
+    // The agent edits file B while tab A is active — the edit must land in
+    // B's buffer (via applyEditToDocument), not be strReplace'd into A.
+    docState.documents.d2 = { id: "d2", content: "= Target\nold", path: "/ws/b.typ", revision: 0 };
+    captured = {
+      editParams: { path: "b.typ", old_string: "old", new_string: "new" },
+      fire: async (_agent, fireTool) => {
+        const toolDone = fireTool();
+        await new Promise((r) => setTimeout(r, 100));
+        expect(useAssistantStore.getState().status).toBe("awaiting-approval");
+        await useAssistantStore.getState().approve();
+        // Await the tool handler so applyApproval (async, dynamic imports) has
+        // fully completed before the assertions run.
+        await toolDone;
+      },
+    };
+
+    await useAssistantStore.getState().sendMessage("edit b");
+
+    // The edit went to d2's buffer + backend, NOT through the active editor.
+    expect(editorApiRef.current!.strReplace).not.toHaveBeenCalled();
+    expect(docState.documents.d2.content).toBe("= Target\nnew");
+    expect(docState.documents.d2.revision).toBe(1);
+    // Tab A's buffer is untouched — the silent-corruption scenario.
+    expect(docState.documents.d1.content).toBe("= H\nbody");
+    expect(updateText).toHaveBeenCalledWith("d2", "= Target\nnew", 1);
+  });
+
+  it("edit targeting a file not open anywhere opens it and never touches the active editor", async () => {
+    // p.path resolves to no open doc (readForContent opened + hard-closed it
+    // backend-side). The edit must open the file on demand and apply there —
+    // the active tab (d1) must neither be strReplace'd nor spliced.
+    (openFileByPath as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "nb",
+      content: "before old",
+      path: "/ws/c.typ",
+      revision: 5,
+    });
+    captured = {
+      editParams: { path: "c.typ", old_string: "old", new_string: "new" },
+      fire: async (_agent, fireTool) => {
+        const toolDone = fireTool();
+        await new Promise((r) => setTimeout(r, 100));
+        expect(useAssistantStore.getState().status).toBe("awaiting-approval");
+        await useAssistantStore.getState().approve();
+        // Await the tool handler so applyApproval (async, dynamic imports) has
+        // fully completed before the assertions run.
+        await toolDone;
+      },
+    };
+
+    await useAssistantStore.getState().sendMessage("edit c");
+
+    expect(editorApiRef.current!.strReplace).not.toHaveBeenCalled();
+    // Opened on demand (read before approval + apply), registered via openPath,
+    // edited, and forwarded with the bumped revision.
+    expect(openFileByPath).toHaveBeenCalledWith("/ws/c.typ");
+    expect(docState.documents.nb.content).toBe("before new");
+    expect(docState.documents.d1.content).toBe("= H\nbody");
+    expect(updateText).toHaveBeenCalledWith("nb", "before new", 6);
+  });
+
+  it("write_file opens the created file as a tab (openFileByPath paired with openPath)", async () => {
+    // Regression guard for the missing-openPath bug: create_entry +
+    // openFileByPath alone register the doc backend-side but never surface a
+    // tab in the UI (lib/openFile.ts always pairs the two).
+    (openFileByPath as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "wf",
+      content: "",
+      path: "/ws/new.typ",
+      revision: 0,
+    });
+    captured = {
+      toolName: "write_file",
+      editParams: { path: "new.typ", content: "hello" },
+      fire: async (_agent, fireTool) => {
+        const toolDone = fireTool();
+        await new Promise((r) => setTimeout(r, 100));
+        expect(useAssistantStore.getState().status).toBe("awaiting-approval");
+        await useAssistantStore.getState().approve();
+        await toolDone;
+      },
+    };
+
+    await useAssistantStore.getState().sendMessage("write it");
+
+    expect(invoke).toHaveBeenCalledWith("create_entry", {
+      rel: "new.typ",
+      kind: "file",
+    });
+    expect(openFileByPath).toHaveBeenCalledWith("/ws/new.typ");
+    // openPath registered the doc as a tab AND its content landed in the
+    // store + backend with the bumped revision.
+    expect(docState.documents.wf.content).toBe("hello");
+    expect(tabsState.tabs).toContain("wf");
+    expect(updateText).toHaveBeenCalledWith("wf", "hello", 1);
   });
 });

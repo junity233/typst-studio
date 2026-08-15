@@ -24,7 +24,7 @@
  * the end).
  */
 
-import { createWriteStream, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createWriteStream, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
@@ -78,7 +78,19 @@ async function ensureVsixCached() {
     throw new Error(`VSIX download failed: HTTP ${res.status} ${res.statusText}`);
   }
   // Node's fetch web streams need conversion to a Node stream for pipeline().
-  await pipeline(Readable.fromWeb(/** @type {any} */ (res).body), createWriteStream(CACHE_VSIX));
+  // Download to a ".part" file and only rename it into place once the stream
+  // has completed: writing directly to CACHE_VSIX would let a mid-stream
+  // failure (connection drop) leave a partial file that the statSync check
+  // above accepts as a valid cache entry, permanently poisoning the cache
+  // with a zip yauzl can't open.
+  const partPath = `${CACHE_VSIX}.part`;
+  try {
+    await pipeline(Readable.fromWeb(/** @type {any} */ (res).body), createWriteStream(partPath));
+    renameSync(partPath, CACHE_VSIX);
+  } catch (err) {
+    rmSync(partPath, { force: true });
+    throw err;
+  }
   const size = statSync(CACHE_VSIX).size;
   console.log(`[fetch-grammar] cached VSIX (${(size / 1024 / 1024).toFixed(2)} MB)`);
 }

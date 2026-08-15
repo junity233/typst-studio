@@ -8,6 +8,7 @@
 //! `async` and mutate ownership, while `status`/`restart` are non-async reads
 //! or signal sends. The lock is held only for the duration of each call.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -33,6 +34,19 @@ pub struct LspService {
     /// replacement manager with the same status callback (the frontend's
     /// subscription keeps working across the swap).
     on_status_change: Arc<dyn Fn(LspStatus) + Send + Sync>,
+    /// Monotonic relaunch-generation allocator. [`relaunch`](Self::relaunch)
+    /// RESERVES its start generation from here (fetch-and-add) instead of
+    /// deriving it from the manager slot: two relaunches racing (the tinymist
+    /// auto-install `on_installed` callback vs. a settings-driven relaunch)
+    /// used to have the second one derive generation 1 from the slot the
+    /// first had already emptied — the frontend's forward-only gate then
+    /// permanently discarded the lower generation's status events.
+    ///
+    /// Initialized to `1 + RELAUNCH_GENERATION_JUMP` (the fresh manager from
+    /// [`start`](Self::start) begins at generation 1) and raised past a live
+    /// manager's generation whenever restarts have carried it ahead of the
+    /// counter.
+    next_generation: AtomicU64,
 }
 
 impl LspService {
@@ -51,6 +65,7 @@ impl LspService {
         Ok(Self {
             manager: Mutex::new(Some(manager)),
             on_status_change,
+            next_generation: AtomicU64::new(1 + RELAUNCH_GENERATION_JUMP),
         })
     }
 
@@ -60,6 +75,7 @@ impl LspService {
         Self {
             manager: Mutex::new(None),
             on_status_change: Arc::new(|_| {}),
+            next_generation: AtomicU64::new(1 + RELAUNCH_GENERATION_JUMP),
         }
     }
 
@@ -72,10 +88,17 @@ impl LspService {
     ///
     /// The old manager is superseded silently (no status event from it — see
     /// `LspManager::supersede_connection`), its listener is stopped, and the
-    /// replacement starts [`RELAUNCH_GENERATION_JUMP`] generations higher and
-    /// announces itself through the same callback. The frontend therefore
-    /// observes one forward generation transition carrying the fresh
-    /// `wsUrl` and reconnects.
+    /// replacement starts a generation jump higher and announces itself
+    /// through the same callback. The frontend therefore observes one
+    /// forward generation transition carrying the fresh `wsUrl` and
+    /// reconnects.
+    ///
+    /// The start generation is RESERVED from the service's monotonic
+    /// counter (never derived from the possibly-empty manager slot), so
+    /// racing relaunches strictly increase the generation instead of one of
+    /// them regressing to 1 behind the frontend's forward-only gate. A
+    /// relaunch whose reservation was overtaken by a concurrent one (it
+    /// started slower) is quietly superseded instead of installed.
     ///
     /// Failure leaves the service without a manager (status reports
     /// `Disabled`) — same degraded state as a failed `start` at setup.
@@ -86,9 +109,13 @@ impl LspService {
         // calls only fire watch channels.
         let start_gen = {
             let mut guard = self.manager.lock();
-            match guard.as_mut() {
+            // The replacement must clear anything the OLD manager could still
+            // emit (the frontend's status gate is forward-only), so the floor
+            // is the old generation + jump. With no manager, a floor of 1
+            // applies (nothing has been emitted above the counter's floor).
+            let floor = match guard.as_mut() {
                 Some(old) => {
-                    let start_gen =
+                    let floor =
                         old.current_generation().saturating_add(RELAUNCH_GENERATION_JUMP);
                     // Supersede BEFORE stopping the listener so the live
                     // relay takes its quiet ended-by-restart path (kills the
@@ -96,10 +123,11 @@ impl LspService {
                     old.supersede_connection();
                     old.shutdown();
                     guard.take();
-                    start_gen
+                    floor
                 }
                 None => 1,
-            }
+            };
+            reserve_generation(&self.next_generation, floor)
         };
         // Phase 2 — async start outside the lock. The replacement announces
         // its initial status (unavailable/awaitingClient) itself.
@@ -110,7 +138,26 @@ impl LspService {
         )
         .await
         .map_err(|e| crate::error::AppError::Other(format!("LSP relaunch failed: {e}")))?;
-        *self.manager.lock() = Some(manager);
+        // Install only if this reservation is still the newest: a concurrent
+        // relaunch may have installed a higher-generation replacement while
+        // this one was starting, and installing a lower one would strand it
+        // behind the frontend's forward-only gate. Quietly supersede the
+        // loser (it already announced at its own — lower — generation, which
+        // the gate discards as stale) and leave the newer manager in place.
+        {
+            let mut guard = self.manager.lock();
+            let overtaken = guard
+                .as_ref()
+                .is_some_and(|m| m.current_generation() >= start_gen);
+            if overtaken {
+                drop(guard);
+                let mut loser = manager;
+                loser.supersede_connection();
+                loser.shutdown();
+            } else {
+                *guard = Some(manager);
+            }
+        }
         Ok(())
     }
 
@@ -153,6 +200,25 @@ impl LspService {
     }
 }
 
+/// Reserve the next relaunch start generation from `counter` (see
+/// [`LspService::next_generation`]): a compare-and-swap fetch-and-add of
+/// [`RELAUNCH_GENERATION_JUMP`] that never returns — nor leaves the counter —
+/// below `floor` (the old manager's generation + the jump). Every reservation
+/// is strictly larger than the previous one, so even racing relaunches can
+/// never re-derive a generation the frontend's forward-only status gate would
+/// discard as stale.
+fn reserve_generation(counter: &AtomicU64, floor: u64) -> u64 {
+    let mut current = counter.load(Ordering::SeqCst);
+    loop {
+        let reserved = current.max(floor);
+        let next = reserved.saturating_add(RELAUNCH_GENERATION_JUMP);
+        match counter.compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return reserved,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // The service is a thin wrapper; its behavior is exercised end-to-end via
@@ -180,6 +246,102 @@ mod tests {
         // Must not panic.
         svc.restart();
         svc.request_restart(LspRestartReason::WorkspaceChange);
+    }
+
+    /// `reserve_generation` hands out strictly increasing slots, respects the
+    /// floor (a live manager's generation + jump), and stays distinct under
+    /// concurrency — the core of the monotonic-relaunch fix.
+    #[test]
+    fn reserve_generation_is_monotonic_and_respects_floor() {
+        let counter = AtomicU64::new(1 + RELAUNCH_GENERATION_JUMP);
+        // Sequential reservations strictly increase.
+        let a = reserve_generation(&counter, 1);
+        assert_eq!(a, 1 + RELAUNCH_GENERATION_JUMP);
+        let b = reserve_generation(&counter, a + RELAUNCH_GENERATION_JUMP);
+        assert!(b >= a + RELAUNCH_GENERATION_JUMP, "a={a} b={b}");
+
+        // A live manager whose generation ran past the counter (many restart
+        // bumps) raises the reservation instead of letting it regress.
+        let high_floor = 10_000;
+        let c = reserve_generation(&counter, high_floor);
+        assert_eq!(c, high_floor, "reservation must clear the floor");
+        assert!(
+            counter.load(Ordering::SeqCst) > high_floor,
+            "counter must stay ahead of the reservation"
+        );
+
+        // Concurrent reservations are all distinct (never tie, never regress).
+        let counter = Arc::new(AtomicU64::new(1));
+        let reserved = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let counter = counter.clone();
+                let reserved = reserved.clone();
+                std::thread::spawn(move || {
+                    reserved.lock().push(reserve_generation(&counter, 1));
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("reservation thread panicked");
+        }
+        let mut got = reserved.lock().clone();
+        got.sort_unstable();
+        got.dedup();
+        assert_eq!(got.len(), 8, "8 racing reservations must be distinct: {got:?}");
+    }
+
+    /// Regression: relaunching from an EMPTY slot (the disabled service, or
+    /// the window after a concurrent relaunch's teardown) must not restart at
+    /// generation 1 — the frontend's forward-only gate would then permanently
+    /// discard the replacement's status events. Sequential relaunches must
+    /// strictly increase.
+    #[tokio::test]
+    async fn relaunch_from_empty_slot_keeps_generation_monotonic() {
+        let unavailable = LspConfig {
+            tinymist_path: "tinymist-definitely-not-on-path-xyz".into(),
+            enabled: true,
+        };
+        let svc = LspService::disabled();
+
+        svc.relaunch(unavailable.clone()).await.unwrap();
+        let g1 = svc.status().generation;
+        assert!(
+            g1 >= 1 + RELAUNCH_GENERATION_JUMP,
+            "relaunch from an empty slot must not restart at 1, got {g1}"
+        );
+
+        svc.relaunch(unavailable.clone()).await.unwrap();
+        let g2 = svc.status().generation;
+        assert!(
+            g2 > g1,
+            "sequential relaunches must strictly increase: {g1} -> {g2}"
+        );
+    }
+
+    /// Two relaunches racing (the tinymist auto-install callback vs. a
+    /// settings change) must both succeed and must never leave the service on
+    /// a generation below the first jump. Whichever manager loses the race is
+    /// superseded, not installed.
+    #[tokio::test]
+    async fn concurrent_relaunches_do_not_regress_generation() {
+        let unavailable = LspConfig {
+            tinymist_path: "tinymist-definitely-not-on-path-xyz".into(),
+            enabled: true,
+        };
+        let svc = LspService::start(unavailable.clone(), |_| {})
+            .await
+            .unwrap();
+
+        let (a, b) = tokio::join!(svc.relaunch(unavailable.clone()), svc.relaunch(unavailable));
+        a.expect("first racing relaunch");
+        b.expect("second racing relaunch");
+
+        let g = svc.status().generation;
+        assert!(
+            g >= 1 + RELAUNCH_GENERATION_JUMP,
+            "the surviving manager must sit a jump above the original, got {g}"
+        );
     }
 
     /// `relaunch` swaps the manager and continues ABOVE the old generation

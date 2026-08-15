@@ -151,11 +151,42 @@ fn upsert<'a>(
 
 /// Convert a gix repo-relative path (bytes) to an owned, forward-slash
 /// `String`. gix paths are already forward-slash on every platform, but we
-/// normalize defensively.
+/// normalize defensively. Non-UTF-8 paths (git stores raw bytes) are kept
+/// LOSSY — U+FFFD stands in for the undecodable bytes — so distinct files
+/// stay distinct entries. Returning `""` instead would merge every such file
+/// into one bogus `GitFileStatus { path: "" }` whose kinds overwrite each
+/// other.
 fn bstr_to_string(bytes: &[u8]) -> String {
     use gix::bstr::ByteSlice as _;
-    bytes
-        .to_str()
-        .map(|s| s.replace('\\', "/"))
-        .unwrap_or_default()
+    bytes.to_str_lossy().replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bstr_to_string;
+
+    #[test]
+    fn ascii_paths_pass_through_with_forward_slashes() {
+        assert_eq!(bstr_to_string(b"src/main.typ"), "src/main.typ");
+        // Backslashes (never produced by gix, normalized defensively).
+        assert_eq!(bstr_to_string(b"src\\main.typ"), "src/main.typ");
+    }
+
+    #[test]
+    fn non_utf8_paths_stay_distinguishable() {
+        // Two different non-UTF-8 paths must not both collapse to "" (which
+        // would merge them into one bogus status entry).
+        let a = bstr_to_string(b"a\xE9.typ");
+        let b = bstr_to_string(b"b\xFF.typ");
+        assert!(!a.is_empty());
+        assert!(!b.is_empty());
+        assert_ne!(a, b);
+        // The undecodable byte renders as U+FFFD, not dropped.
+        assert_eq!(bstr_to_string(b"dir/a\xE9.typ"), "dir/a\u{FFFD}.typ");
+    }
+
+    #[test]
+    fn valid_utf8_multibyte_paths_are_preserved() {
+        assert_eq!(bstr_to_string("笔记/文档.typ".as_bytes()), "笔记/文档.typ");
+    }
 }

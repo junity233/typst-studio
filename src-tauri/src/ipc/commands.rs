@@ -505,7 +505,10 @@ pub async fn export_png(
         let mut written = Vec::with_capacity(pages.len());
         for (name, bytes) in pages {
             let full = save_dir.join(&name);
-            std::fs::write(&full, &bytes)?;
+            // Atomic write (same as export_pdf): auto-export-on-save paths
+            // make routine exports common, and an app quit mid-batch must
+            // never leave a truncated page image at a displayed path.
+            crate::persistence::atomic::write_bytes(&full, &bytes)?;
             written.push(full.to_string_lossy().to_string());
         }
         Ok(written)
@@ -567,7 +570,10 @@ pub async fn export_svg(
         let mut written = Vec::with_capacity(pages.len());
         for (name, bytes) in pages {
             let full = save_dir.join(&name);
-            std::fs::write(&full, &bytes)?;
+            // Atomic write (same as export_pdf): auto-export-on-save paths
+            // make routine exports common, and an app quit mid-batch must
+            // never leave a truncated page image at a displayed path.
+            crate::persistence::atomic::write_bytes(&full, &bytes)?;
             written.push(full.to_string_lossy().to_string());
         }
         Ok(written)

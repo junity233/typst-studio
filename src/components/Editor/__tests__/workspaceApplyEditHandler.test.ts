@@ -39,7 +39,7 @@ import type { PlannedDiskEdit, PlannedModelEdit } from "../workspaceEdit";
 // ---------------------------------------------------------------------------
 interface FakeModel {
   uri: string;
-  applyEdits: ReturnType<typeof vi.fn>;
+  pushEditOperations: ReturnType<typeof vi.fn>;
 }
 interface FakeRegistry {
   resolveDocumentId: ReturnType<typeof vi.fn>;
@@ -55,7 +55,7 @@ function fakeRegistry(open: Record<string, { uri: string; id: string }>): {
   const uriToId = new Map<string, string>();
   for (const { uri, id } of Object.values(open)) {
     uriToId.set(uri, id);
-    const m: FakeModel = { uri, applyEdits: vi.fn() };
+    const m: FakeModel = { uri, pushEditOperations: vi.fn() };
     models.set(id, m);
   }
   const registry: FakeRegistry = {
@@ -104,18 +104,41 @@ describe("applyModelEdits", () => {
 
     expect(failed).toEqual([]);
     const model = models.get("doc-a")!;
-    expect(model.applyEdits).toHaveBeenCalledTimes(1);
-    expect(model.applyEdits).toHaveBeenCalledWith([
-      {
-        range: {
-          startLineNumber: 1,
-          startColumn: 1,
-          endLineNumber: 1,
-          endColumn: 4,
+    expect(model.pushEditOperations).toHaveBeenCalledTimes(1);
+    expect(model.pushEditOperations).toHaveBeenCalledWith(
+      null,
+      [
+        {
+          range: {
+            startLineNumber: 1,
+            startColumn: 1,
+            endLineNumber: 1,
+            endColumn: 4,
+          },
+          text: "hi",
         },
-        text: "hi",
-      },
-    ]);
+      ],
+      expect.any(Function),
+    );
+  });
+
+  it("records an undo step (pushEditOperations, not the undo-less applyEdits)", () => {
+    // The seam must go through pushEditOperations so Ctrl+Z can revert
+    // LSP-driven edits (F2 rename, code actions). Pin the undo idiom: null
+    // cursor state in, null cursor state out (programmatic, non-tracking
+    // edits). The fake model deliberately has NO applyEdits method — the
+    // applier calling it would throw here.
+    const { registry, models } = fakeRegistry({
+      a: { uri: "file:///a.typ", id: "doc-a" },
+    });
+    applyModelEdits(
+      [{ uri: "file:///a.typ", edits: [te(0, 0, 0, 1, "x")] }],
+      registry,
+    );
+    const model = models.get("doc-a")!;
+    const call = model.pushEditOperations.mock.calls[0];
+    expect(call[0]).toBeNull();
+    expect((call[2] as () => null)()).toBeNull();
   });
 
   it("reports a URI as failed when it does not resolve to an open doc", () => {
@@ -152,8 +175,8 @@ describe("applyModelEdits", () => {
       { uri: "file:///b.typ", edits: [te(1, 0, 1, 1, "B")] },
     ] as unknown as PlannedModelEdit[];
     applyModelEdits(edits, registry);
-    expect(models.get("doc-a")!.applyEdits).toHaveBeenCalledOnce();
-    expect(models.get("doc-b")!.applyEdits).toHaveBeenCalledOnce();
+    expect(models.get("doc-a")!.pushEditOperations).toHaveBeenCalledOnce();
+    expect(models.get("doc-b")!.pushEditOperations).toHaveBeenCalledOnce();
   });
 });
 

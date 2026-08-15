@@ -380,6 +380,53 @@ describe("aiStream — OpenAI Chat Completions", () => {
     const events = summary(await drain(streamFn({} as any, { messages: [] } as any)));
     expect(events.some((e) => e.type === "toolcall_end")).toBe(false);
   });
+
+  it("sends the system prompt as a leading system message", async () => {
+    const chunks: OpenAIChunk[] = [
+      { choices: [{ delta: { content: "ok" } }] },
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+    ];
+    openaiCreateMock.mockReturnValue(asyncIter(chunks));
+
+    const streamFn = makeStreamFn();
+    await drain(
+      streamFn({} as any, { messages: [], systemPrompt: "Be terse." } as any),
+    );
+
+    const params = openaiCreateMock.mock.calls[0][0];
+    expect(params.messages[0]).toEqual({
+      role: "system",
+      content: "Be terse.",
+    });
+  });
+
+  it("omits the system message when there is no system prompt", async () => {
+    const chunks: OpenAIChunk[] = [
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+    ];
+    openaiCreateMock.mockReturnValue(asyncIter(chunks));
+
+    const streamFn = makeStreamFn();
+    await drain(streamFn({} as any, { messages: [] } as any));
+
+    const params = openaiCreateMock.mock.calls[0][0];
+    expect(
+      params.messages.filter((m: any) => m.role === "system"),
+    ).toHaveLength(0);
+  });
+
+  it("passes the ai.maxTokens setting as max_tokens", async () => {
+    const chunks: OpenAIChunk[] = [
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+    ];
+    openaiCreateMock.mockReturnValue(asyncIter(chunks));
+
+    const streamFn = makeStreamFn();
+    await drain(streamFn({} as any, { messages: [] } as any));
+
+    // Seeded settings have ai.maxTokens = 1024.
+    expect(openaiCreateMock.mock.calls[0][0].max_tokens).toBe(1024);
+  });
 });
 
 describe("aiStream — Anthropic Messages", () => {
@@ -475,5 +522,54 @@ describe("aiStream — Anthropic Messages", () => {
       reason: "error",
       errorMessage: "401 unauthorized",
     });
+  });
+
+  it("accumulates a SECOND text block after a tool_use block", async () => {
+    // Anthropic interleaves text → tool_use → text; every text block must get
+    // its own mapping entry and accumulate (not just the first one).
+    const evs: AnthropicEvent[] = [
+      { type: "message_start" },
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Before." } },
+      { type: "content_block_stop", index: 0 },
+      {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "tool_use", id: "tu_1", name: "read_file" },
+      },
+      {
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "input_json_delta", partial_json: "{}" },
+      },
+      { type: "content_block_stop", index: 1 },
+      { type: "content_block_start", index: 2, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 2, delta: { type: "text_delta", text: "After." } },
+      { type: "content_block_stop", index: 2 },
+      { type: "message_delta", delta: { stop_reason: "end_turn" } },
+      { type: "message_stop" },
+    ];
+    anthropicCreateMock.mockReturnValue(asyncIter(evs));
+
+    const streamFn = makeStreamFn();
+    const events = summary(await drain(streamFn({} as any, { messages: [] } as any)));
+
+    expect(events).toEqual([
+      { type: "start" },
+      { type: "text_start", contentIndex: 0 },
+      { type: "text_delta", contentIndex: 0, delta: "Before." },
+      { type: "text_end", contentIndex: 0, content: "Before." },
+      { type: "toolcall_start", contentIndex: 1 },
+      { type: "toolcall_delta", contentIndex: 1, delta: "{}" },
+      {
+        type: "toolcall_end",
+        contentIndex: 1,
+        toolCall: { type: "toolCall", id: "tu_1", name: "read_file", arguments: {} },
+      },
+      { type: "text_start", contentIndex: 2 },
+      { type: "text_delta", contentIndex: 2, delta: "After." },
+      { type: "text_end", contentIndex: 2, content: "After." },
+      { type: "done", reason: "stop" },
+    ]);
   });
 });

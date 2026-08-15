@@ -16,11 +16,15 @@ import { effectiveLayout } from "../../lib/layoutState";
 // the pane's preferredSize at first render, written on sash drag — and the
 // session-v2 `layout.sidebarWidth` is the cross-restart source of truth,
 // seeded into localStorage on startup (useWindowRestore) and captured on close
-// (useAppCommands). The default/min match the pane's maxSize [0,520] bounds;
-// the clamp on read guarantees a stale snapshot can't collapse the sidebar.
+// (useAppCommands). The pane's runtime bounds are [0,520] (min 0 exists so
+// `snap` can drag-collapse), but we never PERSIST a non-positive width: a
+// hidden pane reports size 0, and restoring that would clamp to a 0-width
+// sidebar the toggle can't bring back. The clamp on read (a 180px restore
+// floor) additionally guards against a stale 0 persisted by an older build.
 const SIDEBAR_WIDTH_KEY = "ts-sidebar-width";
 const SIDEBAR_WIDTH_DEFAULT = 320;
-const SIDEBAR_WIDTH_MIN = 0;
+/** Restore floor — below this the sidebar is too narrow to be usable. */
+const SIDEBAR_WIDTH_MIN = 180;
 
 function loadSidebarWidth(): number {
   try {
@@ -28,6 +32,7 @@ function loadSidebarWidth(): number {
     if (raw) {
       const n = Number(raw);
       if (Number.isFinite(n) && n >= SIDEBAR_WIDTH_MIN) return n;
+      if (Number.isFinite(n)) return SIDEBAR_WIDTH_MIN;
     }
   } catch {
     // ignore
@@ -65,12 +70,16 @@ export function Workbench() {
 
   // Persist the sidebar pane width on sash drag. Allotment fires onChange with
   // the full pane-size array on every layout change; the sidebar is index 0.
-  // Best-effort: a quota/privacy-mode failure is swallowed so a drag never
-  // throws into React's event loop. The write per move is cheap (a single
-  // localStorage key), matching the preview sash's persist-on-drag behavior.
+  // A HIDDEN pane reports size 0 — persisting that would leave a 0-width
+  // sidebar across restarts (the runtime clamp is [0,520], so the toggle
+  // couldn't bring it back) — so non-positive widths are skipped. Best-effort:
+  // a quota/privacy-mode failure is swallowed so a drag never throws into
+  // React's event loop. The write per move is cheap (a single localStorage
+  // key), matching the preview sash's persist-on-drag behavior.
   const handleAllotmentChange = useCallback((sizes: number[]) => {
     const w = sizes[0];
     if (typeof w !== "number" || !Number.isFinite(w)) return;
+    if (w <= 0) return; // hidden pane — don't clobber the last visible width
     try {
       localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w));
     } catch {

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { RecoveryAvailablePayload } from "../../lib/types";
+import type { RestoredDoc } from "../../lib/session";
 import { useRecoveryStore } from "../../store/recoveryStore";
 
 /**
@@ -17,7 +18,9 @@ import { useRecoveryStore } from "../../store/recoveryStore";
  *   - non-empty event → resolves immediately as "offered".
  */
 
-const { raceRecoveryAvailable } = await import("../useStartupSession");
+const { raceRecoveryAvailable, resolveRestoredActiveId } = await import(
+  "../useStartupSession"
+);
 
 /** A controllable subscribe stub: captures the handler and resolves the
  * registration promise. The test fires the handler (or never does) to drive
@@ -156,5 +159,52 @@ describe("raceRecoveryAvailable (Issue 2 — launch latency)", () => {
     // Should be ~400ms; assert < 1000ms to robustly distinguish from 1500ms
     // without being flaky on a slow runner.
     expect(elapsed).toBeLessThan(1000);
+  });
+});
+
+/** Build a restored-doc fixture (disk or untitled record + fresh id). */
+function diskRestored(path: string, id: string): RestoredDoc {
+  return { record: { kind: "disk", path, dirty: false }, id, dirty: false };
+}
+
+describe("resolveRestoredActiveId (active-view restore)", () => {
+  // The persisted activeDocumentId is a UUID from the PREVIOUS launch; the
+  // backend mints a fresh UUID per open, so an id match never succeeds across
+  // a restart. The restore must match by path (session.lastFile is the
+  // persisted active-document path hint) instead of always landing on the
+  // last tab.
+  const restored: RestoredDoc[] = [
+    diskRestored("/w/a.typ", "fresh-a"),
+    diskRestored("/w/b.typ", "fresh-b"),
+  ];
+
+  it("matches the restored disk doc by path when the persisted id is stale", () => {
+    expect(
+      resolveRestoredActiveId(restored, "dead-uuid-from-last-launch", "/w/a.typ"),
+    ).toBe("fresh-a");
+  });
+
+  it("still prefers a direct id match when one exists", () => {
+    expect(resolveRestoredActiveId(restored, "fresh-b", "/w/a.typ")).toBe("fresh-b");
+  });
+
+  it("matches the path hint separator-insensitively (Windows backslashes)", () => {
+    expect(
+      resolveRestoredActiveId(
+        [diskRestored("C:\w\a.typ", "fresh-a")],
+        "dead-uuid",
+        "C:/w/a.typ",
+      ),
+    ).toBe("fresh-a");
+  });
+
+  it("falls back to the last restored doc when the hint matches nothing", () => {
+    // Stale hint (the file was closed before shutdown) or an untitled active
+    // doc ("" hint) — same fallback as before.
+    expect(resolveRestoredActiveId(restored, "dead-uuid", "/w/gone.typ")).toBe(
+      "fresh-b",
+    );
+    expect(resolveRestoredActiveId(restored, "dead-uuid", "")).toBe("fresh-b");
+    expect(resolveRestoredActiveId(restored, null, "/w/a.typ")).toBe("fresh-b");
   });
 });

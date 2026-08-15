@@ -372,11 +372,27 @@ export function EditorArea() {
   const panePreviewWrapperRef = useRef<HTMLDivElement | null>(null);
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
   const scrollSyncOn = scrollSync !== false; // default true when unset
-  // Latest lineMap + svg pages for use inside stable callbacks.
+  // Project-preview mixing guard: with project preview on, the PreviewPane
+  // renders the MAIN file's pages while the editor edits a DIFFERENT (sub-)
+  // file. The cursor-overlay line numbers and the sync mappers' lineMap come
+  // from the ACTIVE tab — resolving them against the main file's page
+  // geometry yields arbitrary wrong scroll positions and highlights. While
+  // the two disagree, scroll-sync and the cursor-line overlay are disabled
+  // (the persisted setting still reads "on"; sync resumes the moment the
+  // edited tab IS the previewed doc).
+  const previewDocId = previewDoc?.id ?? null;
+  const scrollSyncUnavailable =
+    projectPreviewActive && activeTabId !== previewDocId;
+  // Latest lineMap + svg pages for use inside stable callbacks. svgPagesRef
+  // tracks the RENDERED preview's pages ((previewDoc ?? activeTab)) so
+  // refreshPageMetrics parses the viewBox of the pages actually in the DOM —
+  // under project preview those belong to the main file, not the edited tab.
+  // lineMapRef tracks the active tab: it feeds only the scroll-sync mappers,
+  // which are gated off while the two documents disagree.
   const lineMapRef = useRef(activeTab?.lineMap ?? []);
   lineMapRef.current = activeTab?.lineMap ?? [];
   const svgPagesRef = useRef<string[]>(activeTab?.svgPages ?? []);
-  svgPagesRef.current = activeTab?.svgPages ?? [];
+  svgPagesRef.current = (previewDoc ?? activeTab)?.svgPages ?? [];
 
   const handleJumpToLine = useCallback((line: number) => {
     editorApiRef.current?.revealLine(line, 1);
@@ -516,7 +532,9 @@ export function EditorArea() {
   const lastUserScrollAt = useRef(0);
   const animRaf = useRef<number | null>(null);
   const scrollSyncOnRef = useRef(scrollSyncOn);
-  scrollSyncOnRef.current = scrollSyncOn;
+  // Includes the project-preview mixing guard: the rAF loop must stop (not
+  // just stop re-kicking) when the previewed doc stops matching the editor's.
+  scrollSyncOnRef.current = scrollSyncOn && !scrollSyncUnavailable;
   // Settling bookkeeping (see SETTLE_FRAMES). `lastAppliedRef` holds the value
   // most recently written to the follower, so the ease step has a stable basis
   // even when the follower's queried position lags a frame (Monaco's
@@ -712,7 +730,7 @@ export function EditorArea() {
 
   // Editor → preview: the editor is the driver.
   useEffect(() => {
-    if (!scrollSyncOn) return;
+    if (!scrollSyncOn || scrollSyncUnavailable) return;
     const api = editorApiRef.current;
     if (!api) return;
     const dispose = api.onDidScrollChange((topLine) => {
@@ -723,15 +741,15 @@ export function EditorArea() {
     });
     return dispose;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollSyncOn, editorReadyTick, kick, isApplying]);
+  }, [scrollSyncOn, scrollSyncUnavailable, editorReadyTick, kick, isApplying]);
 
   // Preview → editor: the preview is the driver.
   const handlePreviewScroll = useCallback(() => {
-    if (!scrollSyncOn) return;
+    if (!scrollSyncOn || scrollSyncUnavailable) return;
     // Ignore echoes of our own programmatic preview scroll (editor driving).
     if (isApplying("preview")) return;
     kick("preview");
-  }, [scrollSyncOn, kick, isApplying]);
+  }, [scrollSyncOn, scrollSyncUnavailable, kick, isApplying]);
 
   // Keep `pageMetrics` fresh AND re-align after geometry changes. A recompile,
   // zoom change, or tab switch reflows the preview pages, which (a) invalidates
@@ -766,10 +784,12 @@ export function EditorArea() {
         // otherwise the lineMap is stale (edits outpaced the compile) and
         // snapping would actively MIS-align. Scroll-follow still runs against
         // whatever lineMap exists when the user scrolls — best effort.
+        // (Also skipped while the previewed doc ≠ the edited tab — see
+        // scrollSyncUnavailable.)
         const doc = activeTabIdRef.current;
         const d = doc ? useDocumentsStore.getState().documents[doc] : undefined;
         const caughtUp = !!d && d.compiledRevision >= d.revision;
-        if (scrollSyncOn && caughtUp && editorApiRef.current) {
+        if (scrollSyncOn && !scrollSyncUnavailable && caughtUp && editorApiRef.current) {
           lastAppliedRef.current = null;
           kick("editor");
         }
@@ -780,7 +800,9 @@ export function EditorArea() {
     };
   }, [
     activeTab?.id,
-    activeTab?.svgPages,
+    // Key on the RENDERED preview's pages (previewDoc when project preview is
+    // on) — those are the pages whose geometry refreshPageMetrics measures.
+    previewDoc?.svgPages,
     activeTab?.lineMap,
     previewZoomLevel,
     previewPadding,
@@ -788,6 +810,7 @@ export function EditorArea() {
     previewVisible,
     refreshPageMetrics,
     scrollSyncOn,
+    scrollSyncUnavailable,
     kick,
   ]);
 
@@ -800,9 +823,11 @@ export function EditorArea() {
 
   // Turning sync off must stop an already-running interpolation immediately;
   // unsubscribing from future scroll events alone would let the old rAF loop
-  // continue moving the follower until its idle/settle phase completed.
+  // continue moving the follower until its idle/settle phase completed. The
+  // same applies when sync becomes UNAVAILABLE (project preview showing a
+  // different doc than the edited tab).
   useEffect(() => {
-    if (scrollSyncOn) return;
+    if (scrollSyncOn && !scrollSyncUnavailable) return;
     if (animRaf.current != null) {
       cancelAnimationFrame(animRaf.current);
       animRaf.current = null;
@@ -811,7 +836,7 @@ export function EditorArea() {
     lastAppliedRef.current = null;
     settleTargetRef.current = null;
     settleCountRef.current = 0;
-  }, [scrollSyncOn]);
+  }, [scrollSyncOn, scrollSyncUnavailable]);
 
   useEffect(() => {
     if (!prevPreviewVisible.current && previewVisible && activeTab) {
@@ -907,6 +932,10 @@ export function EditorArea() {
 
   const activePreviewLines =
     activeTab &&
+    // Project-preview mixing: the cursor's line numbers belong to the edited
+    // tab, but the overlay resolves them against the PREVIEWED doc's lineMap —
+    // skip rather than highlight arbitrary regions of the main file.
+    !scrollSyncUnavailable &&
     activeTab.compiledRevision >= activeTab.revision &&
     previewHighlightState?.tabId === activeTab.id
       ? previewHighlightState.lines
@@ -1075,11 +1104,16 @@ export function EditorArea() {
     const id = activeTabIdRef.current;
     const d = id ? useDocumentsStore.getState().documents[id] : undefined;
     const caughtUp = !!d && d.compiledRevision >= d.revision;
-    if (scrollSyncOn && caughtUp && editorApiRef.current) {
+    if (
+      scrollSyncOn &&
+      !scrollSyncUnavailable &&
+      caughtUp &&
+      editorApiRef.current
+    ) {
       lastAppliedRef.current = null;
       kick("editor");
     }
-  }, [refreshPageMetrics, scrollSyncOn, kick]);
+  }, [refreshPageMetrics, scrollSyncOn, scrollSyncUnavailable, kick]);
 
   return (
     <div

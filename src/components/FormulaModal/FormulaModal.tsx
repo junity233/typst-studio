@@ -101,6 +101,22 @@ export function FormulaModal() {
     }
   }, [latex, mode, open]);
 
+  // Esc closes. Window-level listener like AboutModal (clicking
+  // non-focusable chrome moves focus to <body>, where the overlay-level
+  // onKeyDown never fires), attached only while the modal is open — this
+  // component stays mounted across closes.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, close]);
+
   const canInsert = useMemo(
     () => latex.trim() !== "" && !inserting,
     [latex, inserting],
@@ -151,14 +167,18 @@ export function FormulaModal() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      close();
-      return;
-    }
     // Enter (without Shift) submits, like LinkModal. Shift+Enter inserts a
     // newline so multi-line LaTeX (align blocks) is still editable.
-    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+    // isComposing / keyCode 229: an IME (e.g. Chinese pinyin) is committing
+    // the composition on this Enter — don't confirm with half-committed text.
+    if (
+      e.key === "Enter" &&
+      !e.shiftKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.nativeEvent.isComposing &&
+      e.keyCode !== 229
+    ) {
       e.preventDefault();
       void handleConfirm();
     }

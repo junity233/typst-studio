@@ -298,6 +298,15 @@ fn entry_to_editable(entry: &hayagriva::Entry) -> BibEntryEditable {
 /// structure. Untouched entries and untouched fields on edited entries survive
 /// verbatim.
 ///
+/// **Key renames:** the edit modal makes the citation key editable, so an
+/// edited entry whose key is absent from the original is either a brand-new
+/// entry OR a rename. Renames are detected heuristically (see
+/// [`detect_key_renames`]) and patched onto the ORIGINAL parsed entry — every
+/// field outside the edit form's probe list (editor, keywords, series,
+/// booktitle, chapter, month, urldate, crossref, file, …) survives, and the
+/// entry keeps its position in the file. Undetected renames degrade to the
+/// historical delete-old + add-new behavior.
+///
 /// Per format:
 /// - **BibLaTeX** (`.bib`): uses `biblatex::Bibliography` directly (NOT
 ///   hayagriva) because biblatex preserves `.bib` field fidelity far better
@@ -319,6 +328,123 @@ pub fn serialize_bibliography(
     }
 }
 
+/// Detect citation-key RENAMES among the edited entries.
+///
+/// The join between the edited list and the original file is BY KEY, so an
+/// entry whose key was edited in the modal looks like delete-old + add-new —
+/// which destroys every field the edit form does not surface and moves the
+/// entry to the end of the file. This heuristic recovers the common case:
+///
+/// An edited entry whose key is NOT among `original_keys` is matched against
+/// the originals that are otherwise unaccounted-for (not claimed by any edited
+/// key, i.e. candidates for deletion). If EXACTLY ONE unclaimed original has
+/// matching core fields ([`cores_match`]: same title, or same title+authors,
+/// compared whitespace/case-insensitively because the edited side comes from
+/// the frontend's projection of a different parser), the pair is recorded as a
+/// rename: `old key → edited entry`. Zero matches (nothing looks like it) or
+/// more than one (ambiguous) leave the pair alone, degrading to the historical
+/// add-new + delete-old behavior — deliberately conservative so a genuine
+/// delete-plus-add is never mis-merged.
+fn detect_key_renames<'a>(
+    original_keys: &[String],
+    entries: &'a [BibEntryEditable],
+    original_core: impl Fn(&str) -> Option<(Option<String>, Vec<String>)>,
+) -> std::collections::HashMap<String, &'a BibEntryEditable> {
+    // Originals no edited entry claims by key: each is either user-deleted or
+    // renamed away. `original_core` returning `None` (entry missing from the
+    // parsed original) can never match.
+    let mut unclaimed: Vec<&str> = original_keys
+        .iter()
+        .map(|k| k.as_str())
+        .filter(|k| !entries.iter().any(|e| e.key == *k))
+        .collect();
+    let mut renames = std::collections::HashMap::new();
+    // Deterministic order: scan the edited list front-to-back; each rename
+    // claims its original so two identical-looking edited entries cannot both
+    // take the same one.
+    for edited in entries {
+        // Only entries whose key is absent from the original can be renames;
+        // everything else joins by key directly.
+        if original_keys.iter().any(|k| k == &edited.key) {
+            continue;
+        }
+        let mut candidate: Option<usize> = None;
+        let mut ambiguous = false;
+        for (idx, orig_key) in unclaimed.iter().enumerate() {
+            let matches = original_core(orig_key)
+                .map(|(title, authors)| cores_match(&title, &authors, edited))
+                .unwrap_or(false);
+            if matches {
+                if candidate.is_some() {
+                    ambiguous = true;
+                    break;
+                }
+                candidate = Some(idx);
+            }
+        }
+        if let Some(idx) = candidate {
+            if !ambiguous {
+                let old = unclaimed.remove(idx);
+                renames.insert(old.to_string(), edited);
+            }
+        }
+    }
+    renames
+}
+
+/// Heuristic core-field comparison for [`detect_key_renames`].
+///
+/// Normalization is whitespace-collapsing + lowercase: the edited side comes
+/// from the frontend's hayagriva projection while the original comes from a
+/// different parser (biblatex direct / hayagriva), so only a normalized
+/// comparison is stable. A comparable title must agree; when both sides list
+/// authors they must agree too. With no comparable title, matching authors
+/// alone anchor the match. No comparable signal at all → no match.
+fn cores_match(
+    orig_title: &Option<String>,
+    orig_authors: &[String],
+    edited: &BibEntryEditable,
+) -> bool {
+    let norm = |s: &str| -> String {
+        s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    };
+    let titles_agree = match (orig_title.as_deref(), edited.title.as_deref()) {
+        (Some(a), Some(b)) => Some(norm(a) == norm(b)),
+        _ => None,
+    };
+    let authors_agree = if orig_authors.is_empty() || edited.authors.is_empty() {
+        None
+    } else {
+        Some(
+            orig_authors.len() == edited.authors.len()
+                && orig_authors
+                    .iter()
+                    .zip(&edited.authors)
+                    .all(|(a, b)| norm(a) == norm(b)),
+        )
+    };
+    match (titles_agree, authors_agree) {
+        (Some(true), None | Some(true)) => true,
+        (None, Some(true)) => true,
+        _ => false,
+    }
+}
+
+/// Core fields of an ORIGINAL parsed `biblatex::Entry` for rename matching.
+/// Mirrors what `entry_to_editable` surfaced to the edit modal: the verbatim
+/// title text and "Given Family" author names.
+fn biblatex_core_for_match(entry: &biblatex::Entry) -> (Option<String>, Vec<String>) {
+    use biblatex::ChunksExt;
+    let title = entry.title().ok().map(|chunks| chunks.format_verbatim());
+    let authors = entry
+        .author()
+        .unwrap_or_default()
+        .iter()
+        .map(|p| format!("{} {}", p.given_name, p.name))
+        .collect();
+    (title, authors)
+}
+
 /// Serialize `.bib` via `biblatex::Bibliography` (full fidelity). See
 /// [`serialize_bibliography`].
 fn serialize_biblatex(
@@ -332,14 +458,32 @@ fn serialize_biblatex(
     let edited_by_key: std::collections::HashMap<&str, &BibEntryEditable> =
         entries.iter().map(|e| (e.key.as_str(), e)).collect();
 
-    // 1. Apply edits to existing entries + collect keys to know the kept set.
-    //    We iterate over the bibliography's current keys (collected first to
-    //    avoid borrow issues while mutating).
+    // 0. Key renames (heuristic — see [`detect_key_renames`]): without this,
+    //    a renamed entry would be rebuilt from the flat projection, losing
+    //    every field the edit form does not surface.
     let existing_keys: Vec<String> = bib.keys().map(str::to_string).collect();
+    let rename_map = detect_key_renames(&existing_keys, entries, |key| {
+        bib.get(key).map(biblatex_core_for_match)
+    });
+
+    // 1. Apply edits (and renames) to existing entries + collect keys to know
+    //    the kept set. We iterate over the bibliography's current keys
+    //    (collected first to avoid borrow issues while mutating).
     for key in &existing_keys {
         if let Some(edited) = edited_by_key.get(key.as_str()) {
             // Apply edits to the matching entry in place.
             if let Some(entry) = bib.get_mut(key) {
+                apply_biblatex_edits(entry, edited);
+            }
+        } else if let Some(edited) = rename_map.get(key.as_str()) {
+            // Rename: `biblatex::Entry::key` is a public field, so re-key in
+            // place — the entry keeps its position AND every untouched field.
+            // (The Bibliography's private key→index map still holds the OLD
+            // key afterwards, which is harmless: the new key is never looked
+            // up or re-inserted — step 2 skips rename targets — and
+            // serialization walks the entries vector, not the index.)
+            if let Some(entry) = bib.get_mut(key) {
+                entry.key = edited.key.clone();
                 apply_biblatex_edits(entry, edited);
             }
         } else {
@@ -348,9 +492,12 @@ fn serialize_biblatex(
         }
     }
 
-    // 2. Add new entries (key not in original).
+    // 2. Add new entries (key not in original AND not a rename target — the
+    //    renamed entry already lives in `bib` under its new key).
     for edited in entries {
-        if !existing_keys.iter().any(|k| k == &edited.key) {
+        if !existing_keys.iter().any(|k| k == &edited.key)
+            && !rename_map.values().any(|e| e.key == edited.key)
+        {
             let entry_type = biblatex::EntryType::new(&edited.entry_type);
             let mut entry = biblatex::Entry::new(edited.key.clone(), entry_type);
             apply_biblatex_edits(&mut entry, edited);
@@ -460,57 +607,132 @@ fn serialize_yaml(
     original: &str,
     entries: &[BibEntryEditable],
 ) -> Result<String, BibParseError> {
-    let mut library = hayagriva::io::from_yaml_str(original)
+    let library = hayagriva::io::from_yaml_str(original)
         .map_err(|e| BibParseError::Yaml(e.to_string()))?;
 
     let edited_by_key: std::collections::HashMap<&str, &BibEntryEditable> =
         entries.iter().map(|e| (e.key.as_str(), e)).collect();
-
-    // 1. Remove deleted entries (in original but not in edited list).
     let original_keys: Vec<String> = library.keys().map(str::to_string).collect();
+
+    // 0. Key renames (heuristic — see [`detect_key_renames`]), matched against
+    //    the ORIGINAL entries via the same core-field projection the edit
+    //    modal saw.
+    let rename_map = detect_key_renames(&original_keys, entries, |key| {
+        library.get(key).map(|e| {
+            let core = core_fields(e);
+            (core.title, core.authors)
+        })
+    });
+
+    // 1. Rebuild the output library in ORIGINAL order: patched clones for
+    //    keys the edited list still carries, re-keyed clones for renames
+    //    (both keep their position and every untouched typed field), and
+    //    nothing for deleted keys. `Library::push` keys by `entry.key()`, so
+    //    changing a key requires re-parsing the entry under the new name (see
+    //    [`rekey_yaml_entry`]).
+    let mut out = hayagriva::Library::new();
     for key in &original_keys {
-        if !edited_by_key.contains_key(key.as_str()) {
-            library.remove(key);
+        let edited = edited_by_key
+            .get(key.as_str())
+            .or_else(|| rename_map.get(key.as_str()));
+        let Some(edited) = edited else {
+            // In original but NOT in edited list → user deleted it.
+            continue;
+        };
+        let Some(original_entry) = library.get(key).cloned() else {
+            continue;
+        };
+        // Did the entry TYPE change? `entry_type` is a private field with no
+        // public setter, so a type change requires rebuilding via
+        // `Entry::new` (which loses the typed non-core fields — an
+        // acceptable trade-off since changing an entry's type is rare and
+        // the user is re-keying the fields anyway). When the type is
+        // UNCHANGED we clone-and-patch, preserving every typed field.
+        let new_entry_type = parse_entry_type(&edited.entry_type);
+        let type_changed = *original_entry.entry_type() != new_entry_type;
+        let mut updated = if type_changed {
+            hayagriva::Entry::new(&edited.key, new_entry_type)
+        } else if edited_by_key.contains_key(key.as_str()) {
+            // Un-renamed match: patch the clone directly.
+            original_entry
+        } else {
+            // Rename: re-key the original (preserving all typed fields); a
+            // failed re-key degrades to a fresh build (the pre-rename-
+            // detection behavior).
+            rekey_yaml_entry(&original_entry, &edited.key)
+                .unwrap_or_else(|| hayagriva::Entry::new(&edited.key, new_entry_type))
+        };
+        apply_hayagriva_core_edits(&mut updated, edited);
+        if type_changed {
+            // A rebuild dropped the typed fields; re-apply the known extras.
+            apply_hayagriva_extra(&mut updated, edited);
         }
+        out.push(&updated);
     }
 
-    // 2. Apply edits: for entries that existed, clone the original (preserving
-    //    all typed fields) and overwrite only the changed core fields. For new
-    //    entries, build a fresh `Entry` and set core + extra.
+    // 2. Add new entries (key not in original AND not a rename target — the
+    //    renamed entry already lives in `out` under its new key).
     for edited in entries {
-        let new_entry_type = parse_entry_type(&edited.entry_type);
-        if let Some(original_entry) = library.get(&edited.key).cloned() {
-            // Did the entry TYPE change? `entry_type` is a private field with no
-            // public setter, so a type change requires rebuilding via
-            // `Entry::new` (which loses the typed non-core fields — an
-            // acceptable trade-off since changing an entry's type is rare and
-            // the user is re-keying the fields anyway). When the type is
-            // UNCHANGED we clone-and-patch, preserving every typed field.
-            let type_changed = *original_entry.entry_type() != new_entry_type;
-            let mut updated = if type_changed {
-                hayagriva::Entry::new(&edited.key, new_entry_type)
-            } else {
-                original_entry
-            };
-            apply_hayagriva_core_edits(&mut updated, edited);
-            if type_changed {
-                // A rebuild dropped the typed fields; re-apply the known extras.
-                apply_hayagriva_extra(&mut updated, edited);
-            }
-            library.push(&updated);
-        } else {
+        if !original_keys.iter().any(|k| k == &edited.key)
+            && !rename_map.values().any(|e| e.key == edited.key)
+        {
             // New entry: build fresh. Extra fields are best-effort (hayagriva's
             // typed setters can't cover every field without a fixed schema, so
             // only the well-known ones are mapped; the rest are dropped, which
             // is acceptable for a freshly-created entry).
-            let mut fresh = hayagriva::Entry::new(&edited.key, new_entry_type);
+            let mut fresh =
+                hayagriva::Entry::new(&edited.key, parse_entry_type(&edited.entry_type));
             apply_hayagriva_core_edits(&mut fresh, edited);
             apply_hayagriva_extra(&mut fresh, edited);
-            library.push(&fresh);
+            out.push(&fresh);
         }
     }
 
-    hayagriva::io::to_yaml_str(&library).map_err(|e| BibParseError::YamlSerialize(e.to_string()))
+    hayagriva::io::to_yaml_str(&out).map_err(|e| BibParseError::YamlSerialize(e.to_string()))
+}
+
+/// Re-key a `hayagriva::Entry` to `new_key`, preserving every typed field.
+///
+/// `hayagriva::Entry` keeps its `key` private (getter only, no setter) and is
+/// not `Deserialize`, so the only sanctioned re-key is a YAML round-trip:
+/// serialize a one-entry library, swap the top-level key line for the new key,
+/// and re-parse. This is the same serialization a save itself performs, so
+/// field fidelity is identical to a normal save. Returns `None` when the swap
+/// or re-parse fails; callers fall back to building a fresh entry.
+fn rekey_yaml_entry(entry: &hayagriva::Entry, new_key: &str) -> Option<hayagriva::Entry> {
+    let mut single = hayagriva::Library::new();
+    single.push(entry);
+    let yaml = hayagriva::io::to_yaml_str(&single).ok()?;
+    // The document is a single top-level mapping: the first line is
+    // `<old key>:` and everything after it is the (indented) field block.
+    let (_, body) = yaml.split_once('\n')?;
+    let doc = format!("{}:\n{}", yaml_key_literal(new_key), body);
+    hayagriva::io::from_yaml_str(&doc).ok()?.into_iter().next()
+}
+
+/// Quote `key` for use as a YAML top-level mapping key. Plain (unquoted) only
+/// for conservative citation-key shapes — anything else (empty, whitespace,
+/// leading digit/dash, YAML scalar look-alikes like `true`/`3.14`, trailing
+/// colon, …) is single-quoted with `'` doubled, which is always valid YAML.
+fn yaml_key_literal(key: &str) -> String {
+    const SCALAR_LOOKALIKES: [&str; 8] =
+        ["true", "false", "null", "yes", "no", "on", "off", "~"];
+    let plain_safe = !key.is_empty()
+        && !SCALAR_LOOKALIKES.contains(&key.to_ascii_lowercase().as_str())
+        && key
+            .chars()
+            .next()
+            .map_or(false, |c| c.is_ascii_alphabetic() || c == '_')
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':' | '+'))
+        && !key.ends_with(':')
+        && key.chars().any(|c| c.is_ascii_alphabetic());
+    if plain_safe {
+        key.to_string()
+    } else {
+        format!("'{}'", key.replace('\'', "''"))
+    }
 }
 
 /// Parse a kebab-case entry-type string back into a `hayagriva::types::EntryType`.
@@ -986,6 +1208,173 @@ knuth1984:
         assert_eq!(extra_value(back, "journal"), Some("Annalen der Physik"));
         assert_eq!(extra_value(back, "volume"), Some("322"));
         assert_eq!(back.year, Some(1905));
+    }
+
+    // --- Key-rename handling ------------------------------------------------
+
+    /// Renaming a citation key in the edit modal must patch the ORIGINAL
+    /// parsed entry: untouched fields survive AND the entry keeps its position
+    /// (the historical behavior — delete-old + add-new — destroyed every field
+    /// outside the edit form's probe list and moved the entry to the end).
+    #[test]
+    fn rename_biblatex_preserves_fields_and_position() {
+        let mut entries =
+            parse_bibliography_editable(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex).unwrap();
+        let einstein = entries
+            .iter_mut()
+            .find(|e| e.key == "einstein1905")
+            .expect("einstein1905");
+        einstein.key = "einstein05".to_string();
+
+        let serialized =
+            serialize_bibliography(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex, &entries).unwrap();
+        let reparsed =
+            parse_bibliography_editable(&serialized, BibFormat::BibLatex).expect("reparse");
+
+        assert_eq!(reparsed.len(), 2, "a rename must not change the entry count");
+        assert_eq!(reparsed[0].key, "einstein05", "renamed entry keeps its position");
+        let back = find_editable(&reparsed, "einstein05");
+        assert_eq!(back.entry_type, "article");
+        assert_eq!(
+            back.title.as_deref(),
+            Some("On the Electrodynamics of Moving Bodies")
+        );
+        assert_eq!(back.authors, vec!["Albert Einstein".to_string()]);
+        assert_eq!(back.year, Some(1905));
+        // Untouched fields preserved because the original entry was patched,
+        // not rebuilt from the flat projection.
+        assert_eq!(extra_value(back, "journal"), Some("Annalen der Physik"));
+        assert_eq!(extra_value(back, "volume"), Some("322"));
+        assert_eq!(extra_value(back, "pages"), Some("891-921"));
+        // The untouched sibling entry is unaffected.
+        let knuth = find_editable(&reparsed, "knuth1984");
+        assert_eq!(extra_value(knuth, "publisher"), Some("Addison-Wesley"));
+    }
+
+    /// A rename combined with a field edit: the heuristic still matches (the
+    /// title is unchanged), the edited field is applied, and the rest survive.
+    #[test]
+    fn rename_with_field_edit_biblatex() {
+        let mut entries =
+            parse_bibliography_editable(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex).unwrap();
+        let einstein = entries
+            .iter_mut()
+            .find(|e| e.key == "einstein1905")
+            .expect("einstein1905");
+        einstein.key = "einstein05".to_string();
+        einstein.year = Some(1906);
+
+        let serialized =
+            serialize_bibliography(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex, &entries).unwrap();
+        let reparsed =
+            parse_bibliography_editable(&serialized, BibFormat::BibLatex).expect("reparse");
+
+        let back = find_editable(&reparsed, "einstein05");
+        assert_eq!(back.year, Some(1906), "edited field applied");
+        assert_eq!(extra_value(back, "journal"), Some("Annalen der Physik"));
+        assert_eq!(extra_value(back, "volume"), Some("322"));
+    }
+
+    /// YAML rename: the re-keyed clone keeps the parent Periodical (journal +
+    /// volume) and its position.
+    #[test]
+    fn rename_yaml_preserves_fields_and_position() {
+        let mut entries =
+            parse_bibliography_editable(YAML_EDITABLE_FIXTURE, BibFormat::HayagrivaYaml).unwrap();
+        let einstein = entries
+            .iter_mut()
+            .find(|e| e.key == "einstein1905")
+            .expect("einstein1905");
+        einstein.key = "einstein-05".to_string();
+
+        let serialized =
+            serialize_bibliography(YAML_EDITABLE_FIXTURE, BibFormat::HayagrivaYaml, &entries)
+                .unwrap();
+        let reparsed =
+            parse_bibliography_editable(&serialized, BibFormat::HayagrivaYaml).expect("reparse");
+
+        assert_eq!(reparsed.len(), 2, "a rename must not change the entry count");
+        assert_eq!(reparsed[0].key, "einstein-05", "renamed entry keeps its position");
+        let back = find_editable(&reparsed, "einstein-05");
+        assert_eq!(back.entry_type, "article");
+        assert_eq!(
+            back.title.as_deref(),
+            Some("On the Electrodynamics of Moving Bodies")
+        );
+        assert_eq!(back.year, Some(1905));
+        // The parent journal/volume survive (re-keyed clone of the original).
+        assert_eq!(extra_value(back, "journal"), Some("Annalen der Physik"));
+        assert_eq!(extra_value(back, "volume"), Some("322"));
+    }
+
+    /// A rename to a key that needs YAML quoting still round-trips.
+    #[test]
+    fn rename_yaml_to_quoted_key() {
+        let mut entries =
+            parse_bibliography_editable(YAML_EDITABLE_FIXTURE, BibFormat::HayagrivaYaml).unwrap();
+        let knuth = entries
+            .iter_mut()
+            .find(|e| e.key == "knuth1984")
+            .expect("knuth1984");
+        knuth.key = "1905 paper".to_string();
+
+        let serialized =
+            serialize_bibliography(YAML_EDITABLE_FIXTURE, BibFormat::HayagrivaYaml, &entries)
+                .unwrap();
+        let reparsed =
+            parse_bibliography_editable(&serialized, BibFormat::HayagrivaYaml).expect("reparse");
+
+        let back = find_editable(&reparsed, "1905 paper");
+        assert_eq!(back.title.as_deref(), Some("The TeXbook"));
+        assert_eq!(extra_value(back, "publisher"), Some("Addison-Wesley"));
+    }
+
+    /// A genuinely NEW entry (nothing like any original) must NOT be matched
+    /// to a deleted original: delete + unrelated add stays delete + add.
+    #[test]
+    fn new_entry_with_different_title_is_not_a_rename() {
+        let mut entries =
+            parse_bibliography_editable(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex).unwrap();
+        entries.retain(|e| e.key != "knuth1984");
+        entries.push(BibEntryEditable {
+            key: "fresh2024".to_string(),
+            entry_type: "article".to_string(),
+            title: Some("A Brand New Paper".to_string()),
+            authors: vec!["Jane Doe".to_string()],
+            year: Some(2024),
+            extra: Vec::new(),
+        });
+
+        let serialized =
+            serialize_bibliography(BIB_EDITABLE_FIXTURE, BibFormat::BibLatex, &entries).unwrap();
+        let reparsed =
+            parse_bibliography_editable(&serialized, BibFormat::BibLatex).expect("reparse");
+
+        assert_eq!(reparsed.len(), 2);
+        assert!(reparsed.iter().all(|e| e.key != "knuth1984"), "deleted");
+        let fresh = find_editable(&reparsed, "fresh2024");
+        assert_eq!(fresh.title.as_deref(), Some("A Brand New Paper"));
+        assert!(
+            extra_value(fresh, "publisher").is_none(),
+            "unrelated new entry must not inherit the deleted entry's fields"
+        );
+        let einstein = find_editable(&reparsed, "einstein1905");
+        assert_eq!(extra_value(einstein, "journal"), Some("Annalen der Physik"));
+    }
+
+    /// Unit-test the YAML key quoting used by the rename re-key round-trip.
+    #[test]
+    fn yaml_key_literal_quotes_unsafe_keys() {
+        assert_eq!(yaml_key_literal("einstein1905"), "einstein1905");
+        assert_eq!(yaml_key_literal("einstein-1905"), "einstein-1905");
+        assert_eq!(yaml_key_literal("a_1.b+c:d"), "a_1.b+c:d");
+        assert_eq!(yaml_key_literal("true"), "'true'");
+        assert_eq!(yaml_key_literal("1905"), "'1905'");
+        assert_eq!(yaml_key_literal("has space"), "'has space'");
+        assert_eq!(yaml_key_literal("it's"), "'it''s'");
+        assert_eq!(yaml_key_literal(""), "''");
+        assert_eq!(yaml_key_literal("trailing:"), "'trailing:'");
+        assert_eq!(yaml_key_literal("-dash"), "'-dash'");
     }
 
     #[test]

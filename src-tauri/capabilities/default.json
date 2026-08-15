@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the MAIN window only. Grants core APIs, the opener plugin, native file dialogs (open/save), and the filesystem plugin's frontend-exposed APIs (used by paste-image write/mkdir). Scoped to $HOME/** so the frontend fs plugin can't write outside the user's home directory. NOTE: the app's core open/save/save-as file I/O goes through Rust IPC commands that use std::fs DIRECTLY (not the fs plugin), so they bypass this scope — tightening to user-chosen paths only requires a deeper per-action grant model and is tracked as a future production gate. Tauri's deny-default protections (e.g. the webview data folder on Windows/Linux) still take precedence. See README 'Security' section. The settings window has its own reduced capability (capabilities/settings.json) WITHOUT fs write access — a settings UI has no business writing files.",
+  "description": "Capability for the MAIN window only. Grants core APIs, the opener plugin, native file dialogs (open/save), and the filesystem plugin's default set only (app-specific-dir read/mkdir defaults — no additional fs permissions). All file I/O (open/save/save-as, paste-image writes, image/PDF reads) goes through Rust IPC commands that use std::fs DIRECTLY (not the fs plugin), so it bypasses this capability entirely — tightening to user-chosen paths only requires a deeper per-action grant model and is tracked as a future production gate. DELIBERATELY grants no $HOME-scoped fs plugin access: the main webview renders AI markdown and remote images, so this contains the blast radius of a compromised webview (even if XSSed, it has no frontend-exposed fs read/write outside app-specific dirs). Tauri's deny-default protections (e.g. the webview data folder on Windows/Linux) still take precedence. See README 'Security' section. The settings window has its own reduced capability (capabilities/settings.json).",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -22,26 +22,6 @@
     "dialog:default",
     "dialog:allow-confirm",
     "dialog:allow-ask",
-    "fs:default",
-    {
-      "identifier": "fs:allow-read-text-file",
-      "allow": [{ "path": "$HOME/**" }]
-    },
-    {
-      "identifier": "fs:allow-write-text-file",
-      "allow": [{ "path": "$HOME/**" }]
-    },
-    {
-      "identifier": "fs:allow-write-file",
-      "allow": [{ "path": "$HOME/**" }]
-    },
-    {
-      "identifier": "fs:allow-mkdir",
-      "allow": [{ "path": "$HOME/**" }]
-    },
-    {
-      "identifier": "fs:allow-exists",
-      "allow": [{ "path": "$HOME/**" }]
-    }
+    "fs:default"
   ]
 }

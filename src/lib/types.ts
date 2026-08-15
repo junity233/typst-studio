@@ -181,7 +181,7 @@ success: boolean,
 /**
  * Wall-clock compile duration in milliseconds.
  */
-duration_ms: bigint, 
+duration_ms: number, 
 /**
  * Errors encountered (empty on success).
  */
@@ -320,7 +320,7 @@ export type Diagnostic = { severity: Severity, range: Range, message: string,
 /**
  * Typst error code, when available.
  */
-code: bigint | null, };
+code: number | null, };
 
 /**
  * Payload of the `diagnostics` event. `revision` (§7) tags which buffer

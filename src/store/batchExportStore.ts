@@ -6,6 +6,7 @@ import {
   openFileByPath,
 } from "../lib/tauri";
 import type { BatchExportOutcome, TypstFileEntry } from "../lib/types";
+import { toIpcError } from "../lib/ipc-error";
 import { flushDocumentSnapshot } from "../lib/saveDocument";
 import { workspacePathsEqual } from "../lib/workspacePath";
 import { useDocumentsStore } from "./documentsStore";
@@ -94,7 +95,9 @@ export const useBatchExportStore = create<BatchExportState>()((set, get) => ({
       if (!get().open) return;
       set({ files, phase: "picking" });
     } catch (e) {
-      set({ phase: "picking", error: String(e) });
+      // Backend rejections arrive as serialized IpcError objects, not Error —
+      // toIpcError extracts the message (String(e) would be "[object Object]").
+      set({ phase: "picking", error: toIpcError(e).message });
     }
   },
 
@@ -143,11 +146,13 @@ export const useBatchExportStore = create<BatchExportState>()((set, get) => ({
       set({ phase: "done", results });
     } catch (e) {
       // A cancelled folder pick is a silent return to picking, not an error.
-      const message = e instanceof Error ? e.message : String(e);
-      if (!/cancel/i.test(message)) {
-        set({ phase: "picking", error: message });
-      } else {
+      // The backend signals it via IpcError code "cancelled" (§5.3) — the
+      // serialized object is narrowed by toIpcError, never stringified.
+      const ipc = toIpcError(e);
+      if (ipc.code === "cancelled") {
         set({ phase: "picking" });
+      } else {
+        set({ phase: "picking", error: ipc.message });
       }
     } finally {
       // Release the backend-only tabs regardless of outcome. Best-effort: a

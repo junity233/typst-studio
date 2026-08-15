@@ -8,6 +8,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'release tag (vX.Y.Z)'
+        required: true
+        type: string
 
 # tauri-action creates the draft release via the API — the default read-only
 # GITHUB_TOKEN cannot, so contents:write is required.
@@ -88,8 +93,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Typst Studio ${{ github.ref_name }}'
+          # On a tag push, github.ref_name is the tag (vX.Y.Z). On a manual
+          # workflow_dispatch run it is the BRANCH name (e.g. "master"), which
+          # would make tauri-action create a stray tag/release named after the
+          # branch — so prefer the required `tag` input on manual runs.
+          tagName: ${{ inputs.tag || github.ref_name }}
+          releaseName: 'Typst Studio ${{ inputs.tag || github.ref_name }}'
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

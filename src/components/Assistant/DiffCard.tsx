@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Maximize2, X } from "lucide-react";
@@ -59,6 +59,27 @@ function computeDiff(before: string, after: string): DiffLine[] {
   return out;
 }
 
+/**
+ * Cap a diff's context to `ctx` lines around each change. `computeDiff`
+ * returns the WHOLE file as context (unlimited), which would render huge
+ * documents unreadably in the modal. Dropped runs are visible via the
+ * line-number gutters (the numbers jump).
+ */
+function contextWindow(diff: DiffLine[], ctx: number): DiffLine[] {
+  const keep = new Array<boolean>(diff.length).fill(false);
+  for (let i = 0; i < diff.length; i++) {
+    if (diff[i].kind === "ctx") continue;
+    for (
+      let j = Math.max(0, i - ctx);
+      j <= Math.min(diff.length - 1, i + ctx);
+      j++
+    ) {
+      keep[j] = true;
+    }
+  }
+  return diff.filter((_, i) => keep[i]);
+}
+
 export function DiffCard({ approval, onApply, onReject }: DiffCardProps) {
   const { t } = useTranslation("assistant");
   const [poppedOut, setPoppedOut] = useState(false);
@@ -67,7 +88,11 @@ export function DiffCard({ approval, onApply, onReject }: DiffCardProps) {
   const after =
     approval.kind === "write_file"
       ? (approval.after ?? "")
-      : before.replace(approval.old_string ?? "", approval.new_string ?? "");
+      : // Function replacer: with a string replacement, String.replace applies
+        // substitution patterns ($&, $', $$ …) to new_string, diverging from the
+        // literal text applyStrReplace inserts. A function's return value is
+        // used literally (and keeps first-match semantics).
+        before.replace(approval.old_string ?? "", () => approval.new_string ?? "");
   const diff = computeDiff(before, after);
   // Inline card shows ONLY the changed lines (no context).
   const changedLines = diff.filter((l) => l.kind !== "ctx");
@@ -129,7 +154,10 @@ export function DiffCard({ approval, onApply, onReject }: DiffCardProps) {
 
       {poppedOut && (
         <DiffModal
-          diff={changedLines}
+          // The modal shows the FULL diff (context lines + line numbers),
+          // capped to a window around the changes — unlike the inline card,
+          // which shows only the changed lines.
+          diff={contextWindow(diff, 3)}
           path={path}
           verdict={approval.verdict}
           onApply={onApply}
@@ -158,6 +186,19 @@ function DiffModal({
   onClose: () => void;
 }) {
   const { t } = useTranslation("assistant");
+  // Esc closes — window-level listener like AboutModal (a focused element
+  // inside the portal is not guaranteed to receive the key). Attached only
+  // while the modal is mounted (it's conditionally rendered).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
   return createPortal(
     <div className="dialog-overlay assistant-diff-modal-overlay" onClick={onClose}>
       <div
@@ -181,6 +222,14 @@ function DiffModal({
                 key={i}
                 className={`assistant-diff-line assistant-diff-line--${line.kind}`}
               >
+                {/* Line-number gutters (before/after); blank for pure adds /
+                  dels, so the columns stay aligned. */}
+                <span className="assistant-diff-line__num">
+                  {line.beforeLine > 0 ? line.beforeLine : ""}
+                </span>
+                <span className="assistant-diff-line__num">
+                  {line.afterLine > 0 ? line.afterLine : ""}
+                </span>
                 <span className="assistant-diff-line__sign">
                   {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
                 </span>

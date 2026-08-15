@@ -19,10 +19,16 @@ function norm(p: string): string {
 
 /** Collapse `.` and `..` segments lexically (no symlink resolution). */
 function lexicalNormalize(p: string): string {
-  const isAbs = p.startsWith("/");
-  const driveMatch = /^([A-Za-z]:)(\/.*)?$/.exec(p);
+  // Preserve a leading UNC anchor (`//server/share`, `\\server\share`): the
+  // segment loop below drops empty segments, which would collapse the anchor
+  // into `/server/share` — on Windows that re-roots the path on the current
+  // drive instead of the network share, so every derived path would be wrong.
+  const unc = p.startsWith("//") || p.startsWith("\\\\");
+  const source = unc ? p.slice(2).replace(/\\/g, "/") : p;
+  const isAbs = !unc && source.startsWith("/");
+  const driveMatch = /^([A-Za-z]:)(\/.*)?$/.exec(source);
   const drive = driveMatch ? driveMatch[1] : "";
-  const body = driveMatch ? (driveMatch[2] ?? "/") : isAbs ? p : p;
+  const body = driveMatch ? (driveMatch[2] ?? "/") : source;
   const parts = body.split("/");
   const out: string[] = [];
   for (const part of parts) {
@@ -38,9 +44,20 @@ function lexicalNormalize(p: string): string {
     out.push(part);
   }
   const joined = out.join("/");
+  if (unc) return `//${joined}`;
   if (drive) return `${drive}/${joined}`;
   if (isAbs) return `/${joined}`;
   return joined || ".";
+}
+
+/**
+ * Whether a normalized (forward-slash) path is Windows-shaped: a drive letter
+ * (`C:/…`) or a UNC share (`//server/…`). Windows path matching is
+ * case-insensitive; POSIX paths compare exactly (same convention as
+ * `workspacePath.ts`).
+ */
+function isWindowsPath(p: string): boolean {
+  return /^[A-Za-z]:\//.test(p) || p.startsWith("//");
 }
 
 /**
@@ -64,8 +81,14 @@ export function resolveWorkspacePath(
       ? candidate
       : `${root}/${candidate}`;
     const normalized = lexicalNormalize(abs);
+    // Windows paths are case-insensitive: compare folded (lowercased) forms
+    // so a differently-cased path isn't wrongly rejected as an escape; POSIX
+    // paths compare exactly.
+    const fold = isWindowsPath(root)
+      ? (p: string) => p.toLowerCase()
+      : (p: string) => p;
     // Permit exactly the root, or anything under `root/`.
-    if (normalized !== root && !normalized.startsWith(root + "/")) {
+    if (fold(normalized) !== fold(root) && !fold(normalized).startsWith(fold(root) + "/")) {
       throw new Error(`Path "${relOrAbs}" resolves outside the workspace.`);
     }
     return normalized;
@@ -77,8 +100,14 @@ export function resolveWorkspacePath(
   }
   const single = lexicalNormalize(norm(singleFilePath));
   const singleBasename = single.split("/").pop() ?? single;
-  const candidate = norm(relOrAbs);
-  if (candidate === single || candidate === singleBasename) {
+  // Normalize the candidate too (not just separator-swap): an agent-supplied
+  // `./name` or `//server//share/name` must still equal the normalized single
+  // path — a bare `norm` left those forms un-collapsed and wrongly rejected.
+  const candidate = lexicalNormalize(norm(relOrAbs));
+  const fold = isWindowsPath(single)
+    ? (p: string) => p.toLowerCase()
+    : (p: string) => p;
+  if (fold(candidate) === fold(single) || fold(candidate) === fold(singleBasename)) {
     return single;
   }
   throw new Error(

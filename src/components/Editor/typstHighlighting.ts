@@ -64,6 +64,45 @@ let sharedRegistry: any = null;
 let appliedTokenBase: MonacoTokenBase | null = null;
 
 /**
+ * The token-theme base most recently REQUESTED via
+ * `applyTypstTokenTheme`, even if the registry didn't exist yet to honor it.
+ * `doInit` applies this instead of a hardcoded "light": the caller
+ * (`MonacoEditor`'s theme effect) fires before Monaco has tokenized its first
+ * typst model, so `doInit` (which creates the registry) runs LATER — without
+ * this record, a dark-theme user's request was dropped and `doInit` painted
+ * Light+ tokens at startup with no retry.
+ */
+let pendingTokenBase: MonacoTokenBase | null = null;
+
+/**
+ * Serializes theme applications (fetch + CSS rewrite). Without this,
+ * `doInit`'s initial apply — which assigns `sharedRegistry` BEFORE its await —
+ * can run CONCURRENTLY with an `applyTypstTokenTheme(otherBase)` that arrives
+ * mid-await: the two CSS rewrites can land out of order, leaving
+ * `appliedTokenBase = otherBase` while the CSS still shows the initial palette
+ * (and later requests early-return on `appliedTokenBase`, sticking the wrong
+ * palette for the session). Chaining EVERY apply — `doInit`'s initial one
+ * included — guarantees the last-requested base also lands last.
+ */
+let themeApplyChain: Promise<void> = Promise.resolve();
+
+/**
+ * Enqueue an [`applyTokenTheme`](Self.applyTokenTheme) on the serialization
+ * chain. The returned promise settles with the apply itself (errors propagate
+ * to the caller); the chain swallows them so a failed apply doesn't poison
+ * later enqueues.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function enqueueTokenThemeApply(registry: any, base: MonacoTokenBase): Promise<void> {
+  const run = themeApplyChain.then(() => applyTokenTheme(registry, base));
+  themeApplyChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/**
  * Register the Typst language + TextMate tokenizer + theme CSS.
  *
  * Safe to call multiple times; subsequent calls are no-ops.
@@ -179,8 +218,12 @@ async function applyTokenTheme(registry: any, base: MonacoTokenBase): Promise<vo
 
 /**
  * Switch the Typst editor's token theme to `base` (light/dark). A no-op if
- * registration hasn't completed yet (the editor still renders with a plain-text
- * fallback, then colors in once init finishes), or if `base` is already applied.
+ * `base` is already applied.
+ *
+ * If the registry doesn't exist yet (init hasn't run — it starts lazily on
+ * Monaco's first typst tokenization), the request is recorded in
+ * `pendingTokenBase` and honored by `doInit`, so the initial palette always
+ * matches the theme the user actually has selected.
  *
  * Waits for `registrationPromise` so the shared registry exists before
  * re-applying. Safe to call before first init — `registrationPromise` is set on
@@ -191,8 +234,13 @@ export async function applyTypstTokenTheme(base: MonacoTokenBase): Promise<void>
   // Skip if already applied (avoids a redundant fetch + CSS rewrite on every
   // theme-store tick).
   if (appliedTokenBase === base) return;
+  // Record the request BEFORE waiting: the registry only comes into existence
+  // when `doInit` runs (lazily, on Monaco's first typst tokenization), which
+  // is typically AFTER this call. Recording here lets `doInit` apply the
+  // CURRENTLY requested base instead of assuming "light".
+  pendingTokenBase = base;
   // Wait for the registry to exist. If registration hasn't started, there's
-  // nothing to re-theme yet — `doInit` will apply the initial palette itself.
+  // nothing to re-theme yet — `doInit` will apply the recorded palette itself.
   if (registrationPromise) {
     try {
       await registrationPromise;
@@ -200,8 +248,8 @@ export async function applyTypstTokenTheme(base: MonacoTokenBase): Promise<void>
       return; // init failed; nothing to re-theme (doInit reports the error).
     }
   }
-  if (!sharedRegistry) return;
-  await applyTokenTheme(sharedRegistry, base);
+  if (!sharedRegistry) return; // doInit will apply `pendingTokenBase` later.
+  await enqueueTokenThemeApply(sharedRegistry, base);
   appliedTokenBase = base;
 }
 
@@ -257,9 +305,16 @@ async function doInit(): Promise<unknown> {
   // palette (light/dark) later without rebuilding it.
   sharedRegistry = registry;
 
-  // ── Apply the initial token theme (light) ─────────────────────────────
-  await applyTokenTheme(registry, "light");
-  appliedTokenBase = "light";
+  // ── Apply the initial token theme ─────────────────────────────────────
+  // Honor whatever base was requested before init ran (dark-theme users call
+  // `applyTypstTokenTheme("dark")` before the first tokenization creates this
+  // registry — see `pendingTokenBase`); fall back to "light" when nobody asked.
+  // Routed through the serialization chain so a palette switch arriving while
+  // this apply is in flight queues BEHIND it instead of racing its CSS rewrite
+  // (see `themeApplyChain`).
+  const initialBase: MonacoTokenBase = pendingTokenBase ?? "light";
+  await enqueueTokenThemeApply(registry, initialBase);
+  appliedTokenBase = initialBase;
 
   // ── Load the grammar ──────────────────────────────────────────────────
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

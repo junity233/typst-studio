@@ -9,8 +9,9 @@ import i18n from "../../i18n";
  * svg/webp/bmp). Preview-only — no editing, no dirty state, no save.
  *
  * The bytes are fetched on demand via the backend `read_file_bytes` command
- * (NOT the `@tauri-apps/plugin-fs` plugin, which is capability-scoped to
- * `$HOME/**` and cannot read arbitrary workspace paths). The bytes are wrapped
+ * (NOT the `@tauri-apps/plugin-fs` plugin, which is granted only
+ * app-specific-dir access via `fs:default` and cannot read arbitrary
+ * workspace paths). The bytes are wrapped
  * in a `Blob` and exposed via an object URL that is revoked on unmount / when
  * the path changes, so memory is reclaimed.
  *

@@ -14,6 +14,7 @@ import {
   openWorkspaceByPath,
 } from "../../../lib/tauri";
 import { toIpcError } from "../../../lib/ipc-error";
+import { useDialogStore } from "../../../store/dialogStore";
 import { editorApiRef } from "../../Editor/editorApiRef";
 import i18n from "../../../i18n";
 import { useActiveDocument } from "../../../store/tabsStore";
@@ -104,6 +105,22 @@ export function PackageDetail() {
     setActiveView("workbench.explorer");
   };
 
+  /** Ask (via the styled ConfirmDialog — native window.confirm is dead in
+   *  the macOS WKWebView, see Explorer.tsx) whether to overwrite existing
+   *  files at the template destination. */
+  const confirmOverwrite = async () => {
+    const result = await useDialogStore.getState().confirm({
+      title: t("useTemplate"),
+      message: t("confirmOverwrite"),
+      confirmLabel: i18n.t("confirm", { ns: "common" }),
+      cancelLabel: i18n.t("cancel", { ns: "common" }),
+      // Overwriting destroys existing files — start focused on Cancel so a
+      // stray Enter cannot confirm.
+      danger: true,
+    });
+    return result === "confirm";
+  };
+
   const applyTemplate = async () => {
     const dest = await openDialog({
       directory: true,
@@ -114,7 +131,7 @@ export function PackageDetail() {
     const destStr = String(dest);
     try {
       const isEmpty = await packageDirIsEmpty(destStr);
-      if (!isEmpty && !confirm(t("confirmOverwrite"))) {
+      if (!isEmpty && !(await confirmOverwrite())) {
         return;
       }
       await runInit(destStr, !isEmpty);
@@ -132,7 +149,7 @@ export function PackageDetail() {
           return;
         }
         // Confirm before overwriting existing files at the destination.
-        if (confirm(t("confirmOverwrite"))) {
+        if (await confirmOverwrite()) {
           try {
             await runInit(destStr, true);
           } catch (e2) {

@@ -42,6 +42,7 @@ pub struct Diagnostic {
     pub range: Range,
     pub message: String,
     /// Typst error code, when available.
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub code: Option<i64>,
 }
 

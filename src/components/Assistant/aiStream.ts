@@ -152,7 +152,7 @@ async function driveStream(
     fetch: createTauriFetch("bearer"),
     dangerouslyAllowBrowser: true,
   });
-  await driveOpenAIChat(stream, client, context, modelId, temperature, options?.signal);
+  await driveOpenAIChat(stream, client, context, modelId, temperature, maxTokens, options?.signal);
 }
 
 /** Accumulator for the in-flight assistant message. */
@@ -206,6 +206,7 @@ async function driveOpenAIChat(
   context: Context,
   modelId: string,
   temperature: number,
+  maxTokens: number,
   signal?: AbortSignal,
 ): Promise<void> {
   const acc = newAcc();
@@ -223,6 +224,7 @@ async function driveOpenAIChat(
       messages,
       stream: true,
       temperature,
+      ...(maxTokens ? { max_tokens: maxTokens } : {}),
       ...(tools.length > 0 ? { tools, tool_choice: "auto" as const } : {}),
     },
     { signal },
@@ -312,6 +314,12 @@ async function driveOpenAIChat(
 
 function convertMessagesForOpenAI(context: Context): ChatCompletionMessageParam[] {
   const out: ChatCompletionMessageParam[] = [];
+  // The system prompt lives on the Context, not in context.messages — emit it
+  // as a leading system message (the Anthropic path sends it via `system:`).
+  // Without this the assistant runs with no instructions at all.
+  if (context.systemPrompt) {
+    out.push({ role: "system", content: context.systemPrompt });
+  }
   for (const m of context.messages) {
     if (m.role === "user") {
       // UserMessage.content can be a string OR a (TextContent|ImageContent)[]
@@ -395,20 +403,20 @@ async function driveAnthropic(
   // partial.content (pi-ai contract), so we derive it from acc.content.length
   // at push time rather than hardcoding offsets.
   const anthropicIdxToContentIdx: Map<number, number> = new Map();
-  let textContentIndex: number | null = null;
   let stopReason: string | null = null;
 
   for await (const ev of response) {
     if (ev.type === "content_block_start") {
       const block = ev.content_block;
       if (block.type === "text") {
-        if (!acc.textBlock) {
-          acc.textBlock = { type: "text", text: "" };
-          acc.content.push(acc.textBlock);
-          textContentIndex = acc.content.length - 1;
-          anthropicIdxToContentIdx.set(ev.index, textContentIndex);
-          stream.push({ type: "text_start", contentIndex: textContentIndex, partial: partial(acc, modelId, provider) });
-        }
+        // A message can contain MULTIPLE text blocks (Anthropic interleaves
+        // text → tool_use → text). Key every text block by its event index —
+        // like tool blocks — so each accumulates separately instead of only
+        // the first one existing.
+        acc.content.push({ type: "text", text: "" });
+        const contentIdx = acc.content.length - 1;
+        anthropicIdxToContentIdx.set(ev.index, contentIdx);
+        stream.push({ type: "text_start", contentIndex: contentIdx, partial: partial(acc, modelId, provider) });
       } else if (block.type === "tool_use") {
         const tc: ToolCall = { type: "toolCall", id: block.id, name: block.name, arguments: {} };
         acc.content.push(tc);
@@ -429,9 +437,12 @@ async function driveAnthropic(
     } else if (ev.type === "content_block_delta") {
       const delta = ev.delta;
       const contentIdx = anthropicIdxToContentIdx.get(ev.index);
-      if (delta.type === "text_delta" && contentIdx === textContentIndex && acc.textBlock) {
-        acc.textBlock.text += delta.text;
-        stream.push({ type: "text_delta", contentIndex: contentIdx, delta: delta.text, partial: partial(acc, modelId, provider) });
+      if (delta.type === "text_delta" && contentIdx !== undefined) {
+        const block = acc.content[contentIdx];
+        if (block.type === "text") {
+          block.text += delta.text;
+          stream.push({ type: "text_delta", contentIndex: contentIdx, delta: delta.text, partial: partial(acc, modelId, provider) });
+        }
       } else if (delta.type === "input_json_delta" && contentIdx !== undefined && acc.toolBlocks.has(contentIdx)) {
         const prev = acc.toolArgJson.get(contentIdx) ?? "";
         const next = prev + delta.partial_json;
@@ -444,8 +455,9 @@ async function driveAnthropic(
       }
     } else if (ev.type === "content_block_stop") {
       const contentIdx = anthropicIdxToContentIdx.get(ev.index);
-      if (contentIdx === textContentIndex && acc.textBlock) {
-        stream.push({ type: "text_end", contentIndex: contentIdx, content: acc.textBlock.text, partial: partial(acc, modelId, provider) });
+      if (contentIdx !== undefined && acc.content[contentIdx].type === "text") {
+        const stopped = acc.content[contentIdx] as { type: "text"; text: string };
+        stream.push({ type: "text_end", contentIndex: contentIdx, content: stopped.text, partial: partial(acc, modelId, provider) });
       } else if (contentIdx !== undefined && acc.toolBlocks.has(contentIdx)) {
         const block = acc.toolBlocks.get(contentIdx)!;
         try {

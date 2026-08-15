@@ -88,11 +88,17 @@ pub async fn discard_all_recovery(state: State<'_, AppState>) -> Result<()> {
 /// still exists, which is checked separately at startup).
 #[tauri::command]
 pub async fn mark_clean_shutdown(state: State<'_, AppState>) -> Result<()> {
-    // Flush any pending debounced snapshots first so the marker reflects the
-    // true final state (a pending edit that hasn't flushed would otherwise be
-    // lost + the marker would claim a clean shutdown).
-    state.editor.flush_recovery();
+    // Flush any PENDING debounced snapshot work (§5.1.2) so a snapshot that
+    // was scheduled but not yet written still lands — but do NOT run a fresh
+    // `snapshot_dirty_documents` pass over the open tabs. The frontend quit
+    // flow discards each dirty doc's snapshot (discardRecovery) BEFORE calling
+    // this, while those docs are still open and dirty; re-snapshotting here
+    // would resurrect exactly the snapshots the user just declined (§5.1.4).
+    // `flush_now` only drains the debounce worker's pending buffer, which
+    // honours the shared `discarded_since_queued` guard, so a pending edit
+    // for a discarded doc is skipped rather than rewritten.
     if let Some(recovery) = state.editor.recovery() {
+        recovery.flush_now();
         recovery.mark_clean_shutdown();
     }
     Ok(())

@@ -71,6 +71,22 @@ export function BibEditModal({ mode, initial, onConfirm, onCancel }: BibEditModa
     keyRef.current?.focus();
   }, []);
 
+  // Esc = cancel. Window-level listener like AboutModal: clicking
+  // non-focusable chrome (title/padding) moves focus to <body>, where the
+  // overlay-level onKeyDown never fires — so Escape must not depend on focus
+  // being inside the portal. Attached on mount (the modal mounts fresh) and
+  // removed on unmount.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onCancel();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
   const keyValid = key.trim().length > 0;
 
   /** Patch one cell of an `extra` row (0 = name, 1 = value) immutably. */
@@ -99,13 +115,6 @@ export function BibEditModal({ mode, initial, onConfirm, onCancel }: BibEditModa
     onConfirm(assembled);
   };
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      onCancel();
-    }
-  };
-
   const titleKey = mode === "add" ? "addEntry" : "editEntry";
 
   return createPortal(
@@ -113,7 +122,6 @@ export function BibEditModal({ mode, initial, onConfirm, onCancel }: BibEditModa
       className="dialog-overlay"
       role="presentation"
       onClick={onCancel}
-      onKeyDown={onKeyDown}
     >
       <div
         className="dialog bib-edit-modal"

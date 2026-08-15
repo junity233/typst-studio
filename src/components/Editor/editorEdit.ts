@@ -274,7 +274,14 @@ function offsetsToRange(
     if (!start && startOffset <= lineEnd) {
       start = { line: line, col: startOffset - lineStart + 1 };
     }
-    if (!end && endOffset <= lineEnd + 1) {
+    // NOTE: the end mapping uses `<= lineEnd` (NOT `lineEnd + 1`). An offset of
+    // `lineEnd + 1` points just past the line's `\n` — i.e. at the FIRST char
+    // of the NEXT line — so it must fall through to the next iteration and map
+    // there as column 1. Claiming it for this line would yield column
+    // `lineLen + 2`, one past `getLineMaxColumn`; Monaco clamps that back, so
+    // the trailing `\n` escapes the replaced range (e.g. replacing "hello\n"
+    // with "" in "hello\nworld" left "\nworld" behind).
+    if (!end && endOffset <= lineEnd) {
       end = { line: line, col: endOffset - lineStart + 1 };
     }
     if (start && end) break;

@@ -42,17 +42,26 @@ export function LinkModal({ initialLabel = "", onConfirm, onCancel }: LinkModalP
     urlRef.current?.focus();
   }, []);
 
+  // Esc = cancel. Window-level listener like AboutModal: clicking
+  // non-focusable chrome (title/padding) moves focus to <body>, where the
+  // overlay-level onKeyDown never fires — so Escape must not depend on focus
+  // being inside the portal. Attached on mount (the modal mounts fresh) and
+  // removed on unmount.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onCancel();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
   const submit = () => {
     const trimmed = url.trim();
     if (trimmed === "") return; // URL is required; empty → no-op (don't close)
     onConfirm(trimmed, label.trim());
-  };
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      onCancel();
-    }
   };
 
   return createPortal(
@@ -60,10 +69,6 @@ export function LinkModal({ initialLabel = "", onConfirm, onCancel }: LinkModalP
       className="dialog-overlay"
       role="presentation"
       onClick={onCancel}
-      // Capture Esc at the overlay so it fires even when focus is in a field.
-      // Stop propagation after handling so an ancestor keydown (e.g. the
-      // editor) doesn't also react.
-      onKeyDown={onKeyDown}
     >
       <div
         className="dialog link-modal"
@@ -86,7 +91,7 @@ export function LinkModal({ initialLabel = "", onConfirm, onCancel }: LinkModalP
             // from a keydown{Enter} on a text input the way real browsers do,
             // and being explicit here is also robust against any future
             // change to the form's submit button. Escape is handled at the
-            // overlay (below); stopPropagation keeps it from double-firing.
+            // window level (see the effect above).
             if (e.key === "Enter") {
               e.preventDefault();
               submit();

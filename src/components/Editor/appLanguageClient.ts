@@ -583,15 +583,39 @@ class AppLanguageClient {
     const currentGen = this.snapshot.generation;
 
     // Open the WebSocket. We resolve start() only once the client has fully
-    // started (Running) or failed.
+    // started (Running) or failed. The timer bounds the whole connect+initialize
+    // phase: a hung initialize settles none of the paths below, and an
+    // unsettled start would block the `pending` chain forever (see
+    // START_TIMEOUT_MS).
     await new Promise<void>((resolve) => {
       let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
       const finish = () => {
-        if (!settled) {
-          settled = true;
-          resolve();
-        }
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimeout(timer);
+        resolve();
       };
+      timer = setTimeout(() => {
+        // Reached Ready already → finish() cleared this timer; a still-firing
+        // timer means the phase never completed.
+        if (this.snapshot.generation !== currentGen || this.snapshot.state === "Ready") {
+          finish();
+          return;
+        }
+        this.setSnapshot({
+          state: "Failed",
+          generation: currentGen,
+          error: `Language client failed to initialize within ${START_TIMEOUT_MS / 1000}s`,
+        });
+        // Dispose the half-open client + socket so the next start() begins
+        // clean. Called directly (NOT this.stop(), which enqueues onto the
+        // `pending` chain we are currently blocking) and not awaited — its
+        // synchronous prefix nulls this.handle before finish() releases the
+        // chain, so a queued start() can't race the old handle.
+        void this.stopInternal({ bumpGeneration: false }).catch(() => {});
+        finish();
+      }, START_TIMEOUT_MS);
 
       let ws: WebSocket;
       try {
@@ -916,6 +940,17 @@ function errorMessage(e: unknown): string {
     return String(e);
   }
 }
+
+/**
+ * Ceiling on the connect+initialize phase of a start. If the WebSocket opens
+ * but tinymist never answers `initialize` (hung process, dead relay), neither
+ * `client.start()` nor the state-change/close callbacks ever settle — without
+ * this bound, the unsettled start would block the serialized
+ * [`pending`](Self.AppLanguageClient.pending) chain forever and every later
+ * start/stop/startWithFreshEndpoint call would queue behind it (no LSP
+ * recovery). 45s is far above a healthy initialize (sub-second) yet finite.
+ */
+const START_TIMEOUT_MS = 45_000;
 
 /** The app-wide singleton. Import this; never construct `AppLanguageClient`. */
 export const appLanguageClient = new AppLanguageClient();

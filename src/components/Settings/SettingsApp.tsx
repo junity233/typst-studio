@@ -34,6 +34,7 @@ import {
   pickPath,
 } from "../../lib/tauri";
 import { toIpcError } from "../../lib/ipc-error";
+import { useDialogStore } from "../../store/dialogStore";
 import i18n from "../../i18n";
 import {
   localizedCategoryLabel,
@@ -370,15 +371,23 @@ function ActionControl({ def }: { def: SettingDef }) {
 
   const run = async () => {
     if (busy) return;
-    // Destructive clear actions: confirm first (§2 "明确确认优先").
+    // Destructive clear actions: confirm first (§2 "明确确认优先"). Uses the
+    // styled ConfirmDialog — native window.confirm is dead in the macOS
+    // WKWebView (see Explorer.tsx's doDeleteWithConfirm).
     if (def.action === "clearRecentWorkspaces" || def.action === "clearRecoveryData") {
       const alsoRecovery = def.action === "clearRecoveryData";
-      const ok = window.confirm(
-        alsoRecovery
+      const result = await useDialogStore.getState().confirm({
+        title: localizedSettingLabel(def),
+        message: alsoRecovery
           ? i18n.t("confirmClearRecovery", { ns: "errors" })
           : i18n.t("confirmClearRecent", { ns: "errors" }),
-      );
-      if (!ok) return;
+        confirmLabel: i18n.t("confirm", { ns: "common" }),
+        cancelLabel: i18n.t("cancel", { ns: "common" }),
+        // Both clear actions destroy data — start focused on Cancel so a
+        // stray Enter cannot confirm.
+        danger: true,
+      });
+      if (result !== "confirm") return;
     }
     setBusy(true);
     try {

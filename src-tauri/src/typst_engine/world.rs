@@ -326,11 +326,12 @@ impl World for EditorWorld {
     fn today(&self, offset: Option<Duration>) -> Option<Datetime> {
         // Read the wall clock at call time (once per compile, negligible cost
         // against the ~150ms budget) so a long-lived world reports the CURRENT
-        // date, not the tab-open timestamp. When an offset is supplied, shift
-        // the reported time by it so `datetime.today(offset: ..)` honors the
-        // requested timezone instead of always returning UTC.
-        let now = chrono::Utc::now();
-        let shifted = match offset {
+        // date, not the tab-open timestamp. Per the `World` contract: with NO
+        // offset the LOCAL date must be chosen (a UTC+8 user at 07:00 local
+        // would otherwise see the previous day); with an offset, the UTC date
+        // shifted by it — so `datetime.today(offset: ..)` honors the requested
+        // timezone. Both branches reduce to a naive wall-clock datetime.
+        let naive = match offset {
             Some(d) => {
                 // `Duration::decompose` → [weeks, days, hours, minutes, seconds]
                 // as whole-unit i64s. Recompose into a single chrono Duration.
@@ -340,17 +341,17 @@ impl World for EditorWorld {
                     + chrono::Duration::hours(h)
                     + chrono::Duration::minutes(m)
                     + chrono::Duration::seconds(s);
-                now + delta
+                (chrono::Utc::now() + delta).naive_utc()
             }
-            None => now,
+            None => chrono::Local::now().naive_local(),
         };
         Datetime::from_ymd_hms(
-            shifted.year(),
-            shifted.month() as u8,
-            shifted.day() as u8,
-            shifted.hour() as u8,
-            shifted.minute() as u8,
-            shifted.second() as u8,
+            naive.year(),
+            naive.month() as u8,
+            naive.day() as u8,
+            naive.hour() as u8,
+            naive.minute() as u8,
+            naive.second() as u8,
         )
     }
 }
@@ -424,6 +425,53 @@ mod tests {
         assert!(
             World::today(&world, None).is_some(),
             "today() should yield a date"
+        );
+    }
+
+    /// The `World` contract: with no offset the LOCAL date is chosen, so a
+    /// UTC+N user in the early morning must not see the previous (UTC) day.
+    /// The returned date has to match one of two `Local::now()` readings taken
+    /// around the call (they can straddle midnight, even New Year).
+    #[test]
+    fn today_without_offset_tracks_the_local_clock() {
+        let world = embedded_world("");
+        let before = chrono::Local::now().naive_local();
+        let got = World::today(&world, None).expect("today() should yield a date");
+        let after = chrono::Local::now().naive_local();
+        let d = (
+            got.year().expect("full datetime has a year"),
+            got.month().expect("full datetime has a month"),
+            got.day().expect("full datetime has a day"),
+        );
+        let b = (before.year(), before.month() as u8, before.day() as u8);
+        let a = (after.year(), after.month() as u8, after.day() as u8);
+        assert!(
+            d == b || d == a,
+            "today(None) must report the LOCAL date ({d:?}), not some other clock"
+        );
+    }
+
+    /// With an offset, the UTC date shifted by that offset is reported.
+    #[test]
+    fn today_with_offset_shifts_utc_by_the_offset() {
+        let world = embedded_world("");
+        // +25 hours: tomorrow's UTC date (whatever "today" is) — unless the
+        // two clock reads straddle a month/year boundary, so compare against
+        // both readings like the local test above.
+        let offset = Duration::construct(0, 0, 25, 0, 0);
+        let before = chrono::Utc::now().naive_utc() + chrono::Duration::hours(25);
+        let got = World::today(&world, Some(offset)).expect("date with offset");
+        let after = chrono::Utc::now().naive_utc() + chrono::Duration::hours(25);
+        let d = (
+            got.year().expect("year"),
+            got.month().expect("month"),
+            got.day().expect("day"),
+        );
+        let b = (before.year(), before.month() as u8, before.day() as u8);
+        let a = (after.year(), after.month() as u8, after.day() as u8);
+        assert!(
+            d == b || d == a,
+            "today(offset) must report UTC shifted by the offset ({d:?})"
         );
     }
 

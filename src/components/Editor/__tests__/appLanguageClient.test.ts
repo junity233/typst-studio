@@ -75,7 +75,16 @@ const {
   MockWebSocket,
   webSocketInstances,
   iwsInstances,
+  controls,
 } = vi.hoisted(() => {
+    // Test control knobs shared with the mocks below.
+    const controls = {
+      // When true, the NEXT constructed client's start() never settles —
+      // simulates a hung `initialize` (socket open, tinymist unresponsive),
+      // the scenario the bounded start timeout must recover from.
+      hangNextStart: false,
+    };
+
     const startedInstances: {
       state: number;
       clientOptions: unknown;
@@ -96,6 +105,10 @@ const {
       messageTransports: unknown;
       state = 1; // Stopped
       start = async () => {
+        if (controls.hangNextStart) {
+          controls.hangNextStart = false;
+          return new Promise<void>(() => {}); // never settles (hung initialize)
+        }
         this.state = 3; // Starting; caller flips to Running via the state cb.
       };
       // M2: mirror real BaseLanguageClient.stop() — it FIRES the
@@ -173,6 +186,7 @@ const {
       MockWebSocket,
       webSocketInstances,
       iwsInstances,
+      controls,
     };
   });
 
@@ -236,6 +250,7 @@ beforeEach(() => {
   startedInstances.length = 0;
   webSocketInstances.length = 0;
   iwsInstances.length = 0;
+  controls.hangNextStart = false;
   // Install our MockWebSocket as the global constructor the implementation
   // calls via `new WebSocket(url)`. jsdom ships a real (non-functional-in-node)
   // WebSocket; replacing it on the window lets each test capture the instance
@@ -665,6 +680,54 @@ describe("appLanguageClient — lifecycle (mocked transports)", () => {
     // Disabled with NO "Failed" in between.
     expect(seen).not.toContain("Failed");
     expect(seen).toContain("Disabled");
+  });
+
+  // Bounded start timeout: if the WebSocket opens but `initialize` never
+  // completes, none of the settle paths (Ready / client.start() resolution /
+  // onerror / onclose) fire. Pre-fix, the unsettled start blocked the
+  // serialized `pending` chain forever — every later start/stop queued behind
+  // it with no recovery. The timeout must fail the start, dispose the client +
+  // socket, and free the chain for the next caller.
+  it("fails and disposes a hung initialize after the timeout, keeping the chain live", async () => {
+    vi.useFakeTimers();
+    try {
+      controls.hangNextStart = true;
+      const p = appLanguageClient.start({
+        wsUrl: "ws://host/lsp",
+        workspaceRootPath: null,
+        workspaceName: null,
+      });
+      await vi.waitFor(() => expect(webSocketInstances).toHaveLength(1));
+      webSocketInstances[0]!.onopen!();
+      await vi.waitFor(() => expect(startedInstances).toHaveLength(1));
+      expect(appLanguageClient.getSnapshot().state).toBe("Initializing");
+
+      // Advance past the bounded connect+initialize window.
+      await vi.advanceTimersByTimeAsync(45_000);
+
+      const snap = appLanguageClient.getSnapshot();
+      expect(snap.state).toBe("Failed");
+      expect(snap.error).toMatch(/initialize/i);
+      // The half-open client was stopped and its socket disposed.
+      expect(startedInstances[0]!.state).toBe(1); // Stopped
+      expect(iwsInstances[0]!.disposed).toBe(true);
+      // The start itself settled (this is the fix — it used to hang here).
+      await p;
+
+      // The chain is FREE: a subsequent start settles instead of queueing
+      // forever behind the hung one.
+      const p2 = appLanguageClient.start({
+        wsUrl: "ws://host/lsp2",
+        workspaceRootPath: null,
+        workspaceName: null,
+      });
+      await vi.waitFor(() => expect(webSocketInstances).toHaveLength(2));
+      webSocketInstances[1]!.onerror!();
+      await p2;
+      expect(appLanguageClient.getSnapshot().state).toBe("Failed");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

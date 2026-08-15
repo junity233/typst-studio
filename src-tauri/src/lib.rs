@@ -488,7 +488,11 @@ pub fn run() {
             let recovery: Arc<crate::persistence::recovery::RecoveryService> = Arc::new(recovery);
             // §5.1.2: clear the clean-shutdown marker FIRST so a crash during
             // this session is detectable on the next launch. The marker is only
-            // re-written once a clean close completes.
+            // re-written once a clean close completes. Whether the PRIOR
+            // session shut down cleanly must be captured BEFORE the clear —
+            // reading it afterwards would always report "not clean" and the
+            // startup decision below could never take the clean branch.
+            let had_clean_shutdown = recovery.has_clean_shutdown();
             recovery.clear_clean_shutdown();
             // Wire the recovery sink into the editor so update_text/mark_saved
             // snapshot/discard dirty buffers.
@@ -509,7 +513,9 @@ pub fn run() {
             // Even with a clean marker, a newer-than-disk snapshot is offered.
             // Compute the payload here (synchronously, in setup) and emit it
             // after the window is up so the frontend's listener is registered.
-            let recovery_payload = compute_recovery_payload(&recovery);
+            // `had_clean_shutdown` was captured above, BEFORE the marker was
+            // cleared for this session.
+            let recovery_payload = compute_recovery_payload(&recovery, had_clean_shutdown);
 
             // Package service (Packages view): index cache + typst-kit handle.
             // The index cache lives under the app config dir (NOT typst's own
@@ -655,26 +661,47 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // §6.2 "应用关闭时停止接收任务并有界等待 worker 结束": on Exit, signal
-            // the compile supervisor to drain (no new compiles, suppress in-flight
-            // emits) and give the workers a brief, bounded window to finish their
-            // current compile. Best-effort — Rust can't force-kill a thread, so a
-            // runaway compile outliving the window is simply dropped. We do this on
-            // ExitRequested/Exit, not on every window close, so a Settings-window
-            // toggle doesn't tear down compilation.
+            // §6.2 "应用关闭时停止接收任务并有界等待 worker 结束": on
+            // ExitRequested, signal the compile supervisor to drain (no new
+            // compiles, suppress in-flight emits) and give the workers a
+            // brief, bounded window to finish their current compile
+            // (wait_for_drain returns as soon as nothing is compiling, and
+            // never blocks longer than SHUTDOWN_DRAIN_TIMEOUT). Best-effort —
+            // Rust can't force-kill a thread, so a runaway compile outliving
+            // the window is simply dropped. We do this on ExitRequested (not
+            // on every window close) so a Settings-window toggle doesn't tear
+            // down compilation; Exit follows ExitRequested in the normal
+            // shutdown flow and only re-arms the flags.
             use tauri::Manager as _;
-            if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
-                if let Some(state) = app.try_state::<crate::ipc::state::AppState>() {
-                    state.editor.compile().shutdown();
-                    // §6.3: stop the watcher-health poll thread too.
-                    state.watcher_health.shutdown();
+            match event {
+                tauri::RunEvent::ExitRequested { .. } => {
+                    if let Some(state) = app.try_state::<crate::ipc::state::AppState>() {
+                        let compile = state.editor.compile().clone();
+                        compile.shutdown();
+                        compile.wait_for_drain(
+                            crate::service::compile_supervisor::SHUTDOWN_DRAIN_TIMEOUT,
+                        );
+                        // §6.3: stop the watcher-health poll thread too.
+                        state.watcher_health.shutdown();
+                    }
                 }
+                tauri::RunEvent::Exit => {
+                    if let Some(state) = app.try_state::<crate::ipc::state::AppState>() {
+                        state.editor.compile().shutdown();
+                        state.watcher_health.shutdown();
+                    }
+                }
+                _ => {}
             }
         });
 }
 
 /// Compute the startup recovery payload (§5.1.3), or `None` when no recovery is
 /// offered.
+///
+/// `had_clean_shutdown` is whether the PRIOR session's clean-shutdown marker
+/// was present — the caller must capture it BEFORE `.setup` clears the marker
+/// for the current session (reading it here would always see "not clean").
 ///
 /// Recovery is offered when:
 /// - the prior session did NOT finish a clean shutdown (no `clean-shutdown`
@@ -686,6 +713,7 @@ pub fn run() {
 /// flag so the UI can pick the right default action (§5.1.3).
 fn compute_recovery_payload(
     recovery: &crate::persistence::recovery::RecoveryService,
+    had_clean_shutdown: bool,
 ) -> Option<crate::ipc::events::RecoveryAvailablePayload> {
     use crate::ipc::events::RecoveryAvailablePayload;
     use crate::ipc::recovery_commands::summarize_recoverable;
@@ -702,9 +730,54 @@ fn compute_recovery_payload(
     // (snapshot has edits beyond what's on disk — offer even after a clean
     // shutdown, since the user may want that buffer back).
     let any_disk_changed = infos.iter().any(|i| i.disk_changed);
-    if recovery.has_clean_shutdown() && !any_disk_changed {
+    if had_clean_shutdown && !any_disk_changed {
         // Clean shutdown and every snapshot matches disk → nothing to recover.
         return None;
     }
     Some(RecoveryAvailablePayload { snapshots: infos })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_recovery_payload;
+
+    /// §5.1.3 decision table for `compute_recovery_payload`: a snapshot that
+    /// matches disk suppresses the dialog only when the PRIOR session shut
+    /// down cleanly — the caller captures that BEFORE clearing the marker
+    /// (see `.setup`), which is why it arrives as a parameter rather than
+    /// being re-read from the service here (post-clear it would always be
+    /// false and the clean branch could never suppress anything).
+    #[test]
+    fn clean_prior_session_with_matching_disk_suppresses_recovery() {
+        let dir = std::env::temp_dir().join(format!("ts-recpayload-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let svc = crate::persistence::recovery::RecoveryService::new(dir.clone()).unwrap();
+
+        // One disk-backed dirty doc whose snapshot's recorded disk version
+        // matches the file as it is now (disk_changed == false).
+        let file = dir.join("doc.typ");
+        std::fs::write(&file, "on disk").unwrap();
+        let mut meta = crate::domain::document::DocumentMeta::with_loose_path(
+            crate::domain::document::DocumentId::new(),
+            file.clone(),
+            dir.clone(),
+        );
+        meta.dirty = true;
+        meta.revision = 1;
+        svc.snapshot_dirty_documents(&[meta], |_| Some("on disk".into()));
+
+        // Prior session clean + nothing disk-changed → suppressed.
+        assert!(
+            compute_recovery_payload(&svc, true).is_none(),
+            "clean shutdown + matching disk must suppress the recovery dialog"
+        );
+        // Prior session crashed (marker absent) → offered despite the match.
+        assert!(
+            compute_recovery_payload(&svc, false).is_some(),
+            "an unclean shutdown must offer recovery for a surviving snapshot"
+        );
+
+        drop(svc);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

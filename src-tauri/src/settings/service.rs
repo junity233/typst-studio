@@ -11,7 +11,7 @@
 //! runtime document is a free-form `serde_json::Value`, and `set` validates
 //! every write against the embedded [`Manifest`].
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -24,6 +24,15 @@ use super::store::JsonFileStore;
 pub struct SettingsService {
     /// The full runtime config document.
     data: RwLock<Value>,
+    /// Serializes `set` writers across their whole clone→mutate→save (+
+    /// rollback) sequence. Without it two racing `set`s interleave: a failed
+    /// save's rollback could restore a stale whole-document clone and erase a
+    /// concurrent successful write from memory (while disk and `on_change`
+    /// announced it), and a snapshot taken before another writer's mutation
+    /// could be persisted over it (lost update). Plain sync mutex — the
+    /// critical section is short and contains no awaits. `data` stays a
+    /// `RwLock` so `get`/`get_all` never contend with it.
+    write_lock: Mutex<()>,
     /// Build-time-embedded catalog of known settings + defaults/constraints.
     manifest: Manifest,
     /// Persistence handle.
@@ -42,6 +51,7 @@ impl SettingsService {
         let data = store.load_value();
         Ok(Self {
             data: RwLock::new(data),
+            write_lock: Mutex::new(()),
             manifest,
             store,
             on_change: Box::new(on_change),
@@ -104,14 +114,36 @@ impl SettingsService {
         }
         validate(def, &value)?;
 
-        // Apply, then clone a snapshot so persistence/broadcast happen outside
-        // the write lock (no IO or reentrant reads under the guard).
+        // Serialize against other `set` calls for the whole mutate+save
+        // sequence (see `write_lock`): the snapshot is taken and persisted
+        // atomically w.r.t. other writers, so a save can neither clobber a
+        // concurrent writer's key from disk nor roll memory back past one.
+        // The callback fires after the guard is dropped — `on_change` stays
+        // reentrancy-safe (it may probe `get`/`set` itself).
         let snapshot = {
-            let mut guard = self.data.write();
-            set_pointer(&mut guard, path, value);
-            guard.clone()
+            let _writer = self.write_lock.lock();
+            // Apply, then clone a snapshot so persistence/broadcast happen
+            // outside the document write lock (no IO or reentrant reads under
+            // that guard). The pre-mutation document is cloned too, so a
+            // failed save can roll the in-memory state back — otherwise later
+            // `get`s would serve a value that was never persisted (and
+            // `on_change` never fired for it).
+            let (snapshot, previous) = {
+                let mut guard = self.data.write();
+                let previous = guard.clone();
+                set_pointer(&mut guard, path, value);
+                (guard.clone(), previous)
+            };
+            if let Err(e) = self.store.save_value(&snapshot) {
+                // Persistence failed: restore the pre-mutation document so
+                // memory keeps matching what's on disk. Writers are
+                // serialized, so `previous` is exactly the last state that
+                // was handed to `save_value`.
+                *self.data.write() = previous;
+                return Err(e);
+            }
+            snapshot
         };
-        self.store.save_value(&snapshot)?;
         (self.on_change)(&snapshot);
         Ok(())
     }
@@ -597,6 +629,104 @@ mod tests {
         let svc2 = SettingsService::new(JsonFileStore::new(path.clone()), Manifest::embedded(), |_| {}).unwrap();
         let n: i64 = svc2.get("editor.fontSize", 0);
         assert_eq!(n, 24);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A `set` whose persistence fails must roll the in-memory document back
+    /// to the pre-mutation state and never fire `on_change` — otherwise later
+    /// `get`s would serve a value that only ever existed in memory (a
+    /// memory/persistence divergence until restart).
+    #[test]
+    fn set_rolls_back_when_persistence_fails() {
+        // The store's parent "directory" is actually a regular file, so
+        // `save_value` can never succeed.
+        let dir = std::env::temp_dir().join(format!("typst-settings-rb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, b"not a dir").unwrap();
+
+        let fired = Arc::new(StdMutex::new(false));
+        let f = Arc::clone(&fired);
+        let svc = SettingsService::new(
+            JsonFileStore::new(blocker.join("settings.json")),
+            Manifest::embedded(),
+            move |_| {
+                *f.lock().unwrap() = true;
+            },
+        )
+        .unwrap();
+
+        assert!(
+            svc.set("editor.fontSize", json!(20)).is_err(),
+            "saving under a file-as-parent path must fail"
+        );
+        // Rolled back: memory must not hold the never-persisted value.
+        let n: i64 = svc.get("editor.fontSize", 99);
+        assert_eq!(n, 99, "in-memory document must roll back on save failure");
+        assert!(!*fired.lock().unwrap(), "on_change must not fire for a failed set");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Concurrent `set`s to distinct keys must all land — in memory, on disk,
+    /// and in the broadcast count. This is the regression test for serializing
+    /// writers: without the writer mutex a `set` whose save interleaves with
+    /// another's mutate could persist a snapshot missing the other's key (lost
+    /// update on disk), and a failed save's rollback could restore a clone
+    /// taken before the other's successful write (lost update in memory).
+    #[test]
+    fn concurrent_sets_to_distinct_keys_all_land() {
+        let store = tmp_store();
+        let path = store.path.clone();
+        let fired = Arc::new(StdMutex::new(0usize));
+        let f = Arc::clone(&fired);
+        let svc = Arc::new(
+            SettingsService::new(store, Manifest::embedded(), move |_| {
+                *f.lock().unwrap() += 1;
+            })
+            .unwrap(),
+        );
+
+        const THREADS: usize = 8;
+        const ITERATIONS: usize = 25;
+        let pairs: Vec<(&str, Value)> = vec![
+            ("editor.fontSize", json!(18)),
+            ("editor.wordWrap", json!(true)),
+            ("compiler.debounceMs", json!(250)),
+            ("preview.background", json!("light")),
+        ];
+        let pairs = Arc::new(pairs);
+        let handles: Vec<_> = (0..THREADS)
+            .map(|t| {
+                let svc = Arc::clone(&svc);
+                let pairs = Arc::clone(&pairs);
+                std::thread::spawn(move || {
+                    for i in 0..ITERATIONS {
+                        let (key, val) = pairs[(t + i) % pairs.len()].clone();
+                        svc.set(key, val).expect("every serialized set succeeds");
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("writer thread must not panic");
+        }
+
+        // In memory: every key survived every interleaving.
+        let all = svc.get_all();
+        assert_eq!(all.pointer("/editor/fontSize"), Some(&json!(18)));
+        assert_eq!(all.pointer("/editor/wordWrap"), Some(&json!(true)));
+        assert_eq!(all.pointer("/compiler/debounceMs"), Some(&json!(250)));
+        assert_eq!(all.pointer("/preview/background"), Some(&json!("light")));
+        // On disk: the same document (no stale-snapshot lost update).
+        let svc2 = SettingsService::new(
+            JsonFileStore::new(path.clone()),
+            Manifest::embedded(),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(svc2.get_all(), all, "disk must hold exactly what memory does");
+        // Broadcast: one fire per successful set, no more, no fewer.
+        assert_eq!(*fired.lock().unwrap(), THREADS * ITERATIONS);
         let _ = std::fs::remove_file(&path);
     }
 }

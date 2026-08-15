@@ -125,9 +125,11 @@ impl CompileService {
     /// because a newer revision already won. This replaces relying on event
     /// arrival order for consistency.
     ///
-    /// Runs inside [`std::panic::catch_unwind`] because the compile executes on
-    /// the worker's large-stack thread — without catching, a typst panic would
-    /// silently kill the thread and the frontend would see `compiling` forever.
+    /// Both the compile and the post-compile render/aux/emit tail run inside
+    /// [`std::panic::catch_unwind`] because they execute on the worker's
+    /// large-stack thread — without catching, a panic in EITHER phase would
+    /// silently kill the thread (every later recompile signal is then dropped
+    /// by the dead receiver) and the frontend would see `compiling` forever.
     ///
     /// **Supervision (§6.2)** — applied here, around the existing pipeline:
     /// - *Concurrency cap*: a process-wide semaphore gates `compiler::compile`.
@@ -184,12 +186,24 @@ impl CompileService {
         };
         emitter.emit_status(id, revision, CompileStatus::Compiling, None);
 
+        // --- §6.2 concurrency cap --------------------------------------------
+        // Acquire a permit BEFORE arming the slow-compile watchdog: a worker
+        // queued behind the cap must not hold `still_running=true` for a
+        // compile that hasn't started yet — after SLOW_COMPILE_THRESHOLD the
+        // watchdog would emit `Slow` for a compile still waiting to begin. A
+        // worker blocked here still drains its channel (the worker loop
+        // coalesces while we wait), so this bounds parallel CPU without
+        // adding latency for the latest edit. Released via the guard's Drop
+        // OR release_early on the happy path — whichever comes first.
+        let _permit = supervisor.acquire();
+
         // --- §6.2 slow-compile watchdog --------------------------------------
-        // A short-lived thread that, after SLOW_COMPILE_THRESHOLD, checks whether
-        // this compile is still running. If so, it emits `Slow`. The flag is
-        // cleared (and the emit suppressed) when the compile finishes first.
-        // The watchdog uses its OWN atomic flag (not the supervisor's) so each
-        // compile's flag is independent.
+        // Armed only once the permit is in hand (i.e. the compile can actually
+        // start now). A short-lived thread that, after SLOW_COMPILE_THRESHOLD,
+        // checks whether this compile is still running. If so, it emits
+        // `Slow`. The flag is cleared (and the emit suppressed) when the
+        // compile finishes first. The watchdog uses its OWN atomic flag (not
+        // the supervisor's) so each compile's flag is independent.
         let slow_flag = Arc::new(AtomicBool::new(true)); // true = compile still running
         spawn_slow_watchdog(
             slow_flag.clone(),
@@ -199,14 +213,6 @@ impl CompileService {
             id,
             revision,
         );
-
-        // --- §6.2 concurrency cap --------------------------------------------
-        // Acquire a permit before compile; release after. A worker blocked here
-        // still drains its channel (the worker loop coalesces while we wait),
-        // so this bounds parallel CPU without adding latency for the latest
-        // edit. Released via the guard's Drop OR release_early on the happy
-        // path — whichever comes first.
-        let _permit = supervisor.acquire();
 
         // Compile WITHOUT holding any tab-level lock.
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| compiler::compile(&tab.world)));
@@ -227,6 +233,40 @@ impl CompileService {
             return;
         }
 
+        // --- post-compile tail: wrapped in catch_unwind (§6.2) ----------------
+        // The tail runs on the same worker thread as the compile; a panic in
+        // it (renderer, source map, outline, incremental-cache handling, emit)
+        // is caught here and routed through the SAME backoff +
+        // "Internal compiler error" path the compile-phase guard uses —
+        // otherwise the typst-compile thread would die, every later recompile
+        // signal would be silently dropped (the dead receiver swallows sends),
+        // the last emitted status would stay `Compiling` with no diagnostic,
+        // and the panic backoff would never arm (it only counts panics
+        // observed inside a catch_unwind).
+        let tail = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            Self::post_compile_tail(tab, emitter, deps, id, revision, text_before, result)
+        }));
+        if let Err(payload) = tail {
+            Self::handle_compile_panic(tab, emitter, id, revision, payload);
+        }
+    }
+
+    /// The post-compile half of
+    /// [`do_compile_for_tab`](Self::do_compile_for_tab): dependency-graph
+    /// refresh, compile-phase panic handling, result store, and — on success
+    /// with an unchanged buffer — the SVG render + source map + outline +
+    /// `compiled` emit. Runs on the worker thread; the caller wraps it in
+    /// `catch_unwind` so a panic here can't kill the worker thread (§6.2).
+    #[allow(clippy::too_many_arguments)]
+    fn post_compile_tail(
+        tab: &Arc<TabState>,
+        emitter: &Arc<dyn Emitter>,
+        deps: &DependencyGraph,
+        id: DocumentId,
+        revision: u64,
+        text_before: String,
+        result: Result<(CompileOutcome, Option<PagedDocument>), Box<dyn std::any::Any + Send>>,
+    ) {
         // Refresh the reverse dependency graph from the files this compile
         // pulled in (multi-file projects). After the closed-doc / shutdown
         // guards so a stale compile can't pollute the graph; covers success and
@@ -247,58 +287,7 @@ impl CompileService {
         let (outcome, doc) = match result {
             Ok(pair) => pair,
             Err(payload) => {
-                let msg = payload
-                    .downcast_ref::<String>().cloned()
-                    .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "unknown compiler panic".to_string());
-
-                // --- §6.2 panic backoff: count + maybe arm cooldown ----------
-                // The worker survives (catch_unwind keeps the thread alive), so
-                // we only need to track consecutive panics and arm a cooldown
-                // when they exceed the threshold. Reset on success below.
-                let (count, now_in_backoff) = {
-                    let mut rt = tab.state.lock();
-                    rt.consecutive_panic_count = rt.consecutive_panic_count.saturating_add(1);
-                    let armed = if rt.consecutive_panic_count >= PANIC_BACKOFF_THRESHOLD {
-                        rt.panic_cooldown_until = Some(Instant::now() + PANIC_BACKOFF_DURATION);
-                        true
-                    } else {
-                        false
-                    };
-                    (rt.consecutive_panic_count, armed)
-                };
-                if now_in_backoff {
-                    tracing::warn!(
-                        "compile panicked {PANIC_BACKOFF_THRESHOLD}x for {id}; \
-                         entering {PANIC_BACKOFF_DURATION:?} backoff"
-                    );
-                } else {
-                    tracing::warn!(
-                        consecutive = count,
-                        "compiler panic for {id} (catch_unwind recovered)"
-                    );
-                }
-
-                let diag = Diagnostic {
-                    severity: Severity::Error,
-                    range: Range {
-                        start_line: 1,
-                        start_column: 1,
-                        end_line: 1,
-                        end_column: 1,
-                    },
-                    message: format!("Internal compiler error: {msg}"),
-                    code: None,
-                };
-                {
-                    let mut rt = tab.state.lock();
-                    rt.last_outcome = CompileOutcome::fail(vec![diag.clone()], 0);
-                    rt.last_doc = None;
-                    rt.last_page_svgs.clear();
-                    rt.last_compiled_revision = Some(revision);
-                }
-                emitter.emit_diagnostics(id, revision, vec![diag]);
-                emitter.emit_status(id, revision, CompileStatus::Error, Some(0));
+                Self::handle_compile_panic(tab, emitter, id, revision, payload);
                 return;
             }
         };
@@ -434,6 +423,73 @@ impl CompileService {
         }
     }
 
+    /// Shared §6.2 panic path for BOTH the compile phase and the post-compile
+    /// render/aux tail: count the panic (arming the cooldown at
+    /// [`PANIC_BACKOFF_THRESHOLD`]), clear any stale compile result, and
+    /// surface an "Internal compiler error" diagnostic + `Error` status — the
+    /// frontend must never be left watching a stale `Compiling` while the
+    /// worker silently stops.
+    fn handle_compile_panic(
+        tab: &Arc<TabState>,
+        emitter: &Arc<dyn Emitter>,
+        id: DocumentId,
+        revision: u64,
+        payload: Box<dyn std::any::Any + Send>,
+    ) {
+        let msg = payload
+            .downcast_ref::<String>().cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_else(|| "unknown compiler panic".to_string());
+
+        // --- §6.2 panic backoff: count + maybe arm cooldown --------------
+        // The worker survives (catch_unwind keeps the thread alive), so we
+        // only need to track consecutive panics and arm a cooldown when they
+        // exceed the threshold. Reset on the next successful compile.
+        let (count, now_in_backoff) = {
+            let mut rt = tab.state.lock();
+            rt.consecutive_panic_count = rt.consecutive_panic_count.saturating_add(1);
+            let armed = if rt.consecutive_panic_count >= PANIC_BACKOFF_THRESHOLD {
+                rt.panic_cooldown_until = Some(Instant::now() + PANIC_BACKOFF_DURATION);
+                true
+            } else {
+                false
+            };
+            (rt.consecutive_panic_count, armed)
+        };
+        if now_in_backoff {
+            tracing::warn!(
+                "compile panicked {PANIC_BACKOFF_THRESHOLD}x for {id}; \
+                 entering {PANIC_BACKOFF_DURATION:?} backoff"
+            );
+        } else {
+            tracing::warn!(
+                consecutive = count,
+                "compiler panic for {id} (catch_unwind recovered)"
+            );
+        }
+
+        let diag = Diagnostic {
+            severity: Severity::Error,
+            range: Range {
+                start_line: 1,
+                start_column: 1,
+                end_line: 1,
+                end_column: 1,
+            },
+            message: format!("Internal compiler error: {msg}"),
+            code: None,
+        };
+        {
+            let mut rt = tab.state.lock();
+            rt.last_outcome = CompileOutcome::fail(vec![diag.clone()], 0);
+            rt.last_doc = None;
+            rt.last_page_svgs.clear();
+            rt.last_compiled_revision = Some(revision);
+        }
+        emitter.emit_diagnostics(id, revision, vec![diag]);
+        emitter.emit_status(id, revision, CompileStatus::Error, Some(0));
+    }
+
     // --- revision-aware result accessors (§9 export pinning) ----------------
 
     /// Current diagnostics for a tab (empty if the tab or last outcome has none).
@@ -473,12 +529,21 @@ impl CompileService {
 
     /// Signal all compile workers to drain + stop (§6.2 "应用关闭时停止接收
     /// 任务"). Non-blocking: the bounded wait for cooperative exit is the
-    /// caller's responsibility (the RunEvent::Exit handler sleeps up to
+    /// caller's responsibility (the RunEvent::ExitRequested handler calls
+    /// [`wait_for_drain`](Self::wait_for_drain) with
     /// [`SHUTDOWN_DRAIN_TIMEOUT`]). A runaway compile is not force-killed —
     /// Rust has no safe way to kill a thread — but no *new* compile starts and
     /// in-flight emits are suppressed.
     pub fn shutdown(&self) {
         self.store.supervisor.shutdown();
+    }
+
+    /// §6.2 "有界等待 worker 结束": after [`shutdown`](Self::shutdown), block
+    /// until no compile permit is held (nothing compiling) or `timeout`
+    /// elapses. Gives an in-flight compile a cooperative window to finish
+    /// before the process exits; returns early when idle.
+    pub fn wait_for_drain(&self, timeout: std::time::Duration) {
+        self.store.supervisor.wait_for_drain(timeout);
     }
 }
 
@@ -855,6 +920,116 @@ mod tests {
         assert!(
             statuses.is_empty(),
             "backoff must skip the compile entirely, got {statuses:?}"
+        );
+    }
+
+    /// A panic in the POST-COMPILE tail (here: the emitter's `emit_compiled`,
+    /// standing in for a renderer / source-map / outline panic — the same
+    /// worker thread, same unguarded phase) must be caught by the tail's
+    /// catch_unwind and routed through the same panic-backoff +
+    /// "Internal compiler error" path as a compile-phase panic. Before the
+    /// guard, such a panic killed the typst-compile thread: every later
+    /// recompile signal was silently dropped and the frontend stayed on
+    /// `Compiling` forever. (A panic message on stderr is expected noise —
+    /// catch_unwind recovers it.)
+    #[test]
+    fn render_tail_panic_is_caught_and_surfaces_error() {
+        #[derive(Default)]
+        struct PanicOnCompiledEmitter {
+            statuses: PlMutex<Vec<(DocumentId, u64, CompileStatus, Option<u64>)>>,
+            diagnostics: PlMutex<Vec<String>>,
+        }
+        impl Emitter for PanicOnCompiledEmitter {
+            fn emit_compiled(
+                &self,
+                _id: DocumentId,
+                _revision: u64,
+                _page_count: usize,
+                _full: bool,
+                _changed_pages: Vec<crate::ipc::events::ChangedPage>,
+                _line_map: Vec<LineRect>,
+                _outline: Vec<crate::domain::outline::OutlineNode>,
+                _duration_ms: u64,
+            ) {
+                panic!("boom in the render/emit tail");
+            }
+            fn emit_diagnostics(
+                &self,
+                _id: DocumentId,
+                _revision: u64,
+                diagnostics: Vec<Diagnostic>,
+            ) {
+                self.diagnostics
+                    .lock()
+                    .extend(diagnostics.into_iter().map(|d| d.message));
+            }
+            fn emit_status(
+                &self,
+                id: DocumentId,
+                revision: u64,
+                status: CompileStatus,
+                duration_ms: Option<u64>,
+            ) {
+                self.statuses.lock().push((id, revision, status, duration_ms));
+            }
+            fn emit_conflict(
+                &self,
+                _id: DocumentId,
+                _revision: u64,
+                _conflict: ConflictState,
+                _disk_content: Option<String>,
+            ) {
+            }
+        }
+
+        let id = DocumentId::new();
+        let meta = crate::domain::document::DocumentMeta {
+            id,
+            path: None,
+            title: "t".into(),
+            dirty: false,
+            origin: crate::domain::document::DocumentOrigin::Untitled,
+            revision: 1,
+            conflict: ConflictState::None,
+            kind: crate::domain::document::DocumentKind::Typst,
+            hidden: false,
+        };
+        let tab = Arc::new(TabState::with_meta(meta, "Hello".into()));
+        let emitter_typed = Arc::new(PanicOnCompiledEmitter::default());
+        let emitter_dyn: Arc<dyn Emitter> = emitter_typed.clone();
+        let supervisor = CompileSupervisor::with_cap(2);
+        let mut map = std::collections::HashMap::new();
+        map.insert(id, tab.clone());
+        let tabs = Arc::new(parking_lot::RwLock::new(map));
+
+        CompileService::do_compile_for_tab(
+            &tab,
+            &emitter_dyn,
+            &supervisor,
+            &tabs,
+            &DependencyGraph::new(),
+            id,
+        );
+
+        // The tail panic surfaced as an "Internal compiler error" diagnostic +
+        // terminal Error status (not a stuck Compiling)…
+        let statuses = emitter_typed.statuses.lock().clone();
+        assert!(
+            statuses.iter().any(|(_, _, s, _)| *s == CompileStatus::Error),
+            "tail panic must surface an Error status, got {statuses:?}"
+        );
+        let diags = emitter_typed.diagnostics.lock().clone();
+        assert!(
+            diags
+                .iter()
+                .any(|m| m.starts_with("Internal compiler error")),
+            "tail panic must surface an internal-error diagnostic, got {diags:?}"
+        );
+        // …and it counts toward the panic backoff (arms the cooldown at the
+        // threshold, exactly like a compile-phase panic).
+        assert_eq!(
+            tab.state.lock().consecutive_panic_count, 1,
+            "tail panic must count toward the panic backoff"
         );
     }
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useRecoveryStore, recoverRequiresCompareFirst } from "../../store/recoveryStore";
 import {
@@ -41,6 +41,23 @@ export function RecoveryDialog() {
   const { t } = useTranslation("dialog");
   const dialogOpen = useRecoveryStore((s) => s.dialogOpen);
   const recoverable = useRecoveryStore((s) => s.recoverable);
+  const close = useRecoveryStore((s) => s.close);
+
+  // Esc force-closes the dialog — the store's documented dismiss path (the
+  // snapshots stay on disk for the next session, so this is no-op-safe).
+  // Window-level listener like AboutModal: the first row's Recover may be
+  // disabled (mustCompare), so an in-dialog focus isn't guaranteed.
+  useEffect(() => {
+    if (!dialogOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [dialogOpen, close]);
 
   if (!dialogOpen) return null;
 

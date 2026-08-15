@@ -418,8 +418,17 @@ export function Explorer(_props: { viewId?: string }) {
                 depth={0}
                 onCancel={() => setPendingNew(null)}
                 onSubmit={async (entryName) => {
-                  await createEntry(entryName, pendingNew.kind);
-                  setPendingNew(null);
+                  try {
+                    await createEntry(entryName, pendingNew.kind);
+                    setPendingNew(null);
+                  } catch (e) {
+                    window.alert(
+                      i18n.t("actionFailed", {
+                        ns: "errors",
+                        message: toIpcError(e).message,
+                      }),
+                    );
+                  }
                 }}
               />
             )}
@@ -660,13 +669,26 @@ function TreeRow({
                 depth={depth + 1}
                 onCancel={() => setPendingNew(null)}
                 onSubmit={async (entryName) => {
-                  await createEntry(
-                    entryName.includes("/")
-                      ? entryName
-                      : `${entry.relative}/${entryName}`,
-                    pendingNew.kind,
+                  // Always resolve the typed name against the TARGET directory —
+                  // a slash-containing name (sub/notes.typ) typed inside docs/
+                  // must create docs/sub/notes.typ, not a root-level
+                  // sub/notes.typ. Collapse duplicate separators the prefixing
+                  // could introduce.
+                  const rel = `${entry.relative}/${entryName}`.replace(
+                    /\/{2,}/g,
+                    "/",
                   );
-                  setPendingNew(null);
+                  try {
+                    await createEntry(rel, pendingNew.kind);
+                    setPendingNew(null);
+                  } catch (e) {
+                    window.alert(
+                      i18n.t("actionFailed", {
+                        ns: "errors",
+                        message: toIpcError(e).message,
+                      }),
+                    );
+                  }
                 }}
               />
             )}
@@ -889,6 +911,12 @@ function NewEntryRow({
   onSubmit: (value: string) => Promise<void>;
   onCancel: () => void;
 }) {
+  // Guards the async create against double submission: Enter fires onSubmit,
+  // and the input's blur (the row is still mounted while the create is in
+  // flight) would fire it again. Locks until the promise settles; the parent
+  // clears the row only on success, so on failure the flag resets and the user
+  // can retry.
+  const submittingRef = useRef(false);
   return (
     <li>
       <div className="tree-row" style={{ "--tree-depth": depth } as React.CSSProperties}>
@@ -900,7 +928,11 @@ function NewEntryRow({
           initial=""
           onCancel={onCancel}
           onSubmit={(v) => {
-            void onSubmit(v);
+            if (v.trim() === "" || submittingRef.current) return;
+            submittingRef.current = true;
+            void onSubmit(v).finally(() => {
+              submittingRef.current = false;
+            });
           }}
         />
       </div>

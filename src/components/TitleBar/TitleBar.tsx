@@ -101,7 +101,13 @@ export function TitleBar() {
     setOpenName(name);
     openMenu(items, rect.left, rect.bottom);
   }
-  const openFileMenu = (e: React.MouseEvent) => openAt(e, "file", buildFileMenu(t));
+  // Opening the File menu refreshes the cached recent list (async — the menu
+  // being built RIGHT NOW still shows the cached entries; the NEXT open sees
+  // the fresh list) so it doesn't go stale mid-session.
+  const openFileMenu = (e: React.MouseEvent) => {
+    void primeRecent();
+    openAt(e, "file", buildFileMenu(t));
+  };
   const openEditMenu = (e: React.MouseEvent) => openAt(e, "edit", buildEditMenu(t));
   const openViewMenu = (e: React.MouseEvent) => openAt(e, "view", buildViewMenu(t));
   const openHelpMenu = (e: React.MouseEvent) => openAt(e, "help", buildHelpMenu(t));
@@ -285,16 +291,24 @@ function check(label: string, id: string, checked: boolean): MenuItem {
 
 const sep = (): MenuItem => ({ type: "separator" });
 
-function buildFileMenu(t: T): MenuItem[] {
+/** Build the File dropdown's items. Exported for unit-testing the dispatch ids. */
+export function buildFileMenu(t: T): MenuItem[] {
   // Open Recent — a nested submenu whose children are the recent workspaces.
   // An empty children list renders the parent row disabled ("No recent
   // workspaces"); see ContextMenu's submenu handling.
   const recent = readRecentSync();
   const recentChildren: MenuItem[] = recent.length
-    ? recent.map((path, i) => ({
+    ? recent.map((path) => ({
         type: "action",
         label: shortLabel(path),
-        onSelect: () => void dispatch(`open-recent:${i}`),
+        // Path-encoded id, NOT an index: the backend recent list is
+        // move-to-front and changes on every workspace open, so an index
+        // captured at menu-build time drifts against the freshly-loaded list
+        // the dispatcher resolves against (entries would open the WRONG
+        // workspace). Encoding the path from this same list guarantees the
+        // label and the dispatch target are the same entry.
+        onSelect: () =>
+          void dispatch(`open-recent:${encodeURIComponent(path)}`),
       }))
     : [
         {
@@ -398,8 +412,8 @@ function buildHelpMenu(t: T): MenuItem[] {
 /**
  * Read recent workspaces SYNCHRONOUSLY for menu construction. The session is
  * normally loaded by app startup, so we cache the first async read into a
- * module-scoped variable; the menu re-reads on every open so a freshly-loaded
- * session shows up on the second click.
+ * module-scoped variable; opening the File menu re-primes the cache (see
+ * `openFileMenu`) so a mid-session workspace open shows up on the next open.
  */
 let recentCache: string[] = [];
 let recentLoaded = false;
