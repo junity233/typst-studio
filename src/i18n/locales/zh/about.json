@@ -1,5 +1,4 @@
 {
-  "__smoke__": "about zh 就绪",
   "title": "关于 {{name}}",
   "version": "版本 {{version}}",
   "tagline": "一款支持实时预览的 Typst 可视化编辑器。",

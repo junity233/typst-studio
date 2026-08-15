@@ -47,6 +47,5 @@
   "noConfig": "No .typstpro yet — set any field to create one",
   "noWorkspace": "Open a folder to configure the project",
   "confirmDeleteTitle": "Delete project config",
-  "confirmDeleteMessage": "Delete the workspace's .typstpro? This cannot be undone.",
-  "__smoke__": "project en ok"
+  "confirmDeleteMessage": "Delete the workspace's .typstpro? This cannot be undone."
 }

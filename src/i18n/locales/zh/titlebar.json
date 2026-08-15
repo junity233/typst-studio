@@ -1,8 +1,6 @@
 {
-  "__smoke__": "titlebar zh 就绪",
   "openDocuments": "打开的文档",
   "tabTooltip": "{{title}}{{dirty, client}}",
-  "dirtyTooltip": " • 未保存",
   "closeTab": "关闭 {{title}}",
   "newTab": "新建标签页",
   "minimize": "最小化",
@@ -21,4 +19,3 @@
   "tabRevealInFinder": "在访达中显示",
   "tabRevealInFileExplorer": "在文件资源管理器中显示"
 }
-

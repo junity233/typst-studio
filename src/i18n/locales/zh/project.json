@@ -47,6 +47,5 @@
   "noConfig": "尚无 .typstpro —— 设置任一字段即可创建",
   "noWorkspace": "请打开文件夹以配置项目",
   "confirmDeleteTitle": "删除项目配置",
-  "confirmDeleteMessage": "删除工作区的 .typstpro?此操作不可撤销。",
-  "__smoke__": "project zh ok"
+  "confirmDeleteMessage": "删除工作区的 .typstpro?此操作不可撤销。"
 }

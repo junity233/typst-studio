@@ -1,5 +1,4 @@
 {
-  "__smoke__": "batchExport zh ok",
   "title": "批量导出为 PDF",
   "loading": "正在扫描工作区中的 .typ 文件…",
   "noFiles": "此工作区中没有找到 .typ 文件。",

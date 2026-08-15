@@ -1,5 +1,4 @@
 {
-  "__smoke__": "about en ok",
   "title": "About {{name}}",
   "version": "Version {{version}}",
   "tagline": "A Typst visual editor with live preview.",

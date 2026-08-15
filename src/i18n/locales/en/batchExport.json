@@ -1,5 +1,4 @@
 {
-  "__smoke__": "batchExport en ok",
   "title": "Batch export to PDF",
   "loading": "Scanning workspace for .typ files…",
   "noFiles": "No .typ files found in this workspace.",

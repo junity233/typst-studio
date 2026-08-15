@@ -27,6 +27,5 @@
   "cancel": "Cancel",
   "confirmDeleteTitle": "Delete Reference",
   "confirmDeleteMessage": "Delete the reference \"{{key}}\"? This cannot be undone.",
-  "keyRequired": "Citation key is required",
-  "__smoke__": "bibliography en ok"
+  "keyRequired": "Citation key is required"
 }

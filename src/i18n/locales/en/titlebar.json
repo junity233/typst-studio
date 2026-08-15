@@ -1,8 +1,6 @@
 {
-  "__smoke__": "titlebar en ok",
   "openDocuments": "Open documents",
   "tabTooltip": "{{title}}{{dirty, client}}",
-  "dirtyTooltip": " • unsaved",
   "closeTab": "Close {{title}}",
   "newTab": "New tab",
   "minimize": "Minimize",
@@ -21,4 +19,3 @@
   "tabRevealInFinder": "Reveal in Finder",
   "tabRevealInFileExplorer": "Reveal in File Explorer"
 }
-

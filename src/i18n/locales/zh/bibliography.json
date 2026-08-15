@@ -27,6 +27,5 @@
   "cancel": "取消",
   "confirmDeleteTitle": "删除参考文献",
   "confirmDeleteMessage": "删除参考文献 \"{{key}}\"？此操作无法撤销。",
-  "keyRequired": "引用键不能为空",
-  "__smoke__": "bibliography zh 就绪"
+  "keyRequired": "引用键不能为空"
 }
