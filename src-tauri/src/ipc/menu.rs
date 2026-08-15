@@ -69,12 +69,6 @@ pub mod ids {
     pub fn open_recent(index: usize) -> String {
         format!("{}{}", OPEN_RECENT_PREFIX, index)
     }
-
-    /// Parse an "Open Recent" item id back into its list index, or `None` if the
-    /// id isn't an open-recent item.
-    pub fn parse_open_recent(id: &str) -> Option<usize> {
-        id.strip_prefix(OPEN_RECENT_PREFIX)?.parse::<usize>().ok()
-    }
 }
 
 /// Build the full application menu. On macOS the first submenu is the app-name

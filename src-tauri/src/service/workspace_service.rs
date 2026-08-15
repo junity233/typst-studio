@@ -401,13 +401,6 @@ impl WorkspaceService {
         }
         Ok(())
     }
-
-    /// Read a `.typ` file's text by absolute path (for `open_file_by_path`).
-    /// The command layer pairs this with the resolver to open a workspace-backed
-    /// tab.
-    pub fn read_file_text(&self, abs_path: &Path) -> Result<String> {
-        std::fs::read_to_string(abs_path).map_err(AppError::Io)
-    }
 }
 
 impl Default for WorkspaceService {

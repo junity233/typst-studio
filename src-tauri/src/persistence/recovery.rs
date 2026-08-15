@@ -208,9 +208,6 @@ enum Msg {
         text: String,
         disk_version: Option<DiskVersion>,
     },
-    /// A document became clean / was discarded / was closed — drop its pending
-    /// entry (and the on-disk snapshot is handled by the caller).
-    Cancel(DocumentId),
     /// The user explicitly discarded `id` (§5.1.4). Drops any pending entry AND
     /// records the id in the shared "discarded since queued" set so a racing
     /// `flush_pending` cannot re-write it. Sent from `discard_snapshot`.
@@ -354,12 +351,6 @@ impl RecoveryService {
                             // (Re)arm the debounce deadline from now.
                             deadline = Some(now + debounce_for_thread);
                         }
-                        Ok(Msg::Cancel(id)) => {
-                            pending.remove(&id);
-                            if pending.is_empty() {
-                                deadline = None;
-                            }
-                        }
                         Ok(Msg::Discard(id)) => {
                             // §5.1.4: drop any pending entry for `id` and
                             // remember it as discarded so a `flush_pending`
@@ -464,11 +455,6 @@ impl RecoveryService {
         }) {
             tracing::trace!(?id, error = %e, "recovery: debounce worker gone; snapshot dropped");
         }
-    }
-
-    /// Cancel any pending snapshot for `id` (e.g. it was just discarded).
-    pub fn cancel_pending(&self, id: DocumentId) {
-        let _ = self.sender.send(Msg::Cancel(id));
     }
 
     // --- immediate snapshot paths --------------------------------------------

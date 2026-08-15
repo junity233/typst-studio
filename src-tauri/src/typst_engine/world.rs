@@ -153,17 +153,6 @@ impl EditorWorld {
         })
     }
 
-    /// Attach (or replace) the in-memory VFS overlay after construction. Used
-    /// when a world was built without a resolver/VFS and later needs to consult
-    /// the shared overlay.
-    ///
-    /// Note: the overlay is only consulted for non-main files, which require a
-    /// resolver — so attaching a VFS to a resolver-less world is harmless (it
-    /// will simply never be read), but has no effect.
-    pub fn set_vfs(&mut self, vfs: Arc<MemoryVfs>) {
-        self.vfs = Some(vfs);
-    }
-
     /// Replace the entire source text in place.
     ///
     /// Takes `&self` (interior mutability) so a shared `Arc<EditorWorld>` can
@@ -221,11 +210,6 @@ impl EditorWorld {
         let path = resolver.disk_path_of(id).ok()?;
         let entry = vfs.get(&path)?;
         Some(entry.text.clone())
-    }
-
-    /// Whether this world can resolve files from disk (a workspace is open).
-    pub fn has_resolver(&self) -> bool {
-        self.resolver.is_some()
     }
 
     /// Record a non-main `FileId` the compiler requested, for later dependency
