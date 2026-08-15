@@ -1319,16 +1319,6 @@ export async function resolveConflictOverwrite(
   await invoke("resolve_conflict_overwrite", { id });
 }
 
-/**
- * Clear the conflict flag WITHOUT touching the buffer or dirty state (§5.4 稍后
- * 处理 / discard). The in-place save STAYS blocked (the doc is still
- * "conflicted" from the gate's perspective once re-detected), but the dialog
- * closes and the user keeps editing. Idempotent.
- */
-export async function clearConflict(id: DocumentId): Promise<void> {
-  await invoke("clear_conflict", { id });
-}
-
 // --- Paste-feature: remote image download -----------------------------------
 
 /** Download a remote URL to a local file via the backend net module. */

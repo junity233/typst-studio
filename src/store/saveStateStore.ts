@@ -27,7 +27,7 @@ export interface SaveStateStore {
 }
 
 /** The idle default for an untracked document. */
-export const IDLE_SAVE_STATE: SaveState = "idle";
+const IDLE_SAVE_STATE: SaveState = "idle";
 
 export const useSaveStateStore = create<SaveStateStore>()((set, get) => ({
   byDoc: {},

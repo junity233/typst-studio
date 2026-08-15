@@ -331,7 +331,7 @@ export const useDocumentsStore = create<DocumentsState>()((set, get) => {
         // cleared conflict on every edit, which silently swallowed an
         // unresolved external change ("用户继续输入不能自动清除 conflict"). Only
         // explicit resolution actions (use-disk / overwrite / save-as / discard)
-        // clear the flag — see setConflict / markSaved / clearConflict. This
+        // clear the flag — see setConflict / markSaved. This
         // means a conflicted doc the user keeps typing in STAYS conflicted (and
         // the in-place save gate keeps blocking) until they resolve it.
         return {
