@@ -1006,10 +1006,17 @@ mod tests {
                 flate2::Compression::default(),
             );
             let mut tar = tar::Builder::new(gz);
-            tar.append_data(&mut tar::Header::new_gnu(), "README.md", b"readme" as &[u8])
+            // append_data only fills in the path and checksum; the size
+            // field must be set by the caller or it stays all-NUL, which
+            // readers reject with "numeric field was not a number".
+            let mut readme_header = tar::Header::new_gnu();
+            readme_header.set_size(b"readme".len() as u64);
+            tar.append_data(&mut readme_header, "README.md", b"readme" as &[u8])
                 .unwrap();
+            let mut binary_header = tar::Header::new_gnu();
+            binary_header.set_size(binary_contents.len() as u64);
             tar.append_data(
-                &mut tar::Header::new_gnu(),
+                &mut binary_header,
                 format!("bin/{}", binary_name()),
                 binary_contents as &[u8],
             )

@@ -170,6 +170,15 @@ pub fn validate_workspace_relative_path(path: &str, field: &str) -> Result<()> {
             "{field} must be relative to the workspace root (got '{path}')"
         )));
     }
+    // `C:\x` parses as a relative path on Unix hosts, so the `Prefix`
+    // component below never appears there — check the drive letter
+    // explicitly to enforce the same workspace boundary on every platform.
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        return Err(AppError::InvalidInput(format!(
+            "{field} must stay within the workspace (got '{path}')"
+        )));
+    }
     for comp in p.components() {
         use std::path::Component;
         match comp {
