@@ -17,6 +17,7 @@ use tauri::{AppHandle, State};
 
 use crate::domain::diagnostics::Diagnostic;
 use crate::domain::document::{DocumentId, DocumentMeta};
+use crate::domain::file_kind::IMAGE_EXTENSIONS;
 use crate::error::{AppError, Result};
 use crate::ipc::events::{LspStatusPayload, OpenedDocument};
 use crate::ipc::state::AppState;
@@ -90,7 +91,7 @@ pub async fn open_file(
                     "yaml", "yml", "toml", "xml",
                 ],
             ),
-            ("Images", &["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"]),
+            ("Images", IMAGE_EXTENSIONS),
             ("PDF", &["pdf"]),
         ],
     )
@@ -114,7 +115,7 @@ pub async fn open_file(
 pub async fn pick_image_file(app: AppHandle) -> Result<Option<String>> {
     let picked = super::dialog::pick_file(
         &app,
-        &[("Images", &["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"])],
+        &[("Images", IMAGE_EXTENSIONS)],
     )
     .await?;
     let Some(path) = picked else {

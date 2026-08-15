@@ -19,8 +19,8 @@ use crate::domain::document::DocumentKind;
 
 /// Image extensions opened as [`DocumentKind::Image`] (preview-only).
 ///
-/// Kept in sync with the existing image-picker dialog filter in
-/// `commands::pick_image_file` (`png/jpg/jpeg/gif/svg/webp/bmp`).
+/// Also feeds the image-picker dialog filters in `ipc::commands`, so the
+/// dialog and the tree classify image files identically.
 pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"];
 
 /// Markdown extensions opened as [`DocumentKind::Markdown`] (editable +
