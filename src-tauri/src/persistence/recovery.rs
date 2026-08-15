@@ -912,7 +912,7 @@ mod tests {
         let (svc, dir) = make_service();
         let (meta, text) = untitled_meta("hello unsaved");
         // Use the synchronous API for determinism.
-        svc.snapshot_dirty_documents(&[meta.clone()], |id| {
+        svc.snapshot_dirty_documents(std::slice::from_ref(&meta), |id| {
             (id == meta.id).then(|| text.clone())
         });
         let snapshot_path = dir.join(DOCUMENTS_DIR).join(format!("{}.json", meta.id));
@@ -936,7 +936,7 @@ mod tests {
         let tmp = tmp_dir().join("a.typ");
         std::fs::write(&tmp, "x").unwrap();
         let dirty = loose_meta(&tmp, true);
-        svc.snapshot_dirty_documents(&[dirty.clone()], |_| Some("edited".into()));
+        svc.snapshot_dirty_documents(std::slice::from_ref(&dirty), |_| Some("edited".into()));
         let snapshot_path = dir.join(DOCUMENTS_DIR).join(format!("{}.json", dirty.id));
         assert!(snapshot_path.exists());
 
@@ -1053,7 +1053,7 @@ mod tests {
         let tmp = tmp_dir().join("discard.typ");
         std::fs::write(&tmp, "x").unwrap();
         let meta = loose_meta(&tmp, true);
-        svc.snapshot_dirty_documents(&[meta.clone()], |_| Some("unsaved".into()));
+        svc.snapshot_dirty_documents(std::slice::from_ref(&meta), |_| Some("unsaved".into()));
         let snapshot_path = dir.join(DOCUMENTS_DIR).join(format!("{}.json", meta.id));
         assert!(snapshot_path.exists());
 
@@ -1095,7 +1095,7 @@ mod tests {
         let tmp = tmp_dir().join("bak.typ");
         std::fs::write(&tmp, "x").unwrap();
         let meta = loose_meta(&tmp, true);
-        svc.snapshot_dirty_documents(&[meta.clone()], |_| Some("X".into()));
+        svc.snapshot_dirty_documents(std::slice::from_ref(&meta), |_| Some("X".into()));
         // Corrupt the manifest main; .bak should still hold the prior good copy.
         std::fs::write(dir.join(MANIFEST_FILENAME), "{ broken").unwrap();
         // list_recoverable reloads the manifest tolerantly.

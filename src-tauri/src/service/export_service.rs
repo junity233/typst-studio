@@ -392,8 +392,7 @@ mod tests {
 
         let err = export
             .render_pdf_with_options(id, 1, TEST_REVISION_WAIT, &PdfOptions::default())
-            .err()
-            .expect("export of a failed revision must error");
+            .expect_err("export of a failed revision must error");
         let msg = err.to_string();
         assert!(
             msg.contains("failed to compile") || msg.contains("assert"),
@@ -429,8 +428,7 @@ mod tests {
         let bogus = DocumentId::new();
         let err = export
             .render_pdf_with_options(bogus, 0, TEST_REVISION_WAIT, &PdfOptions::default())
-            .err()
-            .expect("unknown tab must error");
+            .expect_err("unknown tab must error");
         assert!(err.to_string().contains("no open document"));
     }
 
@@ -443,8 +441,7 @@ mod tests {
         let start = std::time::Instant::now();
         let err = export
             .render_pdf_with_options(id, 9_999, TEST_REVISION_WAIT, &PdfOptions::default())
-            .err()
-            .expect("an unreachable revision must time out");
+            .expect_err("an unreachable revision must time out");
         let elapsed = start.elapsed();
         assert!(err.to_string().contains("timed out"), "got: {err}");
         // Sanity: it actually waited ~the timeout, not returned instantly.

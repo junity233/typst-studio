@@ -545,11 +545,11 @@ mod tests {
     // --- VFS overlay (§5 end) ------------------------------------------------
 
     /// Build a workspace world whose resolver is the same as `workspace_world`
-    /// but whose world consults a fresh shared VFS. Returns the world + the VFS
-    /// + the (canonical) root, so a test can upsert overlays and observe the
-    /// effect. The resolver root is canonicalized to mirror production
-    /// (EditorService anchors resolvers at canonical paths), so `disk_path_of`
-    /// produces the same canonical path the VFS is keyed by.
+    /// but whose world consults a fresh shared VFS. Returns the world, the
+    /// VFS, and the (canonical) root, so a test can upsert overlays and
+    /// observe the effect. The resolver root is canonicalized to mirror
+    /// production (EditorService anchors resolvers at canonical paths), so
+    /// `disk_path_of` produces the same canonical path the VFS is keyed by.
     fn workspace_world_with_vfs(
     ) -> (EditorWorld, std::sync::Arc<MemoryVfs>, std::path::PathBuf) {
         let raw = std::env::temp_dir().join(format!("typst-world-{}", uuid::Uuid::new_v4()));

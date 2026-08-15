@@ -614,7 +614,7 @@ mod tests {
             *f.lock().unwrap() = true;
         })
         .unwrap();
-        assert!(*fired.lock().unwrap() == false);
+        assert!(!*fired.lock().unwrap());
         svc.set("editor.fontSize", json!(16)).unwrap();
         assert!(*fired.lock().unwrap());
     }

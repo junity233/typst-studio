@@ -304,7 +304,7 @@ mod tests {
     fn io_other_disk_full_message_is_detected() {
         // Some platforms surface ENOSPC as Other("...No space left..."); the
         // heuristic should still classify it as DiskFull.
-        let e = std::io::Error::new(std::io::ErrorKind::Other, "No space left on device");
+        let e = std::io::Error::other("No space left on device");
         let ipc: IpcError = AppError::Io(e).into();
         assert_eq!(ipc.code, ErrorCode::DiskFull);
     }

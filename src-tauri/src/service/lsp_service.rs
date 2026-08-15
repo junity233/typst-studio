@@ -307,7 +307,7 @@ mod tests {
         svc.relaunch(unavailable.clone()).await.unwrap();
         let g1 = svc.status().generation;
         assert!(
-            g1 >= 1 + RELAUNCH_GENERATION_JUMP,
+            g1 > RELAUNCH_GENERATION_JUMP,
             "relaunch from an empty slot must not restart at 1, got {g1}"
         );
 
@@ -339,7 +339,7 @@ mod tests {
 
         let g = svc.status().generation;
         assert!(
-            g >= 1 + RELAUNCH_GENERATION_JUMP,
+            g > RELAUNCH_GENERATION_JUMP,
             "the surviving manager must sit a jump above the original, got {g}"
         );
     }

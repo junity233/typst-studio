@@ -2777,7 +2777,7 @@ mod tests {
         assert!(under.is_empty(), "hidden doc must not block delete; got {under:?}");
 
         // docs_at_paths (template preflight) likewise ignores it.
-        let at = document.docs_at_paths(&[path.clone()]);
+        let at = document.docs_at_paths(std::slice::from_ref(&path));
         assert!(at.is_empty(), "hidden doc must not block template; got {at:?}");
 
         let _ = std::fs::remove_dir_all(&dir);

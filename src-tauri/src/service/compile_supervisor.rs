@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn concurrency_cap_is_min_of_parallelism_and_four() {
         let cap = compile_concurrency_cap();
-        assert!(cap >= 1 && cap <= MAX_CONCURRENT_COMPILES);
+        assert!((1..=MAX_CONCURRENT_COMPILES).contains(&cap));
     }
 
     #[test]

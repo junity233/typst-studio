@@ -5,10 +5,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  *
  * `useInsertImage` is a thin orchestrator: it stitches together
  * pickImageFile → readFileBytes → inferExt → resolveImageDir → expandTemplate →
- * ensureAbsolute → writeImage → replaceSelection. The path math itself lives
- * in those primitives (each tested independently), so here we only pin the
- * orchestration: the right calls happen in order, cancel is a clean no-op,
- * and the inserted `#image("…")` string carries the escaped absolute path.
+ * ensureAbsolute → writeImage → imageSrcForInsert → replaceSelection. The path
+ * math itself lives in those primitives (each tested independently), so here we
+ * only pin the orchestration: the right calls happen in order, cancel is a
+ * clean no-op, and the inserted `#image("…")` string carries the escaped source
+ * path (document-relative when expressible, absolute otherwise).
  *
  * Every primitive is mocked via `vi.mock` so the test never touches Tauri IPC
  * or the real filesystem. The factories are hoisted above the imports
@@ -23,6 +24,7 @@ const resolveImageDir = vi.fn();
 const expandTemplate = vi.fn();
 const ensureAbsolute = vi.fn();
 const writeImage = vi.fn();
+const imageSrcForInsert = vi.fn();
 
 vi.mock("../../../lib/tauri", () => ({ pickImageFile, readFileBytes }));
 vi.mock("../../../lib/htmlToTypst/images", () => ({ inferExt }));
@@ -33,6 +35,7 @@ vi.mock("../../../components/Editor/imageIo", () => ({
   resolveImageDir,
   ensureAbsolute,
   writeImage,
+  imageSrcForInsert,
 }));
 vi.mock("../../../lib/pathMacros", () => ({ expandTemplate }));
 
@@ -93,7 +96,7 @@ describe("useInsertImage", () => {
     expect(api.replace).not.toHaveBeenCalled();
   });
 
-  it("happy path: writes the file and inserts #image(\"…\") with the absolute path", async () => {
+  it("happy path: writes the file and inserts #image(\"…\") with the relative src", async () => {
     pickImageFile.mockResolvedValue("/photos/cat.png");
     readFileBytes.mockResolvedValue(new Uint8Array([1, 2, 3]));
     inferExt.mockReturnValue("png");
@@ -101,6 +104,7 @@ describe("useInsertImage", () => {
     expandTemplate.mockReturnValue("/docs/assets/cat.png");
     ensureAbsolute.mockResolvedValue("/docs/assets/cat.png");
     writeImage.mockResolvedValue(undefined);
+    imageSrcForInsert.mockResolvedValue("assets/cat.png");
 
     const api = await runFlow();
 
@@ -109,9 +113,16 @@ describe("useInsertImage", () => {
       "/docs/assets/cat.png",
       new Uint8Array([1, 2, 3]),
     );
-    // Inserted text is the absolute path inside #image("…").
+    // imageSrcForInsert derives the insert source from the absolute written
+    // path plus the tab/context (mirrors both paste pipelines).
+    expect(imageSrcForInsert).toHaveBeenCalledWith(
+      "/docs/assets/cat.png",
+      TAB,
+      expect.objectContaining({ workspace: "/ws", filePath: "/docs/main.typ" }),
+    );
+    // Inserted text is the relative source inside #image("…").
     expect(api.replace).toHaveBeenCalledTimes(1);
-    expect(api.replace).toHaveBeenCalledWith('#image("/docs/assets/cat.png")');
+    expect(api.replace).toHaveBeenCalledWith('#image("assets/cat.png")');
   });
 
   it("derives fileName from the picked path basename", async () => {
@@ -122,6 +133,7 @@ describe("useInsertImage", () => {
     expandTemplate.mockReturnValue("expanded");
     ensureAbsolute.mockResolvedValue("/abs/expanded");
     writeImage.mockResolvedValue(undefined);
+    imageSrcForInsert.mockResolvedValue("/abs/expanded");
 
     await runFlow({ insertImagePathTemplate: undefined });
 
@@ -142,6 +154,7 @@ describe("useInsertImage", () => {
     expandTemplate.mockReturnValue("r");
     ensureAbsolute.mockResolvedValue("/abs/r");
     writeImage.mockResolvedValue(undefined);
+    imageSrcForInsert.mockResolvedValue("r");
 
     await runFlow({ insertImagePathTemplate: "${fileDir}/img.${ext}" });
 
@@ -160,6 +173,10 @@ describe("useInsertImage", () => {
     ensureAbsolute.mockResolvedValue('C:\\docs\\my "weird".png');
     writeImage.mockResolvedValue(undefined);
     expandTemplate.mockReturnValue('C:\\docs\\my "weird".png');
+    // imageSrcForInsert can't express a relative path here (cross-drive
+    // fallback), so the insert carries the absolute path — which must still
+    // be escaped.
+    imageSrcForInsert.mockResolvedValue('C:\\docs\\my "weird".png');
 
     const api = await runFlow();
 
@@ -178,11 +195,13 @@ describe("useInsertImage", () => {
     expandTemplate.mockReturnValue("r");
     ensureAbsolute.mockResolvedValue("/abs/r");
     writeImage.mockResolvedValue(undefined);
+    imageSrcForInsert.mockResolvedValue("r");
 
     await runFlow();
 
     // Order: pick → read → inferExt → resolveDir → expand → ensureAbsolute →
-    // writeImage → replaceSelection. We assert relative order via call index.
+    // writeImage → imageSrcForInsert → replaceSelection. We assert relative
+    // order via call index.
     const order = [
       pickImageFile,
       readFileBytes,
@@ -191,6 +210,7 @@ describe("useInsertImage", () => {
       expandTemplate,
       ensureAbsolute,
       writeImage,
+      imageSrcForInsert,
     ];
     for (let i = 1; i < order.length; i++) {
       expect(
@@ -198,6 +218,52 @@ describe("useInsertImage", () => {
         `${order[i].name} should be called after ${order[i - 1].name}`,
       ).toBeGreaterThan(order[i - 1].mock.invocationCallOrder[0]);
     }
+  });
+
+  it("writes the absolute path but inserts the relative src (roles stay split)", async () => {
+    // The disk write must always receive the absolute path (where the bytes
+    // actually live), while the inserted #image() reference uses the relative
+    // source derived by imageSrcForInsert — the two responsibilities must not
+    // get conflated when the src differs from the written path.
+    pickImageFile.mockResolvedValue("/photos/cat.png");
+    readFileBytes.mockResolvedValue(new Uint8Array([7]));
+    inferExt.mockReturnValue("png");
+    resolveImageDir.mockResolvedValue("/docs");
+    expandTemplate.mockReturnValue("/docs/assets/cat.png");
+    ensureAbsolute.mockResolvedValue("/docs/assets/cat.png");
+    writeImage.mockResolvedValue(undefined);
+    imageSrcForInsert.mockResolvedValue("assets/cat.png");
+
+    const api = await runFlow();
+
+    expect(writeImage).toHaveBeenCalledWith("/docs/assets/cat.png", new Uint8Array([7]));
+    expect(api.replace).toHaveBeenCalledWith('#image("assets/cat.png")');
+  });
+
+  it("catches an imageSrcForInsert rejection (no throw, no editor insert) and logs", async () => {
+    // The src-derivation step is awaited after writeImage; if it rejects
+    // (e.g. path math throws), the shared catch must swallow it so the
+    // `void`-style caller never sees an unhandled rejection — and the flow
+    // must abort before the editor insert.
+    pickImageFile.mockResolvedValue("/x/a.png");
+    readFileBytes.mockResolvedValue(new Uint8Array([1]));
+    inferExt.mockReturnValue("png");
+    resolveImageDir.mockResolvedValue("/x");
+    expandTemplate.mockReturnValue("/x/assets/a.png");
+    ensureAbsolute.mockResolvedValue("/x/assets/a.png");
+    writeImage.mockResolvedValue(undefined);
+    imageSrcForInsert.mockRejectedValue(new Error("path math failed"));
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const api = await runFlow();
+
+    expect(writeImage).toHaveBeenCalledTimes(1); // the file was written
+    expect(api.replace).not.toHaveBeenCalled(); // flow aborted before insert
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(errSpy.mock.calls[0]![0]).toBe(
+      "[FormatToolbar] insert image failed:",
+    );
+    errSpy.mockRestore();
   });
 
   it("catches a writeImage rejection (no throw, no editor insert) and logs", async () => {
@@ -217,6 +283,7 @@ describe("useInsertImage", () => {
     const api = await runFlow();
 
     expect(writeImage).toHaveBeenCalledTimes(1); // the failing call happened
+    expect(imageSrcForInsert).not.toHaveBeenCalled(); // abort happens before insert
     expect(api.replace).not.toHaveBeenCalled(); // flow aborted before insert
     expect(errSpy).toHaveBeenCalledTimes(1);
     expect(errSpy.mock.calls[0]![0]).toBe(

@@ -629,13 +629,16 @@ mod tests {
     use parking_lot::Mutex as PlMutex;
     use std::time::Duration;
 
+    /// Recorded per `emit_status`: (document, revision, status, duration_ms).
+    type StatusLog = Vec<(DocumentId, u64, CompileStatus, Option<u64>)>;
+
     /// A recording emitter that captures every status emit into a shared vec.
     /// Used to assert the supervision behavior without a Tauri AppHandle. The
     /// other emit methods are no-ops — only `emit_status` matters for the
     /// supervision assertions.
     #[derive(Default)]
     struct RecordingEmitter {
-        statuses: PlMutex<Vec<(DocumentId, u64, CompileStatus, Option<u64>)>>,
+        statuses: PlMutex<StatusLog>,
         /// Captured (page_count, full, changed_count) per emit_compiled, for
         /// the incremental-rendering perf test.
         compiled: PlMutex<Vec<(usize, bool, usize)>>,
@@ -749,6 +752,7 @@ mod tests {
     ///   - first compile: full=true, changed_pages == page_count (everything)
     ///   - second compile: full=false, changed_pages << page_count (only the
     ///     page(s) affected by the edit — ideally just 1)
+    ///
     /// This is the core contract that lets svg_ms/emit_ms stay under
     /// compile_ms after the first compile.
     ///
@@ -936,7 +940,7 @@ mod tests {
     fn render_tail_panic_is_caught_and_surfaces_error() {
         #[derive(Default)]
         struct PanicOnCompiledEmitter {
-            statuses: PlMutex<Vec<(DocumentId, u64, CompileStatus, Option<u64>)>>,
+            statuses: PlMutex<StatusLog>,
             diagnostics: PlMutex<Vec<String>>,
         }
         impl Emitter for PanicOnCompiledEmitter {

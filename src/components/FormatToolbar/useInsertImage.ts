@@ -4,7 +4,7 @@ import { pickImageFile, readFileBytes } from "../../lib/tauri";
 import { inferExt } from "../../lib/htmlToTypst/images";
 import { escapeTypstStr } from "../../lib/htmlToTypst/escape";
 import { expandTemplate } from "../../lib/pathMacros";
-import { resolveImageDir, ensureAbsolute, writeImage } from "../Editor/imageIo";
+import { resolveImageDir, ensureAbsolute, writeImage, imageSrcForInsert } from "../Editor/imageIo";
 
 /**
  * The non-edit details the insert-image flow needs to resolve a destination
@@ -24,7 +24,8 @@ export interface InsertImageContext {
  * chosen file into the configured assets location, and inserts `#image("…")`
  * at the cursor. No-ops on cancel or when there's no tab. Mirrors the
  * paste-image flow (`usePasteConvert.ts` `resolveImage`) — reuses imageIo +
- * pathMacros + `escapeTypstStr` so the path math stays in one place.
+ * pathMacros + `escapeTypstStr` + `imageSrcForInsert` so the path math stays
+ * in one place.
  *
  * Why a hook (not a plain function): it is called at the top level of
  * FormatToolbar and its returned callback is threaded into {@link
@@ -32,8 +33,11 @@ export interface InsertImageContext {
  * `tab` / `workspace` / template. The callback itself is imperative — no React
  * state, no effects.
  *
- * The inserted path is the absolute on-disk path (matches the existing paste
- * flow per spec §5.4; a relative-path mode is a documented follow-up).
+ * The inserted path is preferably relative to the source document's directory
+ * (Typst semantics; portable), matching both paste pipelines via
+ * `imageSrcForInsert`. When no relative path can be expressed (untitled tab,
+ * a target on another Windows drive, or bytes landing in the app-config cache
+ * dir), it falls back to the absolute on-disk path.
  */
 export function useInsertImage(
   ctx: InsertImageContext,
@@ -73,7 +77,11 @@ export function useInsertImage(
       });
       const abs = await ensureAbsolute(rel, ctx.workspace ?? undefined);
       await writeImage(abs, bytes);
-      api.replaceSelection('#image("' + escapeTypstStr(abs) + '")');
+      const src = await imageSrcForInsert(abs, tab, {
+        workspace: ctx.workspace ?? undefined,
+        filePath: tab.path ?? undefined,
+      });
+      api.replaceSelection('#image("' + escapeTypstStr(src) + '")');
     } catch (err) {
       // No toast/notification system exists yet (only the heavy ConfirmDialog).
       // For v1, log clearly so the failure isn't silent; a future toast should

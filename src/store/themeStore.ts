@@ -103,7 +103,16 @@ export async function applyTheme(id: string | undefined): Promise<void> {
     return;
   }
 
-  const css = await getThemeCss(resolved);
+  let css: string | null;
+  try {
+    css = await getThemeCss(resolved);
+  } catch (e) {
+    // Transient IPC failure: degrade to the default theme (remove any stale
+    // CSS) exactly like a `null` result, instead of letting `useTheme`'s
+    // `void applyTheme(...)` turn this into an unhandled rejection.
+    console.warn(`[themes] failed to load theme "${resolved}"; falling back to default:`, e);
+    css = null;
+  }
   // A newer applyTheme started while this fetch was in flight — drop the stale
   // result. This also covers "switched to default": that call removed the
   // element and we must not re-add it here.
