@@ -760,88 +760,145 @@ impl DocumentService {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
 
-        // Snapshot the current buffer + revision + old canonical path before
-        // mutating anything, so a registry conflict leaves the tab fully intact.
-        let (text, revision, old_canon, current_meta) = {
-            let tabs = self.store.tabs.read();
-            let tab = tabs
-                .get(&id)
-                .cloned()
-                .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?;
-            let rt = tab.state.lock();
-            let meta = rt.meta.clone();
-            (
-                tab.world.text(),
-                meta.revision,
-                meta.origin.canonical_path().map(|p| p.to_path_buf()),
-                meta,
-            )
-        };
+        // The world rebuild below is expensive (font loading in
+        // `EditorWorld::with_resolver` — tens of ms), so the buffer can advance
+        // between snapshot and swap. Mirror `rebuild_workspace_worlds`' CAS
+        // discipline: verify under the locks that the buffer still matches the
+        // snapshot and only then insert; on a miss, retry from a FRESH snapshot
+        // so the rebuilt world carries the newest text. Without this, an edit
+        // landing inside the window was silently dropped from the new world.
+        const MAX_ATTEMPTS: usize = 4;
+        for _attempt in 0..MAX_ATTEMPTS {
+            // Snapshot the current buffer + revision + old canonical path
+            // before mutating anything, so a registry conflict leaves the tab
+            // fully intact.
+            let (text, revision, old_canon, current_meta) = {
+                let tabs = self.store.tabs.read();
+                let tab = tabs
+                    .get(&id)
+                    .cloned()
+                    .ok_or_else(|| AppError::NotFound(format!("tab {id} not found")))?;
+                let rt = tab.state.lock();
+                let meta = rt.meta.clone();
+                (
+                    tab.world.text(),
+                    meta.revision,
+                    meta.origin.canonical_path().map(|p| p.to_path_buf()),
+                    meta,
+                )
+            };
 
-        // New metadata: loose file at the target, revision carried over.
-        // `dirty`:
-        // - Save As (`saved_revision: Some`): the tab is clean iff the buffer
-        //   revision still matches the snapshot that was written — a racing
-        //   newer edit stays dirty (the written bytes are stale for it).
-        // - Generic rebind (`saved_revision: None`, i.e. the rename 联动):
-        //   the buffer did NOT hit disk, so
-        //   the CURRENT dirty flag must carry over. Resetting it here would
-        //   silently un-dirty a doc with unsaved edits — delete protection
-        //   (`docs_under_path_with_hidden` / `hard_close_if_clean` reads
-        //   `meta.dirty`) would then destroy the unsaved buffer without the
-        //   §5.5 DeleteBlocked prompt, and recovery snapshotting
-        //   (`snapshot_dirty_documents` filters on `meta.dirty`) would skip
-        //   it. `kind`, `conflict`, and `hidden` are preserved from the
-        //   CURRENT meta for the same reason: a directory rename rebinds
-        //   every open doc under the prefix, including non-Typst tabs
-        //   (image / pdf / markdown, opened via `open_non_typst_from_disk`,
-        //   which deliberately skip the compile pipeline) and soft-closed
-        //   (hidden) ones — resetting those flags here would flip a non-Typst
-        //   tab back to Typst (spawning a compile worker for a non-Typst
-        //   buffer), drop an active conflict, and un-hide a soft-closed tab.
-        let new_meta = DocumentMeta {
-            dirty: saved_revision.map_or(current_meta.dirty, |saved| saved != revision),
-            revision,
-            kind: current_meta.kind,
-            conflict: current_meta.conflict,
-            hidden: current_meta.hidden,
-            ..DocumentMeta::with_loose_path(id, canon.clone(), root.clone())
-        };
+            // New metadata: loose file at the target, revision carried over.
+            // `dirty`:
+            // - Save As (`saved_revision: Some`): the tab is clean iff the buffer
+            //   revision still matches the snapshot that was written — a racing
+            //   newer edit stays dirty (the written bytes are stale for it).
+            // - Generic rebind (`saved_revision: None`, i.e. the rename 联动):
+            //   the buffer did NOT hit disk, so
+            //   the CURRENT dirty flag must carry over. Resetting it here would
+            //   silently un-dirty a doc with unsaved edits — delete protection
+            //   (`docs_under_path_with_hidden` / `hard_close_if_clean` reads
+            //   `meta.dirty`) would then destroy the unsaved buffer without the
+            //   §5.5 DeleteBlocked prompt, and recovery snapshotting
+            //   (`snapshot_dirty_documents` filters on `meta.dirty`) would skip
+            //   it. `kind`, `conflict`, and `hidden` are preserved from the
+            //   CURRENT meta for the same reason: a directory rename rebinds
+            //   every open doc under the prefix, including non-Typst tabs
+            //   (image / pdf / markdown, opened via `open_non_typst_from_disk`,
+            //   which deliberately skip the compile pipeline) and soft-closed
+            //   (hidden) ones — resetting those flags here would flip a non-Typst
+            //   tab back to Typst (spawning a compile worker for a non-Typst
+            //   buffer), drop an active conflict, and un-hide a soft-closed tab.
+            let new_meta = DocumentMeta {
+                dirty: saved_revision.map_or(current_meta.dirty, |saved| saved != revision),
+                revision,
+                kind: current_meta.kind,
+                conflict: current_meta.conflict,
+                hidden: current_meta.hidden,
+                ..DocumentMeta::with_loose_path(id, canon.clone(), root.clone())
+            };
 
-        // Rebind the registry first — on conflict, nothing below runs.
-        self.store
-            .registry
-            .write()
-            .rebind(id, new_meta.clone())?;
+            // Rebind the registry first — on conflict, nothing below runs.
+            self.store
+                .registry
+                .write()
+                .rebind(id, new_meta.clone())?;
 
-        // Rebuild the world against the new parent directory. `build_loose_tab`
-        // carries the meta (incl. revision) and resets the compile result via
-        // `with_meta_and_world`; falls back to a detached world on anchor failure.
-        let new_tab = self.build_loose_tab(&new_meta, &text, &root, &canon);
+            // Rebuild the world against the new parent directory. This is the
+            // expensive step the CAS guards: `build_loose_tab` carries the meta
+            // (incl. revision) and resets the compile result via
+            // `with_meta_and_world`; falls back to a detached world on anchor
+            // failure.
+            let new_tab = self.build_loose_tab(&new_meta, &text, &root, &canon);
 
-        // Re-key the shared VFS (§5 end): drop the entry under the OLD canonical
-        // path (if any) and publish the buffer under the NEW one, so other tabs
-        // that #include this file resolve to its post-Save-As location.
-        if let Some(old) = &old_canon {
-            if old.as_path() != canon.as_path() {
-                self.store.vfs.remove(old);
-                // The Save-As target is a different file; drop the old path's
-                // outgoing dependency edges. The new path's edges refresh on the
-                // imminent recompile (swap_world → create_worker → compile).
-                self.store.deps.remove_outgoing(old);
+            // CAS insert: under the tabs write + state locks, verify the buffer
+            // still matches the snapshot (revision AND text) before inserting;
+            // a miss retries with a fresh snapshot. Same contract as
+            // [`cas_swap_world`](Self::cas_swap_world), specialized to the
+            // rebind tail below (VFS re-key + disk-version seed).
+            {
+                let mut tabs = self.store.tabs.write();
+                let cas_hit = {
+                    match tabs.get(&id) {
+                        None => {
+                            // Closed mid-rebind: nothing left to swap.
+                            true
+                        }
+                        Some(tab) => {
+                            let rt = tab.state.lock();
+                            rt.meta.revision == revision && tab.world.text() == text
+                        }
+                    }
+                };
+                if !cas_hit {
+                    continue; // CAS miss → fresh snapshot (guard dropped here)
+                }
+                if tabs.contains_key(&id) {
+                    tabs.insert(id, new_tab.clone());
+                } else {
+                    break; // closed mid-rebind: nothing left to swap
+                }
             }
+
+            // Re-key the shared VFS (§5 end): drop the entry under the OLD
+            // canonical path (if any) and publish the buffer under the NEW one,
+            // so other tabs that #include this file resolve to its post-Save-As
+            // location.
+            if let Some(old) = &old_canon {
+                if old.as_path() != canon.as_path() {
+                    self.store.vfs.remove(old);
+                    // The Save-As target is a different file; drop the old path's
+                    // outgoing dependency edges. The new path's edges refresh on
+                    // the imminent recompile (swap_world → create_worker →
+                    // compile).
+                    self.store.deps.remove_outgoing(old);
+                }
+            }
+            self.store.vfs.upsert(canon.clone(), text.clone(), revision);
+
+            // Worker rotation: same tail as `swap_world`.
+            self.rotate_worker_if_typst(id, &new_tab);
+
+            // The rebuilt tab's runtime starts with `disk_version: None`. Seed it
+            // from the freshly-written target file (Save As just wrote it), so the
+            // imminent watcher event for that write is recognized as self-induced
+            // (§8.2). Also ensure the target's parent dir is watched — Save As to a
+            // directory outside the workspace needs a loose watcher to catch
+            // future external changes (§4.2).
+            self.set_disk_version_from_path(id, Some(&canon));
+            loose_watcher_for(&self.store, &root);
+            return Ok(());
         }
-        self.store.vfs.upsert(canon.clone(), text.clone(), revision);
-
-        // Swap the new world in and rotate the worker to trigger a recompile.
-        self.swap_world(id, new_tab);
-
-        // The rebuilt tab's runtime starts with `disk_version: None`. Seed it
-        // from the freshly-written target file (Save As just wrote it), so the
-        // imminent watcher event for that write is recognized as self-induced
-        // (§8.2). Also ensure the target's parent dir is watched — Save As to a
-        // directory outside the workspace needs a loose watcher to catch
-        // future external changes (§4.2).
+        // Exhausted the CAS retries while edits kept racing: leave the tab on
+        // its old world rather than dropping an edit (same outcome policy as
+        // `rebuild_workspace_worlds`). Registry-wise we are now rebound at the
+        // new path with the pre-retry metadata, which is consistent — only the
+        // world rebuild is skipped, and the next edit/recompile refreshes it.
+        tracing::warn!(
+            ?id,
+            attempts = MAX_ATTEMPTS,
+            "rebind kept losing the CAS race with edits; keeping the old-resolution world (no edit lost)"
+        );
         self.set_disk_version_from_path(id, Some(&canon));
         loose_watcher_for(&self.store, &root);
         Ok(())
