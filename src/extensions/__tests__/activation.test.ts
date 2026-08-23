@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 
 /**
  * Pins the activation-loop contract of `src/extensions/index.ts`:
@@ -15,22 +15,6 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 const { activateAll } = await import("../index");
 const { useStartupProblemsStore } = await import("../../store/startupProblemsStore");
-
-// Mock the glob: vi.mock is hoisted, so build the module map lazily via the
-// factory's closure over `vi`.
-vi.mock("../../../extensions", async () => {
-  throw new Error("unused");
-});
-
-function setGlobModules(mods: Record<string, { default?: unknown }>) {
-  // The production module calls import.meta.glob directly; vitest cannot stub
-  // that. Instead we exercise the same loop logic through dynamic re-import
-  // with a mocked store and REAL extension modules below — this file pins the
-  // observable contract via the escape hatch: run activateAll against the real
-  // in-tree extensions (they must all activate cleanly) and assert that no
-  // problems were recorded for them.
-  void mods;
-}
 
 describe("extension activation loop contract", () => {
   beforeEach(() => {

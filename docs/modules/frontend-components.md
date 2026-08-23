@@ -33,7 +33,9 @@ zustand stores and call typed wrappers in `src/lib/tauri.ts` — never
   inserted as `#image("…")`; Cmd/Ctrl+Shift+V pastes raw.
 - `workspaceApplyEditHandler.ts` — overrides LSP `workspace/applyEdit`:
   open-doc edits → live models; closed files → backend
-  `apply_text_edits_to_disk_file`.
+  `apply_text_edits_to_disk_file`. Edits landing on a NON-active model are
+  synced explicitly (`updateContent` + fire-and-forget `updateText`), since
+  the editor's content listener only observes the attached model.
 - `saveAsMigration.ts` — `originSignature` / `migrateModelForSaveAs`
   (atomic URI-map swap; shared by Save-As and directory-rename batch).
 - Support seams: `editorEdit.ts` (wrap/replace/toggle), `imageIo.ts` /

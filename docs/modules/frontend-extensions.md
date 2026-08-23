@@ -74,9 +74,11 @@ anything else alerts).
 
 ## Invariants
 
-- **Activation failure isolation**: one extension's `activate()` throwing is
-  caught and logged; the rest activate (mirrors VS Code's policy,
-  `index.ts`).
+- **Activation failure isolation**: one extension's `activate()` throwing
+  (or rejecting — the loop awaits, so async activations are safe too) is
+  caught and routed to the startup-problems banner (`component:
+  "extension:<id>"`) in addition to the console log; the rest activate
+  (mirrors VS Code's policy, `index.ts`).
 - **Idempotent registration**: duplicate ids are ignored with a warning;
   workbench guards re-entry with an `activated` flag (it has two activation
   paths: `activateAll()` from App and `ensureActivated()` from `dispatch()`,

@@ -63,7 +63,9 @@ reached Ready once — first-connecter-wins backend rule),
 `useExternalFileRouting`, `useWindowRestore`, `useTheme`, `useLanguage`,
 `useWheelZoom` (clamped step zoom), `useDebounce`,
 `useEscapeToClose` (window-level close-on-Escape for modal portals;
-callbacks in refs so the listener attaches only while active),
+callbacks in refs so the listener attaches only while active; only the
+TOPMOST layer of `hooks/escapeStack.ts` acts on Escape, so stacked modals
+close one at a time),
 `useClampedPopupPosition` + `usePopupDismiss` (viewport clamp + 4-listener
 dismiss for floating portal popups — ContextMenu, TableGridPicker).
 

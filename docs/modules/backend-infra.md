@@ -75,9 +75,10 @@ host:port is refused.
 
 - `atomic.rs` — the atomic write used by everything: same-dir
   `.typst-tmp-<base>-<uuid>` temp → write → fsync → copy target perms →
-  rename (Unix) / rename-then-remove+rename fallback (Windows; the failed
-  fallback preserves the temp as the last copy) → best-effort dir fsync.
-  Original untouched on pre-rename failure; stale temps >24 h cleaned at
+  rename (Unix) / rename with sharing-violation backoff retry on Windows
+  (the destructive remove-then-rename fallback is GONE — any residual
+  failure leaves the original file intact and errors) → best-effort dir
+  fsync. Original untouched on any failure; stale temps >24 h cleaned at
   startup.
 - `backup.rs` — `load_json_with_backup` / `write_with_backup`: `.bak` =
   last known-good, rotated only from successfully-read previous bytes;

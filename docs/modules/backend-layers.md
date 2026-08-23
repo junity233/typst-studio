@@ -146,3 +146,15 @@ without `-D warnings` because of the one known warning in
 - Paste-destination containment (workspace root or app config dir) is
   centralized in `ipc::ensure_paste_dest`, shared by `write_bytes_to_file`
   and `fetch_url_to_file`.
+- Read-source containment mirrors it via `ipc::ensure_read_source`
+  (`read_file_bytes`, bibliography parse/save family): an absolute path must
+  be an open document's canonical path, contained in the workspace or app
+  config dir, or EXACTLY equal the most recent dialog-picked path recorded
+  by `pick_image_file` in `AppState.dialog_grant` (the backend mints the
+  grant; the webview can only consume it).
+- Secrets: settings keys flagged `"secret": true` in the manifest (currently
+  `ai.apiKey`) are masked by `settings/service.rs` in `get_all_settings`,
+  `get_setting`, and the `settings_changed` broadcast; `set_setting`
+  rejects a write of the sentinel. Backend readers (`ai_commands`) use the
+  unmasked `get`. The Settings window renders secrets as password inputs
+  that only send explicitly typed values.

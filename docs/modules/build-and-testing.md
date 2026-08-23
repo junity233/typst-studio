@@ -7,9 +7,11 @@
 ## Build chain (frontend)
 
 - `npm run dev` / `build` first run `fetch-grammar` (downloads tinymist's
-  VSIX from OpenVSX, extracts the TextMate grammar + language config +
-  manifest slice into `src/assets/grammar/`, cached in
-  `node_modules/.cache/grammar` for offline rebuilds) and
+  VSIX from OpenVSX, verifies its SHA-256 against the hardcoded pin AND the
+  registry's `.sha256` sidecar BEFORE deleting the previous output dir,
+  extracts the TextMate grammar + language config + manifest slice into
+  `src/assets/grammar/`, cached in `node_modules/.cache/grammar` for offline
+  rebuilds) and
   `fetch-monaco-assets` (mirrors oniguruma WASM + theme JSONs into
   `public/vendor/`). Both outputs are **generated and gitignored** — `tsc`
   imports the grammar manifest, so a fresh clone fails typecheck until
@@ -31,7 +33,8 @@
 `src-tauri` is a Tauri v2 crate (`cargo` workspace root at `src-tauri/`).
 The `export-types` feature enables ts-rs type-export tests:
 `cargo test --features export-types` regenerates `src/lib/types.ts` — run
-it whenever a `#[derive(TS)]` struct changes. Linux CI needs the GTK/
+it whenever a `#[derive(TS)]` struct changes. CI enforces this with a drift
+gate (regenerate + `git diff --exit-code src/lib/types.ts`). Linux CI needs the GTK/
 WebKit dev packages (see `.github/workflows/ci.yml`). Clippy runs without
 `-D warnings` (one known warning sits in the frozen
 `src-tauri/src/git/status.rs`).
