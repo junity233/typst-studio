@@ -40,6 +40,8 @@ import type { PlannedDiskEdit, PlannedModelEdit } from "../workspaceEdit";
 interface FakeModel {
   uri: string;
   pushEditOperations: ReturnType<typeof vi.fn>;
+  /** Post-"edit" text read back by applyModelEdits for the inactive sync. */
+  getValue: ReturnType<typeof vi.fn>;
 }
 interface FakeRegistry {
   resolveDocumentId: ReturnType<typeof vi.fn>;
@@ -47,15 +49,19 @@ interface FakeRegistry {
   __models: Map<string, FakeModel>; // by documentId
 }
 
-function fakeRegistry(open: Record<string, { uri: string; id: string }>): {
+function fakeRegistry(open: Record<string, { uri: string; id: string; value?: string }>): {
   registry: FakeRegistry;
   models: Map<string, FakeModel>;
 } {
   const models = new Map<string, FakeModel>();
   const uriToId = new Map<string, string>();
-  for (const { uri, id } of Object.values(open)) {
+  for (const { uri, id, value } of Object.values(open)) {
     uriToId.set(uri, id);
-    const m: FakeModel = { uri, pushEditOperations: vi.fn() };
+    const m: FakeModel = {
+      uri,
+      pushEditOperations: vi.fn(),
+      getValue: vi.fn(() => value ?? ""),
+    };
     models.set(id, m);
   }
   const registry: FakeRegistry = {
@@ -69,6 +75,11 @@ function fakeRegistry(open: Record<string, { uri: string; id: string }>): {
     __models: models,
   };
   return { registry, models };
+}
+
+/** A no-op inactive-model sync recorder (default third dep in most tests). */
+function fakeSync(): ReturnType<typeof vi.fn> {
+  return vi.fn();
 }
 
 /** Build an LSP TextEdit. */
@@ -100,7 +111,7 @@ describe("applyModelEdits", () => {
       { uri: "file:///a.typ", edits: [te(0, 0, 0, 3, "hi")] },
     ];
 
-    const failed = applyModelEdits(edits, registry);
+    const failed = applyModelEdits(edits, registry, fakeSync(), null);
 
     expect(failed).toEqual([]);
     const model = models.get("doc-a")!;
@@ -134,6 +145,8 @@ describe("applyModelEdits", () => {
     applyModelEdits(
       [{ uri: "file:///a.typ", edits: [te(0, 0, 0, 1, "x")] }],
       registry,
+      fakeSync(),
+      null,
     );
     const model = models.get("doc-a")!;
     const call = model.pushEditOperations.mock.calls[0];
@@ -148,7 +161,9 @@ describe("applyModelEdits", () => {
     const edits = [
       { uri: "file:///closed.typ", edits: [te(0, 0, 0, 1, "x")] },
     ] as unknown as PlannedModelEdit[];
-    expect(applyModelEdits(edits, registry)).toEqual(["file:///closed.typ"]);
+    expect(applyModelEdits(edits, registry, fakeSync(), null)).toEqual([
+      "file:///closed.typ",
+    ]);
   });
 
   it("reports a URI as failed when the registry has no model entry for the id", () => {
@@ -162,7 +177,9 @@ describe("applyModelEdits", () => {
     const edits = [
       { uri: "file:///ghost.typ", edits: [te(0, 0, 0, 1, "x")] },
     ] as unknown as PlannedModelEdit[];
-    expect(applyModelEdits(edits, registry)).toEqual(["file:///ghost.typ"]);
+    expect(applyModelEdits(edits, registry, fakeSync(), null)).toEqual([
+      "file:///ghost.typ",
+    ]);
   });
 
   it("applies edits to MULTIPLE models independently", () => {
@@ -174,9 +191,82 @@ describe("applyModelEdits", () => {
       { uri: "file:///a.typ", edits: [te(0, 0, 0, 1, "A")] },
       { uri: "file:///b.typ", edits: [te(1, 0, 1, 1, "B")] },
     ] as unknown as PlannedModelEdit[];
-    applyModelEdits(edits, registry);
+    applyModelEdits(edits, registry, fakeSync(), null);
     expect(models.get("doc-a")!.pushEditOperations).toHaveBeenCalledOnce();
     expect(models.get("doc-b")!.pushEditOperations).toHaveBeenCalledOnce();
+  });
+
+  it("syncs INACTIVE models through the injected store/backend sync", () => {
+    // Regression pin (P0-1): the editor's content-change listener only
+    // observes the ATTACHED model. An LSP edit on any other open model must be
+    // explicitly pushed into documentsStore + updateText — otherwise a later
+    // save of that background doc writes stale pre-edit text to disk.
+    const { registry } = fakeRegistry({
+      b: { uri: "file:///b.typ", id: "doc-b", value: "renamed content" },
+    });
+    const sync = fakeSync();
+    applyModelEdits(
+      [{ uri: "file:///b.typ", edits: [te(0, 0, 0, 1, "R")] }],
+      registry,
+      sync,
+      "doc-active", // doc-b is NOT the active tab
+    );
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(sync).toHaveBeenCalledWith("doc-b", "renamed content");
+  });
+
+  it("does NOT sync the ACTIVE model (its change flows through editor onChange)", () => {
+    // Double-driving the active doc would double-bump revisions and race the
+    // debounced compile push — the active path belongs to handleTextChanged.
+    const { registry } = fakeRegistry({
+      a: { uri: "file:///a.typ", id: "doc-a", value: "typed" },
+    });
+    const sync = fakeSync();
+    applyModelEdits(
+      [{ uri: "file:///a.typ", edits: [te(0, 0, 0, 1, "T")] }],
+      registry,
+      sync,
+      "doc-a", // active
+    );
+    expect(sync).not.toHaveBeenCalled();
+  });
+
+  it("reads back post-edit text AFTER pushEditOperations (getValue ordering)", () => {
+    // The sync must observe the post-edit text; pin that getValue is invoked
+    // after the edit lands, not before.
+    const { registry, models } = fakeRegistry({
+      a: { uri: "file:///a.typ", id: "doc-a", value: "post-edit" },
+    });
+    const order: string[] = [];
+    models.get("doc-a")!.pushEditOperations.mockImplementation(() => {
+      order.push("edit");
+    });
+    models.get("doc-a")!.getValue.mockImplementation(() => {
+      order.push("read");
+      return "post-edit";
+    });
+    applyModelEdits(
+      [{ uri: "file:///a.typ", edits: [te(0, 0, 0, 1, "T")] }],
+      registry,
+      fakeSync(),
+      null,
+    );
+    expect(order).toEqual(["edit", "read"]);
+  });
+
+  it("skips the sync for a FAILED uri (no model → nothing was applied)", () => {
+    const { registry } = fakeRegistry({
+      a: { uri: "file:///a.typ", id: "doc-a" },
+    });
+    const sync = fakeSync();
+    const failed = applyModelEdits(
+      [{ uri: "file:///gone.typ", edits: [te(0, 0, 0, 1, "x")] }],
+      registry,
+      sync,
+      null,
+    );
+    expect(failed).toEqual(["file:///gone.typ"]);
+    expect(sync).not.toHaveBeenCalled();
   });
 });
 

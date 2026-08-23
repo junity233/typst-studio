@@ -21,7 +21,11 @@ import type {
  * The seams:
  *
  *   - [`applyModelEdits`](Self.applyModelEdits): apply open-doc LSP TextEdit[]
- *     to Monaco models (resolves URI → model via an injected registry).
+ *     to Monaco models (resolves URI → model via an injected registry), then
+ *     push non-active-model results through an injected store/backend sync —
+ *     the editor's onChange only observes the ATTACHED model, so without that
+ *     sync a background-tab edit would never reach documentsStore or the
+ *     backend (and a later save would write stale text).
  *   - [`confirmationMessage`](Self.confirmationMessage): pure presentational.
  *   - [`executeWorkspaceEditPlan`](Self.executeWorkspaceEditPlan): the
  *     orchestration (confirm → model → disk → result) with all I/O injected.
@@ -52,10 +56,12 @@ export interface MonacoEditOp {
  * Ctrl+Z. `pushEditOperations` records the edits on the undo stack; the null
  * `beforeCursorState` / `() => null` cursor-state computer is the standard
  * idiom for programmatic (non-cursor-tracking) edits. The return value
- * (post-edit selections) is discarded. Only `entry.uri` (the canonical string)
- * is read — the model's own `uri` property is intentionally NOT in this
- * interface (real Monaco's is a `Uri` object, not a string, and we don't need
- * it).
+ * (post-edit selections) is discarded. `getValue` lets the applier read back
+ * the post-edit text for the inactive-model store sync (see
+ * [`SyncInactiveModelEdit`](Self.SyncInactiveModelEdit)). Only `entry.uri`
+ * (the canonical string) is read — the model's own `uri` property is
+ * intentionally NOT in this interface (real Monaco's is a `Uri` object, not a
+ * string, and we don't need it).
  */
 export interface EditableModelEntry {
   model: {
@@ -64,6 +70,7 @@ export interface EditableModelEntry {
       ops: MonacoEditOp[],
       cursorStateComputer: () => null,
     ) => unknown;
+    getValue: () => string;
   };
   uri: string;
 }
@@ -75,16 +82,41 @@ export interface ModelEditRegistry {
 }
 
 /**
+ * Store/backend synchronization for edits applied to a model that is NOT the
+ * one currently attached to the editor. The editor's content-change listener
+ * (`DirectMonacoEditor` → `MonacoEditor.handleTextChanged`) only observes the
+ * ATTACHED model, so a `pushEditOperations` on any other open model never
+ * reaches `documentsStore` or the backend compile pipeline — an F2 rename on a
+ * background tab would otherwise leave the store (and the next save) holding
+ * stale pre-edit text. Production injects
+ * [`syncInactiveModelEdit`](./workspaceApplyEditHandler.ts), which mirrors the
+ * assistant approval-edit path: `updateContent` (bumps revision, marks dirty)
+ * then a fire-and-forget `updateText` IPC with that revision.
+ */
+export type SyncInactiveModelEdit = (
+  documentId: string,
+  nextContent: string,
+) => void;
+
+/**
  * Apply a planned set of OPEN-DOC edits to the matching Monaco models. Returns
  * the URIs it could NOT apply (no open model at that URI) — the caller treats
  * those as a failure.
  *
  * Each model's edits go through ONE `model.pushEditOperations` call (a single
  * atomic operation = one undo step — unlike the raw `applyEdits`, which mutates
- * with no undo entry, leaving the edits unrevertable via Ctrl+Z). The resulting
- * content-change then flows through the editor's normal onChange path (dirty +
- * revision + backend forward) — we do NOT bypass the dirty/revision flow (§12.2
- * "进入正常 dirty/revision 流程").
+ * with no undo entry, leaving the edits unrevertable via Ctrl+Z).
+ *
+ * Store/backend sync: the editor's content-change listener only observes the
+ * model currently ATTACHED to the editor, so an edit applied to any OTHER open
+ * model would never reach `documentsStore` or the backend compile pipeline.
+ * For each edit whose document id differs from `activeDocumentId`, the injected
+ * [`SyncInactiveModelEdit`](Self.SyncInactiveModelEdit) is invoked with the
+ * post-edit text read back from the model. The ACTIVE model is skipped — its
+ * change flows through the editor's normal onChange path (dirty + revision +
+ * backend forward), which must not be double-driven (§12.2 "进入正常
+ * dirty/revision 流程"). Passing `null` activeDocumentId treats every doc as
+ * inactive (used by tests; production always knows the active tab).
  *
  * LSP ranges are 0-indexed; Monaco is 1-indexed for both lines and columns, so
  * each TextEdit is converted here.
@@ -92,6 +124,8 @@ export interface ModelEditRegistry {
 export function applyModelEdits(
   modelEdits: PlannedModelEdit[],
   registry: ModelEditRegistry,
+  syncInactiveModel: SyncInactiveModelEdit,
+  activeDocumentId: string | null,
 ): string[] {
   const failed: string[] = [];
   for (const { uri, edits } of modelEdits) {
@@ -115,6 +149,9 @@ export function applyModelEdits(
       text: e.newText,
     }));
     entry.model.pushEditOperations(null, ops, () => null);
+    if (id !== activeDocumentId) {
+      syncInactiveModel(id, entry.model.getValue());
+    }
   }
   return failed;
 }

@@ -12,9 +12,11 @@ import {
   executeWorkspaceEditPlan,
   toEntryKindWire,
   type DiskApplyIpc,
+  type SyncInactiveModelEdit,
 } from "./workspaceEditApplier";
 import { monacoModelRegistry } from "./monacoModelRegistry";
 import { useDocumentsStore } from "../../store/documentsStore";
+import { useTabsStore } from "../../store/tabsStore";
 import { useDialogStore } from "../../store/dialogStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import {
@@ -22,6 +24,7 @@ import {
   createEntry,
   deleteEntry,
   renameEntry,
+  updateText,
 } from "../../lib/tauri";
 import { fileUriToWorkspaceRel } from "../../lib/workspacePath";
 import i18n from "../../i18n";
@@ -140,6 +143,33 @@ export function createProductionWorkspaceEditDeps(): WorkspaceApplyEditDeps {
 }
 
 /**
+ * Store/backend sync for an LSP edit applied to a model that is NOT attached
+ * to the editor (a background tab). The editor's content-change listener only
+ * fires for the ATTACHED model, so without this the store/revision/backend
+ * pipeline never learns about the edit — and a later save of that background
+ * doc would write its stale pre-edit text to disk.
+ *
+ * Mirrors the assistant approval-edit path: `updateContent` synchronously
+ * bumps the revision + marks dirty, then the exact revision is read back and a
+ * fire-and-forget `updateText` IPC carries (content, revision) to the backend
+ * compile pipeline. The backend adopts the frontend revision, so ordering with
+ * any concurrent user typing is safe. A vanished doc (closed mid-apply) reads
+ * as undefined revision and is dropped.
+ */
+const syncInactiveModelEdit: SyncInactiveModelEdit = (
+  documentId,
+  nextContent,
+) => {
+  useDocumentsStore.getState().updateContent(documentId, nextContent);
+  const revision =
+    useDocumentsStore.getState().documents[documentId]?.revision;
+  if (revision === undefined) return; // doc closed mid-apply
+  void updateText(documentId, nextContent, revision).catch((e) =>
+    console.warn("[workspaceApplyEdit] inactive-model updateText failed:", e),
+  );
+};
+
+/**
  * The production `workspace/applyEdit` handler: builds the plan from the live
  * registry + store, then delegates to
  * [`executeWorkspaceEditPlan`](./workspaceEditApplier.ts). This is the function
@@ -164,7 +194,12 @@ export async function handleApplyWorkspaceEdit(
         })
         .then((r) => r === "confirm"),
     applyModels: (modelEdits) =>
-      applyModelEdits(modelEdits, monacoModelRegistry),
+      applyModelEdits(
+        modelEdits,
+        monacoModelRegistry,
+        syncInactiveModelEdit,
+        useTabsStore.getState().activeId,
+      ),
     applyDisk: (diskEdits) => applyDiskEdits(diskEdits, deps, deps.uriToRel),
   });
 }
