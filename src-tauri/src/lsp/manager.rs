@@ -1071,13 +1071,28 @@ impl LspManager {
                         }
                     };
 
-                    let ws_stream = match tokio_tungstenite::accept_hdr_async(
-                        stream,
-                        validator,
-                    ).await {
-                        Ok(s) => s,
-                        Err(e) => {
+                    let ws_stream = match tokio::time::timeout(
+                        // Handshake deadline: a local process that connects but
+                        // never completes the HTTP upgrade would otherwise hold
+                        // the accept loop here INDEFINITELY — no new accept, no
+                        // shutdown/wake polling (slowloris by any low-privilege
+                        // local process; restart() could not recover). 10s is
+                        // generous for a loopback handshake.
+                        std::time::Duration::from_secs(10),
+                        tokio_tungstenite::accept_hdr_async(stream, validator),
+                    )
+                    .await
+                    {
+                        Ok(Ok(s)) => s,
+                        Ok(Err(e)) => {
                             tracing::warn!("rejected WebSocket handshake: {e}");
+                            continue;
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                "WebSocket handshake timed out after 10s; \
+                                 dropping the connection and resuming accept"
+                            );
                             continue;
                         }
                     };

@@ -233,14 +233,26 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   },
 
   toggleExpand: async (rel) => {
-    const expanded = new Set(get().expanded);
-    if (expanded.has(rel)) {
-      expanded.delete(rel);
-    } else {
-      expanded.add(rel);
-      await get().ensureLoaded(rel);
+    // Read-modify-write must be FUNCTIONAL: snapshotting the Set before an
+    // `await` and committing the stale copy afterwards loses concurrent
+    // updates (fast successive toggles / collapseAll during the load would
+    // each clobber the other). Mutate the freshest state inside `set`, and
+    // only load children for the net-expanded case.
+    const wasExpanded = get().expanded.has(rel);
+    if (wasExpanded) {
+      set((s) => {
+        const expanded = new Set(s.expanded);
+        expanded.delete(rel);
+        return { expanded };
+      });
+      return;
     }
-    set({ expanded });
+    set((s) => {
+      const expanded = new Set(s.expanded);
+      expanded.add(rel);
+      return { expanded };
+    });
+    await get().ensureLoaded(rel);
   },
 
   collapseAll: () => {
