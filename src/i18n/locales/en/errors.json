@@ -8,6 +8,7 @@
   "couldNotOpenFolder": "Could not open folder: {{message}}",
   "commandFailed": "{{label}}: {{message}}",
   "actionFailed": "Action failed: {{message}}",
+  "settingSaveFailed": "Could not save setting: {{message}}",
   "renameFailed": "Rename failed: {{message}}",
   "revealFailed": "Reveal failed: {{message}}",
   "deleteFailed": "Delete failed: {{message}}",

@@ -40,7 +40,7 @@ vi.mock("../../components/Editor/monacoModelRegistry", () => ({
 }));
 
 import type { SearchHit } from "../../lib/types";
-import { useSearchStore } from "../searchStore";
+import { useSearchStore, applyReplaceOutcome } from "../searchStore";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -169,5 +169,42 @@ describe("searchStore replace", () => {
 
     expect(useSearchStore.getState().error).toBe("disk full");
     expect(useSearchStore.getState().replacing).toBe(false);
+  });
+
+  it("applyReplaceOutcome skips a doc the user edited past newRevision (CAS guard)", async () => {
+    // The replace outcome was computed against revision 6; while it was in
+    // flight the user typed, pushing the local doc to revision 8. Applying
+    // would destroy those edits AND move the local revision backwards — so
+    // this doc must be skipped entirely.
+    docState.documents = {
+      "doc-a": { content: "needle plus user edits", revision: 8, dirty: true },
+    };
+
+    await applyReplaceOutcome([
+      { id: "doc-a", newContent: "pin", newRevision: 7, path: "/x/a.typ" },
+    ]);
+
+    // No Monaco replace, no store overwrite.
+    expect(mocks.applyExternalContent).not.toHaveBeenCalled();
+    expect(docState.documents["doc-a"]).toEqual({
+      content: "needle plus user edits",
+      revision: 8,
+      dirty: true,
+    });
+  });
+
+  it("applyReplaceOutcome never lowers the local revision", async () => {
+    // A divergent case where local is BEHIND (backend raced ahead of our last
+    // sync): applying is fine, but the merged revision must be the backend's,
+    // never a smaller value than what was already local.
+    docState.documents = {
+      "doc-b": { content: "needle", revision: 3, dirty: false },
+    };
+
+    await applyReplaceOutcome([
+      { id: "doc-b", newContent: "pin", newRevision: 5, path: "/x/b.typ" },
+    ]);
+
+    expect(docState.documents["doc-b"].revision).toBe(5);
   });
 });

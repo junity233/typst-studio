@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useSettingsStore } from "../store/settingsStore";
 import type { Manifest } from "../lib/settings-types";
+import { alertIpcError } from "../lib/ipc-error";
 
 /**
  * Read a value out of a nested object by dot-path, e.g.
@@ -68,7 +69,15 @@ export function useSetting<T>(
 
   const setter = useCallback(
     (value: T) => {
-      void useSettingsStore.getState().set(path, value);
+      // The write is fire-and-forget for the caller, but a REJECTED
+      // `set_setting` (backend validation, persist failure) must not vanish:
+      // without a broadcast the control would silently snap back with zero
+      // feedback — violating the repo-wide fail-loud convention. Surface it
+      // through the shared IPC error alert.
+      useSettingsStore
+        .getState()
+        .set(path, value)
+        .catch((e) => alertIpcError("settingSaveFailed", e));
     },
     [path],
   );

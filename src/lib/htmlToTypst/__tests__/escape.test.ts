@@ -13,6 +13,12 @@ describe("escapeTypst", () => {
   it("escapes unicode-looking ascii only", () => {
     expect(escapeTypst("price = $5")).toBe("price = \\$5");
   });
+  it("escapes slashes so URLs cannot open line/block comments", () => {
+    // Regression pin: unescaped, every `https://` URL became a Typst line
+    // comment that swallowed the rest of the line (`/*` opened a block).
+    expect(escapeTypst("https://example.com")).toBe("https:\\/\\/example.com");
+    expect(escapeTypst("/* block */")).toBe("\\/\\* block \\*\\/");
+  });
 });
 
 describe("escapeTypstStr", () => {

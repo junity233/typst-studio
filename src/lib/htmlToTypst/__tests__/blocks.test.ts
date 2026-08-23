@@ -17,6 +17,14 @@ describe("convertBlocks", () => {
   it("paragraphs separated by blank line", () => {
     expect(walk("<p>one</p><p>two</p>")).toBe("one\n\ntwo");
   });
+  it("unknown block container keeps child paragraphs separated", () => {
+    // Regression pin: Word's clipboard wraps content in `<section>`/`<article>`
+    // etc.; the old inline fallback flattened a multi-paragraph section into
+    // one run-on paragraph. Children must convert as BLOCKS.
+    expect(walk("<section><p>one</p><h2>Head</h2></section>")).toBe(
+      "one\n\n== Head",
+    );
+  });
   it("unordered list", () => {
     expect(walk("<ul><li>a<li>b</ul>")).toBe("- a\n- b");
   });

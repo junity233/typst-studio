@@ -8,6 +8,7 @@
   "couldNotOpenFolder": "无法打开文件夹:{{message}}",
   "commandFailed": "{{label}}:{{message}}",
   "actionFailed": "操作失败:{{message}}",
+  "settingSaveFailed": "设置保存失败:{{message}}",
   "renameFailed": "重命名失败:{{message}}",
   "revealFailed": "显示失败:{{message}}",
   "deleteFailed": "删除失败:{{message}}",

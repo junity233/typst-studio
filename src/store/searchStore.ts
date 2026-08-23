@@ -152,7 +152,12 @@ export const useSearchStore = create<SearchState>((set, get) => {
     run: async () => {
       const { query } = get();
       if (!query.trim()) {
-        set({ results: [], error: null });
+        // The empty-query early-out MUST also claim a sequence number: without
+        // it, an in-flight run() started before the clear still carries the
+        // current seq and its late response would resurrect stale results over
+        // this empty state (the guard exists to protect exactly this call).
+        ++runSeq;
+        set({ results: [], error: null, searching: false });
         return;
       }
       const seq = ++runSeq;
@@ -220,6 +225,16 @@ export async function applyReplaceOutcome(openDocs: OpenDocReplacement[]): Promi
   if (openDocs.length === 0) return;
   const { monacoModelRegistry } = await import("../components/Editor/monacoModelRegistry");
   for (const r of openDocs) {
+    // CAS guard: the replace was computed against a snapshot. If the user
+    // typed while it was in flight, blindly overwriting `content + revision`
+    // here would (a) destroy those edits and (b) move the local revision
+    // BACKWARDS, letting later compile events pass the staleness guard and
+    // show stale preview output. Skip diverged docs — they are reported via
+    // `replaceFailures` by the caller's outcome handling.
+    const local = useDocumentsStore.getState().documents[r.id];
+    if (local && local.revision > r.newRevision) {
+      continue;
+    }
     monacoModelRegistry.applyExternalContent(r.id, r.newContent, r.newRevision);
     useDocumentsStore.setState((s) => {
       const doc = s.documents[r.id];
@@ -231,7 +246,7 @@ export async function applyReplaceOutcome(openDocs: OpenDocReplacement[]): Promi
             ...doc,
             content: r.newContent,
             dirty: true,
-            revision: r.newRevision,
+            revision: Math.max(doc.revision, r.newRevision),
           },
         },
       };

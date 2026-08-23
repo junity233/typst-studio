@@ -72,8 +72,14 @@ function blockNode(node: Node, wctx: WalkCtx, depth: number): string {
       return "#line(length: 100%)";
     case "table":
       return convertTable(el, wctx);
-    default:
-      return convertInline(el, wctx);
+    default: {
+      // Unknown block-level container (`<section>`, `<article>`, `<font>`, …
+      // — Word's clipboard HTML is full of them): recurse as BLOCKS so child
+      // paragraphs/headings keep their separation. The previous inline
+      // fallback flattened a multi-paragraph section into one run-on
+      // paragraph, silently destroying structure.
+      return convertBlocks(el, wctx, depth).trim();
+    }
   }
 }
 

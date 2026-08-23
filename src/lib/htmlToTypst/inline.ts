@@ -62,7 +62,12 @@ function inlineNode(node: Node, wctx: WalkCtx): string {
       const href = el.getAttribute("href") ?? "";
       const text = inner();
       if (!href) return text;
-      if (text === href) return `#link("${escapeTypstStr(href)}")`;
+      // Bare-link optimization: when the visible text equals the href, emit
+      // just `#link("…")` (Typst renders the URL itself). Compare against the
+      // ESCAPED text — with `/` in the escape set, `https://x.io` now escapes
+      // to `https:\/\/x.io`, so comparing raw would silently drop the
+      // optimization for every URL.
+      if (text === escapeTypst(href)) return `#link("${escapeTypstStr(href)}")`;
       return `#link("${escapeTypstStr(href)}")[${text}]`;
     }
     case "span": {
