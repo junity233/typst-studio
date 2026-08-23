@@ -11,6 +11,7 @@
   "opening": "Opening…",
   "working": "Working…",
   "default": "default",
+  "secretConfigured": "Configured — type to replace",
   "add": "Add",
   "removePath": "Remove {{path}}",
   "pathsPlaceholder": "/path/to/folder",

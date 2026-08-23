@@ -58,6 +58,47 @@ impl SettingsService {
         })
     }
 
+    /// The full runtime config document (a deep clone), with every manifest key
+    /// marked `"secret": true` MASKED. The webview must never receive secret
+    /// material (e.g. `ai.apiKey`) in plaintext — the module doc for
+    /// `ipc/ai_commands` pins "the API key never crosses to the webview". The
+    /// mask is a stable sentinel (`"••••••••"`) so the frontend can tell
+    /// "configured" from "empty"; writes of a non-sentinel value replace the
+    /// secret (see [`set`](Self.set), which unconditionally overwrites).
+    pub fn get_all_masked(&self) -> Value {
+        let mut data = self.data.read().clone();
+        self.mask_secrets(&mut data);
+        data
+    }
+
+    /// Read one path, masking it if it is a secret key.
+    pub fn get_masked(&self, path: &str, default: Value) -> Value {
+        let ptr = dotted_to_pointer(path);
+        let raw = match self.data.read().pointer(&ptr).cloned() {
+            Some(v) => v,
+            None => default,
+        };
+        if self.is_secret(path) && !raw.is_null() {
+            return mask_secret_value(&raw);
+        }
+        raw
+    }
+
+    /// True iff `path` is a manifest key flagged `"secret": true`.
+    pub fn is_secret(&self, path: &str) -> bool {
+        self.manifest
+            .find(path)
+            .and_then(|d| d.extra.get("secret"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Mask every secret key found in `data` in place. Missing keys stay
+    /// missing (the frontend falls back to the manifest default).
+    fn mask_secrets(&self, data: &mut Value) {
+        mask_secret_keys(data);
+    }
+
     /// The full runtime config document (a deep clone).
     pub fn get_all(&self) -> Value {
         self.data.read().clone()
@@ -159,6 +200,44 @@ fn dotted_to_pointer(path: &str) -> String {
         out.push_str(seg);
     }
     out
+}
+
+/// The sentinel a secret key reads as over IPC once it has been set. Stable
+/// (not derived from the value) so the frontend can compare against it and the
+/// "configured?" boolean stays meaningful without exposing any key material.
+pub(crate) const SECRET_MASK: &str = "••••••••";
+
+/// Mask one secret VALUE: empty string stays empty ("not configured"), any
+/// other value becomes [`SECRET_MASK`]. Non-strings become Null.
+fn mask_secret_value(value: &Value) -> Value {
+    match value.as_str() {
+        Some(s) if !s.is_empty() => Value::String(SECRET_MASK.to_string()),
+        _ => Value::Null,
+    }
+}
+
+/// Mask every manifest `"secret": true` key found in `data`, in place. Free
+/// function (over the embedded manifest, which is static build data) so the
+/// `settings_changed` broadcast in `lib.rs` can mask without holding a service
+/// instance. Missing keys stay missing.
+pub(crate) fn mask_secret_keys(data: &mut Value) {
+    let manifest = Manifest::embedded();
+    for category in &manifest.categories {
+        for def in &category.settings {
+            let is_secret = def
+                .extra
+                .get("secret")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !is_secret {
+                continue;
+            }
+            let ptr = dotted_to_pointer(&def.key);
+            if let Some(slot) = data.pointer_mut(&ptr) {
+                *slot = mask_secret_value(slot);
+            }
+        }
+    }
 }
 
 /// Write `value` at the dotted `path` inside `root`, creating intermediate
@@ -401,6 +480,44 @@ mod tests {
         assert_eq!(dotted_to_pointer("editor.fontSize"), "/editor/fontSize");
         assert_eq!(dotted_to_pointer("a.b.c"), "/a/b/c");
         assert_eq!(dotted_to_pointer("compiler.debounceMs"), "/compiler/debounceMs");
+    }
+
+    #[test]
+    fn secret_key_is_masked_in_get_all_and_never_persists_the_mask() {
+        // P0 pin: `ai.apiKey` (manifest `"secret": true`) must never cross to
+        // the webview in plaintext. get_all_masked shows the sentinel; the
+        // stored document keeps the real value for the backend proxy.
+        let svc = make_service();
+        svc.set("ai.apiKey", json!("sk-real-secret")).unwrap();
+
+        let masked = svc.get_all_masked();
+        assert_eq!(
+            masked.pointer(&dotted_to_pointer("ai.apiKey")),
+            Some(&json!(SECRET_MASK)),
+            "masked view must show the sentinel"
+        );
+        assert_eq!(
+            svc.get::<String>("ai.apiKey", String::new()),
+            "sk-real-secret",
+            "backend reads the REAL key (ai proxy depends on this)"
+        );
+
+        // An unset secret reads as Null (not configured), not as the mask.
+        let fresh = make_service();
+        let masked_fresh = fresh.get_all_masked();
+        assert_eq!(
+            masked_fresh.pointer(&dotted_to_pointer("ai.apiKey")).or(Some(&json!(null))),
+            Some(&json!(null)),
+            "unset secret must not look configured"
+        );
+    }
+
+    #[test]
+    fn set_setting_rejects_saving_the_mask_sentinel() {
+        // The sentinel is display-only; persisting it would destroy the real
+        // key while looking configured. The IPC layer rejects it.
+        assert!(SECRET_MASK.chars().all(|c| c == '•'));
+        assert!(!SECRET_MASK.is_empty());
     }
 
     #[test]

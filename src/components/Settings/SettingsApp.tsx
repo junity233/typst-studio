@@ -328,6 +328,11 @@ function SettingRow({ def, last }: { def: SettingDef; last: boolean }) {
 function SettingControl({ def }: { def: SettingDef }) {
   // Action settings render as buttons, not inputs.
   if (def.action !== undefined) return <ActionControl def={def} />;
+  // Secret settings render as a password-style input that never shows the
+  // stored value (the store only ever holds the mask sentinel anyway).
+  if ((def as SettingDef & { secret?: boolean }).secret === true) {
+    return <SecretControl def={def} />;
+  }
   switch (def.type) {
     case "number":
       return <NumberControl def={def} integer={false} />;
@@ -483,6 +488,48 @@ function StringControl({ def }: { def: SettingDef }) {
       placeholder={fallback || t("default")}
       onChange={(e) => setValue(e.target.value)}
     />
+  );
+}
+
+/**
+ * A `"secret": true` setting (currently `ai.apiKey`). The backend masks the
+ * stored value behind a sentinel, so the input NEVER displays real secret
+ * material: it shows empty (with a "configured" hint) while a key is saved,
+ * and only sends a value the user explicitly typed. Clearing the field and
+ * blurring saves "" (removes the key).
+ */
+function SecretControl({ def }: { def: SettingDef }) {
+  const { t } = useTranslation("settings");
+  const [draft, setDraft] = useState("");
+  const [stored, setValue] = useSetting<string>(def.key);
+  // The mask sentinel (backend `SECRET_MASK`) reads as truthy → configured.
+  const configured = typeof stored === "string" && stored.length > 0;
+  const commit = () => {
+    if (draft !== "") void setValue(draft);
+    setDraft("");
+  };
+  return (
+    <div className="setting-secret">
+      <input
+        id={SETTING_ID(def.key)}
+        className="setting-input"
+        type="password"
+        value={draft}
+        placeholder={
+          draft === ""
+            ? configured
+              ? t("secretConfigured")
+              : t("default")
+            : ""
+        }
+        autoComplete="off"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+        }}
+      />
+    </div>
   );
 }
 

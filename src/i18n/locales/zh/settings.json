@@ -11,6 +11,7 @@
   "opening": "正在打开…",
   "working": "处理中…",
   "default": "默认",
+  "secretConfigured": "已配置 — 输入以替换",
   "add": "添加",
   "removePath": "移除 {{path}}",
   "pathsPlaceholder": "/路径/到/文件夹",

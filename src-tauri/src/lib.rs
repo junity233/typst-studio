@@ -308,7 +308,11 @@ pub fn run() {
                         store,
                         manifest,
                         move |data| {
-                            let _ = app_for_settings.emit("settings_changed", data.clone());
+                            // The broadcast crosses to the webview, so secrets
+                            // must be masked exactly like `get_all_settings`.
+                            let mut masked = data.clone();
+                            crate::settings::service::mask_secret_keys(&mut masked);
+                            let _ = app_for_settings.emit("settings_changed", masked);
                         },
                     )
                 },

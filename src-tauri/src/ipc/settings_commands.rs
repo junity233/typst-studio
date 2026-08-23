@@ -31,20 +31,37 @@ pub(crate) fn should_restart_for_setting(key: &str) -> bool {
     key.starts_with(LSP_SETTING_PREFIX)
 }
 
-/// Return the full runtime config document.
+/// Return the full runtime config document, with secret keys
+/// (`"secret": true` in the manifest, currently `ai.apiKey`) MASKED. The
+/// webview must never receive secret material in plaintext — see the
+/// `ai_commands` module doc's pinned invariant. Writes replace a secret
+/// wholesale; `set_setting` rejects the mask sentinel so the UI can never
+/// accidentally persist it back.
 #[tauri::command]
 pub async fn get_all_settings(state: State<'_, AppState>) -> Result<Value> {
-    Ok(state.settings.get_all())
+    Ok(state.settings.get_all_masked())
 }
 
 /// Read a single value. When `default` is omitted the manifest default for
-/// `path` is used.
+/// `path` is used. Secret keys read as the mask sentinel (or Null when unset).
 #[tauri::command]
 pub async fn get_setting(
     path: String,
     default: Option<Value>,
     state: State<'_, AppState>,
 ) -> Result<Value> {
+    if state.settings.is_secret(&path) {
+        let dv = match default {
+            Some(d) => d,
+            None => state
+                .settings
+                .manifest()
+                .find(&path)
+                .map(|d| d.default.clone())
+                .unwrap_or(Value::Null),
+        };
+        return Ok(state.settings.get_masked(&path, dv));
+    }
     Ok(match default {
         Some(d) => state.settings.get::<Value>(&path, d),
         None => state.settings.get_or_default::<Value>(&path),
@@ -52,12 +69,23 @@ pub async fn get_setting(
 }
 
 /// Validate, persist, and broadcast a single value (`settings_changed`).
+///
+/// A write of the mask sentinel ([`SECRET_MASK`](crate::settings::service::SECRET_MASK))
+/// to a secret key is rejected: the sentinel is display-only, and persisting it
+/// would destroy the real key while looking like "still configured".
 #[tauri::command]
 pub async fn set_setting(
     path: String,
     value: Value,
     state: State<'_, AppState>,
 ) -> Result<()> {
+    if state.settings.is_secret(&path)
+        && value.as_str() == Some(crate::settings::service::SECRET_MASK)
+    {
+        return Err(AppError::InvalidInput(format!(
+            "refusing to save the display mask back to '{path}'; enter a new value or leave the field unchanged"
+        )));
+    }
     state.settings.set(&path, value)?;
     // §18: only initialize-time LSP settings (`lsp.*`) require restarting
     // tinymist — they ride in the `initialize` payload and can't be re-applied
