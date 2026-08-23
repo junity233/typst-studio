@@ -622,6 +622,7 @@ pub fn run() {
                 project_config,
                 tinymist,
                 dialog_grant: Arc::new(std::sync::Mutex::new(None)),
+                open_grant: Arc::new(std::sync::Mutex::new(None)),
             });
 
             // Custom titlebar (Windows only): drop the OS frame so the frontend

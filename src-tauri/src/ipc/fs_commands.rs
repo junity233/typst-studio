@@ -978,12 +978,18 @@ pub async fn reveal_in_finder(
 /// gets a parent-directory-rooted resolver so same-dir `#include` /
 /// `#image()` resolve; a workspace file would get the workspace resolver
 /// (plumbed in Task B).
+///
+/// The path is guarded by
+/// [`ensure_open_source`](crate::ipc::ensure_open_source): workspace/config/
+/// open-doc/dialog-grant/session-recorded/single-instance-grant only — a
+/// compromised webview cannot read arbitrary files' text through this command.
 #[tauri::command]
 pub async fn open_file_by_path(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<OpenedDocument> {
-    open_path_classified(&state, PathBuf::from(path)).await
+    let canon = crate::ipc::ensure_open_source(&state, &path)?;
+    open_path_classified(&state, canon).await
 }
 
 /// Shared open-by-path logic used by both [`open_file_by_path`] (tree /

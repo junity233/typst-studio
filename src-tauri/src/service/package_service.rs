@@ -132,7 +132,15 @@ impl PackageService {
     }
 
     /// Resolve the on-disk package dir for `name:version`.
+    ///
+    /// `name`/`version` arrive from IPC, so they are validated as package-spec
+    /// components BEFORE any join: each must parse back out of a
+    /// [`PackageSpec`] (which rejects `/`, `\`, `..`, empty, etc.). Without
+    /// this a crafted `"../../x"` would escape the cache root and
+    /// [`Self::uninstall`] would `remove_dir_all` an arbitrary directory.
     pub fn package_dir(&self, name: &str, version: &str) -> Option<PathBuf> {
+        validate_package_component(name)?;
+        validate_package_component(version)?;
         self.cache_root()
             .map(|root| root.join("preview").join(name).join(version))
     }
@@ -283,6 +291,31 @@ impl PackageService {
     }
 }
 
+/// Validate one IPC-supplied package path component (`name` or `version`).
+///
+/// The component must survive being parsed as part of a real
+/// [`PackageSpec`] (`@preview/<name>:<version>`): that rejects empty strings,
+/// path separators, `.`/`..`, and every other character typst forbids in a
+/// package name/version. This is the trust boundary that keeps
+/// [`PackageService::package_dir`] joins (and the `remove_dir_all` behind
+/// `uninstall`) inside the cache root.
+fn validate_package_component(component: &str) -> Option<()> {
+    // Validate each component independently by pairing it with a known-good
+    // counterpart: a name must parse as the name half of a real spec, a
+    // version as the version half. `PackageSpec::FromStr` rejects empty
+    // strings, path separators, `.`/`..`, colons, and other forbidden chars.
+    if component.contains(':') {
+        return None;
+    }
+    let as_name = format!("@preview/{component}:0.0.0")
+        .parse::<PackageSpec>()
+        .is_ok();
+    let as_version = format!("@preview/name:{component}")
+        .parse::<PackageSpec>()
+        .is_ok();
+    (as_name || as_version).then_some(())
+}
+
 /// Apply a `CatalogFilter` to a catalog snapshot.
 fn filter_catalog(cat: &Catalog, filter: &CatalogFilter, latest_only: bool) -> Vec<PackageEntry> {
     let source: &[PackageEntry] = if latest_only { &cat.latest } else { &cat.all };
@@ -386,6 +419,51 @@ fn collect_template_target_files(src: &Path, dest: &Path) -> Result<Vec<PathBuf>
 mod tests {
     use super::*;
     use crate::domain::package_catalog::TemplateMeta;
+
+    #[test]
+    fn package_dir_rejects_traversal_components() {
+        // No cache root in this environment-independent check: validation must
+        // fail BEFORE the join, so `None` from a missing cache is
+        // indistinguishable — assert via the validator directly plus the full
+        // path with a temp cache.
+        assert_eq!(validate_package_component("../../evil"), None);
+        assert_eq!(validate_package_component("a/b"), None);
+        assert_eq!(validate_package_component("a\\b"), None);
+        assert_eq!(validate_package_component(".."), None);
+        assert_eq!(validate_package_component("."), None);
+        assert_eq!(validate_package_component(""), None);
+        assert_eq!(validate_package_component("with:colon"), None);
+        assert_eq!(validate_package_component("cetz"), Some(()));
+        assert_eq!(validate_package_component("0.4.0"), Some(()));
+        // typst's PackageVersion is strictly numeric `major.minor.patch` — a
+        // semver pre-release tag is NOT part of the on-disk dir naming, so it
+        // must be rejected here too (it could never name a real cached dir).
+        assert_eq!(validate_package_component("0.4.0-alpha1"), None);
+    }
+
+    #[test]
+    fn uninstall_cannot_escape_cache_root() {
+        let svc = PackageService::new(
+            Arc::new(crate::fs::package_index::PackageIndex::new(
+                Arc::new(crate::net::client::HttpClient::new()),
+                std::env::temp_dir().join(format!("ts-pkg-guard-{}", uuid::Uuid::new_v4())),
+            )),
+            crate::fs::packages::system_packages(),
+        );
+        // A crafted traversal name is rejected BEFORE any join, so the resolved
+        // dir is None and uninstall can never `remove_dir_all` outside the
+        // cache root. (Whether a real cache dir exists on this machine doesn't
+        // matter: the guard fires first either way.)
+        assert!(svc.package_dir("../outside", "0.1.0").is_none());
+        assert!(svc.package_dir("cetz", "../../evil").is_none());
+        match svc.uninstall("../outside", "0.1.0") {
+            Err(PackageOpError::Uninstall(msg)) => {
+                assert!(msg.contains("no cache dir configured"));
+            }
+            Err(PackageOpError::NotFound) => {}
+            other => panic!("expected guard rejection, got {other:?}"),
+        }
+    }
 
     #[test]
     fn import_snippet_uses_exact_version_and_wildcard_target() {

@@ -10,13 +10,12 @@
 //! [`ensure_read_source`](crate::ipc::ensure_read_source) (open document /
 //! workspace / config dir / dialog grant) so a compromised webview can't use
 //! them to read or overwrite arbitrary files — including the "dumb write"
-//! [`bibliography_save`]. `bibliography_discover` takes
-//! the root from the caller but only ever READS directories, walking them as
-//! an unprivileged listing (the same surface the Explorer tree already has
-//! via `read_dir`), so it needs no extra guard.
+//! [`bibliography_save`]. `bibliography_discover` walks ONLY the backend's own
+//! open-workspace root; the caller-supplied root is ignored, so it cannot be
+//! pointed at arbitrary directories.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use tauri::async_runtime;
 use tauri::State;
@@ -69,16 +68,23 @@ pub async fn bibliography_parse(
         .map_err(|e| AppError::Other(format!("{e}")))
 }
 
-/// Discover bibliography files under `rootPath` (absolute). Walks the tree with
-/// the same `IGNORED_DIRS` the Explorer tree + Search view skip, capped at a
-/// safe depth and file count. Returns `[]` for a closed workspace (`rootPath`
-/// `None`) or an unreadable/non-directory root — the panel shows its empty state.
+/// Discover bibliography files under the OPEN WORKSPACE's root. Walks the tree
+/// with the same `IGNORED_DIRS` the Explorer tree + Search view skip, capped at
+/// a safe depth and file count. Returns `[]` for a closed workspace — the panel
+/// shows its empty state.
+///
+/// The root is always taken from the backend's own workspace state; the
+/// caller-supplied `rootPath` is deliberately ignored (accepted only for wire
+/// compatibility) so a compromised webview can't enumerate arbitrary
+/// directories or derive content metadata (`entry_count`) from them.
 #[tauri::command]
-pub async fn bibliography_discover(root_path: Option<String>) -> Result<Vec<BibFileInfo>> {
-    let Some(root) = root_path else {
+pub async fn bibliography_discover(
+    state: State<'_, AppState>,
+    _root_path: Option<String>,
+) -> Result<Vec<BibFileInfo>> {
+    let Some(root) = state.workspace.root() else {
         return Ok(Vec::new());
     };
-    let root = PathBuf::from(&root);
     // Walk + stat are blocking IO; move them off the async worker.
     let files = async_runtime::spawn_blocking(move || discover_sync(&root))
         .await
@@ -291,6 +297,7 @@ fn sniff_for_path(path: &str, content: &str) -> BibFormat {
 mod tests {
     use super::*;
     use crate::ipc::read_source_tests::{open_ws_at, test_state};
+    use std::path::PathBuf;
 
     #[test]
     #[cfg(feature = "export-types")]

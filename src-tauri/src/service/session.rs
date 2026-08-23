@@ -394,6 +394,16 @@ impl SessionService {
         }
     }
 
+    /// Replace the in-memory session wholesale (test-only): guard tests need to
+    /// simulate "this path was recorded by a previous session" without touching
+    /// the disk-backed persist path.
+    #[cfg(test)]
+    pub fn set_for_test(&self, session: Session) {
+        if let Ok(mut s) = self.inner.lock() {
+            *s = session;
+        }
+    }
+
     /// Current snapshot.
     pub fn get(&self) -> Session {
         self.inner.lock().map(|s| s.clone()).unwrap_or_default()

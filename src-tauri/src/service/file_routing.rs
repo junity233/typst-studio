@@ -63,6 +63,15 @@ pub fn handle_single_instance<R: Runtime>(app: &AppHandle<R>, argv: Vec<String>)
             }
             Ok(RoutingDecision::OpenNew(path)) => {
                 tracing::info!(open_path = ?path, "single-instance: opening new document");
+                // Mint the open grant BEFORE the event reaches the frontend:
+                // the webview's `open_file_by_path` call is admitted by
+                // `ensure_open_source` only for backend-minted paths, and this
+                // is the one origin that legitimately lives outside every
+                // contained root (a double-clicked file anywhere on disk).
+                if let Some(state) = app.try_state::<crate::ipc::state::AppState>() {
+                    *state.open_grant.lock().expect("open_grant mutex poisoned") =
+                        Some(path.to_string_lossy().into_owned());
+                }
                 let _ = app.emit("open_external_file", OpenExternalFilePayload {
                     path: path.to_string_lossy().into_owned(),
                 });

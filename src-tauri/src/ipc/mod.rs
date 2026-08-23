@@ -107,6 +107,46 @@ pub(crate) fn ensure_read_source(state: &AppState, source: &str) -> Result<PathB
     Ok(source_path.to_path_buf())
 }
 
+/// Containment guard for [`open_file_by_path`](crate::ipc::fs_commands::open_file_by_path)
+/// — the IPC command that reads a file's TEXT into the webview by absolute
+/// path. Without it that command is an arbitrary-file-read primitive for a
+/// compromised webview (`read_file_bytes` has been guarded since its
+/// introduction; this command predates the convention and was missed).
+///
+/// Everything [`ensure_read_source`] accepts is accepted here (workspace,
+/// config dir, an open document's own path, the dialog grant), plus exactly
+/// two more backend-minted origins the open flow legitimately needs:
+///
+/// - a path recorded in the backend-owned `session.json` (`open_documents` /
+///   `last_file` / recent workspaces) — session restore reopens those on
+///   startup; the webview only ever reads them back from us;
+/// - the `open_grant`: the single-instance callback mints it right before
+///   emitting `open_external_file`, so a double-clicked file outside every
+///   root still opens.
+pub(crate) fn ensure_open_source(state: &AppState, source: &str) -> Result<PathBuf> {
+    // Backend-owned session memory: any disk path the previous session had
+    // open (or the last loose file) may be restored. Cheap: the session is
+    // already in memory; no extra IO.
+    let session = state.session.get();
+    let in_session = !session.last_file.is_empty() && session.last_file == source
+        || session
+            .open_documents
+            .iter()
+            .any(|rec| matches!(rec, crate::service::session::OpenDocRecord::Disk { path, .. } if path == source))
+        // The single-instance routing grant (minted by handle_single_instance
+        // immediately before the event reaches the frontend).
+        || state
+            .open_grant
+            .lock()
+            .expect("open_grant mutex poisoned")
+            .as_deref()
+            == Some(source);
+    if in_session {
+        return Ok(PathBuf::from(source));
+    }
+    ensure_read_source(state, source)
+}
+
 #[cfg(test)]
 pub(crate) mod read_source_tests {
     use super::*;
@@ -175,6 +215,7 @@ pub(crate) mod read_source_tests {
             settings,
             net,
             dialog_grant: Arc::new(std::sync::Mutex::new(None)),
+            open_grant: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -255,5 +296,75 @@ pub(crate) mod read_source_tests {
             .rebind_path(meta.id, target.clone())
             .unwrap();
         assert!(ensure_read_source(&state, &target.to_string_lossy()).is_ok());
+    }
+
+    #[test]
+    fn open_guard_rejects_arbitrary_outside_path() {
+        let state = test_state();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "top secret").unwrap();
+        let err =
+            crate::ipc::ensure_open_source(&state, &secret.to_string_lossy())
+                .unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn open_guard_admits_session_recorded_disk_path_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state();
+        let restored = dir.path().join("restored.typ");
+        std::fs::write(&restored, "#set page(width: 1cm)").unwrap();
+        let path_str = restored.to_string_lossy().into_owned();
+        // Not recorded yet → rejected (the arbitrary-read primitive stays shut).
+        assert!(crate::ipc::ensure_open_source(&state, &path_str).is_err());
+        // Record it as the session's open document (session restore flow).
+        let mut s = crate::service::session::Session::default();
+        s.open_documents = vec![crate::service::session::OpenDocRecord::Disk {
+            path: path_str.clone(),
+            dirty: false,
+        }];
+        state.session.set_for_test(s);
+        assert!(crate::ipc::ensure_open_source(&state, &path_str).is_ok());
+        // A sibling path NOT in the session is still rejected — the admission
+        // is exact-match on recorded paths, not directory-wide.
+        let sibling = dir.path().join("other.typ");
+        std::fs::write(&sibling, "x").unwrap();
+        assert!(crate::ipc::ensure_open_source(
+            &state,
+            &sibling.to_string_lossy()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn open_guard_admits_last_file_and_single_instance_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state();
+        let last = dir.path().join("last.typ");
+        std::fs::write(&last, "x").unwrap();
+        let last_str = last.to_string_lossy().into_owned();
+        // `last_file` (legacy single-file restore) is admitted…
+        let mut s = crate::service::session::Session::default();
+        s.last_file = last_str.clone();
+        state.session.set_for_test(s);
+        assert!(crate::ipc::ensure_open_source(&state, &last_str).is_ok());
+
+        // …and the single-instance grant is minted by the backend only.
+        let dropped = tempfile::tempdir().unwrap();
+        let dbl = dropped.path().join("double-clicked.typ");
+        std::fs::write(&dbl, "x").unwrap();
+        let dbl_str = dbl.to_string_lossy().into_owned();
+        assert!(crate::ipc::ensure_open_source(&state, &dbl_str).is_err());
+        *state.open_grant.lock().unwrap() = Some(dbl_str.clone());
+        assert!(crate::ipc::ensure_open_source(&state, &dbl_str).is_ok());
+        let sibling = dropped.path().join("sibling.typ");
+        std::fs::write(&sibling, "x").unwrap();
+        assert!(crate::ipc::ensure_open_source(
+            &state,
+            &sibling.to_string_lossy()
+        )
+        .is_err());
     }
 }

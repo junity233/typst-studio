@@ -142,11 +142,18 @@ pub struct AppState {
     /// Managed tinymist install (auto-download into ~/.typststudio/).
     pub tinymist: Arc<crate::lsp::installer::TinymistInstaller>,
     /// The most recent path the user picked via a NATIVE dialog, recorded by
-    /// the backend itself (`pick_image_file`, `open_file`, …). Read guards
+    /// the backend itself (`pick_image_file`, `pick_file` in `open_file`,
+    /// `open_workspace`, `save_as`, …). Read guards
     /// (`ensure_read_source`) accept it so the frontend can fetch bytes for
     /// the file the user just chose even when it's outside every contained
     /// root. The webview cannot mint this grant — it can only consume one the
     /// backend minted. A single slot is sufficient: grants are consumed
     /// immediately by the flow that triggered the picker.
     pub dialog_grant: Arc<std::sync::Mutex<Option<String>>>,
+    /// The most recent absolute path the BACKEND routed for opening outside a
+    /// native dialog: the single-instance callback's `open_external_file`
+    /// target (a double-clicked `.typ`). Minted here, never by the webview, so
+    /// `ensure_open_source` can admit exactly that one path without reopening
+    /// an arbitrary-file-read primitive.
+    pub open_grant: Arc<std::sync::Mutex<Option<String>>>,
 }
