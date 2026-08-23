@@ -14,6 +14,7 @@
   "addEntry": "Add Reference",
   "editEntry": "Edit Reference",
   "citationKey": "Citation Key",
+  "duplicateKey": "A reference with this key already exists",
   "type": "Type",
   "fieldTitle": "Title",
   "authors": "Authors",

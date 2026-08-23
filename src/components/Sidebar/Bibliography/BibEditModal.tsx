@@ -32,6 +32,13 @@ export interface BibEditModalProps {
   mode: "add" | "edit";
   /** For "edit", the current entry; for "add", a blank template. */
   initial: BibEntryEditable;
+  /**
+   * All citation keys currently in the file (the panel reads them from the
+   * store at open time). Used to block a duplicate key in "add" mode — the
+   * store's addEntry silently REPLACES a duplicate, so without this check
+   * adding an existing key destroys the original entry without warning.
+   */
+  existingKeys: string[];
   /** Called with the assembled entry when the user confirms. */
   onConfirm: (entry: BibEntryEditable) => void;
   /** Called on Esc, overlay-click, or the cancel button. */
@@ -54,7 +61,7 @@ export interface BibEditModalProps {
  * `.bib-edit-field` / `.bib-edit-extra-row` / `.bib-edit-add-field` for the
  * form layout. All `var(--…)` tokens, no hardcoded colors.
  */
-export function BibEditModal({ mode, initial, onConfirm, onCancel }: BibEditModalProps) {
+export function BibEditModal({ mode, initial, existingKeys, onConfirm, onCancel }: BibEditModalProps) {
   const { t } = useTranslation("bibliography");
   // Individual useState per field, mirroring LinkModal's pattern.
   const [key, setKey] = useState(initial.key);
@@ -77,6 +84,13 @@ export function BibEditModal({ mode, initial, onConfirm, onCancel }: BibEditModa
   useEscapeToClose(true, onCancel);
 
   const keyValid = key.trim().length > 0;
+  // In "add" mode a key that already exists would silently overwrite the
+  // original entry (store addEntry's replace branch). Block it and tell the
+  // user instead. "edit" mode is exempt: keeping your own key is the normal
+  // case, and a collision with a DIFFERENT entry is the store's documented
+  // last-wins behavior.
+  const keyDuplicate =
+    mode === "add" && existingKeys.includes(key.trim());
 
   /** Patch one cell of an `extra` row (0 = name, 1 = value) immutably. */
   const setExtraCell = (index: number, field: 0 | 1, value: string) => {
@@ -86,7 +100,7 @@ export function BibEditModal({ mode, initial, onConfirm, onCancel }: BibEditModa
   };
 
   const submit = () => {
-    if (!keyValid) return; // key required — empty is a no-op (don't close)
+    if (!keyValid || keyDuplicate) return; // invalid/duplicate key = no-op (don't close)
     const assembled: BibEntryEditable = {
       key: key.trim(),
       entryType,
@@ -235,7 +249,7 @@ export function BibEditModal({ mode, initial, onConfirm, onCancel }: BibEditModa
             <button type="button" className="btn-utility" onClick={onCancel}>
               {t("cancel")}
             </button>
-            <button type="submit" className="btn-primary" disabled={!keyValid}>
+            <button type="submit" className="btn-primary" disabled={!keyValid || keyDuplicate} title={keyDuplicate ? t("duplicateKey") : undefined}>
               {t("save")}
             </button>
           </div>

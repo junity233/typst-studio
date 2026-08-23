@@ -231,7 +231,7 @@ export function TabStrip() {
                   focusAndActivate(target);
                 }
               }}
-              title={t("tabTooltip", { title, dirty })}
+              title={t("tabTooltip", { title, dirtyMark: dirty ? " ●" : "" })}
             >
               {dirty && <span className="tab-dirty" aria-hidden="true" />}
               <span className="tab-title">{title}</span>

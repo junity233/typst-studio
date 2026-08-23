@@ -81,7 +81,13 @@ export function LinkModal({ initialLabel = "", onConfirm, onCancel }: LinkModalP
             // and being explicit here is also robust against any future
             // change to the form's submit button. Escape is handled at the
             // window level (see the effect above).
-            if (e.key === "Enter") {
+            // isComposing / keyCode 229: an IME (Chinese pinyin etc.) commits
+            // its composition with Enter — don't submit half-committed text.
+            if (
+              e.key === "Enter" &&
+              !e.nativeEvent.isComposing &&
+              e.keyCode !== 229
+            ) {
               e.preventDefault();
               submit();
             }

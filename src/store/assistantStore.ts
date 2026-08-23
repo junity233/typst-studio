@@ -274,9 +274,15 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
               verdict === "approved" ? "applied" : "rejected";
             // Update ONLY this approval's card — matched by its unique id (a
             // later edit to the same file must not rewrite earlier cards'
-            // verdicts).
+            // verdicts). The status write is TERMINAL-STATE-PRESERVING: if the
+            // user hit Stop while the approval was pending, `stop()` already
+            // set "stopped"; unconditionally writing "streaming" here clobbered
+            // that terminal state and made the turn end as "idle".
             set((s) => ({
-              status: "streaming",
+              status:
+                s.status === "stopped" || s.status === "error"
+                  ? s.status
+                  : "streaming",
               pendingApproval: null,
               messages: s.messages.map((m) =>
                 m.approval && m.approval.id === approvalId
@@ -329,16 +335,30 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       await agent.prompt(fullMessage);
       aiLog("agent.prompt() resolved (turn complete)");
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[ai] agent.prompt() rejected:", msg);
-      set((s) => ({
-        status: "error",
-        errorMessage: msg,
-        messages: [
-          ...s.messages,
-          { id: uid(), role: "assistant", text: "", toolStatus: "error", toolResult: msg },
-        ],
-      }));
+      // A user-initiated Stop aborts the agent, so prompt() rejects with an
+      // AbortError. That is NOT a failure — `stop()` already set the terminal
+      // "stopped" status and flushed the stream; appending a red error bubble
+      // for it mislabeled an intentional interruption.
+      const aborted =
+        err instanceof Error &&
+        (err.name === "AbortError" ||
+          /abort/i.test(err.message) ||
+          get().status === "stopped");
+      if (aborted) {
+        aiLog("[ai] agent.prompt() aborted by user (Stop)");
+        set({ status: "stopped" });
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[ai] agent.prompt() rejected:", msg);
+        set((s) => ({
+          status: "error",
+          errorMessage: msg,
+          messages: [
+            ...s.messages,
+            { id: uid(), role: "assistant", text: "", toolStatus: "error", toolResult: msg },
+          ],
+        }));
+      }
     } finally {
       // Finalize: flush any accumulated streaming text + thinking into messages.
       set((s) => ({

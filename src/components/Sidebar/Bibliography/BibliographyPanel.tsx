@@ -266,6 +266,7 @@ export function BibliographyPanel({
         <BibEditModal
           mode={editState.mode}
           initial={editState.entry}
+          existingKeys={useBibliographyStore.getState().fullEntries.map((e) => e.key)}
           onConfirm={handleConfirm}
           onCancel={handleCancelModal}
         />

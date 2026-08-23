@@ -1,6 +1,6 @@
 {
   "openDocuments": "Open documents",
-  "tabTooltip": "{{title}}{{dirty, client}}",
+  "tabTooltip": "{{title}}{{dirtyMark}}",
   "closeTab": "Close {{title}}",
   "newTab": "New tab",
   "minimize": "Minimize",

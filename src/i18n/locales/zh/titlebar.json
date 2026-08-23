@@ -1,6 +1,6 @@
 {
   "openDocuments": "打开的文档",
-  "tabTooltip": "{{title}}{{dirty, client}}",
+  "tabTooltip": "{{title}}{{dirtyMark}}",
   "closeTab": "关闭 {{title}}",
   "newTab": "新建标签页",
   "minimize": "最小化",

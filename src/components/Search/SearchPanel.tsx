@@ -143,7 +143,15 @@ export function SearchPanel(_props: { viewId?: string }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") void run();
+              // isComposing / keyCode 229: an IME commits its composition with
+              // Enter — don't run a search with half-committed text.
+              if (
+                e.key === "Enter" &&
+                !e.nativeEvent.isComposing &&
+                e.keyCode !== 229
+              ) {
+                void run();
+              }
               if (e.key === "Escape") clear();
             }}
             autoFocus

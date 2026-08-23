@@ -14,6 +14,7 @@
   "addEntry": "添加参考文献",
   "editEntry": "修改参考文献",
   "citationKey": "引用键",
+  "duplicateKey": "已存在使用此键的文献",
   "type": "类型",
   "fieldTitle": "标题",
   "authors": "作者",

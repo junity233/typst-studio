@@ -1,9 +1,14 @@
 import { useEffect, useRef } from "react";
+import { acquireEscapeDepth } from "./escapeStack";
 
 /**
  * The dismiss wiring shared by floating portal popups: outside pointer down
  * (capture phase), Escape, scroll (capture), and window resize all call
  * `onDismiss`. Previously hand-rolled per popup.
+ *
+ * Escape respects the modal stack ([`escapeStack`](./escapeStack)): only the
+ * topmost active layer dismisses, so a popup under an open dialog survives
+ * the Escape that closes the dialog.
  *
  * `isInside` distinguishes pointer-downs on the popup (or its portaled
  * descendants) from outside ones — only outside pointer-downs dismiss.
@@ -23,11 +28,14 @@ export function usePopupDismiss(
 
   useEffect(() => {
     if (!active) return;
+    const depth = acquireEscapeDepth();
     const onPointerDown = (e: PointerEvent) => {
       if (!isInsideRef.current(e.target)) onDismissRef.current();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onDismissRef.current();
+      if (e.key !== "Escape") return;
+      if (!depth.isTopmost()) return;
+      onDismissRef.current();
     };
     const onScrollOrResize = () => onDismissRef.current();
     window.addEventListener("pointerdown", onPointerDown, true);
@@ -39,6 +47,7 @@ export function usePopupDismiss(
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("scroll", onScrollOrResize, true);
       window.removeEventListener("resize", onScrollOrResize);
+      depth.release();
     };
   }, [active]);
 }
