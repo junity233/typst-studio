@@ -96,8 +96,9 @@ orchestration, and the paste-conversion pipeline.
   sniffing for del/u/mark/sub/sup.
 - `tables.ts` — `#table(columns: N, table.header(…))`; colspan padded,
   rowspan flattened with a warning.
-- `escape.ts` — `escapeTypst` (markup) vs `escapeTypstStr` (string
-  literals: only `\` and `"`).
+- `escape.ts` — `escapeTypst` (markup incl. `/` so pasted URLs can't open
+  line/block comments, and `<`/`>` against content-syntax ambiguity) vs
+  `escapeTypstStr` (string literals: only `\` and `"`).
 - `images.ts` — placeholder emission + `PendingImage` records; ext
   inference (jpeg→jpg, svg+xml→svg, default png).
 

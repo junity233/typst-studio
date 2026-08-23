@@ -60,8 +60,9 @@ WebKit dev packages (see `.github/workflows/ci.yml`). Clippy runs without
   (`python3 scripts/check_agent_repo.py notes|budget`, pinned
   `--format-adopted 2026-08-15`), `frontend` (fetch-grammar → `tsc -b` →
   `vitest run` → `npm run build` so every PR proves the tree still packs),
-  `rust` (apt deps → clippy `--all-targets` → `cargo test`, with
-  rust-cache).
+  `rust` as a matrix on ubuntu + windows (win32-first app: platform FFI,
+  DELAYLOAD, dunce, trash all need native coverage; apt deps are
+  Linux-conditional; ts-rs drift gate runs Linux-only), with rust-cache.
 - `release.yml` — tag-triggered installer builds.
 
 ## Local gates (lefthook, `lefthook.yml`)

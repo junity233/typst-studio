@@ -7,7 +7,8 @@
 
 - `watcher.rs` — raw `notify` watcher (not a debouncer crate): events push
   deduped paths into a mutex buffer; a flush thread delivers once per
-  debounce window (`compiler.debounceMs`, default 300 ms). `WatcherGuard`
+  debounce window (`compiler.debounceMs`, default 300 ms, clamped to a
+  1 ms floor so 0 cannot busy-spin the flush thread). `WatcherGuard`
   drop stops it.
 - `tree.rs` — one-level lazy `read_dir`; skips `.git`, `target`,
   `node_modules` (`IGNORED_DIRS`, also exposed as a HashSet via
@@ -100,7 +101,10 @@ host:port is refused.
 (single source of truth, also Vite-imported by the frontend). `store.rs` —
 `JsonFileStore` (free-form JSON value, `.bak` fallback, schemaVersion
 tag). `service.rs` — `SettingsService`: dotted-path get/set, manifest
-validation, write lock, rollback, `on_change` broadcast to all windows.
+validation on BOTH write and load (a freshly loaded document is sanitized
+per known key; violating or wrong-typed values reset to defaults with a
+warn; non-finite numbers are always rejected), write lock, rollback,
+`on_change` broadcast to all windows.
 `window.rs` — the standalone Settings window (`?window=settings`,
 always-on-top, `settings_window` events). Manifest categories: editor,
 appearance, compiler, data, preview, lsp, ai, keybindings, saving (~70

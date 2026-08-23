@@ -152,6 +152,14 @@ without `-D warnings` because of the one known warning in
   config dir, or EXACTLY equal the most recent dialog-picked path recorded
   by `pick_image_file` in `AppState.dialog_grant` (the backend mints the
   grant; the webview can only consume it).
+- Open-path containment extends this via `ipc::ensure_open_source`
+  (`open_file_by_path`): everything `ensure_read_source` admits, plus two
+  backend-minted origins the open flow needs — disk paths recorded in the
+  owned session (`open_documents`/`last_file`, startup restore) and
+  `AppState.open_grant`, set by the single-instance callback right before
+  it emits `open_external_file`. Both exact-match. `bibliography_discover`
+  walks only the backend's own workspace root (the caller-supplied root is
+  ignored).
 - Secrets: settings keys flagged `"secret": true` in the manifest (currently
   `ai.apiKey`) are masked by `settings/service.rs` in `get_all_settings`,
   `get_setting`, and the `settings_changed` broadcast; `set_setting`

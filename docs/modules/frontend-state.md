@@ -36,8 +36,10 @@ lazy cut — the move happens on paste), `watcherHealthStore.ts` (polls
 `diagnosticsStore.ts` (per-doc `compiler`/`tinymist` slots, cached deduped
 `combined`), `startupProblemsStore.ts`.
 
-**Feature stores**: `searchStore.ts` (monotonic `runSeq` staleness guard;
-controlled replace into Monaco), `packagesStore.ts` (full index + filter),
+**Feature stores**: `searchStore.ts` (monotonic `runSeq` staleness guard —
+claimed by EVERY path including the empty-query early-out; controlled
+replace into Monaco with a CAS check that skips docs whose local revision
+moved past the outcome), `packagesStore.ts` (full index + filter),
 `bibliographyStore.ts` (`discoverGen`/`loadGen` race guards, `failedPaths`
 anti-loop), `batchExportStore.ts` (phase machine; backend-only tabs),
 `assistantStore.ts` + `assistantTools.ts` + `assistantPrompt.ts` (agent
@@ -57,7 +59,9 @@ reload key bumped by path-matching `fs_changed`), `useTypstCompile` (event →
 store wiring incl. conflict surfacing rules), `useAppCommands` (dispatch,
 keybinding overrides, close guard, session capture), `useStartupSession`,
 `useAutosave` (off/afterDelay/onFocusChange; pure `selectAutosavable`),
-`useSetting` (reactive dot-path read with manifest default fallback) +
+`useSetting` (reactive dot-path read with manifest default fallback; the
+setter routes rejected `set_setting` IPCs to `alertIpcError` — fail loud,
+never a silent snap-back) +
 `readSetting`, `useLspWorkspaceReconnect` (reconnects only after the client
 reached Ready once — first-connecter-wins backend rule),
 `useExternalFileRouting`, `useWindowRestore`, `useTheme`, `useLanguage`,

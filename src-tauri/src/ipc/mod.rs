@@ -321,11 +321,13 @@ pub(crate) mod read_source_tests {
         // Not recorded yet → rejected (the arbitrary-read primitive stays shut).
         assert!(crate::ipc::ensure_open_source(&state, &path_str).is_err());
         // Record it as the session's open document (session restore flow).
-        let mut s = crate::service::session::Session::default();
-        s.open_documents = vec![crate::service::session::OpenDocRecord::Disk {
-            path: path_str.clone(),
-            dirty: false,
-        }];
+        let s = crate::service::session::Session {
+            open_documents: vec![crate::service::session::OpenDocRecord::Disk {
+                path: path_str.clone(),
+                dirty: false,
+            }],
+            ..crate::service::session::Session::default()
+        };
         state.session.set_for_test(s);
         assert!(crate::ipc::ensure_open_source(&state, &path_str).is_ok());
         // A sibling path NOT in the session is still rejected — the admission
@@ -347,8 +349,10 @@ pub(crate) mod read_source_tests {
         std::fs::write(&last, "x").unwrap();
         let last_str = last.to_string_lossy().into_owned();
         // `last_file` (legacy single-file restore) is admitted…
-        let mut s = crate::service::session::Session::default();
-        s.last_file = last_str.clone();
+        let s = crate::service::session::Session {
+            last_file: last_str.clone(),
+            ..crate::service::session::Session::default()
+        };
         state.session.set_for_test(s);
         assert!(crate::ipc::ensure_open_source(&state, &last_str).is_ok());
 
