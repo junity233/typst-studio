@@ -178,6 +178,7 @@ pub fn run() {
             ipc::theme_commands::open_themes_dir,
             // Session memory commands (open documents + active view).
             ipc::session_commands::get_session,
+            ipc::session_commands::get_startup_problems,
             ipc::session_commands::save_session,
             ipc::session_commands::record_workspace,
             ipc::session_commands::clear_recent_workspaces,
@@ -623,6 +624,7 @@ pub fn run() {
                 tinymist,
                 dialog_grant: Arc::new(std::sync::Mutex::new(None)),
                 open_grant: Arc::new(std::sync::Mutex::new(None)),
+                startup_problems: Arc::new(std::sync::Mutex::new(startup_problems.clone())),
             });
 
             // Custom titlebar (Windows only): drop the OS frame so the frontend

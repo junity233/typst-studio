@@ -156,4 +156,9 @@ pub struct AppState {
     /// `ensure_open_source` can admit exactly that one path without reopening
     /// an arbitrary-file-read primitive.
     pub open_grant: Arc<std::sync::Mutex<Option<String>>>,
+    /// Non-fatal startup problems collected during `.setup` (§6.5). The event
+    /// (`startup_problems`) races the webview's listener registration, so this
+    /// pull-side copy backs `get_startup_problems` — the frontend fetches once
+    /// on mount and merges, making a missed push impossible to lose.
+    pub startup_problems: Arc<std::sync::Mutex<Vec<crate::startup::StartupProblem>>>,
 }

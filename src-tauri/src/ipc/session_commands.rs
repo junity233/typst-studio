@@ -27,6 +27,21 @@ pub async fn save_session(
     state.session.update(patch)
 }
 
+/// Pull-side fallback for the `startup_problems` event (§6.5). The event is
+/// emitted once at the end of `.setup` — before the webview has necessarily
+/// registered its listener — so the frontend fetches this once on mount and
+/// merges; a lost push can no longer hide degraded components (fail loud).
+#[tauri::command]
+pub async fn get_startup_problems(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::startup::StartupProblem>> {
+    Ok(state
+        .startup_problems
+        .lock()
+        .expect("startup_problems mutex poisoned")
+        .clone())
+}
+
 /// Record that the user opened `workspace` (§7.2 "最近工作区"): bumps it to the
 /// front of the recent list (deduped + capped). An empty path clears the
 /// current-workspace marker only. Returns the new session snapshot.

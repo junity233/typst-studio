@@ -1169,6 +1169,17 @@ export const onStartupProblems = onProjectedEvent<
   StartupProblem[]
 >("startup_problems", (payload) => payload.problems);
 
+/**
+ * Pull-side fallback for `startup_problems`: the event races the webview's
+ * listener registration (it is emitted once at the end of backend setup), so
+ * the app fetches this once on mount and merges. An empty list means no
+ * problems — or that setup finished before this command could read them, which
+ * the event covers. Either path, a degraded component is never invisible.
+ */
+export async function getStartupProblems(): Promise<StartupProblem[]> {
+  return invoke<StartupProblem[]>("get_startup_problems");
+}
+
 // --- Session memory ----------------------------------------------------------
 
 /**

@@ -33,6 +33,7 @@ import {
   onRecoveryAvailable,
   onFsChanged,
   openSettings,
+  getStartupProblems,
 } from "./lib/tauri";
 import { invalidateFsChanged } from "./lib/viewerByteCache";
 import { isWindows, isTauri } from "./lib/platform";
@@ -85,6 +86,21 @@ export default function App() {
   useTauriListener(onStartupProblems, (problems) => {
     useStartupProblemsStore.getState().setProblems(problems);
   });
+
+  // Pull-side fallback: the `startup_problems` event fires at the end of
+  // backend setup and can land BEFORE this listener registers, permanently
+  // hiding degraded components. Fetch once on mount and merge; duplicates are
+  // harmless (the banner dedupes by identity) and an empty fetch is a no-op.
+  useEffect(() => {
+    void getStartupProblems()
+      .then((problems) => {
+        if (problems.length > 0) {
+          const store = useStartupProblemsStore.getState();
+          store.setProblems([...new Set([...store.problems, ...problems])]);
+        }
+      })
+      .catch((e) => console.warn("[startup] problem fetch failed:", e));
+  }, []);
 
   // Crash recovery (§5.1.3): the backend emits `recovery_available` once at
   // startup if recoverable snapshots exist. Populate the recovery store, which
