@@ -1,4 +1,5 @@
 import { createHostApi, type HostApi } from "./api";
+import { useStartupProblemsStore } from "../store/startupProblemsStore";
 
 // Load and activate all in-tree extensions.
 //
@@ -18,17 +19,32 @@ export async function activateAll(): Promise<void> {
 
   for (const [path, mod] of Object.entries(modules)) {
     const extensionId = path.split("/")[1];
-    const activate = (mod as { default?: (ctx: HostApi) => void }).default;
+    // `void | Promise<void>`: a future async activate() must not turn its
+    // rejection into an unhandled rejection escaping this loop (fails loud
+    // per-extension instead).
+    const activate = (
+      mod as { default?: (ctx: HostApi) => void | Promise<void> }
+    ).default;
     if (typeof activate !== "function") {
       console.warn(`[extensions] ${path} has no default export activate(), skipping`);
       continue;
     }
     try {
       const ctx = createHostApi(extensionId);
-      activate(ctx);
+      await activate(ctx);
       console.debug(`[extensions] activated ${extensionId}`);
     } catch (e) {
       console.error(`[extensions] ${extensionId} activate failed:`, e);
+      // Fails loud (§6.5): route the failure into the startup-problems banner
+      // so "this feature silently vanished" is observable in the UI, not just
+      // the devtools console.
+      useStartupProblemsStore.getState().addProblem({
+        component: `extension:${extensionId}`,
+        message:
+          e instanceof Error
+            ? e.message
+            : `activation failed: ${String(e)}`,
+      });
     }
   }
 }
