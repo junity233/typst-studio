@@ -40,4 +40,12 @@ describe("convertTable", () => {
     expect(typst).toContain("columns: 3");
     expect(typst).toContain("[a], [], [c]");
   });
+  it("empty table emits NOTHING (columns: 0 would not compile) + warning", () => {
+    // P0 pin: `#table(columns: 0)` is rejected by the Typst compiler outright.
+    const noRows = table("<table></table>");
+    expect(noRows.typst).toBe("");
+    expect(noRows.wctx.warnings.some((w) => w.includes("empty table"))).toBe(true);
+    const emptyCells = table("<table><tr><td></td></tr></table>");
+    expect(emptyCells.typst).not.toBe("");
+  });
 });

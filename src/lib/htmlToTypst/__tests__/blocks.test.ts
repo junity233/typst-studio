@@ -37,6 +37,22 @@ describe("convertBlocks", () => {
   it("pre without language -> plain code block", () => {
     expect(walk("<pre>raw code</pre>")).toBe("```\nraw code\n```");
   });
+  it("pre containing ``` widens the fence so content cannot close the block", () => {
+    // P0 pin: a fixed ``` fence would let pasted code containing ``` terminate
+    // the raw block early, re-injecting the trailing text as LIVE markup (a
+    // `#include`/`#read` injection vector). The fence must outgrow the longest
+    // backtick run in the content.
+    expect(walk("<pre>```\n#read('secret')\n```</pre>")).toBe(
+      "````\n```\n#read('secret')\n```\n````",
+    );
+  });
+  it("list item starting with a block marker is escaped", () => {
+    // P0 pin: `<li>= x</li>` sits right after the "- " marker; without escaping
+    // Typst re-parses "= x" as a nested heading inside the list item line.
+    expect(walk("<ul><li>= not-a-heading</li></ul>")).toBe("- \\= not-a-heading");
+    expect(walk("<ul><li>+ plus</li></ul>")).toBe("- \\+ plus");
+    expect(walk("<ul><li>- minus</li></ul>")).toBe("- \\- minus");
+  });
   it("hr -> line", () => {
     expect(walk("<hr>")).toBe("#line(length: 100%)");
   });

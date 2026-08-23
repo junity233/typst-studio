@@ -48,9 +48,12 @@ function inlineNode(node: Node, wctx: WalkCtx): string {
     case "mark":
       return `#highlight[${inner()}]`;
     case "sub":
-      return `#sub ${inner()}`;
+      // Bracket form, NOT `#sub x`: the bare-word form consumes exactly one
+      // word (`#sub a b` renders `b` as normal text after a one-char sub), so
+      // multi-word content like `<sub>a b</sub>` silently changed semantics.
+      return `#sub[${inner()}]`;
     case "sup":
-      return `#super ${inner()}`;
+      return `#super[${inner()}]`;
     case "br":
       return "\\\n";
     case "img":
@@ -69,8 +72,8 @@ function inlineNode(node: Node, wctx: WalkCtx): string {
       if (/font-style\s*:\s*italic/i.test(style)) s = `_${s}_`;
       if (/text-decoration[^;]*line-through/i.test(style)) s = `#strike[${s}]`;
       if (/text-decoration[^;]*underline/i.test(style)) s = `#underline[${s}]`;
-      if (/vertical-align\s*:\s*super/i.test(style)) s = `#super ${s}`;
-      if (/vertical-align\s*:\s*sub/i.test(style)) s = `#sub ${s}`;
+      if (/vertical-align\s*:\s*super/i.test(style)) s = `#super[${s}]`;
+      if (/vertical-align\s*:\s*sub/i.test(style)) s = `#sub[${s}]`;
       return s;
     }
     default:

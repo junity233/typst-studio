@@ -30,6 +30,14 @@ export function convertTable(el: Element, wctx: WalkCtx): string {
   const columns = rows.reduce((m, r) => Math.max(m, r.cells.length), 0);
   if (hasRowspan) wctx.warnings.push("rowspan flattened (Typst #table has no row merge)");
 
+  // A table with no rows (or only empty cells) would emit `columns: 0`, which
+  // the Typst compiler rejects outright. Emit nothing and warn instead —
+  // pasted layout tables often degenerate to this.
+  if (rows.length === 0 || columns === 0) {
+    wctx.warnings.push("empty table skipped (no rows/cells to convert)");
+    return "";
+  }
+
   const headerRows = rows.filter((r) => r.isHeader);
   const bodyRows = rows.filter((r) => !r.isHeader);
 

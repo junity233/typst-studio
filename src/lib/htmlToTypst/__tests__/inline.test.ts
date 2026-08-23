@@ -32,9 +32,13 @@ describe("convertInline", () => {
   it("u -> underline", () => {
     expect(walk("<u>x</u>").typst).toBe("#underline[x]");
   });
-  it("sub/sup", () => {
-    expect(walk("<sub>2</sub>").typst).toBe("#sub 2");
-    expect(walk("<sup>2</sup>").typst).toBe("#super 2");
+  it("sub/sup use the bracket form so multi-word content stays in scope", () => {
+    // P0 pin: `#sub x` consumes exactly ONE word — `<sub>a b</sub>` would
+    // render "a" as a subscript and " b" as normal trailing text.
+    expect(walk("<sub>2</sub>").typst).toBe("#sub[2]");
+    expect(walk("<sup>2</sup>").typst).toBe("#super[2]");
+    expect(walk("<sub>a b</sub>").typst).toBe("#sub[a b]");
+    expect(walk("<sup>n+1</sup>").typst).toBe("#super[n+1]");
   });
   it("link", () => {
     expect(walk('<a href="https://x.io">link</a>').typst).toBe('#link("https://x.io")[link]');

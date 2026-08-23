@@ -87,7 +87,10 @@ function convertList(el: Element, wctx: WalkCtx, depth: number, ordered: boolean
   el.querySelectorAll(":scope > li").forEach((li) => {
     const clone = li.cloneNode(true) as Element;
     clone.querySelectorAll(":scope > ul, :scope > ol").forEach((n) => n.remove());
-    const inline = convertInline(clone, wctx).trim();
+    // The inline result sits directly after the "- " / "+ " marker, so a
+    // leading block-trigger char (e.g. `<li>= x</li>`) would re-parse as a
+    // nested heading. Escape it exactly like a top-level paragraph.
+    const inline = escapeLeadingBlockMarker(convertInline(clone, wctx).trim());
     lines.push(`${indent}${marker} ${inline}`);
     li.querySelectorAll(":scope > ul, :scope > ol").forEach((sub) => {
       lines.push(convertList(sub, wctx, depth + 1, sub.tagName.toLowerCase() === "ol"));
@@ -105,5 +108,13 @@ function convertPre(el: Element): string {
     if (m) lang = m[1];
   }
   const text = (code ?? el).textContent ?? "";
-  return "```" + lang + "\n" + text.replace(/\n$/, "") + "\n```";
+  // Typst raw blocks terminate at the first backtick run at least as long as
+  // the opener, so a fixed ``` fence lets content containing ``` close the
+  // block early and inject the trailing text as live markup. Pick a fence
+  // strictly longer than the longest run in the content (same idiom as the
+  // inline <code> path).
+  const runs = text.match(/`+/g);
+  const longest = runs ? Math.max(...runs.map((r) => r.length)) : 0;
+  const fence = "`".repeat(Math.max(longest + 1, 3));
+  return fence + lang + "\n" + text.replace(/\n$/, "") + "\n" + fence;
 }
