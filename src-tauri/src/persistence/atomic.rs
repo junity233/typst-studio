@@ -30,24 +30,16 @@ pub(crate) const TEMP_PREFIX: &str = ".typst-tmp-";
 /// 4. If `path` exists, copy its permissions onto the temp file (preserve
 ///    mode/perms across overwrites).
 /// 5. Atomic replace via `rename`. On Unix `std::fs::rename` is atomic and
-///    overwrites; the Windows branch is written defensively but needs CI
-///    validation (see below).
+///    overwrites; on Windows a sharing-violation gets a short backoff retry
+///    and any residual failure leaves the target intact (see
+///    [`atomic_replace`] — the old destructive remove-then-rename fallback is
+///    gone: it could permanently destroy the original when its second rename
+///    failed after a successful remove).
 /// 6. Best-effort `sync_all` of the parent directory (Unix only; errors
 ///    ignored) so the rename itself is durable.
-/// 7. On failure in steps 1–4 the temp file is deleted (best-effort) and the
-///    error is returned; the original file is untouched. Step 5's Windows
-///    fallback is the one exception: if it fails **after** having removed the
-///    target, the temp file is the last surviving copy of the new content and
-///    is deliberately left in place (see [`atomic_replace`]) — deleting it
-///    would destroy the data outright.
-///
-/// # Windows note
-/// `std::fs::rename` on Windows is backed by `MoveFileExW` with
-/// `MOVEFILE_REPLACE_EXISTING` since Rust 1.x, so it *can* replace an existing
-/// file. If a future Windows build returns an error there, the fallback is
-/// `remove_file(path)` then `rename` (non-atomic window) or the `windows` crate
-/// — this needs validation on Windows CI. Only the Unix path is exercised in
-/// tests on macOS dev.
+/// 7. On failure in steps 1–5 the temp file is deleted (best-effort) and the
+///    error is returned; the original file (if any) is untouched — a failed
+///    save never destroys the on-disk document.
 pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let temp = unique_temp_path(path);
@@ -67,27 +59,12 @@ pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
         return Err(e);
     }
 
-    // Step 5: atomic replace. On failure the temp file is cleaned up ONLY
-    // when the target still exists intact — in the last-copy case (Windows
-    // fallback removed the target, then its retry rename failed) the temp
-    // holds the only surviving copy of the content and must be preserved.
+    // Step 5: atomic replace. On failure the target is intact (or never
+    // existed), so the temp file is a disposable duplicate and is removed.
     match atomic_replace(&temp, path) {
         ReplaceOutcome::Replaced => {}
         ReplaceOutcome::FailedTargetIntact(e) => {
             let _ = std::fs::remove_file(&temp);
-            return Err(e);
-        }
-        ReplaceOutcome::FailedTempIsLastCopy(e) => {
-            // Do NOT delete the temp file: the target was already removed by
-            // the fallback, so the temp is the last copy of the (fsynced)
-            // new content. Log both paths so the data can be recovered by
-            // hand; `cleanup_stale_temps` only reaps it after 24h.
-            tracing::error!(
-                temp = ?temp,
-                target = ?path,
-                error = %e,
-                "atomic replace failed after the target was removed; keeping the temp file as the last copy of the data"
-            );
             return Err(e);
         }
     }
@@ -210,13 +187,24 @@ enum ReplaceOutcome {
     /// The replace failed with the carried error, but `target` is intact (or
     /// never existed) — the temp file is a disposable duplicate.
     FailedTargetIntact(crate::error::AppError),
-    /// The replace failed with the carried error **after** the original
-    /// `target` was removed (Windows fallback). The temp file is now the last
-    /// copy of the new content and must NOT be deleted.
-    FailedTempIsLastCopy(crate::error::AppError),
 }
 
 /// Step 5: platform-specific atomic replace of `target` with `temp`.
+///
+/// Windows policy (P0 fix, supersedes the old remove-then-rename fallback):
+/// `std::fs::rename` (`MoveFileExW(MOVEFILE_REPLACE_EXISTING)`) is tried first.
+/// On failure the most common cause is another process holding the target open
+/// with no share-delete (`ERROR_SHARING_VIOLATION`, e.g. an antivirus or a
+/// viewer). We retry with a short backoff — those holders typically release
+/// within milliseconds. If retries are exhausted, we FAIL with the target
+/// intact: the caller's data is safe in the temp file? No — the temp file is
+/// cleaned up and the error surfaced; the ORIGINAL file is never deleted by
+/// this function. A destructive remove-then-rename fallback existed here once
+/// and could permanently destroy the original when the second rename failed
+/// after a successful remove (TOCTOU against the very lock that caused the
+/// first failure); it is gone for good. Losing a save with a clear error is
+/// recoverable (the buffer stays dirty in the editor); losing the on-disk
+/// original is not.
 fn atomic_replace(temp: &Path, target: &Path) -> ReplaceOutcome {
     #[cfg(unix)]
     {
@@ -229,45 +217,34 @@ fn atomic_replace(temp: &Path, target: &Path) -> ReplaceOutcome {
     }
     #[cfg(windows)]
     {
-        // `std::fs::rename` on Windows uses `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`,
-        // which replaces an existing file within the same volume. Try it first;
-        // on the rare error (e.g. target opened with exclusive access) fall
-        // back to remove-then-rename. NOTE: the fallback has a tiny window
-        // where `target` is absent — acceptable for non-critical configs but
-        // needs CI validation before relying on it for user documents. If the
-        // fallback rename fails too, the removed target is gone for good, so
-        // the temp file must be preserved as the last copy of the content.
-        match std::fs::rename(temp, target) {
-            Ok(()) => ReplaceOutcome::Replaced,
-            Err(rename_err) => {
-                let removed_target = if target.exists() {
-                    match std::fs::remove_file(target) {
-                        Ok(()) => true,
-                        Err(remove_err) => {
-                            tracing::warn!(?target, error = %remove_err, "windows atomic replace: remove fallback failed");
-                            // The target is intact and the temp file still
-                            // exists; surface the original error.
-                            return ReplaceOutcome::FailedTargetIntact(rename_err.into());
-                        }
+        use std::time::{Duration, Instant};
+        // Retry ONLY on ERROR_SHARING_VIOLATION (another process holds the
+        // target open without share-delete — antivirus, a viewer, a sync
+        // client). 6 attempts × 5..160ms backoff ≈ ≤0.5s total, long enough to
+        // ride out a scanner's transient hold, short enough that a failing
+        // save still reports promptly. Any other error (or exhausted retries)
+        // surfaces immediately with the target intact.
+        const RETRY_DELAYS_MS: [u64; 5] = [5, 10, 20, 40, 80];
+        let started = Instant::now();
+        for attempt in 0..=RETRY_DELAYS_MS.len() {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(RETRY_DELAYS_MS[attempt - 1]));
+            }
+            match std::fs::rename(temp, target) {
+                Ok(()) => return ReplaceOutcome::Replaced,
+                Err(e) => {
+                    let sharing_violation = e.raw_os_error()
+                        == Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32);
+                    if sharing_violation && started.elapsed().as_millis() < 1000 {
+                        tracing::debug!(?target, attempt, error = %e, "windows atomic replace: sharing violation, retrying");
+                        continue;
                     }
-                } else {
-                    false
-                };
-                match std::fs::rename(temp, target) {
-                    Ok(()) => ReplaceOutcome::Replaced,
-                    Err(e) => {
-                        tracing::warn!(?target, error = %e, "windows atomic replace: fallback rename failed");
-                        if removed_target {
-                            ReplaceOutcome::FailedTempIsLastCopy(e.into())
-                        } else {
-                            // The target never existed (new file); nothing
-                            // was lost — the temp is disposable.
-                            ReplaceOutcome::FailedTargetIntact(e.into())
-                        }
-                    }
+                    tracing::warn!(?target, error = %e, "windows atomic replace failed; target left intact");
+                    return ReplaceOutcome::FailedTargetIntact(e.into());
                 }
             }
         }
+        unreachable!("retry loop always returns inside the loop body")
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -400,6 +377,50 @@ mod tests {
         let read_back: serde_json::Value =
             serde_json::from_str(&read(&path)).unwrap();
         assert_eq!(read_back, value);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_replace_failure_never_destroys_the_original() {
+        // P0 regression pin: a rename failure (target held open without
+        // share-delete) must leave the ORIGINAL file byte-identical — the old
+        // remove-then-rename fallback could permanently destroy it when the
+        // second rename failed after a successful remove. We hold an exclusive
+        // handle on the target (no FILE_SHARE_DELETE) to force
+        // ERROR_SHARING_VIOLATION on every replace attempt, then assert the
+        // original survived and no temp leaked.
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tmp_dir();
+        let path = dir.join("held.txt");
+        std::fs::write(&path, "ORIGINAL-BODY").unwrap();
+
+        // 0x3 = FILE_SHARE_READ | FILE_SHARE_WRITE (no FILE_SHARE_DELETE), so
+        // MoveFileExW's replace fails with ERROR_SHARING_VIOLATION while we
+        // hold `guard`.
+        let guard = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x3)
+            .open(&path)
+            .unwrap();
+
+        let err = write_bytes(&path, b"NEW").expect_err("replace must fail while held");
+        drop(guard);
+
+        assert_eq!(
+            read(&path),
+            "ORIGINAL-BODY",
+            "the original must survive a failed atomic write (err: {err})"
+        );
+        let leaked: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(TEMP_PREFIX))
+            .collect();
+        assert!(leaked.is_empty(), "a temp file leaked after failure: {leaked:?}");
+
+        // After the holder releases, a normal write succeeds again.
+        write_bytes(&path, b"NEW").unwrap();
+        assert_eq!(read(&path), "NEW");
     }
 
     #[test]
