@@ -14,6 +14,8 @@ name = "typst_studio_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
+# Tauri's build-time codegen (resource/permission manifests for the bundled
+# frontend). Required by every tauri app; no features needed here.
 tauri-build = { version = "2", features = [] }
 
 [features]
@@ -28,8 +30,14 @@ export-types = ["dep:ts-rs"]
 # otherwise a no-op in release). The feature compiles in but is inert unless
 # `open_devtools()` is actually called.
 tauri = { version = "2", features = ["devtools"] }
+# opener: external links (markdown links, package homepages) open in the system
+# browser via the opener plugin — the ONLY sanctioned escape from the webview.
 tauri-plugin-opener = "2"
+# dialog: native file/folder pickers (open/save/insert-image); the dialog grant
+# for `read_file_bytes` is recorded by the backend command wrapping it.
 tauri-plugin-dialog = "2"
+# fs: minimal-scope plugin (`fs:default`, app-dir only) for settings/theme
+# windows; all user-file IO deliberately goes through our own guarded IPC.
 tauri-plugin-fs = "2"
 # Single-instance enforcement + .typ file routing (§6.1). Desktop-only — the
 # crate has no mobile build, so the `.plugin(...)` registration in lib.rs is
@@ -37,6 +45,8 @@ tauri-plugin-fs = "2"
 # table here would accidentally swallow the deps below it; on mobile the crate
 # compiles but is never linked into the app (the only call site is cfg-gated).
 tauri-plugin-single-instance = "2"
+# Serialization backbone: every wire type (domain → TS via ts-rs, Tauri command
+# args/returns, event payloads, settings/recovery/session JSON on disk).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -82,9 +92,11 @@ biblatex = "0.12"
 # Cargo resolves them as two separate copies (semver-incompatible), so this adds
 # compile time but does not conflict. Verified at the T0 risk gate (cargo check).
 tylax = { version = "0.3.6", default-features = false }
+# `.typstpro` project config is TOML (parse + pretty re-serialize on save).
 toml = "0.8"
+# Binary-over-JSON transport for pasted/inserted image bytes (IPC payload
+# encoding in `write_bytes_to_file` / `read_file_bytes`).
 base64 = "0.21"
-comemo = "0.4"
 
 # Async / scheduling
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "io-util", "process"] }
@@ -103,6 +115,8 @@ tar = "0.4"
 flate2 = "1"
 sha2 = "0.10"
 
+# Structured logging facade + env-filter subscriber (stdout); the rolling file
+# appender below is the diagnostic-log sink (§7.4).
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Rolling file appender for the diagnostic log (§7.4): daily rotation, max 5

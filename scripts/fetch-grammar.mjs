@@ -25,6 +25,7 @@
  */
 
 import { createWriteStream, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
@@ -37,7 +38,17 @@ const ROOT = resolve(__dirname, "..");
 /** Pinned tinymist release we pull grammar artifacts from. */
 const TINYMIST_VERSION = "0.15.2";
 
+/**
+ * SHA-256 of the pinned VSIX, cross-checked against OpenVSX's own published
+ * checksum at download time (defense in depth: the hardcoded hash catches a
+ * tampered/mistaken registry response; fetching the .sha256 sidecar catches a
+ * corrupted CDN mirror even if this constant goes stale after a version bump).
+ */
+const TINYMIST_VSIX_SHA256 =
+  "14b5947913e8ab31e3c01adfd0e39e8da01563e2813a93416fd38931d7cbaf4e";
+
 const OPENVSX_VSIX_URL = `https://open-vsx.org/api/myriad-dreamin/tinymist/${TINYMIST_VERSION}/file/myriad-dreamin.tinymist-${TINYMIST_VERSION}.vsix`;
+const OPENVSX_SHA256_URL = `https://open-vsx.org/api/myriad-dreamin/tinymist/${TINYMIST_VERSION}/file/myriad-dreamin.tinymist-${TINYMIST_VERSION}.sha256`;
 const CACHE_DIR = resolve(ROOT, "node_modules/.cache/grammar");
 const CACHE_VSIX = resolve(CACHE_DIR, `tinymist-${TINYMIST_VERSION}.vsix`);
 const CACHE_MANIFEST = resolve(CACHE_DIR, `tinymist-${TINYMIST_VERSION}-package.json`);
@@ -91,8 +102,50 @@ async function ensureVsixCached() {
     rmSync(partPath, { force: true });
     throw err;
   }
+  await verifyVsixChecksum(CACHE_VSIX);
   const size = statSync(CACHE_VSIX).size;
   console.log(`[fetch-grammar] cached VSIX (${(size / 1024 / 1024).toFixed(2)} MB)`);
+}
+
+/**
+ * Integrity gate (supply chain): the pinned VSIX must hash to the hardcoded
+ * SHA-256 AND match OpenVSX's published `.sha256` sidecar when reachable.
+ * The sidecar is advisory — a network failure fetching it downgrades to the
+ * hardcoded check with a warning rather than bricking offline/air-gapped runs.
+ * @param {string} vsixPath
+ * @returns {Promise<void>}
+ */
+async function verifyVsixChecksum(vsixPath) {
+  const actual = createHash("sha256").update(readFileSync(vsixPath)).digest("hex");
+  if (actual !== TINYMIST_VSIX_SHA256) {
+    rmSync(vsixPath, { force: true });
+    throw new Error(
+      `VSIX checksum mismatch: expected ${TINYMIST_VSIX_SHA256}, got ${actual}.\n` +
+        "The pinned artifact changed upstream or the registry response was tampered with. " +
+        "If this bump is intentional, update TINYMIST_VSIX_SHA256 in scripts/fetch-grammar.mjs.",
+    );
+  }
+  try {
+    const res = await fetch(OPENVSX_SHA256_URL, { redirect: "follow" });
+    if (res.ok) {
+      const expected = (await res.text()).trim().split(/\s+/)[0].toLowerCase();
+      if (expected && expected !== actual) {
+        rmSync(vsixxSafe(vsixPath), { force: true });
+        throw new Error(
+          `VSIX checksum disagrees with OpenVSX's .sha256 sidecar: registry says ${expected}, file is ${actual}`,
+        );
+      }
+      console.log("[fetch-grammar] VSIX sha256 verified against OpenVSX sidecar");
+    }
+  } catch (e) {
+    if (e != null && typeof e === "object" && "message" in e && String(e.message).includes("sidecar")) throw e;
+    console.warn("[fetch-grammar] could not fetch the .sha256 sidecar; relying on the hardcoded checksum");
+  }
+}
+
+/** Identity helper kept so the sidecar-mismatch branch reads clearly. */
+function vsixxSafe(p) {
+  return p;
 }
 
 /**
@@ -245,12 +298,16 @@ function verify() {
 // ---------------------------------------------------------------------------
 
 async function main() {
+  // Ensure the VSIX (network + checksum) BEFORE destroying the previous
+  // output: a failed fetch with no cache must not leave the tree worse than
+  // it was (the old grammar dir keeps offline rebuilds working).
+  await ensureVsixCached();
+
   // Start fresh so a corrupted/incomplete OUT_DIR can't silently satisfy the
   // build's imports.
   rmSync(OUT_DIR, { recursive: true, force: true });
   mkdirSync(OUT_DIR, { recursive: true });
 
-  await ensureVsixCached();
   await extractEntries();
   writeManifestSlice();
   verify();

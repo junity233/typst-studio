@@ -85,8 +85,11 @@ jobs:
             librsvg2-dev \
             patchelf
 
+      # npm ci（不是 install）：发布产物必须从与 CI 测试完全相同的 lockfile
+      # 依赖树构建 —— `npm install` 遇到 lockfile 漂移会自行重新解析出一棵
+      # 未经测试的依赖树并打包。
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build and publish
         uses: tauri-apps/tauri-action@v0

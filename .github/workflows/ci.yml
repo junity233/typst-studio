@@ -72,3 +72,12 @@ jobs:
       - name: Tests
         working-directory: src-tauri
         run: cargo test
+      # ts-rs 漂移门禁：带 export-types 特性重新生成 src/lib/types.ts，任何
+      # 未提交的差异都说明 Rust wire 类型改了但前端类型没再生 —— 让序列化漂移
+      # 在 CI 就失败，而不是等线上暴露。
+      - name: ts-rs type drift gate
+        working-directory: src-tauri
+        run: |
+          cargo test --lib --features export-types export_types
+          git diff --exit-code -- ../src/lib/types.ts \
+            || (echo "::error::src/lib/types.ts is stale — run 'cargo test --features export-types' in src-tauri and commit the regenerated file" && exit 1)
