@@ -204,7 +204,29 @@ impl SaveCoordinator {
 
         // Delegate the actual write to the shared (ungated) core, which both
         // `save` and the explicit overwrite path reach.
-        self.save_core(id).await
+        self.save_core(id).await?;
+
+        // Post-write conflict re-check: an external change landing BETWEEN the
+        // gate above and the atomic write would previously be silently
+        // overwritten — `mark_saved` unconditionally clears `conflict` and
+        // re-baselines the disk version, so the user never saw the conflict UI
+        // and their on-disk content was gone. If a conflict became active
+        // during the write window, surface it now (the buffer is preserved and
+        // dirty per the CAS rules; the watcher's conflict event carries the
+        // disk content for the resolution dialog).
+        if let Some(meta) = self.document.tab_meta(id) {
+            if meta.conflict.is_active() {
+                return Err(IpcError::new(
+                    ErrorCode::ExternalConflict,
+                    format!(
+                        "file changed on disk while saving ({}); resolve before saving in place",
+                        meta.conflict.tag()
+                    ),
+                    true,
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Explicit conflict-resolution "overwrite disk" action (§5.4 覆盖磁盘).
