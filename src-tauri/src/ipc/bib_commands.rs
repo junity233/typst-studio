@@ -9,7 +9,8 @@
 //! The parse/save family guards its `path` with
 //! [`ensure_read_source`](crate::ipc::ensure_read_source) (open document /
 //! workspace / config dir / dialog grant) so a compromised webview can't use
-//! them to read or overwrite arbitrary files. `bibliography_discover` takes
+//! them to read or overwrite arbitrary files — including the "dumb write"
+//! [`bibliography_save`]. `bibliography_discover` takes
 //! the root from the caller but only ever READS directories, walking them as
 //! an unprivileged listing (the same surface the Explorer tree already has
 //! via `read_dir`), so it needs no extra guard.
@@ -120,9 +121,18 @@ pub async fn bibliography_parse_full(
 /// expected to happen on the frontend side OR a future `bibliography_serialize`
 /// command; this command is the dumb, durable write primitive. It is format-
 /// agnostic: it writes the bytes verbatim regardless of `.bib`/`.yml`.
+///
+/// Despite being a "dumb write", it still goes through
+/// [`ensure_read_source`](crate::ipc::ensure_read_source) like the rest of the
+/// parse/save family — an unguarded atomic overwrite of any absolute path
+/// would be an arbitrary-file-write primitive for a compromised webview.
 #[tauri::command]
-pub async fn bibliography_save(path: String, content: String) -> Result<()> {
-    let p = PathBuf::from(&path);
+pub async fn bibliography_save(
+    state: State<'_, AppState>,
+    path: String,
+    content: String,
+) -> Result<()> {
+    let p = crate::ipc::ensure_read_source(&state, &path)?;
     // Atomic write is blocking std::fs; run it off the async worker.
     async_runtime::spawn_blocking(move || {
         crate::persistence::atomic::write_bytes(&p, content.as_bytes())
@@ -280,6 +290,7 @@ fn sniff_for_path(path: &str, content: &str) -> BibFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::read_source_tests::{open_ws_at, test_state};
 
     #[test]
     #[cfg(feature = "export-types")]
@@ -287,6 +298,43 @@ mod tests {
         use ts_rs::TS;
         let cfg = ts_rs::Config::default();
         BibFileInfo::export(&cfg).unwrap();
+    }
+
+    #[test]
+    fn save_rejects_paths_outside_every_root() {
+        let state = test_state();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("evil.bib");
+        std::fs::write(&target, "@book{k}").unwrap();
+        let err =
+            crate::ipc::ensure_read_source(&state, &target.to_string_lossy())
+                .unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)), "got: {err:?}");
+        // The rejected write must not have touched the file.
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "@book{k}");
+    }
+
+    #[test]
+    fn save_allows_paths_inside_open_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state();
+        open_ws_at(&state, dir.path());
+        let inner = dir.path().join("refs.bib");
+        let granted = crate::ipc::ensure_read_source(
+            &state,
+            &inner.to_string_lossy(),
+        )
+        .expect("workspace-contained bib path must pass the guard");
+        assert_eq!(
+            granted,
+            PathBuf::from(inner.to_string_lossy().into_owned())
+        );
+    }
+
+    #[test]
+    fn save_rejects_relative_path() {
+        let state = test_state();
+        assert!(crate::ipc::ensure_read_source(&state, "refs.bib").is_err());
     }
 
     #[test]

@@ -108,7 +108,7 @@ pub(crate) fn ensure_read_source(state: &AppState, source: &str) -> Result<PathB
 }
 
 #[cfg(test)]
-mod read_source_tests {
+pub(crate) mod read_source_tests {
     use super::*;
     use std::sync::Arc;
 
@@ -127,7 +127,7 @@ mod read_source_tests {
     /// A minimal AppState for the guard tests: only `workspace`, `editor`, and
     /// `dialog_grant` are consulted; every other service is a default/empty
     /// construction.
-    fn test_state() -> AppState {
+    pub(crate) fn test_state() -> AppState {
         let emitter = Arc::new(crate::service::test_support::NoopEmitter);
         let editor = Arc::new(EditorService::new(emitter));
         let net = Arc::new(crate::net::client::HttpClient::new());
@@ -178,7 +178,7 @@ mod read_source_tests {
         }
     }
 
-    fn open_ws_at(state: &AppState, dir: &Path) {
+    pub(crate) fn open_ws_at(state: &AppState, dir: &Path) {
         let on_change: OnChange = Arc::new(|_: &[std::path::PathBuf]| {});
         state
             .workspace
