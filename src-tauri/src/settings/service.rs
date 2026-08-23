@@ -49,6 +49,14 @@ impl SettingsService {
         on_change: impl Fn(&Value) + Send + Sync + 'static,
     ) -> Result<Self> {
         let data = store.load_value();
+        // Load-side validation (§6.5 fail loud): `set` validates every write,
+        // but settings.json is a hand-editable file — values written outside
+        // the app (or by an older/buggier build) must not flow into consumers.
+        // Re-run the manifest constraints per known key and reset violations
+        // to that key's default, logging loudly. Type mismatches already fall
+        // back at read time; this pass catches out-of-range / malformed
+        // values that deserialization would happily accept.
+        let data = sanitize_loaded(&manifest, data);
         Ok(Self {
             data: RwLock::new(data),
             write_lock: Mutex::new(()),
@@ -200,6 +208,38 @@ fn dotted_to_pointer(path: &str) -> String {
         out.push_str(seg);
     }
     out
+}
+
+/// Re-validate every manifest key present in a freshly loaded document against
+/// its constraints and reset violations to the key's default (logged loudly).
+/// Free function so `SettingsService::new` can sanitize before any consumer
+/// reads. Unknown keys (not in the manifest) are left alone — they may belong
+/// to a newer build; the read path ignores them.
+fn sanitize_loaded(manifest: &Manifest, mut data: Value) -> Value {
+    if !data.is_object() {
+        return data;
+    }
+    for cat in &manifest.categories {
+        for def in &cat.settings {
+            let ptr = dotted_to_pointer(&def.key);
+            let Some(current) = data.pointer(&ptr).cloned() else {
+                continue; // absent → read path falls back to the default
+            };
+            // A value whose TYPE doesn't match is also caught by `validate`
+            // (e.g. a string where a number belongs) — reset it too, rather
+            // than letting `get`'s per-read fallback serve the default while
+            // the corrupt value keeps living on disk.
+            if validate(def, &current).is_err() {
+                tracing::warn!(
+                    key = %def.key,
+                    stored = %current,
+                    "settings: stored value violates the manifest; resetting to default"
+                );
+                set_pointer(&mut data, &def.key, def.default.clone());
+            }
+        }
+    }
+    data
 }
 
 /// The sentinel a secret key reads as over IPC once it has been set. Stable
@@ -380,6 +420,15 @@ fn validate(def: &SettingDef, value: &Value) -> Result<()> {
 
 /// Enforce manifest `min`/`max` (stored in `extra`) for numeric types.
 fn check_range(extra: &serde_json::Map<String, Value>, key: &str, f: f64) -> Result<()> {
+    // NaN slips past every `<`/`>` comparison (both branches false), so it
+    // would sail through min/max validation and later poison consumers (e.g.
+    // `Scalar::new(NaN)` in the PNG rasterizer). Infinity likewise. Reject all
+    // non-finite values up front — fail loud.
+    if !f.is_finite() {
+        return Err(AppError::InvalidInput(format!(
+            "{key} must be a finite number"
+        )));
+    }
     if let Some(min) = extra.get("min").and_then(|v| v.as_f64()) {
         if f < min {
             return Err(AppError::InvalidInput(format!("{key} must be >= {min}")));
@@ -837,6 +886,92 @@ mod tests {
         assert_eq!(svc2.get_all(), all, "disk must hold exactly what memory does");
         // Broadcast: one fire per successful set, no more, no fewer.
         assert_eq!(*fired.lock().unwrap(), THREADS * ITERATIONS);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn nan_setting_write_is_rejected() {
+        // NaN slips past `<`/`>` range comparisons; the finite check must
+        // reject it (and infinity) before it can reach consumers like the PNG
+        // rasterizer.
+        let svc = make_service();
+        assert!(svc.set("export.pngPixelPerPt", json!(f64::NAN)).is_err());
+        assert!(
+            svc.set("export.pngPixelPerPt", json!(f64::INFINITY))
+                .is_err()
+        );
+        // A normal value still writes fine.
+        svc.set("export.pngPixelPerPt", json!(3.0)).unwrap();
+    }
+
+    #[test]
+    fn loaded_out_of_range_value_is_reset_to_default() {
+        // Simulate a hand-edited settings.json: write a violating document to
+        // disk, then load. The sanitizer must reset the key to its manifest
+        // default instead of letting 1e9 flow into the PNG renderer.
+        let path =
+            std::env::temp_dir().join(format!("typst-settings-{}.json", uuid::Uuid::new_v4()));
+        let bad = json!({
+            "editor": { "fontSize": 999 },
+            "export": { "pngPixelPerPt": 1e9 }
+        });
+        std::fs::write(&path, serde_json::to_vec(&bad).unwrap()).unwrap();
+
+        let store = JsonFileStore::new(path.clone());
+        let svc = SettingsService::new(store, Manifest::embedded(), |_| {}).unwrap();
+        let manifest = Manifest::embedded();
+        let font_default = manifest.find("editor.fontSize").unwrap().default.clone();
+        let ppp_default = manifest
+            .find("export.pngPixelPerPt")
+            .unwrap()
+            .default
+            .clone();
+        assert_eq!(
+            svc.get::<serde_json::Value>("editor.fontSize", serde_json::Value::Null),
+            font_default,
+            "out-of-range fontSize must be reset at load"
+        );
+        assert_eq!(
+            svc.get::<serde_json::Value>("export.pngPixelPerPt", serde_json::Value::Null),
+            ppp_default,
+            "out-of-range pngPixelPerPt must be reset at load"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn loaded_wrong_type_value_is_reset_to_default() {
+        let path =
+            std::env::temp_dir().join(format!("typst-settings-{}.json", uuid::Uuid::new_v4()));
+        // A string where a number belongs: previously this survived on disk
+        // and only `get`'s per-read fallback masked it.
+        let bad = json!({ "editor": { "fontSize": "huge" } });
+        std::fs::write(&path, serde_json::to_vec(&bad).unwrap()).unwrap();
+        let store = JsonFileStore::new(path.clone());
+        let svc = SettingsService::new(store, Manifest::embedded(), |_| {}).unwrap();
+        let manifest = Manifest::embedded();
+        let font_default = manifest.find("editor.fontSize").unwrap().default.clone();
+        assert_eq!(
+            svc.get::<serde_json::Value>("editor.fontSize", serde_json::Value::Null),
+            font_default,
+            "wrong-typed fontSize must be reset at load"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn loaded_valid_values_are_untouched() {
+        let path =
+            std::env::temp_dir().join(format!("typst-settings-{}.json", uuid::Uuid::new_v4()));
+        let ok = json!({ "editor": { "fontSize": 18 } });
+        std::fs::write(&path, serde_json::to_vec(&ok).unwrap()).unwrap();
+        let store = JsonFileStore::new(path.clone());
+        let svc = SettingsService::new(store, Manifest::embedded(), |_| {}).unwrap();
+        assert_eq!(
+            svc.get::<i64>("editor.fontSize", 0),
+            18,
+            "a valid hand-set value must survive loading"
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

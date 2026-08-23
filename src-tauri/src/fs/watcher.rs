@@ -32,6 +32,13 @@ use notify::Watcher as _;
 /// from settings instead. Kept here so internal call sites share one value.
 pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(300);
 
+/// Floor for the effective debounce window. `Duration::ZERO` (a legal
+/// `compiler.debounceMs` value) would turn the flush loop into a busy spin:
+/// `next_flush = now + 0` makes `now < next_flush` always false, so the thread
+/// never sleeps and burns a full core. One millisecond preserves "as fresh as
+/// possible" without spinning.
+const MIN_DEBOUNCE: Duration = Duration::from_millis(1);
+
 /// Callback invoked (on the flush thread) with the deduplicated paths that
 /// changed. Wrapped in `Arc` so it can be shared into the watcher thread.
 pub type OnChange = Arc<dyn Fn(&[PathBuf]) + Send + Sync>;
@@ -66,6 +73,9 @@ impl Drop for WatcherGuard {
 /// Errors if the platform watcher could not be initialized or `root` could not
 /// be watched.
 pub fn watch(root: &Path, debounce: Duration, on_change: OnChange) -> Result<WatcherGuard> {
+    // Clamp the window to the floor (see `MIN_DEBOUNCE`): a 0ms setting must
+    // not degenerate the flush loop into a busy spin.
+    let debounce = debounce.max(MIN_DEBOUNCE);
     // Shared, deduplicated buffer of paths changed since the last flush.
     let pending: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
     let pending_for_cb = Arc::clone(&pending);
@@ -172,5 +182,16 @@ mod tests {
         drop(guard);
         let _ = std::fs::remove_dir_all(&root);
         panic!("watcher never reported the changed file");
+    }
+
+    #[test]
+    fn zero_debounce_is_clamped_to_a_positive_floor() {
+        // A `compiler.debounceMs: 0` setting used to turn the flush loop into
+        // a busy spin (next_flush == now always). The clamp must guarantee a
+        // positive sleep so the thread yields.
+        let clamped = Duration::ZERO.max(MIN_DEBOUNCE);
+        assert!(clamped > Duration::ZERO);
+        // The floor is small enough to stay effectively "fresh".
+        assert!(clamped <= Duration::from_millis(10));
     }
 }

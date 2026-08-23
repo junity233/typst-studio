@@ -18,10 +18,24 @@ pub struct PngRenderer {
     pub pixel_per_pt: f64,
 }
 
+/// The accepted range for `pixel_per_pt`. Values come from the user-editable
+/// `export.pngPixelPerPt` setting; even after manifest validation, the
+/// consumer clamps so an out-of-band value can never drive a multi-GB pixel
+/// allocation (page size × ratio²) or a NaN into `Scalar::new`.
+const PIXEL_PER_PT_MIN: f64 = 0.5;
+const PIXEL_PER_PT_MAX: f64 = 8.0;
+
 impl PngRenderer {
-    /// Create a new renderer with the given pixel-per-point ratio.
+    /// Create a new renderer with the given pixel-per-point ratio. The ratio
+    /// is clamped to `[0.5, 8.0]`; non-finite values (NaN/±inf) fall back to
+    /// the 2.0 default.
     pub fn new(pixel_per_pt: f64) -> Self {
-        Self { pixel_per_pt }
+        let clamped = if pixel_per_pt.is_finite() {
+            pixel_per_pt.clamp(PIXEL_PER_PT_MIN, PIXEL_PER_PT_MAX)
+        } else {
+            2.0
+        };
+        Self { pixel_per_pt: clamped }
     }
 }
 
@@ -104,5 +118,25 @@ mod tests {
             hi.len(),
             lo.len()
         );
+    }
+
+    #[test]
+    fn pixel_per_pt_is_clamped_to_a_safe_range() {
+        // An absurd setting value must not reach the rasterizer: the clamp
+        // keeps the allocation bounded (fail loud happens at validation time;
+        // this is the consumer-side backstop).
+        assert_eq!(PngRenderer::new(1e9).pixel_per_pt, 8.0);
+        assert_eq!(PngRenderer::new(0.0).pixel_per_pt, 0.5);
+        assert_eq!(PngRenderer::new(-3.0).pixel_per_pt, 0.5);
+        // In-range values pass through untouched.
+        assert_eq!(PngRenderer::new(2.5).pixel_per_pt, 2.5);
+    }
+
+    #[test]
+    fn non_finite_pixel_per_pt_falls_back_to_default() {
+        // NaN bypasses every comparison, so it must be special-cased before
+        // clamping — `Scalar::new(NaN)` would poison the page-size math.
+        assert_eq!(PngRenderer::new(f64::NAN).pixel_per_pt, 2.0);
+        assert_eq!(PngRenderer::new(f64::INFINITY).pixel_per_pt, 2.0);
     }
 }

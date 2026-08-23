@@ -216,6 +216,7 @@ pub(crate) mod read_source_tests {
             net,
             dialog_grant: Arc::new(std::sync::Mutex::new(None)),
             open_grant: Arc::new(std::sync::Mutex::new(None)),
+            startup_problems: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
