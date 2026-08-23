@@ -355,7 +355,7 @@ pub struct TinymistInstaller {
     /// client mirrors the shared client's redirect policy and adds the
     /// stall-only read timeout.
     client: reqwest::Client,
-    app: tauri::AppHandle,
+    app: Option<tauri::AppHandle>,
     state: Mutex<InstallState>,
     /// Set once from `lib.rs` after both the installer and the LSP service
     /// exist; fires after a successful install to relaunch the LSP against
@@ -370,6 +370,16 @@ impl TinymistInstaller {
             .read_timeout(READ_STALL_TIMEOUT)
             .build()
             .expect("install reqwest client build");
+        Self::with_client(client, Some(app))
+    }
+
+    /// Construct from an explicit client + optional handle. Production uses
+    /// [`new`](Self::new); the optional-handle form serves tests that never
+    /// trigger installs (the `tinymist_install` emit is skipped when absent).
+    pub(crate) fn with_client(
+        client: reqwest::Client,
+        app: Option<tauri::AppHandle>,
+    ) -> Self {
         Self {
             client,
             app,
@@ -452,7 +462,9 @@ impl TinymistInstaller {
     /// Publish the current status as a `tinymist_install` event.
     fn publish(&self) {
         let payload = self.status();
-        let _ = self.app.emit("tinymist_install", payload);
+        if let Some(app) = &self.app {
+            let _ = app.emit("tinymist_install", payload);
+        }
     }
 
     // -- the install pipeline ----------------------------------------------

@@ -6,18 +6,23 @@
 //! - [`bibliography_discover`]: walk the workspace root and list candidate
 //!   bibliography files.
 //!
-//! Neither needs [`AppState`](crate::ipc::state::AppState) — they are pure file
-//! IO + the hayagriva parser, so they take primitives and return
-//! `Result<T, AppError>`, matching the shape of `package_dir_is_empty` /
-//! `package_compiler_version`.
+//! The parse/save family guards its `path` with
+//! [`ensure_read_source`](crate::ipc::ensure_read_source) (open document /
+//! workspace / config dir / dialog grant) so a compromised webview can't use
+//! them to read or overwrite arbitrary files. `bibliography_discover` takes
+//! the root from the caller but only ever READS directories, walking them as
+//! an unprivileged listing (the same surface the Explorer tree already has
+//! via `read_dir`), so it needs no extra guard.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use tauri::async_runtime;
+use tauri::State;
 
 use crate::domain::bib_entry::{self, BibEntry, BibEntryEditable, BibFormat};
 use crate::error::{AppError, Result};
+use crate::ipc::state::AppState;
 
 /// Metadata about a discovered bibliography file. The path is absolute
 /// (workspace-rooted). `entryCount` is a fast, approximate count used to show
@@ -43,8 +48,11 @@ pub struct BibFileInfo {
 /// from the extension (`.bib` → BibLaTeX, `.yml`/`.yaml` → Hayagriva YAML) with
 /// a content-heuristic fallback for unrecognized extensions.
 #[tauri::command]
-pub async fn bibliography_parse(path: String) -> Result<Vec<BibEntry>> {
-    let p = PathBuf::from(&path);
+pub async fn bibliography_parse(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<BibEntry>> {
+    let p = crate::ipc::ensure_read_source(&state, &path)?;
     // File reading is blocking std::fs; run it off the async worker so a slow
     // disk never stalls the runtime. The payload is small (bib files are KBs),
     // so the spawn overhead is negligible.
@@ -87,8 +95,11 @@ pub async fn bibliography_discover(root_path: Option<String>) -> Result<Vec<BibF
 /// (with a content fallback), file read off the async worker via
 /// `spawn_blocking` so a slow disk never stalls the runtime.
 #[tauri::command]
-pub async fn bibliography_parse_full(path: String) -> Result<Vec<BibEntryEditable>> {
-    let p = PathBuf::from(&path);
+pub async fn bibliography_parse_full(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<BibEntryEditable>> {
+    let p = crate::ipc::ensure_read_source(&state, &path)?;
     let content = async_runtime::spawn_blocking(move || std::fs::read_to_string(&p))
         .await
         .map_err(|e| AppError::Other(format!("bibliography_parse_full join: {e}")))?
@@ -138,10 +149,11 @@ pub async fn bibliography_save(path: String, content: String) -> Result<()> {
 /// caller, which leaves its in-memory list unchanged.
 #[tauri::command]
 pub async fn bibliography_save_entries(
+    state: State<'_, AppState>,
     path: String,
     entries: Vec<BibEntryEditable>,
 ) -> Result<()> {
-    let p = PathBuf::from(&path);
+    let p = crate::ipc::ensure_read_source(&state, &path)?;
     async_runtime::spawn_blocking(move || -> Result<()> {
         // 1. Re-read the original (fidelity strategy needs the source text).
         let original = std::fs::read_to_string(&p).map_err(AppError::Io)?;

@@ -108,11 +108,14 @@ pub async fn open_file(
 
 /// Open a native image-picker dialog and return the chosen file's absolute
 /// path as a string. Returns `None` if the user cancels. Bytes are read by
-/// the frontend via the `@tauri-apps/plugin-fs` plugin — this command only
-/// resolves the path, mirroring how `open_file` resolves a `.typ` path while
-/// leaving content IO to the caller.
+/// the frontend via `read_file_bytes`, whose read guard accepts the path
+/// recorded here — the backend mints the dialog grant itself, so a compromised
+/// webview can never authorize an arbitrary path for reading.
 #[tauri::command]
-pub async fn pick_image_file(app: AppHandle) -> Result<Option<String>> {
+pub async fn pick_image_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>> {
     let picked = super::dialog::pick_file(
         &app,
         &[("Images", IMAGE_EXTENSIONS)],
@@ -121,7 +124,12 @@ pub async fn pick_image_file(app: AppHandle) -> Result<Option<String>> {
     let Some(path) = picked else {
         return Ok(None);
     };
-    Ok(Some(path.to_string_lossy().into_owned()))
+    let grant = path.to_string_lossy().into_owned();
+    *state
+        .dialog_grant
+        .lock()
+        .expect("dialog_grant mutex poisoned") = Some(grant.clone());
+    Ok(Some(grant))
 }
 
 /// Close a tab, releasing its world and caches.

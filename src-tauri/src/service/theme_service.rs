@@ -192,6 +192,14 @@ impl ThemeService {
         Self::new_opt(themes_dir, Some(app))
     }
 
+    /// Test-only handle-less constructor: same as [`new`](Self::new) but the
+    /// watcher emit path is disabled. The `ForTest` suffix is the greppable
+    /// guard — production code must use `new`.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(themes_dir: PathBuf) -> Self {
+        Self::new_opt(themes_dir, None)
+    }
+
     /// Construct with an optional `AppHandle`. `None` skips the watcher's emit
     /// path (used in tests); the cache is still populated and refreshable via
     /// `scan`. Public `new` is the production entry point that always has a

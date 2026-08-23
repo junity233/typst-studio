@@ -1084,16 +1084,22 @@ const MAX_BINARY_PREVIEW_BYTES: u64 = 100 * 1024 * 1024;
 ///
 /// The frontend's `@tauri-apps/plugin-fs` `readFile` is scope-limited to
 /// `$HOME/**` by `capabilities/default.json`, so it CANNOT read workspace
-/// files (e.g. `D:\code\...`). This command uses `std::fs::read` directly
-/// (same as the rest of the app's core I/O) and is therefore scope-unlimited
-/// — consistent with `open_file_by_path`, which also bypasses the fs plugin.
+/// files (e.g. `D:\code\...`). This command uses `std::fs::read` directly,
+/// which is why the path is guarded by
+/// [`ensure_read_source`](crate::ipc::ensure_read_source): it must be an open
+/// document, inside the workspace or app config dir, or the path most recently
+/// picked via a native dialog (`pick_image_file` records the grant). A
+/// compromised webview therefore cannot exfiltrate arbitrary files.
 ///
 /// Guards against oversized files (`MAX_BINARY_PREVIEW_BYTES`). Returns the
 /// bytes as `Vec<u8>`; Tauri serializes that as a JSON number array, which the
 /// frontend wraps in a `Uint8Array` / `Blob`.
 #[tauri::command]
-pub async fn read_file_bytes(path: String) -> Result<Vec<u8>> {
-    let path = PathBuf::from(path);
+pub async fn read_file_bytes(
+    state: tauri::State<'_, crate::ipc::state::AppState>,
+    path: String,
+) -> Result<Vec<u8>> {
+    let path = crate::ipc::ensure_read_source(&state, &path)?;
     let path_for_err = path.to_string_lossy().into_owned();
     tauri::async_runtime::spawn_blocking(move || -> std::result::Result<Vec<u8>, AppError> {
         let len = std::fs::metadata(&path)
