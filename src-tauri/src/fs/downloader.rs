@@ -22,12 +22,24 @@ use typst_kit::downloader::Downloader;
 
 /// A process-wide blocking reqwest client reused across package downloads.
 /// Built once on first use; rustls-tls (no native openssl).
+///
+/// Timeouts are MANDATORY here: `stream` runs on the compile worker thread, so
+/// a registry/CDN connection that stalls without a timeout would hang that
+/// worker forever (the compile never completes and can't be cancelled). 10s to
+/// connect + a 60s stall-only read bound (a slow-but-alive CDN may legally
+/// pause between chunks) turn the hang into an ordinary package-download error
+/// the user can see.
 fn blocking_client() -> &'static reqwest::blocking::Client {
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::blocking::Client::builder()
             // Follow the Typst Universe redirect chain (CDN hops).
             .redirect(reqwest::redirect::Policy::limited(10))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            // reqwest's blocking builder has no read_timeout; `timeout` is a
+            // whole-request wall clock. Package archives are small (a few MB),
+            // so 60s covers even slow CDN chains without hanging the worker.
+            .timeout(std::time::Duration::from_secs(60))
             // rustls is configured via the `rustls-tls` feature on `reqwest`.
             .build()
             .expect("reqwest blocking client build (rustls)")

@@ -692,8 +692,19 @@ impl RecoveryService {
             }
             // Same write + manifest upsert as the synchronous path; log and
             // continue so one bad entry can't block the rest of the flush.
+            // The disk version is (re)computed HERE on the recovery worker —
+            // the enqueue path deliberately passes `None` so a per-keystroke
+            // whole-file read never runs on the IPC/async thread; by flush
+            // time (≥ debounce window after the last edit) one read coalesces
+            // the entire burst.
+            let disk_version = p
+                .meta
+                .origin
+                .canonical_path()
+                .and_then(|path| DiskVersion::from_path(&path).ok())
+                .or(p.disk_version);
             if let Err(e) =
-                write_snapshot_entry(&documents_dir, &mut manifest, id, &p.meta, &p.text, p.disk_version)
+                write_snapshot_entry(&documents_dir, &mut manifest, id, &p.meta, &p.text, disk_version)
             {
                 tracing::warn!(?id, error = %e, "recovery: flush snapshot write failed");
                 continue;

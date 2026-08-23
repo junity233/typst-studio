@@ -1809,11 +1809,10 @@ impl DocumentService {
             worker.recompile();
         }
         if let Some(recovery) = self.recovery() {
-            let disk_version = meta_snapshot
-                .origin
-                .canonical_path()
-                .and_then(|p| DiskVersion::from_path(p).ok());
-            recovery.schedule_snapshot(meta_snapshot, new_content, disk_version);
+            // No disk read here: this runs on the per-keystroke IPC path. The
+            // recovery worker recomputes the disk version at flush time (one
+            // read coalescing the whole debounce burst) — see `flush_pending`.
+            recovery.schedule_snapshot(meta_snapshot, new_content, None);
         }
         Ok(CasReplaceOutcome::Applied {
             revision: applied_revision,
@@ -1918,11 +1917,10 @@ impl DocumentService {
         // recovery service is wired (tests / disabled), this is a no-op. The
         // debounce coalesces bursts; the worker thread flushes after 750ms.
         if let Some(recovery) = self.recovery() {
-            let disk_version = meta_snapshot
-                .origin
-                .canonical_path()
-                .and_then(|p| DiskVersion::from_path(p).ok());
-            recovery.schedule_snapshot(meta_snapshot, content, disk_version);
+            // No disk read here: this runs on the per-keystroke IPC path.
+            // The recovery worker recomputes the disk version at flush time
+            // (one read per burst) — see `flush_pending` in recovery.rs.
+            recovery.schedule_snapshot(meta_snapshot, content, None);
         }
         Ok(authoritative_revision)
     }
