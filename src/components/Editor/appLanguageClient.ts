@@ -590,6 +590,12 @@ class AppLanguageClient {
     await new Promise<void>((resolve) => {
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
+      // Per-attempt handle for the raw socket: the timeout path must CLOSE it.
+      // Without that, a hung connect leaves the WebSocket open; a server that
+      // completes the handshake late fires `onopen` on a start() we already
+      // abandoned, and (generation unchanged — the timeout path bumps nothing)
+      // a full zombie client would be built and take over the Failed state.
+      let attemptWs: WebSocket | null = null;
       const finish = () => {
         if (settled) return;
         settled = true;
@@ -608,11 +614,18 @@ class AppLanguageClient {
           generation: currentGen,
           error: `Language client failed to initialize within ${START_TIMEOUT_MS / 1000}s`,
         });
-        // Dispose the half-open client + socket so the next start() begins
-        // clean. Called directly (NOT this.stop(), which enqueues onto the
-        // `pending` chain we are currently blocking) and not awaited — its
-        // synchronous prefix nulls this.handle before finish() releases the
-        // chain, so a queued start() can't race the old handle.
+        // Close the raw socket FIRST so a late `onopen` sees a closed
+        // WebSocket and abandons (see the onopen guard below). Then dispose
+        // any half-open client so the next start() begins clean. Called
+        // directly (NOT this.stop(), which enqueues onto the `pending` chain
+        // we are currently blocking) and not awaited — its synchronous prefix
+        // nulls this.handle before finish() releases the chain, so a queued
+        // start() can't race the old handle.
+        try {
+          attemptWs?.close();
+        } catch {
+          /* already closed/closing */
+        }
         void this.stopInternal({ bumpGeneration: false }).catch(() => {});
         finish();
       }, START_TIMEOUT_MS);
@@ -629,10 +642,18 @@ class AppLanguageClient {
         finish();
         return;
       }
+      attemptWs = ws;
 
       ws.onopen = () => {
-        if (this.snapshot.generation !== currentGen) {
-          // A newer start() superseded this one; abandon.
+        // Two abandonment checks, in order:
+        // 1. `settled` — this attempt was already concluded (timeout fired, or
+        //    an earlier handler failed it). The timeout path closes the socket,
+        //    but a handshake completing in the same tick could still land here;
+        //    building a client from an abandoned attempt would resurrect a
+        //    zombie over the Failed state. This guard is what generation alone
+        //    cannot express (the timeout path does NOT bump generation).
+        // 2. generation — a newer start()/restart superseded this attempt.
+        if (settled || this.snapshot.generation !== currentGen) {
           finish();
           return;
         }
@@ -729,7 +750,7 @@ class AppLanguageClient {
               finish();
             },
             (e) => {
-              if (this.snapshot.generation !== currentGen) {
+              if (settled || this.snapshot.generation !== currentGen) {
                 finish();
                 return;
               }
@@ -756,7 +777,9 @@ class AppLanguageClient {
       };
 
       ws.onerror = () => {
-        if (this.snapshot.generation !== currentGen) {
+        // An abandoned attempt (timeout already fired) must not overwrite the
+        // Failed snapshot it produced.
+        if (settled || this.snapshot.generation !== currentGen) {
           finish();
           return;
         }
@@ -769,7 +792,7 @@ class AppLanguageClient {
       };
 
       ws.onclose = () => {
-        if (this.snapshot.generation !== currentGen) return;
+        if (settled || this.snapshot.generation !== currentGen) return;
         // Only treat close-before-Ready as a failure. Post-Ready closes are
         // surfaced via the client's onDidChangeState (Stopped → Failed).
         if (this.snapshot.state !== "Ready") {

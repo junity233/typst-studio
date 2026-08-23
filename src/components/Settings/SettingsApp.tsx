@@ -677,6 +677,9 @@ function PathsControl({ def }: { def: SettingDef }) {
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
+                // IME guard: Enter during composition commits the candidate,
+                // not the input — don't add a half-composed path.
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 e.preventDefault();
                 add();
               }

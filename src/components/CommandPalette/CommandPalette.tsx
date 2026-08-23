@@ -90,6 +90,16 @@ export function CommandPalette() {
    * node (the options are virtualized via aria-activedescendant), so Tab is
    * trapped to the input to honor the `aria-modal` contract; Escape closes. */
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // IME composition guard: while composing, arrow keys navigate the IME's
+    // own candidate list — moving the palette highlight AND swallowing the
+    // key breaks candidate selection. Same rationale as the Enter guard
+    // below; applied to arrows so the whole navigation set is consistent.
+    if (
+      (e.key === "ArrowDown" || e.key === "ArrowUp") &&
+      (e.nativeEvent.isComposing || e.keyCode === 229)
+    ) {
+      return;
+    }
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setActiveIndex((i) => Math.min(i + 1, Math.max(0, filtered.length - 1)));

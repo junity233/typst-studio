@@ -53,6 +53,11 @@ export function KeybindingControl({ def }: { def: SettingDef }) {
   useEffect(() => {
     if (!listening) return;
     const onKey = (e: KeyboardEvent) => {
+      // IME composition guard: while an input method is composing, keydowns
+      // carry candidate/commit keys (keyCode 229) whose `e.key` can be a real
+      // character — recording them would serialize composition noise into a
+      // bogus binding.
+      if (e.isComposing || e.keyCode === 229) return;
       e.preventDefault();
       e.stopPropagation();
       const captured = captureKeybinding(e);

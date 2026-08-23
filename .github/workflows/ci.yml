@@ -47,12 +47,20 @@ jobs:
         run: npm run build
 
   rust:
-    runs-on: ubuntu-latest
+    strategy:
+      # 本仓库是 win32 优先的桌面应用（windows-sys FFI、comctl32 DELAYLOAD、
+      # dunce 路径处理、trash 回收站），Linux 单独跑不住平台特定回归 —— 双平台
+      # 都必须绿。fail-fast 关掉：一个平台先红不应掩盖另一个平台的结果。
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      # 与 release.yml 相同的系统依赖：tauri 在 Linux 上编译需要 GTK/WebKit 头文件。
+      # Linux 需要 GTK/WebKit 头文件才能编译 tauri；Windows 官方 runner 自带全部所需。
       - name: Install Linux dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -64,6 +72,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # 每个平台独立缓存（key 自动含 runner os，这里显式声明避免歧义）。
+          prefix-key: rust-${{ matrix.os }}
       # 不用 -D warnings：src/git/status.rs 仍有 1 个已知警告（见 round 计划），
       # 严格化留待该警告清除后。
       - name: Clippy
@@ -74,8 +84,10 @@ jobs:
         run: cargo test
       # ts-rs 漂移门禁：带 export-types 特性重新生成 src/lib/types.ts，任何
       # 未提交的差异都说明 Rust wire 类型改了但前端类型没再生 —— 让序列化漂移
-      # 在 CI 就失败，而不是等线上暴露。
+      # 在 CI 就失败，而不是等线上暴露。（在 Linux 上跑一次即可，类型生成与
+      # 目标平台无关。）
       - name: ts-rs type drift gate
+        if: runner.os == 'Linux'
         working-directory: src-tauri
         run: |
           cargo test --lib --features export-types export_types

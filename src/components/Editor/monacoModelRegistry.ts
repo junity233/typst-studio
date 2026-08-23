@@ -475,6 +475,17 @@ class MonacoModelRegistry {
   }
 
   /**
+   * The last revision the backend confirmed for this document (the revision of
+   * the last open/controlled-replace). `null` when the id isn't open. Used by
+   * the editor's debounce flush to drop pending pushes a controlled replace
+   * has already superseded — sending them would push pre-replace text under a
+   * stale revision.
+   */
+  lastSyncedRevisionOf(documentId: string): number | null {
+    return this.byId.get(documentId)?.lastSyncedRevision ?? null;
+  }
+
+  /**
    * Test/diagnostic ONLY: clear all state (both maps, the suppress set, and
    * dispose every live model). Production code does NOT call this — the
    * `ForTest` suffix is the greppable guard (mirrors `setUntitledSchemeForTest`

@@ -86,6 +86,11 @@ export function useAppCommands(): void {
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
+      // IME composition guard (mirrors CommandPalette): while an input method
+      // is composing (isComposing, or the legacy keyCode 229), keydowns are
+      // candidate-navigation/commit events, not user shortcuts — dispatching
+      // them would trigger app commands from mid-composition typing.
+      if (e.isComposing || e.keyCode === 229) return;
       // A focused editable control (input, textarea, select, [contenteditable])
       // owns the keystrokes — let it handle them, and skip every app-global
       // shortcut so typing in the Search panel or Assistant textarea does not

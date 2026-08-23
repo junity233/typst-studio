@@ -305,6 +305,17 @@ export function MonacoEditor({ tab, onChange, onReady }: MonacoEditorProps) {
     }
     const pending = pendingPushesRef.current.get(id);
     if (pending === undefined) return;
+    // Superseded-push guard: a CONTROLLED REPLACE (conflict use-disk, global
+    // search/replace, assistant edit) advances the registry's synced revision
+    // beyond this keystroke snapshot. Sending it anyway would overwrite the
+    // just-adopted content with pre-replace text (the backend's staleness
+    // guard rejects by revision, but only while the revision is stale — the
+    // window between replace and store update is exactly where it isn't).
+    const synced = monacoModelRegistry.lastSyncedRevisionOf(id);
+    if (synced !== null && pending.revision < synced) {
+      pendingPushesRef.current.delete(id);
+      return;
+    }
     pendingPushesRef.current.delete(id);
     void updateText(id, pending.value, pending.revision).catch((e) =>
       console.warn("[MonacoEditor] updateText failed:", e),

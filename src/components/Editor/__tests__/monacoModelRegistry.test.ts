@@ -676,6 +676,20 @@ describe("MonacoModelRegistry.applyExternalContent (§8.4 controlled replace)", 
     expect(monacoModelRegistry.isSuppressingForward("a")).toBe(false);
   });
 
+  it("lastSyncedRevisionOf reports the synced revision and null for unknown ids", () => {
+    // Pin for the debounce-flush superseded-push guard: a controlled replace
+    // advances lastSyncedRevision, and the editor's flush reads it via this
+    // accessor to DROP pending keystroke pushes that the replace already
+    // overtook (sending them would overwrite the just-adopted content).
+    monacoModelRegistry.openModel("a", openOpts("v0", untitledOrigin, 2));
+    expect(monacoModelRegistry.lastSyncedRevisionOf("a")).toBe(2);
+
+    monacoModelRegistry.applyExternalContent("a", "replaced", 7);
+    expect(monacoModelRegistry.lastSyncedRevisionOf("a")).toBe(7);
+
+    expect(monacoModelRegistry.lastSyncedRevisionOf("ghost")).toBeNull();
+  });
+
   it("is a no-op for an unknown documentId", () => {
     expect(
       monacoModelRegistry.applyExternalContent("ghost", "x", 99),
