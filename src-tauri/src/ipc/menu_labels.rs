@@ -319,11 +319,10 @@ mod tests {
         // Unknown explicit languages (e.g. "fr") don't match en/zh, so they
         // fall through to the system-locale branch — same as "auto".
         //
-        // The comparison must not depend on the PROCESS-WIDE LANG var: the
-        // sibling `system_language_maps_zh_variants_to_zh` test mutates it
-        // concurrently (cargo runs tests in parallel threads), and a read
-        // racing a write made this test flake on CI. Pinning LANG for the
-        // duration makes both sides deterministic regardless of scheduling.
+        // The comparison must not depend on the PROCESS-WIDE LANG var: cargo
+        // runs test threads in parallel, and concurrent env mutation made
+        // these tests flake on CI (see `LANG_MUTEX` below).
+        let _g = LANG_MUTEX.lock();
         let guard = LangGuard::set("en_US.UTF-8");
         let via_fr = resolve(Some("fr"));
         let via_auto = resolve(Some(AUTO_LANGUAGE));
@@ -333,6 +332,7 @@ mod tests {
 
     #[test]
     fn resolve_none_falls_back_to_system_locale() {
+        let _g = LANG_MUTEX.lock();
         let guard = LangGuard::set("en_US.UTF-8");
         assert_eq!(resolve(None), system_language());
         drop(guard);
@@ -340,15 +340,14 @@ mod tests {
 
     #[test]
     fn resolve_auto_falls_back_to_system_locale() {
+        let _g = LANG_MUTEX.lock();
         let guard = LangGuard::set("zh_CN.UTF-8");
         assert_eq!(resolve(Some(AUTO_LANGUAGE)), Language::Zh);
         drop(guard);
     }
 
     /// RAII pin of the process-global `LANG` var: sets it on construction,
-    /// restores the prior value (or removes it) on drop. Serializes nothing —
-    /// each test that reads locale-dependent behavior pins its own value so
-    /// concurrent mutation by other tests cannot change what it observes.
+    /// removes it on drop.
     struct LangGuard;
     impl LangGuard {
         fn set(value: &str) -> Self {
@@ -362,14 +361,25 @@ mod tests {
         }
     }
 
+    /// Serializes EVERY access to the process-global `LANG` var across the
+    /// module's tests. `std::env` is process-global, and cargo runs test
+    /// threads in parallel: a test that reads `LANG` (`system_language`)
+    /// while another sets/removes it observed a torn value — this flaked on
+    /// Windows CI (`resolve_unknown_value…` got En vs Zh) AND locally under
+    /// high thread counts (`system_language_maps_zh_variants_to_zh` saw its
+    /// own value removed mid-loop by a sibling's `LangGuard::drop`). Both
+    /// mutation and observation happen under this mutex, so every test sees
+    /// a consistent environment regardless of scheduling.
+    static LANG_MUTEX: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
     #[test]
     fn system_language_maps_zh_variants_to_zh() {
         // Directly exercise the helper with env vars set to a few Chinese
-        // locales. `LANG` is the first variable consulted. The final restore
-        // (remove) keeps this from leaking a mutated env into other tests in
-        // the process — but note tests that READ locale-dependent behavior
-        // must still pin their own value (LangGuard), since cargo runs test
-        // threads in parallel and this mutation window overlaps them.
+        // locales. `LANG` is the first variable consulted. Held under
+        // LANG_MUTEX so concurrent readers can't observe our intermediate
+        // values; the final remove keeps a mutated env from leaking to other
+        // modules' tests in the process.
+        let _g = LANG_MUTEX.lock();
         for locale in ["zh_CN.UTF-8", "zh-Hans", "zh_TW", "zh"] {
             std::env::set_var("LANG", locale);
             assert_eq!(system_language(), Language::Zh, "locale={}", locale);
