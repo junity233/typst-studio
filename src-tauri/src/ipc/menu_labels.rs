@@ -318,25 +318,58 @@ mod tests {
     fn resolve_unknown_value_falls_back_to_system_locale() {
         // Unknown explicit languages (e.g. "fr") don't match en/zh, so they
         // fall through to the system-locale branch — same as "auto".
+        //
+        // The comparison must not depend on the PROCESS-WIDE LANG var: the
+        // sibling `system_language_maps_zh_variants_to_zh` test mutates it
+        // concurrently (cargo runs tests in parallel threads), and a read
+        // racing a write made this test flake on CI. Pinning LANG for the
+        // duration makes both sides deterministic regardless of scheduling.
+        let guard = LangGuard::set("en_US.UTF-8");
         let via_fr = resolve(Some("fr"));
         let via_auto = resolve(Some(AUTO_LANGUAGE));
         assert_eq!(via_fr, via_auto);
+        drop(guard);
     }
 
     #[test]
     fn resolve_none_falls_back_to_system_locale() {
+        let guard = LangGuard::set("en_US.UTF-8");
         assert_eq!(resolve(None), system_language());
+        drop(guard);
     }
 
     #[test]
     fn resolve_auto_falls_back_to_system_locale() {
-        assert_eq!(resolve(Some(AUTO_LANGUAGE)), system_language());
+        let guard = LangGuard::set("zh_CN.UTF-8");
+        assert_eq!(resolve(Some(AUTO_LANGUAGE)), Language::Zh);
+        drop(guard);
+    }
+
+    /// RAII pin of the process-global `LANG` var: sets it on construction,
+    /// restores the prior value (or removes it) on drop. Serializes nothing —
+    /// each test that reads locale-dependent behavior pins its own value so
+    /// concurrent mutation by other tests cannot change what it observes.
+    struct LangGuard;
+    impl LangGuard {
+        fn set(value: &str) -> Self {
+            std::env::set_var("LANG", value);
+            Self
+        }
+    }
+    impl Drop for LangGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("LANG");
+        }
     }
 
     #[test]
     fn system_language_maps_zh_variants_to_zh() {
         // Directly exercise the helper with env vars set to a few Chinese
-        // locales. `LANG` is the first variable consulted.
+        // locales. `LANG` is the first variable consulted. The final restore
+        // (remove) keeps this from leaking a mutated env into other tests in
+        // the process — but note tests that READ locale-dependent behavior
+        // must still pin their own value (LangGuard), since cargo runs test
+        // threads in parallel and this mutation window overlaps them.
         for locale in ["zh_CN.UTF-8", "zh-Hans", "zh_TW", "zh"] {
             std::env::set_var("LANG", locale);
             assert_eq!(system_language(), Language::Zh, "locale={}", locale);
