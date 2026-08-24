@@ -193,9 +193,15 @@ mod tests {
         let hits = reader.join().expect("reader panicked");
         // After all writers finish the entry is present.
         assert!(vfs.get(&path).is_some());
-        // The reader observed at least some hits (the entry was upserted
-        // immediately, so nearly all reads should hit).
-        assert!(hits > 0, "reader should have observed the entry");
+        // The reader must have observed a CONSISTENT view (never torn — that's
+        // what this test pins). We deliberately do NOT assert hits > 0: the
+        // reader thread may legitimately finish all 1000 iterations before the
+        // OS schedules any writer thread, especially on a loaded CI machine
+        // where thread startup can lag; "entry absent" is a valid consistent
+        // state, not a safety violation. The safety property under test is
+        // that every get() returned either None or a fully-constructed entry,
+        // which cannot be asserted directly — a torn read would instead show
+        // up as a panic/data race here or in Miri.
     }
 
     #[test]
