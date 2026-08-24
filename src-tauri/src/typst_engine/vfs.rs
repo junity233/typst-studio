@@ -158,7 +158,6 @@ mod tests {
 
     #[test]
     fn concurrent_upsert_and_get_are_safe() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::thread;
         let vfs = Arc::new(MemoryVfs::new());
         let path = PathBuf::from("/tmp/concurrent.typ");
@@ -179,29 +178,23 @@ mod tests {
         let vfs_r = vfs.clone();
         let path_r = path.clone();
         let reader = thread::spawn(move || {
-            let hits = AtomicUsize::new(0);
             for _ in 0..1000 {
-                if vfs_r.get(&path_r).is_some() {
-                    hits.fetch_add(1, Ordering::Relaxed);
-                }
+                // Every get must return None or a fully-constructed entry —
+                // a torn read would panic or (in Miri) flag a data race.
+                let _ = vfs_r.get(&path_r);
             }
-            hits.into_inner()
         });
         for w in writers {
             w.join().expect("writer panicked");
         }
-        let hits = reader.join().expect("reader panicked");
+        // Joining the reader proves it ran to completion without panicking.
+        reader.join().expect("reader panicked");
         // After all writers finish the entry is present.
         assert!(vfs.get(&path).is_some());
-        // The reader must have observed a CONSISTENT view (never torn — that's
-        // what this test pins). We deliberately do NOT assert hits > 0: the
-        // reader thread may legitimately finish all 1000 iterations before the
-        // OS schedules any writer thread, especially on a loaded CI machine
-        // where thread startup can lag; "entry absent" is a valid consistent
-        // state, not a safety violation. The safety property under test is
-        // that every get() returned either None or a fully-constructed entry,
-        // which cannot be asserted directly — a torn read would instead show
-        // up as a panic/data race here or in Miri.
+        // We deliberately do NOT assert a hit count: the reader thread may
+        // legitimately finish all 1000 iterations before the OS schedules any
+        // writer thread, especially on a loaded CI machine; "entry absent" is
+        // a valid consistent state, not a safety violation.
     }
 
     #[test]

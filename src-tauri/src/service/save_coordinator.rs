@@ -711,9 +711,15 @@ mod tests {
             "A on disk",
             "preflight must reject before replacing the occupied target"
         );
+        // Compare through `canonicalize_for_identity`, NOT lexically: on the
+        // Windows CI runner `std::fs::canonicalize` yields the 8.3 short-name
+        // form (`C:\Users\RUNNER~1\…`) which dunce keeps (simplifying it is
+        // not always lossless), while the test's raw `dir.join("b.typ")` is
+        // the long form. The backend stores the canonical form; the test must
+        // compare identity-to-identity.
         assert_eq!(
             document.tab_meta(meta_b.id).unwrap().path.as_deref(),
-            Some(b.as_path())
+            Some(crate::domain::path::canonicalize_for_identity(&b).unwrap().as_path())
         );
         assert!(document.tab_meta(meta_b.id).unwrap().dirty);
         assert!(!coord.save_state(meta_b.id).is_saving());

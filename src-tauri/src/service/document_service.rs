@@ -2421,9 +2421,19 @@ mod tests {
             assert_eq!(document.tab_revision(id), Some(1), "same revision bump");
             assert!(document.tab_meta(id).unwrap().dirty, "same dirty mark");
             assert_eq!(document.tab_text(id).as_deref(), Some("v1"));
-            let entry = document.store.vfs.get(path).expect("VFS entry published");
-            assert_eq!(entry.text, "v1", "same VFS text for {path:?}");
-            assert_eq!(entry.revision, 1, "same VFS revision for {path:?}");
+            // Query the VFS under the CANONICAL path: `open_from_content`
+            // stores `canonicalize_for_identity(path)` in the origin, and on
+            // the Windows CI runner that differs lexically from the raw
+            // tempdir path (8.3 short names — `RUNNER~1`). The VFS is keyed
+            // by that stored canonical form, so the lookup must use it too.
+            let canon = canonicalize_for_identity(path).unwrap();
+            let entry = document
+                .store
+                .vfs
+                .get(&canon)
+                .expect("VFS entry published");
+            assert_eq!(entry.text, "v1", "same VFS text for {canon:?}");
+            assert_eq!(entry.revision, 1, "same VFS revision for {canon:?}");
         }
 
         let _ = std::fs::remove_dir_all(&dir);

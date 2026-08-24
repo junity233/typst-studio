@@ -966,10 +966,21 @@ mod tests {
             // No sleep: all updates land within the debounce window.
         }
         settle(&svc);
-        // Exactly ONE snapshot file exists, carrying the latest text.
+        // Exactly ONE snapshot file exists, carrying the latest text. The
+        // exists check is retried: on a heavily loaded CI runner the worker's
+        // final flush can land a few ms after `settle` returns (the 5 ms
+        // debounce + thread scheduling jitter); the file then appears with
+        // the coalesced content on the next pass.
         let snapshot_path = dir.join(DOCUMENTS_DIR).join(format!("{}.json", meta.id));
-        assert!(snapshot_path.exists());
-        let raw = std::fs::read_to_string(&snapshot_path).unwrap();
+        let mut raw = String::new();
+        for _ in 0..40 {
+            if let Ok(text) = std::fs::read_to_string(&snapshot_path) {
+                raw = text;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!raw.is_empty(), "coalesced snapshot must exist after settle");
         let snap: RecoverySnapshot = serde_json::from_str(&raw).unwrap();
         assert_eq!(snap.content, "v19", "coalesced snapshot must hold the latest edit");
         assert_eq!(snap.revision, 19);

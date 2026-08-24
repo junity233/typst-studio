@@ -296,9 +296,17 @@ pub(crate) mod read_source_tests {
             .document()
             .rebind_path(meta.id, target.clone())
             .unwrap();
-        assert!(ensure_read_source(&state, &target.to_string_lossy()).is_ok());
+        // Query with the CANONICAL form: rebind stores
+        // `canonicalize_for_identity(target)`, which on the Windows CI runner
+        // differs lexically from the raw tempdir path (8.3 short names —
+        // `RUNNER~1` vs `runneradmin`). `ensure_read_source`'s open-doc check
+        // is exact-match against the stored path, so the frontend (which got
+        // the canonical path from the backend) always sends that form; the
+        // test must do the same.
+        let canon =
+            crate::domain::path::canonicalize_for_identity(&target).unwrap();
+        assert!(ensure_read_source(&state, &canon.to_string_lossy()).is_ok());
     }
-
     #[test]
     fn open_guard_rejects_arbitrary_outside_path() {
         let state = test_state();
